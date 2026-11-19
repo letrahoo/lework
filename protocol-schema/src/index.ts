@@ -426,6 +426,33 @@ export const ClientInfo = z.object({
   platform: z.string().max(32),
 })
 
+export const GitChangedFileEntry = z.object({
+  path: z.string(),
+  status: z.enum(['modified', 'added', 'deleted', 'renamed', 'untracked']),
+  additions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+})
+export type GitChangedFileEntry = z.infer<typeof GitChangedFileEntry>
+
+export const GitStatusResult = z.object({
+  path: z.string(),
+  isGitRepo: z.boolean(),
+  branch: z.string().optional(),
+  headSha: z.string().optional(),
+  totalAdditions: z.number().int().nonnegative(),
+  totalDeletions: z.number().int().nonnegative(),
+  files: z.array(GitChangedFileEntry),
+})
+export type GitStatusResult = z.infer<typeof GitStatusResult>
+
+export const GitDiffResult = z.object({
+  path: z.string(),
+  filePath: z.string().optional(),
+  diff: z.string(),
+  truncated: z.boolean(),
+})
+export type GitDiffResult = z.infer<typeof GitDiffResult>
+
 export const Methods = {
   'hub.hello': {
     params: z.object({ protocolVersion: z.number().int(), token: z.string().min(8).max(1024), client: ClientInfo }),
@@ -569,6 +596,18 @@ export const Methods = {
   'usage.proxy': {
     params: z.object({}).optional(),
     result: ProxyUsageResult,
+  },
+  'git.status': {
+    params: z.object({ path: z.string().min(1) }),
+    result: GitStatusResult,
+  },
+  'git.diff': {
+    params: z.object({
+      path: z.string().min(1),
+      filePath: z.string().optional(),
+      baseCommitSha: z.string().max(40).optional(),
+    }),
+    result: GitDiffResult,
   },
 } as const
 

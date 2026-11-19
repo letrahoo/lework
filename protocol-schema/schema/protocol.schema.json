@@ -4959,6 +4959,143 @@
           ],
           "additionalProperties": false
         }
+      },
+      "git.status": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "isGitRepo": {
+              "type": "boolean"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "headSha": {
+              "type": "string"
+            },
+            "totalAdditions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "totalDeletions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "modified",
+                      "added",
+                      "deleted",
+                      "renamed",
+                      "untracked"
+                    ]
+                  },
+                  "additions": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "deletions": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "path",
+                  "status",
+                  "additions",
+                  "deletions"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "path",
+            "isGitRepo",
+            "totalAdditions",
+            "totalDeletions",
+            "files"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "git.diff": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "filePath": {
+              "type": "string"
+            },
+            "baseCommitSha": {
+              "type": "string",
+              "maxLength": 40
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "filePath": {
+              "type": "string"
+            },
+            "diff": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "diff",
+            "truncated"
+          ],
+          "additionalProperties": false
+        }
       }
     },
     "notifications": {

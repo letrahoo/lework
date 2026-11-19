@@ -273,6 +273,19 @@ export class SessionManager {
       this.callbacks.onSessionUpdated(managed.meta)
     }
 
+    // Auto-snapshot working tree right before launching a new turn so the user can always roll back
+    try {
+      const summary = text.replace(/\s+/g, ' ').trim().slice(0, 18)
+      this.checkpoints.create(
+        sessionId,
+        managed.meta.cwd,
+        summary ? `对话前自动快照 · ${summary}` : '对话前自动快照',
+        { deduplicateUnchanged: true },
+      )
+    } catch {
+      // Non-git directories gracefully skip checkpointing
+    }
+
     this.sleepInhibitor.acquire()
     void managed.handle
       .prompt(turnId, text)
@@ -344,19 +357,33 @@ export class SessionManager {
     this.sessions.delete(sessionId)
   }
 
+  private resolveSessionWorkspaceCwd(sessionId: string): string {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      return resolveAllowedWorkspacePath(managed.meta.cwd, this.workspaceRoots)
+    }
+    if (sessionId.startsWith('host:')) {
+      const hostEntry = this.hostInspector.getHostSession(sessionId)
+      if (hostEntry?.meta.cwd) {
+        return resolveAllowedWorkspacePath(hostEntry.meta.cwd, this.workspaceRoots)
+      }
+    }
+    throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+  }
+
   listCheckpoints(sessionId: string): CheckpointInfo[] {
-    this.requireSession(sessionId)
-    return this.checkpoints.list(sessionId)
+    const cwd = this.resolveSessionWorkspaceCwd(sessionId)
+    return this.checkpoints.list(sessionId, cwd)
   }
 
   createCheckpoint(sessionId: string, label?: string): CheckpointInfo {
-    const managed = this.requireSession(sessionId)
-    return this.checkpoints.create(sessionId, managed.meta.cwd, label)
+    const cwd = this.resolveSessionWorkspaceCwd(sessionId)
+    return this.checkpoints.create(sessionId, cwd, label)
   }
 
   restoreCheckpoint(sessionId: string, checkpointId: string): void {
-    const managed = this.requireSession(sessionId)
-    this.checkpoints.restore(sessionId, managed.meta.cwd, checkpointId)
+    const cwd = this.resolveSessionWorkspaceCwd(sessionId)
+    this.checkpoints.restore(sessionId, cwd, checkpointId)
   }
 
   subscribeSnapshot(

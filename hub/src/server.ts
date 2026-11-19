@@ -37,10 +37,15 @@ import { HubRpcError } from './security/path-guard.ts'
 import { attestProof, loadOrCreateHubTls, tokenAttestKey, tokenKid, type HubTlsMaterial } from './security/tls.ts'
 import { SessionManager } from './session-manager.ts'
 import type { HostTaskInspector } from './storage/host-history.ts'
-import { listWorkspaceDirectory, readWorkspaceFile } from './storage/workspace-fs.ts'
+import {
+  inspectWorkspaceGitStatus,
+  listWorkspaceDirectory,
+  readWorkspaceFile,
+  readWorkspaceGitDiff,
+} from './storage/workspace-fs.ts'
 import { UsageService } from './usage/index.ts'
 
-const HUB_VERSION = '0.3.0'
+const HUB_VERSION = '0.5.0'
 
 interface ClientConn {
   ws: WebSocket
@@ -722,6 +727,17 @@ export class HubServer {
       }
       case 'usage.proxy': {
         return await this.usageService.getProxyUsage()
+      }
+      case 'git.status': {
+        const p = params as { path: string }
+        return inspectWorkspaceGitStatus(p.path, this.config.workspaceRoots)
+      }
+      case 'git.diff': {
+        const p = params as { path: string; filePath?: string; baseCommitSha?: string }
+        return readWorkspaceGitDiff(p.path, this.config.workspaceRoots, {
+          filePath: p.filePath,
+          baseCommitSha: p.baseCommitSha,
+        })
       }
     }
   }

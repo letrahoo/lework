@@ -221,4 +221,98 @@ class ConsoleStoreStateTest {
             storeScope.cancel()
         }
     }
+
+    @Test
+    fun `T9_1 loads session context window occupancy and global usage quota dashboard`() = runTest {
+        val transport = FakeHubTransport()
+        val sess = SessionMeta(
+            id = "host:claude:ctx_demo",
+            engineId = "claude",
+            cwd = "/workspace/lework",
+            title = "Context Demo",
+            state = SessionState.IDLE,
+            createdAt = 1_000L,
+            updatedAt = 2_000L,
+            lastSeq = 1,
+        )
+        transport.sessions.add(sess)
+        transport.sessionEventsMap[sess.id] = mutableListOf(
+            AgentEvent.UserMessage(0, sess.id, 1_000L, "u_0", "hello"),
+            AgentEvent.AssistantDelta(1, sess.id, 1_100L, "a_1", "world"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sess.id)
+            runCurrent()
+
+            val sessUsage = store.state.value.activeSessionUsage
+            assertEquals("host:claude:ctx_demo", sessUsage?.sessionId)
+            assertEquals(34.2, sessUsage?.contextPercent)
+            assertEquals(68_400L, sessUsage?.contextTokens)
+
+            store.refreshUsageDashboard(days = 7)
+            runCurrent()
+
+            assertEquals(7, store.state.value.usageSelectedDays)
+            assertEquals(1_040_000L, store.state.value.usageSummary?.totals?.totalTokens)
+            assertEquals(2, store.state.value.usageQuota?.windows?.size)
+            assertEquals(true, store.state.value.proxyUsage?.reachable)
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `T9_2 loads workspace git diff and creates and restores checkpoints across host sessions`() = runTest {
+        val transport = FakeHubTransport()
+        val sess = SessionMeta(
+            id = "host:claude:diff_demo",
+            engineId = "claude",
+            cwd = "/workspace/lework",
+            title = "Diff Demo",
+            state = SessionState.IDLE,
+            createdAt = 1_000L,
+            updatedAt = 2_000L,
+            lastSeq = 0,
+        )
+        transport.sessions.add(sess)
+        transport.sessionEventsMap[sess.id] = mutableListOf(
+            AgentEvent.UserMessage(0, sess.id, 1_000L, "u_0", "refactor"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sess.id)
+            runCurrent()
+
+            store.refreshDiffAndCheckpoints()
+            runCurrent()
+            assertEquals("main", store.state.value.gitStatus?.branch)
+            assertEquals(1, store.state.value.gitStatus?.files?.size)
+
+            store.openGitDiff("hub/src/server.ts", null, "hub/src/server.ts")
+            runCurrent()
+            assertTrue(store.state.value.openedDiffContent.orEmpty().contains("+new line"))
+
+            store.createManualCheckpoint("重要节点")
+            runCurrent()
+            assertEquals(1, store.state.value.checkpoints.size)
+            val created = store.state.value.checkpoints.first()
+            assertEquals("重要节点", created.label)
+
+            store.restoreCheckpoint(created)
+            runCurrent()
+            assertEquals(listOf(sess.id to created.id), transport.restoredCheckpoints)
+            assertTrue(store.state.value.checkpointNotice.orEmpty().contains("已回退至"))
+        } finally {
+            storeScope.cancel()
+        }
+    }
 }

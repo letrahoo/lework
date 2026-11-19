@@ -128,6 +128,16 @@ interface HubTransport {
     suspend fun listCheckpoints(sessionId: String): List<CheckpointInfo>
     suspend fun createCheckpoint(sessionId: String, label: String? = null): CheckpointInfo
     suspend fun restoreCheckpoint(sessionId: String, checkpointId: String)
+    suspend fun fetchUsageSummary(days: Int = 14, engineId: String? = null): UsageSummaryResult
+    suspend fun fetchUsageQuota(): UsageQuotaResult
+    suspend fun fetchSessionUsage(sessionId: String): SessionUsageResult
+    suspend fun fetchProxyUsage(): ProxyUsageResult
+    suspend fun fetchGitStatus(path: String): GitStatusResult
+    suspend fun fetchGitDiff(
+        path: String,
+        filePath: String? = null,
+        baseCommitSha: String? = null,
+    ): GitDiffResult
     suspend fun disconnect()
 }
 
@@ -342,7 +352,7 @@ class HubRpcClient(
                     token = token,
                     client = ClientInfo(
                         name = "lework-mobile",
-                        version = "0.4.0",
+                        version = "0.5.0",
                         platform = platformName,
                     ),
                 ),
@@ -479,6 +489,40 @@ class HubRpcClient(
             encodeParams(CheckpointRestoreParams(sessionId = sessionId, checkpointId = checkpointId)),
         )
     }
+
+    override suspend fun fetchUsageSummary(days: Int, engineId: String?): UsageSummaryResult =
+        call(
+            "usage.summary",
+            encodeParams(UsageSummaryParams(days = days, engineId = engineId)),
+        )
+
+    override suspend fun fetchUsageQuota(): UsageQuotaResult =
+        call("usage.quota")
+
+    override suspend fun fetchSessionUsage(sessionId: String): SessionUsageResult =
+        call(
+            "usage.session",
+            encodeParams(UsageSessionParams(sessionId = sessionId)),
+        )
+
+    override suspend fun fetchProxyUsage(): ProxyUsageResult =
+        call("usage.proxy")
+
+    override suspend fun fetchGitStatus(path: String): GitStatusResult =
+        call(
+            "git.status",
+            encodeParams(GitStatusParams(path = path)),
+        )
+
+    override suspend fun fetchGitDiff(
+        path: String,
+        filePath: String?,
+        baseCommitSha: String?,
+    ): GitDiffResult =
+        call(
+            "git.diff",
+            encodeParams(GitDiffParams(path = path, filePath = filePath, baseCommitSha = baseCommitSha)),
+        )
 
     override suspend fun disconnect() {
         readerJob?.cancel()

@@ -235,7 +235,12 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
     const { checkpoints } = await client.call('checkpoint.list', {
       sessionId: session.id,
     })
-    expect(checkpoints.length).toBe(1)
+    expect(checkpoints.length).toBe(2)
+    expect(checkpoints[0].label).toBe('Before refactor')
+    expect(checkpoints[1].label).toContain('对话前自动快照')
+
+    const gitStatus = await client.call('git.status', { path: repoRoot })
+    expect(gitStatus.isGitRepo).toBe(true)
 
     // 10. Pi Engine embedded turn + approval flow
     const { session: piSession } = await client.call('session.create', {

@@ -3,10 +3,13 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ErrorCode, type CheckpointInfo, type FsEntry } from '@lework/protocol'
-import { HubRpcError, assertNotSensitive, resolveAllowedWorkspacePath } from '../security/path-guard.ts'
+import { defaultDataDir } from '../platform/index.ts'
+import { HubRpcError, assertNotSensitive, isSensitivePath, resolveAllowedWorkspacePath } from '../security/path-guard.ts'
 
 const MAX_READ_BYTES = 64 * 1024
+const MAX_DIFF_BYTES = 96 * 1024
 const MAX_DIR_ENTRIES = 120
+const MAX_CHANGED_FILES = 150
 
 export function listWorkspaceDirectory(dirPath: string, workspaceRoots: string[]): {
   path: string
@@ -81,54 +84,412 @@ export function readWorkspaceFile(filePath: string, workspaceRoots: string[]): {
   }
 }
 
-export class CheckpointManager {
-  private readonly checkpointsBySession = new Map<string, CheckpointInfo[]>()
+export type GitChangeKind = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked'
 
-  list(sessionId: string): CheckpointInfo[] {
-    return [...(this.checkpointsBySession.get(sessionId) ?? [])]
+export interface GitChangedFile {
+  path: string
+  status: GitChangeKind
+  additions: number
+  deletions: number
+}
+
+export interface WorkspaceGitStatus {
+  path: string
+  isGitRepo: boolean
+  branch?: string
+  headSha?: string
+  totalAdditions: number
+  totalDeletions: number
+  files: GitChangedFile[]
+}
+
+export function inspectWorkspaceGitStatus(
+  dirPath: string,
+  workspaceRoots: string[],
+): WorkspaceGitStatus {
+  const realDir = resolveAllowedWorkspacePath(dirPath, workspaceRoots)
+  const inside = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    cwd: realDir,
+    encoding: 'utf8',
+    timeout: 3_000,
+  })
+  if (inside.status !== 0 || inside.stdout.trim() !== 'true') {
+    return { path: realDir, isGitRepo: false, totalAdditions: 0, totalDeletions: 0, files: [] }
   }
 
-  create(sessionId: string, cwd: string, label?: string): CheckpointInfo {
-    const headRes = spawnSync('git', ['rev-parse', '--short', 'HEAD'], {
-      cwd,
-      encoding: 'utf8',
-      timeout: 3_000,
-    })
-    const headSha = headRes.status === 0 ? headRes.stdout.trim() : 'working-tree'
+  const branchRes = spawnSync('git', ['branch', '--show-current'], {
+    cwd: realDir,
+    encoding: 'utf8',
+    timeout: 3_000,
+  })
+  const headRes = spawnSync('git', ['rev-parse', '--short', 'HEAD'], {
+    cwd: realDir,
+    encoding: 'utf8',
+    timeout: 3_000,
+  })
+  const hasHead = headRes.status === 0 && Boolean(headRes.stdout.trim())
+  const headSha = hasHead ? headRes.stdout.trim() : undefined
+  const branch = branchRes.status === 0 && branchRes.stdout.trim() ? branchRes.stdout.trim() : headSha
 
-    // Create a git stash commit object without modifying the working tree (`git stash create`)
-    const stashRes = spawnSync('git', ['stash', 'create', label ?? `lework-${sessionId}`], {
-      cwd,
-      encoding: 'utf8',
-      timeout: 5_000,
-    })
-    const stashSha = stashRes.status === 0 && stashRes.stdout.trim() ? stashRes.stdout.trim().slice(0, 12) : headSha
+  // Parse numstat against HEAD (or index on unborn branch)
+  const numstatArgs = hasHead ? ['diff', 'HEAD', '--numstat'] : ['diff', '--numstat']
+  const numstatRes = spawnSync('git', numstatArgs, {
+    cwd: realDir,
+    encoding: 'utf8',
+    timeout: 5_000,
+    maxBuffer: 2 * 1024 * 1024,
+  })
+  const statsByPath = new Map<string, { add: number; del: number }>()
+  if (numstatRes.status === 0 && numstatRes.stdout) {
+    for (const line of numstatRes.stdout.split('\n')) {
+      if (!line.trim()) continue
+      const parts = line.split('\t')
+      if (parts.length < 3) continue
+      const add = Number.parseInt(parts[0] ?? '0', 10)
+      const del = Number.parseInt(parts[1] ?? '0', 10)
+      const relPath = parts.slice(2).join('\t').trim()
+      if (relPath) {
+        statsByPath.set(relPath, {
+          add: Number.isFinite(add) ? add : 0,
+          del: Number.isFinite(del) ? del : 0,
+        })
+      }
+    }
+  }
+
+  const statusRes = spawnSync('git', ['status', '--porcelain=v1', '-uall'], {
+    cwd: realDir,
+    encoding: 'utf8',
+    timeout: 5_000,
+    maxBuffer: 2 * 1024 * 1024,
+  })
+  const files: GitChangedFile[] = []
+  let totalAdditions = 0
+  let totalDeletions = 0
+
+  if (statusRes.status === 0 && statusRes.stdout) {
+    for (const rawLine of statusRes.stdout.split('\n')) {
+      if (rawLine.length < 4) continue
+      const xy = rawLine.slice(0, 2)
+      let rel = rawLine.slice(3).trim()
+      if (rel.includes(' -> ')) {
+        rel = rel.split(' -> ').pop()!.trim()
+      }
+      if (rel.startsWith('"') && rel.endsWith('"')) {
+        try {
+          rel = JSON.parse(rel) as string
+        } catch {
+          rel = rel.slice(1, -1)
+        }
+      }
+      if (!rel || rel.split(/[/\\]+/).includes('..')) continue
+      const absCandidate = path.resolve(realDir, rel)
+      if (isSensitivePath(absCandidate)) continue
+
+      const kind: GitChangeKind =
+        xy === '??'
+          ? 'untracked'
+          : xy.includes('R')
+            ? 'renamed'
+            : xy.includes('D')
+              ? 'deleted'
+              : xy.includes('A')
+                ? 'added'
+                : 'modified'
+
+      let st = statsByPath.get(rel)
+      if (!st && kind === 'untracked') {
+        try {
+          const fstat = fs.statSync(absCandidate)
+          if (fstat.isFile() && fstat.size <= MAX_READ_BYTES) {
+            const lineCount = fs.readFileSync(absCandidate, 'utf8').split('\n').length
+            st = { add: lineCount, del: 0 }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      const additions = st?.add ?? 0
+      const deletions = st?.del ?? 0
+      totalAdditions += additions
+      totalDeletions += deletions
+      files.push({ path: rel, status: kind, additions, deletions })
+      if (files.length >= MAX_CHANGED_FILES) break
+    }
+  }
+
+  return {
+    path: realDir,
+    isGitRepo: true,
+    branch: branch || undefined,
+    headSha,
+    totalAdditions,
+    totalDeletions,
+    files,
+  }
+}
+
+export function readWorkspaceGitDiff(
+  dirPath: string,
+  workspaceRoots: string[],
+  opts: { filePath?: string; baseCommitSha?: string } = {},
+): {
+  path: string
+  filePath?: string
+  diff: string
+  truncated: boolean
+} {
+  const realDir = resolveAllowedWorkspacePath(dirPath, workspaceRoots)
+  const relFile = opts.filePath?.trim()
+  if (relFile) {
+    if (path.isAbsolute(relFile) || relFile.split(/[/\\]+/).includes('..')) {
+      throw new HubRpcError(ErrorCode.PathNotAllowed, 'Invalid relative file path.')
+    }
+    const resolvedTarget = path.resolve(realDir, relFile)
+    if (resolvedTarget !== realDir && !resolvedTarget.startsWith(realDir + path.sep)) {
+      throw new HubRpcError(ErrorCode.PathNotAllowed, 'File path escapes workspace.')
+    }
+    assertNotSensitive(resolvedTarget)
+    try {
+      if (fs.existsSync(resolvedTarget)) {
+        assertNotSensitive(fs.realpathSync(resolvedTarget))
+      }
+    } catch (err) {
+      if (err instanceof HubRpcError) throw err
+    }
+  }
+
+  const baseRef =
+    opts.baseCommitSha && /^[0-9a-f]{7,40}$/i.test(opts.baseCommitSha)
+      ? opts.baseCommitSha
+      : undefined
+  const headCheck = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], {
+    cwd: realDir,
+    encoding: 'utf8',
+    timeout: 3_000,
+  })
+  const targetRef = baseRef ?? (headCheck.status === 0 ? 'HEAD' : undefined)
+
+  const diffArgs = ['diff', '--no-color', '--unified=3']
+  if (targetRef) diffArgs.push(targetRef)
+  if (relFile) diffArgs.push('--', relFile)
+
+  const diffRes = spawnSync('git', diffArgs, {
+    cwd: realDir,
+    encoding: 'utf8',
+    timeout: 6_000,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+  let rawDiff = diffRes.status === 0 ? diffRes.stdout : ''
+
+  // If a specific untracked file was requested, `git diff HEAD -- <file>` is empty; synthesize its `+` preview.
+  if (!rawDiff.trim() && relFile) {
+    const absFile = path.resolve(realDir, relFile)
+    if (fs.existsSync(absFile)) {
+      const st = fs.statSync(absFile)
+      if (st.isFile()) {
+        const readLen = Math.min(st.size, MAX_READ_BYTES)
+        const fd = fs.openSync(absFile, 'r')
+        try {
+          const buf = Buffer.alloc(readLen)
+          fs.readSync(fd, buf, 0, readLen, 0)
+          const lines = buf.toString('utf8').split('\n')
+          rawDiff = [
+            `--- /dev/null`,
+            `+++ b/${relFile}`,
+            `@@ -0,0 +1,${lines.length} @@`,
+            ...lines.map(l => `+${l}`),
+          ].join('\n')
+        } finally {
+          fs.closeSync(fd)
+        }
+      }
+    }
+  }
+
+  // Filter out any sensitive hunks when viewing whole-workspace diff (`relFile` omitted)
+  if (!relFile && rawDiff) {
+    const filteredChunks: string[] = []
+    for (const chunk of rawDiff.split(/^(?=diff --git )/m)) {
+      if (!chunk.trim()) continue
+      const m = chunk.match(/^diff --git a\/(.+?) b\/(.+)$/m)
+      const bPath = m?.[2]?.trim()
+      if (bPath && isSensitivePath(path.resolve(realDir, bPath))) {
+        continue
+      }
+      filteredChunks.push(chunk)
+    }
+    rawDiff = filteredChunks.join('')
+  }
+
+  const truncated = Buffer.byteLength(rawDiff, 'utf8') > MAX_DIFF_BYTES
+  const sliced = truncated ? Buffer.from(rawDiff, 'utf8').subarray(0, MAX_DIFF_BYTES).toString('utf8') : rawDiff
+  return {
+    path: realDir,
+    filePath: relFile,
+    diff: sliced,
+    truncated,
+  }
+}
+
+interface StoredCheckpointEntry extends CheckpointInfo {
+  cwd: string
+}
+
+export class CheckpointManager {
+  private readonly storePath: string
+  private entries: StoredCheckpointEntry[] = []
+
+  constructor(storePath = path.join(defaultDataDir(), 'checkpoints.json')) {
+    this.storePath = storePath
+    this.load()
+  }
+
+  list(sessionId: string, cwd?: string): CheckpointInfo[] {
+    const normCwd = cwd ? safeRealpath(cwd) : undefined
+    return this.entries
+      .filter(e => e.sessionId === sessionId || (normCwd !== undefined && e.cwd === normCwd))
+      .slice(0, 30)
+      .map(({ cwd: _cwd, ...rest }) => rest)
+  }
+
+  create(
+    sessionId: string,
+    cwd: string,
+    label?: string,
+    opts: { deduplicateUnchanged?: boolean } = {},
+  ): CheckpointInfo {
+    const realCwd = safeRealpath(cwd)
+    const sha = captureWorkingTreeCommit(realCwd, label ?? `lework-${sessionId}`)
+    if (!sha) {
+      throw new HubRpcError(ErrorCode.InvalidParams, '当前目录不是 Git 仓库，无法创建快照检查点')
+    }
+
+    if (opts.deduplicateUnchanged) {
+      const latest = this.entries.find(e => e.cwd === realCwd)
+      if (latest && isSameGitTree(realCwd, latest.commitSha, sha)) {
+        const { cwd: _c, ...info } = latest
+        return info
+      }
+    }
 
     const info: CheckpointInfo = {
       id: `ckpt_${crypto.randomBytes(5).toString('hex')}`,
       sessionId,
-      label: label?.trim() || `Checkpoint (${stashSha || 'clean'})`,
-      commitSha: stashSha || 'HEAD',
+      label: label?.trim() || `手动快照 (${sha.slice(0, 8)})`,
+      commitSha: sha,
       createdAt: Date.now(),
     }
-    const list = this.checkpointsBySession.get(sessionId) ?? []
-    list.unshift(info)
-    this.checkpointsBySession.set(sessionId, list.slice(0, 30))
+    this.entries.unshift({ ...info, cwd: realCwd })
+    if (this.entries.length > 200) {
+      this.entries = this.entries.slice(0, 200)
+    }
+    this.save()
     return info
   }
 
   restore(sessionId: string, cwd: string, checkpointId: string): void {
-    const list = this.checkpointsBySession.get(sessionId) ?? []
-    const found = list.find(c => c.id === checkpointId)
+    const realCwd = safeRealpath(cwd)
+    const found = this.entries.find(
+      c => c.id === checkpointId && (c.sessionId === sessionId || c.cwd === realCwd),
+    )
     if (!found) {
       throw new HubRpcError(ErrorCode.NotFound, `Checkpoint "${checkpointId}" not found`)
     }
-    if (found.commitSha && found.commitSha !== 'HEAD' && found.commitSha !== 'working-tree') {
-      spawnSync('git', ['checkout', found.commitSha, '--', '.'], {
-        cwd,
-        encoding: 'utf8',
-        timeout: 5_000,
+    if (!/^[0-9a-f]{7,40}$/i.test(found.commitSha)) {
+      throw new HubRpcError(ErrorCode.InvalidParams, '检查点缺少有效的 Git 快照哈希，无法回退')
+    }
+
+    // Safety net: automatically snapshot current working tree before overwriting tracked files,
+    // so an accidental rollback can itself be undone in one tap.
+    const currentSha = captureWorkingTreeCommit(realCwd, `lework-pre-restore-${sessionId}`)
+    if (currentSha && !isSameGitTree(realCwd, currentSha, found.commitSha)) {
+      this.create(sessionId, realCwd, `回退前自动备份 (${currentSha.slice(0, 8)})`, {
+        deduplicateUnchanged: true,
       })
     }
+
+    const res = spawnSync('git', ['checkout', found.commitSha, '--', '.'], {
+      cwd: realCwd,
+      encoding: 'utf8',
+      timeout: 6_000,
+    })
+    if (res.status !== 0) {
+      throw new HubRpcError(
+        ErrorCode.Internal,
+        `回退检查点失败: ${(res.stderr || res.stdout || '').trim().slice(0, 180)}`,
+      )
+    }
   }
+
+  private load(): void {
+    try {
+      if (!fs.existsSync(this.storePath)) return
+      const parsed = JSON.parse(fs.readFileSync(this.storePath, 'utf8')) as {
+        checkpoints?: StoredCheckpointEntry[]
+      }
+      if (Array.isArray(parsed.checkpoints)) {
+        this.entries = parsed.checkpoints
+      }
+    } catch {
+      this.entries = []
+    }
+  }
+
+  private save(): void {
+    try {
+      fs.mkdirSync(path.dirname(this.storePath), { recursive: true, mode: 0o700 })
+      fs.writeFileSync(
+        this.storePath,
+        JSON.stringify({ checkpoints: this.entries }, null, 2) + '\n',
+        { encoding: 'utf8', mode: 0o600 },
+      )
+      fs.chmodSync(this.storePath, 0o600)
+    } catch {
+      // ignore in read-only test env
+    }
+  }
+}
+
+function safeRealpath(p: string): string {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return path.resolve(p)
+  }
+}
+
+/**
+ * Creates a commit object capturing current tracked working-tree + index state without mutating
+ * the working tree (`git stash create`), falling back to `HEAD` when the working tree is clean.
+ */
+function captureWorkingTreeCommit(cwd: string, message: string): string | null {
+  const stashRes = spawnSync('git', ['stash', 'create', message], {
+    cwd,
+    encoding: 'utf8',
+    timeout: 5_000,
+  })
+  const stashSha = stashRes.status === 0 ? stashRes.stdout.trim() : ''
+  if (/^[0-9a-f]{7,40}$/i.test(stashSha)) {
+    return stashSha.slice(0, 12)
+  }
+  const headRes = spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+    cwd,
+    encoding: 'utf8',
+    timeout: 3_000,
+  })
+  const headSha = headRes.status === 0 ? headRes.stdout.trim() : ''
+  return /^[0-9a-f]{7,40}$/i.test(headSha) ? headSha : null
+}
+
+function isSameGitTree(cwd: string, shaA: string, shaB: string): boolean {
+  if (shaA === shaB) return true
+  const treeA = spawnSync('git', ['rev-parse', `${shaA}^{tree}`], { cwd, encoding: 'utf8', timeout: 2_500 })
+  const treeB = spawnSync('git', ['rev-parse', `${shaB}^{tree}`], { cwd, encoding: 'utf8', timeout: 2_500 })
+  return (
+    treeA.status === 0 &&
+    treeB.status === 0 &&
+    Boolean(treeA.stdout.trim()) &&
+    treeA.stdout.trim() === treeB.stdout.trim()
+  )
 }

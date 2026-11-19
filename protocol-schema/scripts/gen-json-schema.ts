@@ -856,6 +856,45 @@ data class ProxyUsageResult(
 )
 
 @Serializable
+data class GitStatusParams(
+    val path: String,
+)
+
+@Serializable
+data class GitChangedFileEntry(
+    val path: String,
+    val status: String,
+    val additions: Int,
+    val deletions: Int,
+)
+
+@Serializable
+data class GitStatusResult(
+    val path: String,
+    val isGitRepo: Boolean,
+    val branch: String? = null,
+    val headSha: String? = null,
+    val totalAdditions: Int = 0,
+    val totalDeletions: Int = 0,
+    val files: List<GitChangedFileEntry> = emptyList(),
+)
+
+@Serializable
+data class GitDiffParams(
+    val path: String,
+    val filePath: String? = null,
+    val baseCommitSha: String? = null,
+)
+
+@Serializable
+data class GitDiffResult(
+    val path: String,
+    val filePath: String? = null,
+    val diff: String,
+    val truncated: Boolean = false,
+)
+
+@Serializable
 data class StreamEventNotification(
     val event: AgentEvent,
 )

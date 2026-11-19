@@ -17,7 +17,7 @@ private val androidForegroundFlow = MutableStateFlow(true)
 
 actual fun platformName(): String = "Android ${Build.VERSION.RELEASE}"
 
-actual fun appVersionLabel(): String = "v0.3.6 (20261119.0225)"
+actual fun appVersionLabel(): String = "v0.5.0 (20261119.1930)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 

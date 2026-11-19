@@ -303,7 +303,7 @@ actual fun platformName(): String =
 
 actual fun appVersionLabel(): String {
     val info = NSBundle.mainBundle.infoDictionary
-    val shortVer = info?.get("CFBundleShortVersionString") as? String ?: "0.3.0"
+    val shortVer = info?.get("CFBundleShortVersionString") as? String ?: "0.5.0"
     val buildVer = info?.get("CFBundleVersion") as? String ?: "1"
     return "v$shortVer ($buildVer)"
 }

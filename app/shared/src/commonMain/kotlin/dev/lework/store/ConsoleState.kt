@@ -127,6 +127,21 @@ data class ConsoleUiState(
     val dirEntries: List<FsEntry> = emptyList(),
     val openedFilePath: String? = null,
     val openedFileContent: String? = null,
+    // Usage & Subscription Quota Telemetry
+    val usageSelectedDays: Int = 14,
+    val usageLoading: Boolean = false,
+    val usageSummary: UsageSummaryResult? = null,
+    val usageQuota: UsageQuotaResult? = null,
+    val activeSessionUsage: SessionUsageResult? = null,
+    val proxyUsage: ProxyUsageResult? = null,
+    // Git Diff & Snapshot Checkpoints
+    val currentDiffWorkspacePath: String = "",
+    val gitLoading: Boolean = false,
+    val gitStatus: GitStatusResult? = null,
+    val openedDiffTitle: String? = null,
+    val openedDiffContent: String? = null,
+    val openedDiffTruncated: Boolean = false,
+    val checkpointNotice: String? = null,
 ) {
     val activeSession: SessionMeta?
         get() = sessions.firstOrNull { it.id == activeSessionId }

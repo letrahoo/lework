@@ -10,7 +10,7 @@
 lework/
 ├─ docs/                       # 架构设计与规划方案 (docs/PLAN.md)
 ├─ protocol-schema/            # 双端协议单一来源 (Zod v4 -> JSON Schema + Kotlin @Serializable 模型)
-├─ hub/                        # Host Hub 守护进程 (多引擎适配器、终端 TUI 桥接、历史会话接管)
+├─ hub/                        # Host Hub 守护进程 (多引擎适配、TUI 审批桥接、历史会话接管、增量用量扫描与快照)
 ├─ app/                        # KMP + Compose Multiplatform 客户端 (shared / iosApp / androidApp)
 └─ scripts/
    ├─ ios-install.sh           # XcodeGen + 自动签名验签 + devicectl 真机/模拟器构建安装
@@ -47,6 +47,13 @@ pnpm hub
 > **中继与认证配置（可选，全部存放在本机 `~/.lework/`，不入库）**：
 > - 自定义异地中继地址：在 `~/.lework/config.json` 中配置 `"relayUrls": ["https://<your-relay-host>:64450"]`，手机**认证通过后**才会学习并缓存；也可直接在手机登录页手动填写主机地址与访问令牌。
 > - 可选 OAuth 设备流认证（RFC 8628 插件化）：在 `~/.lework/oauth.json`（或环境变量 `LEWORK_OAUTH_SECRET_FILE`，兼容旧 `feishu-secret.json`）配置任一 OAuth Provider（内置 `rfc8628` 通用 SSO 与 `feishu` 实现）与允许的用户列表；未配置时自动降级为纯访问令牌模式。
+> - 可选代理统计与单价覆盖：在 `~/.lework/config.json` 配置 `"cpaManagementKey"`（或环境变量 `LEWORK_CPA_MANAGEMENT_KEY`）即可读取本机 CLIProxyAPI 转发统计；在 `~/.lework/pricing.json` 可自定义各模型单价。
+
+### 核心工作台能力
+
+- **多引擎与本机终端无缝接管**：支持 Claude Code、Codex、AGY、DSH 与内置 Pi 引擎；自动发现电脑 Shell 中正在运行或历史的会话，支持手机代点 `tmux` / `iTerm2` 终端审批、同步排队指令与断点续传。
+- **上下文窗口与多引擎用量看板**：会话内实时显示当前上下文容量占用 %、缓存命中率与估算账单；全局看板按字节偏移增量扫描本机 Claude / Codex / AGY 日志（零后台轮询开销），展示按日趋势、5 小时计费窗口与周额度重置倒计时，以及本机 CPA 代理统计。
+- **变更对比与版本快照回退**：查看当前工作区未提交的 Git 变更列表与逐文件红绿对比，编辑类工具调用自动生成行级前后对比；每轮对话前自动打无损快照（`git stash create`），支持手动存快照、跨快照对比差异与一键安全回退（回退前自动备份）。
 
 ### 安全模型
 

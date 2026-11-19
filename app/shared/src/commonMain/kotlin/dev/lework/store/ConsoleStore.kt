@@ -556,6 +556,10 @@ class ConsoleStore(
             s.copy(
                 activeSessionId = null,
                 checkpoints = emptyList(),
+                activeSessionUsage = null,
+                openedDiffContent = null,
+                openedDiffTitle = null,
+                checkpointNotice = null,
                 selectedMode = eng?.defaultMode ?: s.selectedMode,
             )
         }
@@ -650,6 +654,10 @@ class ConsoleStore(
             it.copy(
                 activeSessionId = null,
                 checkpoints = emptyList(),
+                activeSessionUsage = null,
+                openedDiffContent = null,
+                openedDiffTitle = null,
+                checkpointNotice = null,
                 selectedWorkspacePath = path,
                 selectedExtraWorkspaces = emptyList(),
                 currentBrowsePath = path,
@@ -674,20 +682,31 @@ class ConsoleStore(
             s.copy(
                 activeSessionId = sessionId,
                 checkpoints = emptyList(),
+                activeSessionUsage = null,
+                openedDiffContent = null,
+                openedDiffTitle = null,
+                checkpointNotice = null,
                 selectedEngineId = targetEngineId,
                 selectedModelId = resolvedModel,
                 selectedEffort = resolvedEffort,
                 selectedMode = resolvedMode,
                 selectedWorkspacePath = meta?.cwd ?: s.selectedWorkspacePath,
                 currentBrowsePath = meta?.cwd ?: s.currentBrowsePath,
+                currentDiffWorkspacePath = meta?.cwd ?: s.selectedWorkspacePath,
             )
         }
         scope.launch {
+            runCatching { subscribeAndCatchUp(sessionId) }
             runCatching {
-                subscribeAndCatchUp(sessionId)
-                if (!sessionId.startsWith("host:") && _state.value.activeSessionId == sessionId) {
-                    val ckpts = rpc.listCheckpoints(sessionId)
+                val ckpts = rpc.listCheckpoints(sessionId)
+                if (_state.value.activeSessionId == sessionId) {
                     _state.update { it.copy(checkpoints = ckpts) }
+                }
+            }
+            runCatching {
+                val usage = rpc.fetchSessionUsage(sessionId)
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update { it.copy(activeSessionUsage = usage) }
                 }
             }
         }
@@ -917,6 +936,195 @@ class ConsoleStore(
             val prev = s.transcripts[event.sessionId] ?: SessionTranscript()
             val next = reduceTranscript(prev, event)
             s.copy(transcripts = s.transcripts + (event.sessionId to next))
+        }
+        if (event is AgentEvent.Usage || event is AgentEvent.TurnDone) {
+            refreshActiveSessionUsage(event.sessionId)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Usage & Subscription Quota Telemetry Actions
+    // -----------------------------------------------------------------------
+
+    fun refreshActiveSessionUsage(sessionId: String = _state.value.activeSessionId.orEmpty()) {
+        if (sessionId.isBlank()) return
+        scope.launch {
+            runCatching {
+                val usage = rpc.fetchSessionUsage(sessionId)
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update { it.copy(activeSessionUsage = usage) }
+                }
+            }
+        }
+    }
+
+    fun refreshUsageDashboard(days: Int = _state.value.usageSelectedDays) {
+        val clampedDays = days.coerceIn(1, 90)
+        _state.update { it.copy(usageSelectedDays = clampedDays, usageLoading = true) }
+        val activeSid = _state.value.activeSessionId
+        scope.launch {
+            val summary = runCatching { rpc.fetchUsageSummary(days = clampedDays) }.getOrNull()
+            val quota = runCatching { rpc.fetchUsageQuota() }.getOrNull()
+            val proxy = runCatching { rpc.fetchProxyUsage() }.getOrNull()
+            val sessUsage = activeSid?.let { sid -> runCatching { rpc.fetchSessionUsage(sid) }.getOrNull() }
+            _state.update { s ->
+                s.copy(
+                    usageLoading = false,
+                    usageSummary = summary ?: s.usageSummary,
+                    usageQuota = quota ?: s.usageQuota,
+                    proxyUsage = proxy ?: s.proxyUsage,
+                    activeSessionUsage = if (activeSid != null && s.activeSessionId == activeSid) {
+                        sessUsage ?: s.activeSessionUsage
+                    } else {
+                        s.activeSessionUsage
+                    },
+                )
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Workspace Git Diff & Snapshot Checkpoints Actions
+    // -----------------------------------------------------------------------
+
+    fun refreshDiffAndCheckpoints(workspacePath: String? = null) {
+        val resolvedPath = (workspacePath ?: _state.value.currentDiffWorkspacePath)
+            .ifBlank { _state.value.activeWorkspaces.firstOrNull().orEmpty() }
+            .ifBlank { _state.value.selectedWorkspacePath }
+        if (resolvedPath.isBlank()) return
+        val activeSid = _state.value.activeSessionId
+        _state.update {
+            it.copy(
+                currentDiffWorkspacePath = resolvedPath,
+                gitLoading = true,
+                checkpointNotice = null,
+            )
+        }
+        scope.launch {
+            val status = runCatching { rpc.fetchGitStatus(resolvedPath) }.getOrNull()
+            val ckpts = activeSid?.let { sid -> runCatching { rpc.listCheckpoints(sid) }.getOrNull() }
+            _state.update { s ->
+                s.copy(
+                    gitLoading = false,
+                    gitStatus = status ?: s.gitStatus,
+                    checkpoints = ckpts ?: s.checkpoints,
+                )
+            }
+        }
+    }
+
+    fun switchDiffWorkspace(path: String) {
+        if (path.isBlank()) return
+        _state.update {
+            it.copy(
+                currentDiffWorkspacePath = path,
+                openedDiffContent = null,
+                openedDiffTitle = null,
+                openedDiffTruncated = false,
+            )
+        }
+        refreshDiffAndCheckpoints(path)
+    }
+
+    fun openGitDiff(filePath: String?, baseCommitSha: String?, title: String) {
+        val wsPath = _state.value.currentDiffWorkspacePath
+            .ifBlank { _state.value.activeWorkspaces.firstOrNull().orEmpty() }
+            .ifBlank { _state.value.selectedWorkspacePath }
+        if (wsPath.isBlank()) return
+        _state.update { it.copy(gitLoading = true) }
+        scope.launch {
+            runCatching {
+                val res = rpc.fetchGitDiff(
+                    path = wsPath,
+                    filePath = filePath,
+                    baseCommitSha = baseCommitSha,
+                )
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        openedDiffTitle = title,
+                        openedDiffContent = res.diff,
+                        openedDiffTruncated = res.truncated,
+                    )
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        openedDiffTitle = title,
+                        openedDiffContent = "无法读取对比差异: ${err.message}",
+                        openedDiffTruncated = false,
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeGitDiff() {
+        _state.update {
+            it.copy(
+                openedDiffTitle = null,
+                openedDiffContent = null,
+                openedDiffTruncated = false,
+            )
+        }
+    }
+
+    fun createManualCheckpoint(label: String? = null) {
+        val sid = _state.value.activeSessionId ?: return
+        _state.update { it.copy(gitLoading = true, checkpointNotice = null) }
+        scope.launch {
+            runCatching {
+                val created = rpc.createCheckpoint(sid, label)
+                val list = rpc.listCheckpoints(sid)
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        checkpoints = list,
+                        checkpointNotice = "已保存快照：${created.label}",
+                    )
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        checkpointNotice = "保存快照失败：${err.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun restoreCheckpoint(checkpoint: CheckpointInfo) {
+        val sid = _state.value.activeSessionId ?: return
+        _state.update { it.copy(gitLoading = true, checkpointNotice = null) }
+        scope.launch {
+            runCatching {
+                rpc.restoreCheckpoint(sid, checkpoint.id)
+                val wsPath = _state.value.currentDiffWorkspacePath
+                    .ifBlank { _state.value.activeWorkspaces.firstOrNull().orEmpty() }
+                val nextStatus = wsPath.takeIf { it.isNotBlank() }?.let {
+                    runCatching { rpc.fetchGitStatus(it) }.getOrNull()
+                }
+                val list = rpc.listCheckpoints(sid)
+                _state.update { s ->
+                    s.copy(
+                        gitLoading = false,
+                        gitStatus = nextStatus ?: s.gitStatus,
+                        checkpoints = list,
+                        openedDiffContent = null,
+                        openedDiffTitle = null,
+                        checkpointNotice = "已回退至「${checkpoint.label}」（回退前改动已自动备份）",
+                    )
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        checkpointNotice = "回退失败：${err.message}",
+                    )
+                }
+            }
         }
     }
 }

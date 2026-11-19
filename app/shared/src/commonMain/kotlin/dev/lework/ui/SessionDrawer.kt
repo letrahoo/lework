@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.CompareArrows
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.*
@@ -51,6 +52,8 @@ import kotlinx.coroutines.launch
 internal fun TasksSidebarContent(
     state: ConsoleUiState,
     onNewSession: () -> Unit,
+    onOpenUsage: () -> Unit,
+    onOpenDiffAndCheckpoints: () -> Unit,
     onSelectFilter: (String?) -> Unit,
     onSelectSession: (String) -> Unit,
     onRefresh: () -> Unit,
@@ -118,6 +121,74 @@ internal fun TasksSidebarContent(
                     fontWeight = FontWeight.Medium,
                     color = Everforest.Fg,
                 )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Everforest.Bg1,
+                border = BorderStroke(1.dp, Everforest.Bg3),
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onOpenUsage() }
+                    .testTag("drawer_btn_usage"),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.QueryStats,
+                        contentDescription = null,
+                        tint = Everforest.Green,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                        text = "用量与额度",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Everforest.Fg,
+                        maxLines = 1,
+                    )
+                }
+            }
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Everforest.Bg1,
+                border = BorderStroke(1.dp, Everforest.Bg3),
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onOpenDiffAndCheckpoints() }
+                    .testTag("drawer_btn_diff"),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.CompareArrows,
+                        contentDescription = null,
+                        tint = Everforest.BoldGold,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                        text = "变更与快照",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Everforest.Fg,
+                        maxLines = 1,
+                    )
+                }
             }
         }
 

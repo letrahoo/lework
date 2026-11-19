@@ -51,7 +51,7 @@ object JvmPlatformTestHooks {
 
 actual fun platformName(): String = "JVM-Test"
 
-actual fun appVersionLabel(): String = "v0.3.9 (test)"
+actual fun appVersionLabel(): String = "v0.5.0 (test)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 

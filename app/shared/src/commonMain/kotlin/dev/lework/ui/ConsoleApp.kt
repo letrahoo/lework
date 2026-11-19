@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.CompareArrows
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.*
@@ -60,6 +61,8 @@ fun ConsoleApp(
     var showModelSheet by remember { mutableStateOf(false) }
     var showWorkspaceSheet by remember { mutableStateOf(false) }
     var showFilesSheet by remember { mutableStateOf(false) }
+    var showUsageSheet by remember { mutableStateOf(false) }
+    var showDiffSheet by remember { mutableStateOf(false) }
     var promptText by remember { mutableStateOf("") }
 
     LaunchedEffect(store, autoBootstrap) {
@@ -96,6 +99,16 @@ fun ConsoleApp(
                                     store.startNewDraftSession()
                                     scope.launch { drawerState.close() }
                                 },
+                                onOpenUsage = {
+                                    store.refreshUsageDashboard()
+                                    showUsageSheet = true
+                                    scope.launch { drawerState.close() }
+                                },
+                                onOpenDiffAndCheckpoints = {
+                                    store.refreshDiffAndCheckpoints()
+                                    showDiffSheet = true
+                                    scope.launch { drawerState.close() }
+                                },
                                 onSelectFilter = store::setDrawerEngineFilter,
                                 onSelectSession = { sid ->
                                     store.selectSession(sid)
@@ -120,6 +133,14 @@ fun ConsoleApp(
                                 scope.launch { drawerState.open() }
                             },
                             onOpenModelSheet = { showModelSheet = true },
+                            onOpenUsageSheet = {
+                                store.refreshUsageDashboard()
+                                showUsageSheet = true
+                            },
+                            onOpenDiffSheet = {
+                                store.refreshDiffAndCheckpoints()
+                                showDiffSheet = true
+                            },
                             onOpenFilesSheet = {
                                 store.browseDirectory()
                                 showFilesSheet = true
@@ -204,6 +225,18 @@ fun ConsoleApp(
                                 permission = pendingPerm,
                                 onDecision = { optId ->
                                     store.respondApproval(pendingPerm.requestId, optId, pendingPerm.sessionId)
+                                },
+                            )
+                        }
+
+                        if (state.activeSessionId != null) {
+                            SessionContextStatusStrip(
+                                sessionUsage = state.activeSessionUsage?.takeIf { it.sessionId == state.activeSessionId },
+                                fallbackInputTokens = state.activeTranscript.inputTokens,
+                                fallbackOutputTokens = state.activeTranscript.outputTokens,
+                                onClick = {
+                                    store.refreshUsageDashboard()
+                                    showUsageSheet = true
                                 },
                             )
                         }
@@ -300,6 +333,38 @@ fun ConsoleApp(
                         )
                     }
                 }
+
+                if (showUsageSheet) {
+                    ModalBottomSheet(
+                        onDismissRequest = { showUsageSheet = false },
+                        containerColor = Everforest.Bg1,
+                        contentColor = Everforest.Fg,
+                    ) {
+                        UsageDashboardSheet(
+                            state = state,
+                            onSelectDays = store::refreshUsageDashboard,
+                            onRefresh = { store.refreshUsageDashboard() },
+                        )
+                    }
+                }
+
+                if (showDiffSheet) {
+                    ModalBottomSheet(
+                        onDismissRequest = { showDiffSheet = false },
+                        containerColor = Everforest.Bg1,
+                        contentColor = Everforest.Fg,
+                    ) {
+                        DiffAndCheckpointsSheet(
+                            state = state,
+                            onSelectWorkspace = store::switchDiffWorkspace,
+                            onRefresh = { store.refreshDiffAndCheckpoints() },
+                            onOpenFileDiff = store::openGitDiff,
+                            onCloseDiff = store::closeGitDiff,
+                            onCreateCheckpoint = store::createManualCheckpoint,
+                            onRestoreCheckpoint = store::restoreCheckpoint,
+                        )
+                    }
+                }
             }
         }
     }
@@ -310,6 +375,8 @@ private fun MinimalTopBar(
     state: ConsoleUiState,
     onOpenDrawer: () -> Unit,
     onOpenModelSheet: () -> Unit,
+    onOpenUsageSheet: () -> Unit,
+    onOpenDiffSheet: () -> Unit,
     onOpenFilesSheet: () -> Unit,
     onNewSession: () -> Unit,
 ) {
@@ -388,20 +455,48 @@ private fun MinimalTopBar(
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onOpenFilesSheet) {
+            IconButton(
+                onClick = onOpenUsageSheet,
+                modifier = Modifier.size(36.dp).testTag("topbar_btn_usage"),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.QueryStats,
+                    contentDescription = "用量与额度",
+                    tint = Everforest.Grey2,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            IconButton(
+                onClick = onOpenDiffSheet,
+                modifier = Modifier.size(36.dp).testTag("topbar_btn_diff"),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.CompareArrows,
+                    contentDescription = "变更与快照",
+                    tint = Everforest.Grey2,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            IconButton(
+                onClick = onOpenFilesSheet,
+                modifier = Modifier.size(36.dp),
+            ) {
                 Icon(
                     imageVector = Icons.Rounded.FolderOpen,
                     contentDescription = "工作区文件",
                     tint = Everforest.Grey2,
-                    modifier = Modifier.size(21.dp),
+                    modifier = Modifier.size(20.dp),
                 )
             }
-            IconButton(onClick = onNewSession) {
+            IconButton(
+                onClick = onNewSession,
+                modifier = Modifier.size(36.dp),
+            ) {
                 Icon(
                     imageVector = Icons.Rounded.EditNote,
                     contentDescription = "新建对话",
                     tint = Everforest.Fg,
-                    modifier = Modifier.size(23.dp),
+                    modifier = Modifier.size(22.dp),
                 )
             }
         }

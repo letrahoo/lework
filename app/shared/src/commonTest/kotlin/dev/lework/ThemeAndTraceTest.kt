@@ -8,6 +8,7 @@ import dev.lework.ui.CondensedStep
 import dev.lework.ui.Everforest
 import dev.lework.ui.condenseTraceSteps
 import dev.lework.ui.highlightEverforestCode
+import dev.lework.ui.parseCliTool
 import dev.lework.ui.parseEverforestInline
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -145,5 +146,24 @@ class ThemeAndTraceTest {
 
         assertTrue(condensed[2] is CondensedStep.SingleTool)
         assertTrue(condensed[3] is CondensedStep.SingleTool)
+    }
+
+    @Test
+    fun `T7_3 synthesizes unified diff and line counts for Edit and Write tool calls`() {
+        val editTool = ChatTimelineItem.Tool(
+            id = "t_edit_1",
+            title = "Update",
+            kind = ToolKind.EDIT,
+            status = ToolStatus.COMPLETED,
+            input = """{"file_path":"/repo/src/server.ts","old_string":"const port = 8080\nstart(port)","new_string":"const port = 64450\nstart(port)"}""",
+        )
+        val parsed = parseCliTool(editTool)
+        assertEquals("+1 / -1", parsed.description)
+        assertTrue(parsed.conciseLabel.contains("src/server.ts (+1 / -1)"))
+        val detail = parsed.fullCommandOrDetail.orEmpty()
+        assertTrue(detail.contains("--- a/src/server.ts"))
+        assertTrue(detail.contains("-const port = 8080"))
+        assertTrue(detail.contains("+const port = 64450"))
+        assertTrue(detail.contains(" start(port)"))
     }
 }
