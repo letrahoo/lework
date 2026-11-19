@@ -199,7 +199,7 @@ internal fun AuthEntryView(
                                 modifier = Modifier.size(18.dp),
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("扫码配对主机 (hub pair)", fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                            Text("扫码配对主机 (lework pair)", fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
                         }
                     }
 

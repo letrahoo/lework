@@ -441,7 +441,7 @@ class ConsoleStore(
                 _state.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = "Tailscale ($acct) 下暂未发现其他同账号设备。请在电脑终端执行：pnpm --filter @lework/hub cli tsnet login 并登录同一账号",
+                        connectionError = "Tailscale ($acct) 下暂未发现其他同账号设备。请在电脑终端执行：lework tsnet login 并登录同一账号",
                     )
                 }
                 return@launch
@@ -469,7 +469,7 @@ class ConsoleStore(
                 _state.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = "已发现同账号节点 [$peerSummary]，但未检测到开启 Tailscale 组网的 Lework 主机服务。请在目标电脑执行：pnpm --filter @lework/hub cli tsnet login",
+                        connectionError = "已发现同账号节点 [$peerSummary]，但未检测到开启 Tailscale 组网的 Lework 主机服务。请在目标电脑执行：lework tsnet login",
                     )
                 }
                 return@launch
@@ -521,7 +521,7 @@ class ConsoleStore(
                 it.copy(
                     connectionStatus = ConnectionStatus.ERROR,
                     connectionError = lastErr
-                        ?: "已连通主机 ${chosen.discover.hub.name}，但主机端未开启同账号校验，请在电脑执行：pnpm --filter @lework/hub cli tsnet login",
+                        ?: "已连通主机 ${chosen.discover.hub.name}，但主机端未开启同账号校验，请在电脑执行：lework tsnet login",
                 )
             }
         }

@@ -9,7 +9,8 @@
     "stress:ui": "./app/gradlew -p ./app :shared:jvmTest --tests dev.lework.UiAutomationStressTest --rerun-tasks",
     "verify": "pnpm --filter @lework/protocol gen && pnpm -r check && pnpm -r test && ./app/gradlew -p ./app :shared:jvmTest",
     "check": "pnpm -r check",
-    "hub": "pnpm --filter @lework/hub start"
+    "hub": "pnpm --filter @lework/hub start",
+    "install:cli": "node ./hub/bin/hub.js install-cli"
   },
   "engines": {
     "node": ">=22"

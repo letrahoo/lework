@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
+    "lework": "./bin/hub.js",
     "hub": "./bin/hub.js",
     "hubd": "./bin/hubd.js"
   },

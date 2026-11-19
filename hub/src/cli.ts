@@ -13,7 +13,7 @@ import { loadOrCreateConfig } from './config.ts'
 import { encodePairingDeepLink, type QrPairingPayload } from './auth/pair-manager.ts'
 import { IssuedTokenStore } from './auth/token-store.ts'
 import { TsnetManager, type TsnetStatusSnapshot } from './auth/tsnet-manager.ts'
-import { defaultDataDir, generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
+import { defaultDataDir, ensureUserCliLinks, generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
 import { loadOrCreateHubTls, shortFingerprint } from './security/tls.ts'
 import { HubServer } from './server.ts'
 
@@ -116,6 +116,18 @@ function updateStoredConfig(patch: Record<string, unknown>): void {
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const sub = args[0] ?? 'status'
+
+  if (sub === 'install-cli') {
+    const linked = ensureUserCliLinks(repoRoot)
+    if (linked.length > 0) {
+      console.log('Installed global CLI commands:')
+      for (const p of linked) console.log(`  - ${p}`)
+    } else {
+      console.log('No CLI links updated (check permissions on ~/.local/bin).')
+    }
+    return
+  }
+
   const roleOverride = parseRoleFlag(args)
   const portOverride = parsePortFlag(args)
   const cfg = loadOrCreateConfig({
@@ -124,6 +136,9 @@ async function main(): Promise<void> {
   })
 
   if (sub === 'serve') {
+    if (!process.env.VITEST && !process.env.LEWORK_HOME) {
+      ensureUserCliLinks(repoRoot)
+    }
     process.on('unhandledRejection', err => {
       console.error('[hubd] unhandled rejection:', err instanceof Error ? err.message : err)
     })
@@ -490,7 +505,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    'Usage: hub <serve|status|engines|slaves|pair|tsnet|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
+    'Usage: lework <serve|status|engines|slaves|pair|tsnet|install-cli|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
   )
 }
 

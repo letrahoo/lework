@@ -169,6 +169,49 @@ export class SleepInhibitor {
   }
 }
 
+export function ensureUserCliLinks(
+  repoRoot: string,
+  targetBinDir: string = path.join(os.homedir(), '.local', 'bin'),
+): string[] {
+  const launcher = path.join(repoRoot, 'hub', 'bin', 'hub.js')
+  if (!fs.existsSync(launcher)) return []
+  try {
+    fs.chmodSync(launcher, 0o755)
+    fs.mkdirSync(targetBinDir, { recursive: true, mode: 0o755 })
+  } catch {
+    return []
+  }
+
+  const linked: string[] = []
+  for (const name of ['lework', 'hub']) {
+    const linkPath = path.join(targetBinDir, name)
+    try {
+      const lst = fs.lstatSync(linkPath)
+      if (lst.isSymbolicLink()) {
+        const curTarget = fs.readlinkSync(linkPath)
+        const resolvedCur = path.resolve(path.dirname(linkPath), curTarget)
+        if (resolvedCur === launcher) {
+          linked.push(linkPath)
+          continue
+        }
+        if (!fs.existsSync(resolvedCur) || curTarget.includes('hub/bin/hub.js')) {
+          fs.unlinkSync(linkPath)
+          fs.symlinkSync(launcher, linkPath)
+          linked.push(linkPath)
+        }
+      }
+    } catch {
+      try {
+        fs.symlinkSync(launcher, linkPath)
+        linked.push(linkPath)
+      } catch {
+        // ignore permission errors
+      }
+    }
+  }
+  return linked
+}
+
 export function generateServiceDescriptor(opts: {
   role: 'master' | 'slave'
   repoRoot: string
@@ -176,7 +219,9 @@ export function generateServiceDescriptor(opts: {
 }): { platform: SupportedPlatform; pathHint: string; content: string } {
   const platform = detectPlatform()
   const nodeBin = opts.nodeBin ?? process.execPath
-  const tsxBin = path.join(opts.repoRoot, 'node_modules', '.bin', 'tsx')
+  const hubTsx = path.join(opts.repoRoot, 'hub', 'node_modules', '.bin', 'tsx')
+  const rootTsx = path.join(opts.repoRoot, 'node_modules', '.bin', 'tsx')
+  const tsxBin = fs.existsSync(hubTsx) ? hubTsx : rootTsx
   const cliEntry = path.join(opts.repoRoot, 'hub', 'src', 'cli.ts')
   const home = os.homedir()
 
