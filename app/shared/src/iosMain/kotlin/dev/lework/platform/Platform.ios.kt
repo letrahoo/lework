@@ -154,7 +154,7 @@ private object IosKeychain {
     }
 }
 
-/** One-time migration of credentials that older builds kept in plaintext NSUserDefaults. */
+/** One-time cleanup of legacy pre-TLS plaintext NSUserDefaults credentials (v0.3.x). */
 private object CredentialMigration {
     private var done = false
 
@@ -162,13 +162,6 @@ private object CredentialMigration {
         if (done) return
         done = true
         val d = NSUserDefaults.standardUserDefaults
-        val legacyToken = d.stringForKey(KEY_LEGACY_TOKEN)
-        if (!legacyToken.isNullOrBlank()) {
-            if (IosKeychain.get(KC_ACCOUNT_TOKEN).isNullOrBlank()) {
-                IosKeychain.set(KC_ACCOUNT_TOKEN, legacyToken)
-                IosKeychain.set(KC_ACCOUNT_USER, d.stringForKey(KEY_LEGACY_USER) ?: "Owner")
-            }
-        }
         if (d.objectForKey(KEY_LEGACY_TOKEN) != null || d.objectForKey(KEY_LEGACY_USER) != null) {
             d.removeObjectForKey(KEY_LEGACY_TOKEN)
             d.removeObjectForKey(KEY_LEGACY_USER)

@@ -54,6 +54,7 @@ internal fun AuthEntryView(
     onOpenBrowser: () -> Unit,
     onManualConnect: (String, String) -> Unit,
     onRetry: () -> Unit,
+    onResetCredentials: () -> Unit = {},
 ) {
     var showManualForm by remember(state.oauthEnabled, state.connectionStatus) {
         mutableStateOf(!state.oauthEnabled && state.connectionStatus == ConnectionStatus.NEEDS_AUTH)
@@ -180,6 +181,9 @@ internal fun AuthEntryView(
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text("重试自动发现", fontWeight = FontWeight.SemiBold)
+                        }
+                        TextButton(onClick = onResetCredentials) {
+                            Text("清除旧凭证并重新授权", fontSize = 12.sp, color = Everforest.Grey2)
                         }
                     }
                     ConnectionStatus.CONNECTED -> Unit

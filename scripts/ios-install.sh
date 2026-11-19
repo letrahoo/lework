@@ -87,18 +87,21 @@ if [[ "$MODE" == "--install" ]]; then
   fi
 
   echo "==> Building & signing Lework for physical iPhone ($DEVICE_ID, Team $TEAM_ID, $BUNDLE_ID)..."
-  xcodebuild \
-    -project "$IOS_DIR/iosApp.xcodeproj" \
-    -scheme iosApp \
-    -configuration Debug \
-    -sdk iphoneos \
-    -destination "generic/platform=iOS" \
-    -derivedDataPath "$DERIVED_DATA" \
-    -allowProvisioningUpdates \
-    DEVELOPMENT_TEAM="$TEAM_ID" \
-    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
-    LEWORK_BOOTSTRAP_RELAY="$BOOTSTRAP_RELAY" \
-    build
+  XCODE_ARGS=(
+    -project "$IOS_DIR/iosApp.xcodeproj"
+    -scheme iosApp
+    -configuration Debug
+    -sdk iphoneos
+    -destination "generic/platform=iOS"
+    -derivedDataPath "$DERIVED_DATA"
+    DEVELOPMENT_TEAM="$TEAM_ID"
+    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+    LEWORK_BOOTSTRAP_RELAY="$BOOTSTRAP_RELAY"
+  )
+  if ! xcodebuild "${XCODE_ARGS[@]}" build; then
+    echo "==> Cached provisioning profile unavailable; retrying with -allowProvisioningUpdates..."
+    xcodebuild "${XCODE_ARGS[@]}" -allowProvisioningUpdates build
+  fi
 
   APP_BUNDLE="$DERIVED_DATA/Build/Products/Debug-iphoneos/iosApp.app"
   echo "==> Verifying signature..."

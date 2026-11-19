@@ -429,6 +429,15 @@ class ConsoleStore(
         }
     }
 
+    fun resetCredentialsAndReconnect() {
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        resumeJob?.cancel()
+        saveAuthSession(null, null)
+        HubTrust.clearPins()
+        bootstrapOrConnect()
+    }
+
     private suspend fun connectWithToken(
         wsUrl: String,
         token: String,

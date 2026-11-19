@@ -9,6 +9,14 @@ UID_NUM="$(id -u)"
 HUB_PORT="${LEWORK_HUB_PORT:-64450}"
 RELAY_SSH_HOST="${LEWORK_RELAY_SSH_HOST:-}"
 RELAY_PUBLIC_URL="${LEWORK_RELAY_URL:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --relay-ssh) RELAY_SSH_HOST="$2"; shift 2 ;;
+    --relay-url) RELAY_PUBLIC_URL="$2"; shift 2 ;;
+    --port) HUB_PORT="$2"; shift 2 ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
 LAUNCH_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$HOME/Library/Logs"
 mkdir -p "$LAUNCH_DIR" "$LOG_DIR" "$HOME/.lework"
@@ -100,11 +108,32 @@ systemctl --user enable --now lework-relay.service
 systemctl --user restart lework-relay.service'
 fi
 
-sleep 2
 echo "==> Verifying local Mac Hub (127.0.0.1:$HUB_PORT):"
 # Self-signed Hub certificate (pinned by the app); -k is fine for this unauthenticated health probe
-curl -kfsS --max-time 4 "https://127.0.0.1:$HUB_PORT/v1/auth/discover" && echo ""
+for _ in 1 2 3 4 5 6; do
+  if curl -kfsS --max-time 3 "https://127.0.0.1:$HUB_PORT/v1/auth/discover"; then
+    echo ""
+    break
+  fi
+  sleep 1
+done
+
+if [[ -f "$HOME/.lework/tls/hub-cert.pem" ]]; then
+  "$HOME/.local/bin/node" -e '
+    const crypto = require("node:crypto"), fs = require("node:fs");
+    const pem = fs.readFileSync(process.env.HOME + "/.lework/tls/hub-cert.pem", "utf8");
+    const fp = crypto.createHash("sha256").update(new crypto.X509Certificate(pem).raw).digest("hex");
+    console.log("==> Hub TLS Fingerprint:", fp.slice(0, 16).match(/.{4}/g).join("-").toUpperCase());
+  ' || true
+fi
+
 if [[ -n "$RELAY_PUBLIC_URL" ]]; then
   echo "==> Verifying Relay Entry ($RELAY_PUBLIC_URL):"
-  curl -kfsS --max-time 5 "${RELAY_PUBLIC_URL/http:\/\//https://}/v1/auth/discover" && echo ""
+  for _ in 1 2 3 4 5 6 7 8; do
+    if curl -kfsS --max-time 4 "${RELAY_PUBLIC_URL/http:\/\//https://}/v1/auth/discover"; then
+      echo ""
+      break
+    fi
+    sleep 1
+  done
 fi

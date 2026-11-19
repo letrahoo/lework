@@ -83,6 +83,7 @@ fun ConsoleApp(
                     onOpenBrowser = store::openOAuthBrowserFallback,
                     onManualConnect = store::connectManualEndpoint,
                     onRetry = store::bootstrapOrConnect,
+                    onResetCredentials = store::resetCredentialsAndReconnect,
                 )
             } else {
                 ModalNavigationDrawer(
