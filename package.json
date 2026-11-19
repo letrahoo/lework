@@ -1,0 +1,17 @@
+{
+  "name": "lework",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:kmp": "./app/gradlew -p ./app :shared:jvmTest",
+    "stress:ui": "./app/gradlew -p ./app :shared:jvmTest --tests dev.lework.UiAutomationStressTest --rerun-tasks",
+    "verify": "pnpm --filter @qprc/protocol gen && pnpm -r check && pnpm -r test && ./app/gradlew -p ./app :shared:jvmTest",
+    "check": "pnpm -r check",
+    "hub": "pnpm --filter @qprc/hub start"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

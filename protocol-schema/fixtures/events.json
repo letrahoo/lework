@@ -1,0 +1,99 @@
+[
+  {
+    "seq": 0,
+    "sessionId": "s_1",
+    "ts": 1700000000000,
+    "type": "session.state",
+    "state": "running"
+  },
+  {
+    "seq": 1,
+    "sessionId": "s_1",
+    "ts": 1700000000100,
+    "type": "message.user",
+    "messageId": "m_u1",
+    "text": "Run git status"
+  },
+  {
+    "seq": 2,
+    "sessionId": "s_1",
+    "ts": 1700000000200,
+    "type": "reasoning.delta",
+    "messageId": "m_r1",
+    "text": "Checking repo state..."
+  },
+  {
+    "seq": 3,
+    "sessionId": "s_1",
+    "ts": 1700000000300,
+    "type": "tool.call",
+    "toolCallId": "tc_1",
+    "title": "Bash: git status",
+    "kind": "execute",
+    "status": "pending",
+    "input": "git status"
+  },
+  {
+    "seq": 4,
+    "sessionId": "s_1",
+    "ts": 1700000000400,
+    "type": "permission.requested",
+    "requestId": "perm_1",
+    "toolCallId": "tc_1",
+    "title": "Allow running `git status`?",
+    "options": [
+      {
+        "id": "allow",
+        "name": "Allow once",
+        "kind": "allow_once"
+      },
+      {
+        "id": "reject",
+        "name": "Reject",
+        "kind": "reject_once"
+      }
+    ]
+  },
+  {
+    "seq": 5,
+    "sessionId": "s_1",
+    "ts": 1700000000500,
+    "type": "permission.resolved",
+    "requestId": "perm_1",
+    "optionId": "allow",
+    "outcome": "selected"
+  },
+  {
+    "seq": 6,
+    "sessionId": "s_1",
+    "ts": 1700000000600,
+    "type": "tool.update",
+    "toolCallId": "tc_1",
+    "status": "completed",
+    "output": "On branch main\nnothing to commit"
+  },
+  {
+    "seq": 7,
+    "sessionId": "s_1",
+    "ts": 1700000000700,
+    "type": "message.assistant.delta",
+    "messageId": "m_a1",
+    "text": "Working tree is clean."
+  },
+  {
+    "seq": 8,
+    "sessionId": "s_1",
+    "ts": 1700000000800,
+    "type": "usage",
+    "inputTokens": 120,
+    "outputTokens": 24
+  },
+  {
+    "seq": 9,
+    "sessionId": "s_1",
+    "ts": 1700000000900,
+    "type": "turn.done",
+    "turnId": "t_1",
+    "stopReason": "end_turn"
+  }
+]

@@ -1,0 +1,31 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Local secrets & per-machine configuration
+.env
+.env.*
+*.local.json
+*.local.yaml
+*.local.sh
+.claude/settings.local.json
+.qprc/
+
+# Legacy / vendor untracked artifacts
+legacy/
+vendor/dsh-channel/
+
+# Kotlin / Gradle / Xcode
+.gradle/
+.kotlin/
+build/
+local.properties
+*.xcuserstate
+xcuserdata/
+DerivedData/
+app/iosApp/iosApp.xcodeproj/
+*.ipa
+*.p12
+*.mobileprovision
+.idea/
