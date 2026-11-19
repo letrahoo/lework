@@ -17,6 +17,8 @@ import dev.lework.transport.RpcCallException
 import kotlin.io.encoding.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +27,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 class ConsoleStore(
     private val scope: CoroutineScope,
@@ -112,7 +115,22 @@ class ConsoleStore(
                     } else {
                         s.selectedMode
                     }
-                    s.copy(sessions = nextList, selectedMode = syncMode)
+                    val syncModel = if (s.activeSessionId == updated.id && !updated.model.isNullOrBlank()) {
+                        updated.model
+                    } else {
+                        s.selectedModelId
+                    }
+                    val syncEffort = if (s.activeSessionId == updated.id && updated.reasoningEffort != null) {
+                        updated.reasoningEffort
+                    } else {
+                        s.selectedEffort
+                    }
+                    s.copy(
+                        sessions = nextList,
+                        selectedMode = syncMode,
+                        selectedModelId = syncModel,
+                        selectedEffort = syncEffort,
+                    )
                 }
             }
         }
@@ -196,14 +214,6 @@ class ConsoleStore(
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         startBonjourDiscovery()
-        if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
-            scope.launch {
-                runCatching {
-                    val st = startMobileTsnet(loadSavedTsnetControlUrl())
-                    _state.update { it.copy(tsnetStatus = st) }
-                }
-            }
-        }
         _state.update {
             it.copy(
                 connectionStatus = ConnectionStatus.DISCOVERING,
@@ -215,6 +225,14 @@ class ConsoleStore(
             )
         }
         discoverJob = scope.launch {
+            if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
+                withTimeoutOrNull(2_000L) {
+                    runCatching {
+                        val st = startMobileTsnet(loadSavedTsnetControlUrl())
+                        _state.update { it.copy(tsnetStatus = st) }
+                    }
+                }
+            }
             val found = rpc.discoverIntranetHub(
                 candidates = candidateHubHttpUrls(),
                 dynamicCandidates = observeBonjourHubUrls(),
@@ -321,7 +339,7 @@ class ConsoleStore(
             _state.update { it.copy(tsnetStatus = st) }
             if (st.backendState == "Running") {
                 _state.update { it.copy(tsnetLoggingIn = false) }
-                awaitTsnetPeerAndConnect(st)
+                searchAndConnectViaTsnet()
                 return@launch
             }
             val authUrl = st.authUrl
@@ -349,7 +367,7 @@ class ConsoleStore(
                 _state.update { it.copy(tsnetStatus = cur) }
                 if (cur.backendState == "Running") {
                     _state.update { it.copy(tsnetLoggingIn = false) }
-                    awaitTsnetPeerAndConnect(cur)
+                    searchAndConnectViaTsnet()
                     break
                 }
             }
@@ -363,28 +381,145 @@ class ConsoleStore(
             if (cur.backendState == "Running") {
                 tsnetPollJob?.cancel()
                 _state.update { it.copy(tsnetLoggingIn = false) }
-                awaitTsnetPeerAndConnect(cur)
+                searchAndConnectViaTsnet()
             }
         }
     }
 
-    private suspend fun awaitTsnetPeerAndConnect(initial: MobileTsnetStatus) {
-        _state.update {
-            it.copy(
-                connectionStatus = ConnectionStatus.DISCOVERING,
-                connectionError = null,
-                authStatusText = "已登录 Tailscale (${initial.loginName ?: "同账号"})，正在寻找在线主机…",
-            )
+    /**
+     * Exclusively searches untagged Tailscale peers under the exact same account via `tsnet`,
+     * probes their `:64450` Hub endpoints directly (never hijacked by LAN / OAuth / old relays),
+     * and performs zero-touch same-account handshake.
+     */
+    fun searchAndConnectViaTsnet() {
+        if (!isMobileTsnetAvailable()) return
+        if (discoverJob?.isActive == true && _state.value.authStatusText.contains("Tailscale")) {
+            return
         }
-        for (attempt in 0 until 8) {
-            val cur = if (attempt == 0) initial else queryMobileTsnetStatus()
-            _state.update { it.copy(tsnetStatus = cur) }
-            if (cur.peers.any { it.online && !it.localProxyUrl.isNullOrBlank() }) {
-                break
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+
+        discoverJob = scope.launch {
+            _state.update {
+                it.copy(
+                    tsnetLoggingIn = false,
+                    connectionStatus = ConnectionStatus.CONNECTING,
+                    connectionError = null,
+                    oauthChallenge = null,
+                    authStatusText = "正在同步 Tailscale 同账号节点列表…",
+                )
             }
-            delay(1_500L)
+
+            var status = startMobileTsnet(loadSavedTsnetControlUrl())
+            _state.update { it.copy(tsnetStatus = status) }
+            if (status.backendState != "Running") {
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                        authStatusText = "Tailscale 尚未完成登录，请点击下方按钮登录",
+                    )
+                }
+                return@launch
+            }
+
+            for (attempt in 0 until 4) {
+                if (status.peers.any { !it.localProxyUrl.isNullOrBlank() }) break
+                delay(1_200L)
+                status = queryMobileTsnetStatus()
+                _state.update { it.copy(tsnetStatus = status) }
+            }
+
+            val candidates = status.peers.filter { !it.localProxyUrl.isNullOrBlank() }
+            if (candidates.isEmpty()) {
+                val acct = status.loginName ?: "当前账号"
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.ERROR,
+                        connectionError = "Tailscale ($acct) 下暂未发现其他同账号设备。请在电脑终端执行：pnpm --filter @lework/hub cli tsnet login 并登录同一账号",
+                    )
+                }
+                return@launch
+            }
+
+            val peerSummary = candidates.take(4).joinToString(", ") { it.hostName }
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.CONNECTING,
+                    authStatusText = "正在通过 Tailscale 探测同账号节点 ($peerSummary) 并握手…",
+                )
+            }
+
+            val probed = coroutineScope {
+                candidates.map { peer ->
+                    async {
+                        val proxyUrl = peer.localProxyUrl ?: return@async null
+                        val ep = rpc.probeDirectEndpoint(proxyUrl, timeoutMs = 10_000L)
+                        if (ep != null) peer to ep else null
+                    }
+                }.mapNotNull { it.await() }
+            }
+
+            if (probed.isEmpty()) {
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.ERROR,
+                        connectionError = "已发现同账号节点 [$peerSummary]，但未检测到开启 Tailscale 组网的 Lework 主机服务。请在目标电脑执行：pnpm --filter @lework/hub cli tsnet login",
+                    )
+                }
+                return@launch
+            }
+
+            val (_, chosen) = probed.firstOrNull { it.second.discover.tailscaleSameUser } ?: probed.first()
+            _state.update {
+                it.copy(
+                    discoveredBaseUrl = chosen.baseUrl,
+                    discoveredWsUrl = chosen.wsUrl,
+                    oauthEnabled = chosen.discover.oauthEnabled,
+                    oauthProvider = chosen.discover.oauthProvider,
+                    oauthDisplayName = chosen.discover.oauthDisplayName,
+                    hub = chosen.discover.hub,
+                )
+            }
+
+            var lastErr: String? = null
+            if (chosen.discover.tailscaleSameUser) {
+                _state.update {
+                    it.copy(
+                        authStatusText = "已验证同账号主机 ${chosen.discover.hub.name}，正在签发设备凭证…",
+                    )
+                }
+                runCatching {
+                    rpc.authenticateViaTailscale(chosen.baseUrl, platformName())
+                }.onSuccess { hs ->
+                    val userName = hs.user?.name ?: chosen.discover.tailscaleUser ?: status.displayName ?: "Owner"
+                    saveAuthSession(hs.accessToken, userName)
+                    saveHostAccessToken(hs.hub.id, hs.accessToken)
+                    upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
+                    _state.update { it.copy(authUserName = userName) }
+                    if (connectWithToken(chosen.wsUrl, hs.accessToken)) {
+                        return@launch
+                    }
+                }.onFailure { err ->
+                    lastErr = err.message
+                }
+            }
+
+            val existingToken = loadHostAccessToken(chosen.discover.hub.id) ?: loadSavedAccessToken()
+            if (!existingToken.isNullOrBlank()) {
+                if (connectWithToken(chosen.wsUrl, existingToken)) {
+                    return@launch
+                }
+            }
+
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = lastErr
+                        ?: "已连通主机 ${chosen.discover.hub.name}，但主机端未开启同账号校验，请在电脑执行：pnpm --filter @lework/hub cli tsnet login",
+                )
+            }
         }
-        bootstrapOrConnect()
     }
 
     fun logoutMobileTsnetAccount() {
@@ -519,12 +654,19 @@ class ConsoleStore(
         switchSubscriptionTo(null)
         scope.launch {
             rpc.disconnect()
+            if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
+                runCatching {
+                    val st = startMobileTsnet(loadSavedTsnetControlUrl())
+                    _state.update { it.copy(tsnetStatus = st) }
+                }
+            }
             _state.update {
                 it.copy(
                     hasEnteredWorkspace = false,
                     connectionStatus = ConnectionStatus.NEEDS_AUTH,
                     connectionError = null,
                     oauthChallenge = null,
+                    tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
                     authStatusText = "可扫码配对新主机、使用 Tailscale 同账号发现，或手动填写地址",
                 )
             }
@@ -928,6 +1070,9 @@ class ConsoleStore(
         switchSubscriptionTo(null)
         _state.update { s ->
             val eng = s.selectedEngine
+            val defaultModel = eng?.models?.firstOrNull { it.id == eng.defaultModel }
+                ?: eng?.models?.firstOrNull { it.id == s.selectedModelId }
+                ?: eng?.models?.firstOrNull()
             s.copy(
                 activeSessionId = null,
                 checkpoints = emptyList(),
@@ -935,6 +1080,9 @@ class ConsoleStore(
                 openedDiffContent = null,
                 openedDiffTitle = null,
                 checkpointNotice = null,
+                selectedProviderId = defaultModel?.providerId ?: s.selectedProviderId,
+                selectedModelId = eng?.defaultModel ?: defaultModel?.id ?: s.selectedModelId,
+                selectedEffort = eng?.defaultEffort ?: defaultModel?.defaultEffort ?: s.selectedEffort,
                 selectedMode = eng?.defaultMode ?: s.selectedMode,
             )
         }
@@ -1348,6 +1496,8 @@ class ConsoleStore(
             val eng = s.engines.firstOrNull { it.id == snap.session.engineId }
             s.copy(
                 sessions = updatedSessions,
+                selectedEngineId = snap.session.engineId,
+                selectedModelId = snap.session.model ?: eng?.defaultModel ?: s.selectedModelId,
                 selectedMode = snap.session.mode ?: eng?.defaultMode ?: s.selectedMode,
                 selectedEffort = snap.session.reasoningEffort ?: eng?.defaultEffort ?: s.selectedEffort,
                 selectedWorkspacePath = snap.session.cwd,

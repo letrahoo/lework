@@ -91,6 +91,8 @@ function resolveSystemTailscaleCli(): string | null {
     '/opt/homebrew/bin/tailscale',
     '/usr/local/bin/tailscale',
     '/usr/bin/tailscale',
+    '/usr/sbin/tailscale',
+    '/snap/bin/tailscale',
   ])
 }
 

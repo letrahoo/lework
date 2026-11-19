@@ -507,24 +507,13 @@ func (m *Manager) Status(ctx context.Context) StatusSnapshot {
 			continue
 		}
 		isLework := strings.HasPrefix(strings.ToLower(p.HostName), "lework")
-		// Surface online same-user nodes (and lework-* nodes even while waking up)
-		if !p.Online && !isLework {
-			continue
-		}
 		primaryIP := p.TailscaleIPs[0]
-		proxyURL := ""
-		if isClientMode && raw.BackendState == "Running" {
-			if port, fErr := m.ensureForwarder(primaryIP); fErr == nil && port > 0 {
-				proxyURL = fmt.Sprintf("https://127.0.0.1:%d", port)
-			}
-		}
 		candidates = append(candidates, PeerCandidate{
-			HostName:      p.HostName,
-			DNSName:       p.DNSName,
-			TailscaleIP:   primaryIP,
-			Online:        p.Online,
-			IsLeworkNode:  isLework,
-			LocalProxyURL: proxyURL,
+			HostName:     p.HostName,
+			DNSName:      p.DNSName,
+			TailscaleIP:  primaryIP,
+			Online:       p.Online,
+			IsLeworkNode: isLework,
 		})
 	}
 
@@ -537,6 +526,17 @@ func (m *Manager) Status(ctx context.Context) StatusSnapshot {
 		}
 		return candidates[i].HostName < candidates[j].HostName
 	})
+
+	if len(candidates) > 16 {
+		candidates = candidates[:16]
+	}
+	if isClientMode && raw.BackendState == "Running" {
+		for i := range candidates {
+			if port, fErr := m.ensureForwarder(candidates[i].TailscaleIP); fErr == nil && port > 0 {
+				candidates[i].LocalProxyURL = fmt.Sprintf("https://127.0.0.1:%d", port)
+			}
+		}
+	}
 
 	selfIPs := raw.SelfIPs
 	if selfIPs == nil {
@@ -628,7 +628,7 @@ func (m *Manager) serveForwarder(f *localForwarder) {
 			if b == nil {
 				return
 			}
-			dialCtx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			dialCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			target := net.JoinHostPort(f.peerIP, strconv.Itoa(hubPort))
 			tsConn, err := b.Dial(dialCtx, "tcp", target)
 			cancel()
@@ -722,21 +722,25 @@ func (m *Manager) handleInboundTsConn(ctx context.Context, b EngineBackend, tsCo
 }
 
 func pipeBidirectional(a, b net.Conn) {
+	closeWrite := func(c net.Conn) {
+		if cw, ok := c.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+	}
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(a, b)
-		if tc, ok := a.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
-		}
+		closeWrite(a)
 		done <- struct{}{}
 	}()
 	go func() {
 		_, _ = io.Copy(b, a)
-		if tc, ok := b.(*net.TCPConn); ok {
-			_ = tc.CloseWrite()
-		}
+		closeWrite(b)
 		done <- struct{}{}
 	}()
+	<-done
+	_ = a.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = b.SetDeadline(time.Now().Add(10 * time.Second))
 	<-done
 }
 

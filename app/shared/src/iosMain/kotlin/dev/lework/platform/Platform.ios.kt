@@ -562,8 +562,7 @@ private fun parseMobileTsnetJson(rawJson: String): MobileTsnetStatus {
     }
     val withAvail = parsed.copy(available = hasBridge)
     val liveProxies = withAvail.peers
-        .filter { it.online && !it.localProxyUrl.isNullOrBlank() }
-        .mapNotNull { it.localProxyUrl }
+        .mapNotNull { it.localProxyUrl?.takeIf { u -> u.isNotBlank() } }
     IosDiscoveryBus.updateTsnetProxies(liveProxies)
     return withAvail
 }

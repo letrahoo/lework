@@ -36,6 +36,7 @@ internal fun AuthEntryView(
     onResetCredentials: () -> Unit = {},
     onScanQr: () -> Unit = {},
     onStartTsnetLogin: (String?) -> Unit = {},
+    onSearchTsnetPeers: () -> Unit = {},
     onLogoutTsnet: () -> Unit = {},
     onSelectPairedHost: (String) -> Unit = {},
 ) {
@@ -232,18 +233,33 @@ internal fun AuthEntryView(
                                 }
 
                                 if (state.tsnetStatus.backendState == "Running") {
+                                    val totalPeers = state.tsnetStatus.peers.size
                                     val onlinePeers = state.tsnetStatus.peers.count { it.online }
+                                    val peerHint = when {
+                                        onlinePeers > 0 -> "同账号在线节点 $onlinePeers 台"
+                                        totalPeers > 0 -> "同账号已注册节点 $totalPeers 台"
+                                        else -> "暂未发现其他同账号节点"
+                                    }
                                     Text(
-                                        text = "当前账号：${state.tsnetStatus.loginName ?: "已登录"} · 同账号在线节点 $onlinePeers 台",
+                                        text = "当前账号：${state.tsnetStatus.loginName ?: "已登录"} · $peerHint",
                                         fontSize = 11.5.sp,
                                         color = Everforest.Green,
                                     )
+                                    if (state.tsnetStatus.peers.isNotEmpty()) {
+                                        Text(
+                                            text = "节点：${state.tsnetStatus.peers.take(3).joinToString(", ") { it.hostName }}",
+                                            fontSize = 11.sp,
+                                            color = Everforest.Grey1,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
                                         Button(
-                                            onClick = onRetry,
+                                            onClick = onSearchTsnetPeers,
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = Everforest.Bg3,
                                                 contentColor = Everforest.Fg,

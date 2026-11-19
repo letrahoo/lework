@@ -19,6 +19,8 @@ export interface CachedTranscript {
   queuedPrompts?: string[]
   lastUserInputTs?: number
   recentUserTexts?: string[]
+  model?: string
+  reasoningEffort?: SessionMeta['reasoningEffort']
 }
 
 export interface ParsedHostTranscript {
@@ -29,6 +31,8 @@ export interface ParsedHostTranscript {
   queuedPrompts?: string[]
   lastUserInputTs?: number
   recentUserTexts?: string[]
+  model?: string
+  reasoningEffort?: SessionMeta['reasoningEffort']
 }
 
 export function collectRecentFiles(

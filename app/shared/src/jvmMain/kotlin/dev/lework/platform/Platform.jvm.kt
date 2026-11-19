@@ -86,7 +86,7 @@ actual fun observeAppForeground(): StateFlow<Boolean> = JvmPlatformTestHooks.for
 
 actual fun candidateHubHttpUrls(): List<String> =
     (JvmPlatformTestHooks.bonjourUrls.value +
-        JvmPlatformTestHooks.tsnetStatus.peers.filter { it.online }.mapNotNull { it.localProxyUrl } +
+        JvmPlatformTestHooks.tsnetStatus.peers.mapNotNull { it.localProxyUrl } +
         listOfNotNull(JvmPlatformTestHooks.lastGoodUrl) +
         JvmPlatformTestHooks.savedRelayUrls +
         JvmPlatformTestHooks.candidateUrls).distinct()

@@ -365,4 +365,42 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T10_3 searchAndConnectViaTsnet exclusively probes tsnet peers without LAN OAuth hijack`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.tsnetAvailable = true
+        JvmPlatformTestHooks.tsnetEnabled = true
+        JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.31.44:64450"))
+        JvmPlatformTestHooks.tsnetStatus = dev.lework.platform.MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            loginName = "owner@example.com",
+            peers = listOf(
+                dev.lework.platform.MobileTsnetPeer(
+                    hostName = "lework-hub-mac",
+                    tailscaleIp = "100.88.1.2",
+                    online = false, // even before NetMap flips online, forwarder is ready
+                    isLeworkNode = true,
+                    localProxyUrl = "https://127.0.0.1:59123",
+                ),
+            ),
+        )
+        val transport = FakeHubTransport().apply {
+            simulateTailscaleSameUser = true
+        }
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+
+            assertEquals(1, transport.tailscaleHandshakeCount)
+            assertEquals("https://127.0.0.1:59123", store.state.value.discoveredBaseUrl)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

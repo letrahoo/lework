@@ -86,6 +86,7 @@ fun ConsoleApp(
                     onResetCredentials = store::resetCredentialsAndReconnect,
                     onScanQr = store::scanQrAndPair,
                     onStartTsnetLogin = store::startMobileTsnetLogin,
+                    onSearchTsnetPeers = store::searchAndConnectViaTsnet,
                     onLogoutTsnet = store::logoutMobileTsnetAccount,
                     onSelectPairedHost = store::switchPairedHost,
                 )

@@ -52,8 +52,43 @@ export function normalizeHostEffort(raw: unknown, fallback: ReasoningEffort = 'm
   }
 }
 
+export function resolveClaudeEffectiveModel(
+  rawModel: string | undefined,
+  env?: Record<string, string>,
+): string | undefined {
+  const m = rawModel?.trim()
+  const lower = m?.toLowerCase().replace(/\[1m\]$/i, '') ?? ''
+  if (env) {
+    if (env.ANTHROPIC_MODEL?.trim() && (!m || lower === 'default')) {
+      return env.ANTHROPIC_MODEL.trim()
+    }
+    if (lower === 'opus' || lower === 'opusplan') {
+      return env.ANTHROPIC_DEFAULT_OPUS_MODEL?.trim() || env.ANTHROPIC_MODEL?.trim() || m
+    }
+    if (lower === 'sonnet' || !m || lower === 'default') {
+      return (
+        env.ANTHROPIC_DEFAULT_SONNET_MODEL?.trim() ||
+        env.ANTHROPIC_MODEL?.trim() ||
+        env.ANTHROPIC_DEFAULT_OPUS_MODEL?.trim() ||
+        m
+      )
+    }
+    if (lower === 'haiku') {
+      return (
+        env.ANTHROPIC_DEFAULT_HAIKU_MODEL?.trim() ||
+        env.ANTHROPIC_SMALL_FAST_MODEL?.trim() ||
+        env.ANTHROPIC_MODEL?.trim() ||
+        m
+      )
+    }
+  }
+  return m || undefined
+}
+
 export function readClaudeLocalSettings(homeDir = os.homedir()): {
   model?: string
+  rawModel?: string
+  env?: Record<string, string>
   defaultMode: SessionMode
   effort: ReasoningEffort
   usesLocalProxy: boolean
@@ -70,8 +105,11 @@ export function readClaudeLocalSettings(homeDir = os.homedir()): {
       }
       const rawMode = parsed.permissions?.defaultMode ?? parsed.defaultMode
       const baseUrl = parsed.env?.ANTHROPIC_BASE_URL ?? ''
+      const rawModel = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined
       return {
-        model: typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined,
+        model: resolveClaudeEffectiveModel(rawModel, parsed.env),
+        rawModel,
+        env: parsed.env,
         defaultMode: normalizeHostMode(rawMode, 'default'),
         effort: normalizeHostEffort(parsed.effortLevel, 'medium'),
         usesLocalProxy: baseUrl.includes('127.0.0.1') || baseUrl.includes('localhost'),
@@ -179,4 +217,85 @@ export async function loadAgyModelsFromCli(): Promise<EngineModelSpec[]> {
   } catch {
     return fallbackAgyModels()
   }
+}
+
+export function parseAgyModelString(
+  raw: string | undefined,
+  catalog?: EngineModelSpec[],
+): { modelId?: string; effort?: ReasoningEffort } {
+  const trimmed = raw?.trim()
+  if (!trimmed || trimmed.toLowerCase() === 'none') return {}
+
+  let effort: ReasoningEffort | undefined
+  let base = trimmed
+
+  const parenMatch = base.match(/\s*\((low|medium|high|xhigh|max)\)\s*$/i)
+  if (parenMatch?.[1]) {
+    effort = parenMatch[1].toLowerCase() as ReasoningEffort
+    base = base.slice(0, parenMatch.index).trim()
+  } else {
+    const suffixMatch = base.match(/-(low|medium|high|xhigh|max)$/i)
+    if (suffixMatch?.[1]) {
+      effort = suffixMatch[1].toLowerCase() as ReasoningEffort
+      base = base.slice(0, -(suffixMatch[1].length + 1)).trim()
+    }
+  }
+
+  if (catalog && catalog.length > 0) {
+    const lowerBase = base.toLowerCase()
+    const normKey = lowerBase.replace(/[\s.]+/g, '-')
+    const exact = catalog.find(
+      m =>
+        m.id.toLowerCase() === lowerBase ||
+        m.name.toLowerCase() === lowerBase ||
+        m.id.toLowerCase().replace(/\./g, '-') === normKey,
+    )
+    if (exact) {
+      return { modelId: exact.id, effort }
+    }
+  }
+
+  const lower = base.toLowerCase()
+  if (lower === 'orchestrator (carbon)' || lower === 'orchestrator') {
+    return { modelId: 'gemini-pro-orchestrator', effort }
+  }
+  if (lower === 'orchestrator (neon)') {
+    return { modelId: 'gemini-pro-orchestrator-neon', effort }
+  }
+  if (lower === 'orchestrator (argon)') {
+    return { modelId: 'gemini-pro-orchestrator-argon', effort }
+  }
+
+  // Convert human-readable label (e.g. "Gemini 4 Carbon", "Claude Opus 5.5", "Gemini 3.8 Flash") to AGY wire ID
+  let slug = lower.replace(/\s+/g, '-')
+  slug = slug.replace(/^claude-(opus|sonnet|haiku)-(\d+)\.(\d+)$/, 'claude-$1-$2-$3')
+  return { modelId: slug || undefined, effort }
+}
+
+export function readAgyLocalSettings(
+  homeDir = os.homedir(),
+  catalog?: EngineModelSpec[],
+): {
+  model?: string
+  effort: ReasoningEffort
+  defaultMode: SessionMode
+} {
+  const settingsPath = path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json')
+  try {
+    if (fs.existsSync(settingsPath)) {
+      const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as {
+        model?: string
+        permissions?: { defaultMode?: string }
+      }
+      const resolved = parseAgyModelString(parsed.model, catalog)
+      return {
+        model: resolved.modelId,
+        effort: resolved.effort ?? 'high',
+        defaultMode: normalizeHostMode(parsed.permissions?.defaultMode, 'auto'),
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return { effort: 'high', defaultMode: 'auto' }
 }

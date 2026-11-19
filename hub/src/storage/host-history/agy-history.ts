@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { AgentEvent } from '@lework/protocol'
+import type { AgentEvent, EngineModelSpec, ReasoningEffort } from '@lework/protocol'
 import {
   classifyRawToolCall,
   extractProjectRootFromToolInput,
@@ -11,16 +11,31 @@ import {
   type HostTranscriptEntry,
   type ParsedHostTranscript,
 } from './common.ts'
+import { parseAgyModelString, readAgyLocalSettings } from './engine-settings.ts'
+
+export function extractLatestAgyModelSelection(rawContent: string): string | undefined {
+  if (!rawContent || !rawContent.includes('Model Selection')) return undefined
+  const re = /`Model Selection`\s+from\s+[^\n]+?\s+to\s+([^\n.]+)\./g
+  let last: string | undefined
+  let m: RegExpExecArray | null
+  while ((m = re.exec(rawContent)) !== null) {
+    const val = m[1]?.trim()
+    if (val && val.toLowerCase() !== 'none') last = val
+  }
+  return last
+}
 
 export function scanAgySessions(
   homeDir: string,
   transcriptCache: Map<string, CachedTranscript>,
   out: Map<string, HostTranscriptEntry>,
+  agyCatalog?: EngineModelSpec[],
 ): void {
   const agyRoot = path.join(homeDir, '.gemini', 'antigravity-cli')
   const brainDir = path.join(agyRoot, 'brain')
   if (!fs.existsSync(brainDir)) return
   const agyHistoryMap = readAgyHistoryIndex(path.join(agyRoot, 'history.jsonl'))
+  const agyDefaults = readAgyLocalSettings(homeDir, agyCatalog)
 
   let entries: fs.Dirent[] = []
   try {
@@ -42,8 +57,9 @@ export function scanAgySessions(
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)
   for (const c of candidates.slice(0, 20)) {
     try {
-      const { first, last } = readFirstAndLastLines(c.path, 25, 6)
+      const { first, last } = readFirstAndLastLines(c.path, 25, 12)
       let firstPromptTitle = ''
+      let rawModelSelection: string | undefined
       const inferredPaths: string[] = []
       for (const l of [...first, ...last]) {
         try {
@@ -53,10 +69,14 @@ export function scanAgySessions(
             content?: string
             tool_calls?: Array<{ args?: Record<string, unknown>; arguments?: Record<string, unknown> }>
           }
-          if (!firstPromptTitle && o.type === 'USER_INPUT' && typeof o.content === 'string') {
-            const reqs = extractAgyUserRequests(o.content)
-            if (reqs.length > 0) {
-              firstPromptTitle = reqs[0]!.replace(/\s+/g, ' ').trim().slice(0, 48)
+          if (o.type === 'USER_INPUT' && typeof o.content === 'string') {
+            const sel = extractLatestAgyModelSelection(o.content)
+            if (sel) rawModelSelection = sel
+            if (!firstPromptTitle) {
+              const reqs = extractAgyUserRequests(o.content)
+              if (reqs.length > 0) {
+                firstPromptTitle = reqs[0]!.replace(/\s+/g, ' ').trim().slice(0, 48)
+              }
             }
           }
           if (Array.isArray(o.tool_calls)) {
@@ -95,6 +115,12 @@ export function scanAgySessions(
         }
       }
 
+      const parsedModel = parseAgyModelString(
+        hist?.lastModel ?? rawModelSelection,
+        agyCatalog,
+      )
+      const cached = transcriptCache.get(sessionId)
+
       out.set(sessionId, {
         nativeId: c.convId,
         filePath: c.path,
@@ -109,8 +135,9 @@ export function scanAgySessions(
           createdAt: Math.floor(c.birthtimeMs || c.mtimeMs),
           updatedAt: Math.floor(c.mtimeMs),
           lastSeq: 0,
-          reasoningEffort: 'high',
-          mode: 'auto',
+          model: cached?.model ?? parsedModel.modelId ?? agyDefaults.model,
+          reasoningEffort: cached?.reasoningEffort ?? parsedModel.effort ?? agyDefaults.effort,
+          mode: agyDefaults.defaultMode,
           source: 'host',
         },
       })
@@ -123,6 +150,7 @@ export function scanAgySessions(
 export function parseAgyTranscript(
   sessionId: string,
   filePath: string,
+  agyCatalog?: EngineModelSpec[],
 ): ParsedHostTranscript {
   const events: AgentEvent[] = []
   const workspaces: string[] = []
@@ -130,6 +158,7 @@ export function parseAgyTranscript(
   let isRunning = false
   let turnStartedAt: number | undefined
   let lastUserInputTs = 0
+  let latestModelRaw: string | undefined
   const recentUserTexts: string[] = []
   const lines = readFullSessionLines(filePath)
   let seq = 0
@@ -148,6 +177,8 @@ export function parseAgyTranscript(
       }
       const ts = o.created_at ? Date.parse(o.created_at) || Date.now() : Date.now()
       if (o.type === 'USER_INPUT' && typeof o.content === 'string') {
+        const sel = extractLatestAgyModelSelection(o.content)
+        if (sel) latestModelRaw = sel
         const reqs = extractAgyUserRequests(o.content)
         if (reqs.length > 0) {
           isRunning = true
@@ -249,6 +280,10 @@ export function parseAgyTranscript(
       // ignore
     }
   }
+  const resolvedModel: { modelId?: string; effort?: ReasoningEffort } = parseAgyModelString(
+    latestModelRaw,
+    agyCatalog,
+  )
   return {
     events,
     workspaces,
@@ -256,6 +291,8 @@ export function parseAgyTranscript(
     turnStartedAt,
     lastUserInputTs,
     recentUserTexts,
+    model: resolvedModel.modelId,
+    reasoningEffort: resolvedModel.effort,
   }
 }
 
@@ -345,6 +382,7 @@ export function findLatestAgyUserInputFromTail(filePath: string): { ts: number; 
 
 interface AgyHistoryInfo {
   customTitle?: string
+  lastModel?: string
   workspaces: string[]
   prompts: Array<{ text: string; ts: number }>
 }
@@ -387,6 +425,9 @@ export function readAgyHistoryIndex(historyFile: string): Map<string, AgyHistory
           if (cmd.startsWith('/rename ')) {
             const renamed = cmd.slice('/rename '.length).trim()
             if (renamed) rec.customTitle = renamed
+          } else if (cmd.startsWith('/model ')) {
+            const mArg = cmd.slice('/model '.length).trim()
+            if (mArg) rec.lastModel = mArg
           } else if (cmd === '/clear') {
             rec.prompts.length = 0
           }

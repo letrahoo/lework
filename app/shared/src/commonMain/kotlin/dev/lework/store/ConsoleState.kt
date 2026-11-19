@@ -168,8 +168,19 @@ data class ConsoleUiState(
         get() = selectedEngine?.models.orEmpty()
 
     val selectedModelSpec: EngineModelSpec?
-        get() = availableModelsForEngine.firstOrNull { it.id == selectedModelId }
-            ?: availableModelsForEngine.firstOrNull()
+        get() {
+            val target = selectedModelId?.trim().orEmpty()
+            if (target.isNotEmpty()) {
+                val normTarget = target.lowercase().replace('.', '-')
+                availableModelsForEngine.firstOrNull {
+                    it.id.equals(target, ignoreCase = true) ||
+                        it.name.removeSuffix(" (Proxy)").equals(target, ignoreCase = true) ||
+                        it.id.lowercase().replace('.', '-') == normTarget
+                }?.let { return it }
+                return EngineModelSpec(id = target, name = target)
+            }
+            return availableModelsForEngine.firstOrNull()
+        }
 
     val availableEfforts: List<ReasoningEffort>
         get() = selectedModelSpec?.efforts?.ifEmpty { null }

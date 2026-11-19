@@ -13,7 +13,7 @@ import {
   type HostTranscriptEntry,
   type ParsedHostTranscript,
 } from './common.ts'
-import { readClaudeLocalSettings } from './engine-settings.ts'
+import { readClaudeLocalSettings, resolveClaudeEffectiveModel } from './engine-settings.ts'
 
 export function scanClaudeSessions(
   homeDir: string,
@@ -30,7 +30,7 @@ export function scanClaudeSessions(
       const nativeId = path.basename(f.path, '.jsonl')
       const sessionId = `host:claude:${nativeId}`
       const slug = path.basename(path.dirname(f.path))
-      const { first, last } = readFirstAndLastLines(f.path, 20, 10)
+      const { first, last } = readFirstAndLastLines(f.path, 25, 35)
       let promptTitle = ''
       let customTitle = ''
       let model: string | undefined
@@ -97,7 +97,7 @@ export function scanClaudeSessions(
           createdAt: Math.floor(f.birthtimeMs || f.mtimeMs),
           updatedAt: Math.floor(Math.max(f.mtimeMs, rt?.updatedAt ?? 0)),
           lastSeq: 0,
-          model: model ?? claudeDefaults.model,
+          model: resolveClaudeEffectiveModel(model, claudeDefaults.env) ?? claudeDefaults.model,
           reasoningEffort: claudeDefaults.effort,
           mode: claudeDefaults.defaultMode,
           source: 'host',
@@ -112,6 +112,7 @@ export function scanClaudeSessions(
 export function parseClaudeTranscript(
   sessionId: string,
   filePath: string,
+  claudeEnv?: Record<string, string>,
 ): ParsedHostTranscript {
   const events: AgentEvent[] = []
   const workspaces: string[] = []
@@ -119,6 +120,7 @@ export function parseClaudeTranscript(
   const queued: string[] = []
   let isRunning = false
   let turnStartedAt: number | undefined
+  let latestModel: string | undefined
   const lines = readFullSessionLines(filePath)
   let seq = 0
   for (const line of lines) {
@@ -141,6 +143,7 @@ export function parseClaudeTranscript(
         message?: {
           id?: string
           role?: string
+          model?: string
           stop_reason?: string | null
           usage?: { input_tokens?: number; output_tokens?: number }
           content?: unknown
@@ -148,6 +151,9 @@ export function parseClaudeTranscript(
       }
       if (typeof o.cwd === 'string' && o.cwd.trim()) {
         workspaces.push(o.cwd.trim())
+      }
+      if (typeof o.message?.model === 'string' && o.message.model.trim()) {
+        latestModel = o.message.model.trim()
       }
       const ts = o.timestamp ? Date.parse(o.timestamp) || Date.now() : Date.now()
       if (o.type === 'queue-operation') {
@@ -313,6 +319,7 @@ export function parseClaudeTranscript(
     isRunning: isRunning || openTools.size > 0,
     turnStartedAt,
     queuedPrompts: queued.length > 0 ? queued : undefined,
+    model: resolveClaudeEffectiveModel(latestModel, claudeEnv),
   }
 }
 

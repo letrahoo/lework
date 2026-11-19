@@ -189,3 +189,58 @@ func TestHostInboundProxyVerifiesSameUserAndRecordsSourcePort(t *testing.T) {
 		t.Fatal("timed out waiting for inbound proxied connection")
 	}
 }
+
+func TestPipeBidirectionalPreservesDelayedResponseAfterHalfClose(t *testing.T) {
+	srvLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srvLn.Close()
+
+	go func() {
+		conn, aErr := srvLn.Accept()
+		if aErr != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 64)
+		_, _ = conn.Read(buf)
+		// Simulate Hub computing attestation/TLS proof after client finishes writing request
+		time.Sleep(80 * time.Millisecond)
+		_, _ = conn.Write([]byte("ATTEST_OK"))
+	}()
+
+	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyLn.Close()
+
+	go func() {
+		c, aErr := proxyLn.Accept()
+		if aErr != nil {
+			return
+		}
+		defer c.Close()
+		up, dErr := net.Dial("tcp", srvLn.Addr().String())
+		if dErr != nil {
+			return
+		}
+		defer up.Close()
+		pipeBidirectional(c, up)
+	}()
+
+	cli, err := net.Dial("tcp", proxyLn.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	_, _ = cli.Write([]byte("HELLO"))
+	_ = cli.(*net.TCPConn).CloseWrite()
+
+	resp := make([]byte, 32)
+	n, err := cli.Read(resp)
+	if err != nil || string(resp[:n]) != "ATTEST_OK" {
+		t.Fatalf("expected ATTEST_OK after half-close, got %q (err=%v)", string(resp[:n]), err)
+	}
+}

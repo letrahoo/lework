@@ -77,7 +77,7 @@ class FakeHubTransport : HubTransport {
         val chosen = candidates.firstOrNull() ?: "https://127.0.0.1:64450"
         return DiscoveredEndpoint(
             baseUrl = chosen,
-            wsUrl = "wss://127.0.0.1:64450/v1/ws",
+            wsUrl = dev.lework.security.hubWsUrlOf(chosen),
             discover = HubDiscoverResult(
                 ok = true,
                 hub = hubInfo,

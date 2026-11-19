@@ -169,7 +169,7 @@ export class ModelRegistry {
         const models = (body.data ?? [])
           .map(item => (typeof item?.id === 'string' ? item.id : ''))
           .filter(Boolean)
-          .slice(0, 40)
+          .slice(0, 80)
         if (models.length > 0) {
           this.cachedCpaModels = models
         }

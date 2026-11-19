@@ -26,6 +26,7 @@ import {
 import { parseDshTranscript, scanDshSessions } from './host-history/dsh-history.ts'
 import {
   loadAgyModelsFromCli,
+  readAgyLocalSettings,
   readClaudeLocalSettings,
   readCodexLocalSettings,
   readCodexModelsCache,
@@ -117,9 +118,11 @@ export class HostTaskInspector {
       }
     }
     if (engineId === 'agy') {
+      const agyCfg = readAgyLocalSettings(this.homeDir, this.agyModelsCache ?? undefined)
       return {
-        defaultMode: 'auto',
-        defaultEffort: 'high',
+        defaultModel: agyCfg.model,
+        defaultMode: agyCfg.defaultMode,
+        defaultEffort: agyCfg.effort,
         supportedModes: ['auto', 'plan', 'default'],
       }
     }
@@ -154,7 +157,7 @@ export class HostTaskInspector {
       ]
       const proxyModels: EngineModelSpec[] = cpaModels
         .filter(m => !m.includes('image'))
-        .slice(0, 12)
+        .slice(0, 60)
         .map(m => ({
           id: m,
           name: `${m} (Proxy)`,
@@ -166,7 +169,7 @@ export class HostTaskInspector {
       if (claudeCfg.model && !combined.some(m => m.id === claudeCfg.model)) {
         combined.unshift({
           id: claudeCfg.model,
-          name: `${claudeCfg.model} (本机当前)`,
+          name: claudeCfg.model,
           providerId: claudeCfg.usesLocalProxy ? 'cpa_local' : 'sub_claude',
           efforts: stdEfforts,
           defaultEffort: claudeCfg.effort,
@@ -240,7 +243,7 @@ export class HostTaskInspector {
     scanCodexSessions(this.homeDir, next)
     this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
     scanClaudeSessions(this.homeDir, this.claudeRuntimeMap, next)
-    scanAgySessions(this.homeDir, this.transcriptCache, next)
+    scanAgySessions(this.homeDir, this.transcriptCache, next, this.agyModelsCache ?? undefined)
     scanDshSessions(this.homeDir, next)
 
     // Preserve rich runtime/transcript metadata already parsed for watched or cached sessions
@@ -258,6 +261,8 @@ export class HostTaskInspector {
         ...entry.meta,
         cwd: mergedWorkspaces[0] ?? entry.meta.cwd,
         workspaces: mergedWorkspaces.length > 0 ? mergedWorkspaces : entry.meta.workspaces,
+        model: prev.meta.model ?? entry.meta.model,
+        reasoningEffort: prev.meta.reasoningEffort ?? entry.meta.reasoningEffort,
         lastSeq: prev.meta.lastSeq > 0 ? prev.meta.lastSeq : entry.meta.lastSeq,
         liveStatusText: isActive ? (prev.meta.liveStatusText ?? entry.meta.liveStatusText) : undefined,
         turnStartedAt: isActive ? (prev.meta.turnStartedAt ?? entry.meta.turnStartedAt) : undefined,
@@ -298,6 +303,8 @@ export class HostTaskInspector {
     let queuedPrompts: string[] | undefined
     let lastUserInputTs: number | undefined
     let recentUserTexts: string[] | undefined
+    let parsedModel: string | undefined
+    let parsedEffort: ReasoningEffort | undefined
     if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
       events = cached.events
       extraWorkspaces = cached.extraWorkspaces
@@ -306,14 +313,18 @@ export class HostTaskInspector {
       queuedPrompts = cached.queuedPrompts
       lastUserInputTs = cached.lastUserInputTs
       recentUserTexts = cached.recentUserTexts
+      parsedModel = cached.model
+      parsedEffort = cached.reasoningEffort
     } else {
+      const claudeCfg =
+        entry.meta.engineId === 'claude' ? readClaudeLocalSettings(this.homeDir) : undefined
       const parsed: ParsedHostTranscript =
         entry.meta.engineId === 'codex'
           ? parseCodexTranscript(sessionId, entry.filePath)
           : entry.meta.engineId === 'claude'
-            ? parseClaudeTranscript(sessionId, entry.filePath)
+            ? parseClaudeTranscript(sessionId, entry.filePath, claudeCfg?.env)
             : entry.meta.engineId === 'agy'
-              ? parseAgyTranscript(sessionId, entry.filePath)
+              ? parseAgyTranscript(sessionId, entry.filePath, this.agyModelsCache ?? undefined)
               : entry.meta.engineId === 'dsh'
                 ? parseDshTranscript(sessionId, entry.filePath)
                 : { events: [], workspaces: [], isRunning: false, turnStartedAt: undefined }
@@ -324,6 +335,8 @@ export class HostTaskInspector {
       queuedPrompts = parsed.queuedPrompts
       lastUserInputTs = parsed.lastUserInputTs
       recentUserTexts = parsed.recentUserTexts
+      parsedModel = parsed.model
+      parsedEffort = parsed.reasoningEffort
       this.transcriptCache.set(sessionId, {
         mtimeMs: st.mtimeMs,
         size: st.size,
@@ -334,6 +347,8 @@ export class HostTaskInspector {
         queuedPrompts,
         lastUserInputTs,
         recentUserTexts,
+        model: parsedModel,
+        reasoningEffort: parsedEffort,
       })
     }
 
@@ -387,6 +402,8 @@ export class HostTaskInspector {
       ...entry.meta,
       cwd: primaryCwd,
       workspaces: mergedWorkspaces,
+      model: parsedModel ?? entry.meta.model,
+      reasoningEffort: parsedEffort ?? entry.meta.reasoningEffort,
       state: liveState,
       liveStatusText: activeWatch?.lastLiveStatus ?? entry.meta.liveStatusText,
       turnStartedAt: liveState === 'running' ? (turnStartedAt ?? Math.floor(st.mtimeMs)) : undefined,

@@ -84,6 +84,11 @@ interface HubTransport {
         preferredHubId: String? = null,
     ): DiscoveredEndpoint?
 
+    suspend fun probeDirectEndpoint(
+        baseUrl: String,
+        timeoutMs: Long = 10_000L,
+    ): DiscoveredEndpoint? = discoverIntranetHub(listOf(baseUrl), waitWindowMs = timeoutMs)
+
     /**
      * Verifies (and pins) the Hub's TLS certificate *before* any token is sent to it, using
      * token-bound attestation. Throws [HubTrustException] if the endpoint cannot prove itself.
@@ -288,6 +293,28 @@ class HubRpcClient(
         return result
     }
 
+    override suspend fun probeDirectEndpoint(
+        baseUrl: String,
+        timeoutMs: Long,
+    ): DiscoveredEndpoint? {
+        val normalized = normalizeHubBaseUrl(baseUrl)
+        if (normalized.isEmpty()) return null
+        return try {
+            val res = withTimeout(timeoutMs) {
+                probeClient.get("$normalized/v1/auth/discover")
+            }
+            if (!res.status.isSuccess()) return null
+            val info = ProtocolJson.decodeFromString(HubDiscoverResult.serializer(), res.bodyAsText())
+            DiscoveredEndpoint(
+                baseUrl = normalized,
+                wsUrl = hubWsUrlOf(normalized),
+                discover = info.copy(relayUrls = emptyList()),
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     /** Once a Hub is pinned, OAuth also runs only against pinned Hubs (no impostor login pages). */
     private fun oauthClient(): HttpClient = if (HubTrust.pinned().isNotEmpty()) secureClient else probeClient
 
@@ -373,7 +400,7 @@ class HubRpcClient(
     ): DirectTokenAuthResult {
         val base = normalizeHubBaseUrl(baseUrl)
         val nonce = HubAttestation.newNonce()
-        val res = withTimeout(8_000L) {
+        val res = withTimeout(12_000L) {
             probeClient.post("$base/v1/auth/tailscale") {
                 setBody(
                     ProtocolJson.encodeToString(
