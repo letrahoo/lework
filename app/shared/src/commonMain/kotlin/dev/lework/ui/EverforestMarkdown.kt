@@ -21,7 +21,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -30,9 +35,11 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.copyTextToClipboard
@@ -41,13 +48,23 @@ import dev.lework.security.isSafeExternalLink
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+internal enum class MdTableAlign {
+    START,
+    CENTER,
+    END,
+}
+
 internal sealed interface MdBlock {
     data class Heading(val level: Int, val text: String) : MdBlock
     data class Paragraph(val text: String) : MdBlock
     data class CodeFence(val lang: String, val code: String) : MdBlock
     data class Quote(val alertKind: String?, val lines: List<String>) : MdBlock
     data class ListGroup(val items: List<MdListItem>) : MdBlock
-    data class Table(val headers: List<String>, val rows: List<List<String>>) : MdBlock
+    data class Table(
+        val headers: List<String>,
+        val rows: List<List<String>>,
+        val alignments: List<MdTableAlign> = emptyList(),
+    ) : MdBlock
     data object ThematicBreak : MdBlock
 }
 
@@ -241,84 +258,224 @@ private fun QuoteBlockView(quote: MdBlock.Quote) {
     }
 }
 
+private class TableGridMetrics {
+    var colX: IntArray = IntArray(0)
+    var rowY: IntArray = IntArray(0)
+}
+
 @Composable
 private fun TableBlockView(table: MdBlock.Table) {
     val colCount = maxOf(
         table.headers.size,
         table.rows.maxOfOrNull { it.size } ?: 0,
     ).coerceAtLeast(1)
+    val rowCount = 1 + table.rows.size
+    val metrics = remember { TableGridMetrics() }
 
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = Everforest.BgDim,
         border = BorderStroke(1.dp, Everforest.Bg2),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("md_table"),
     ) {
-        Column(
-            modifier = Modifier
-                .horizontalScroll(rememberScrollState())
-                .width(IntrinsicSize.Max),
-        ) {
-            Row(
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val minTableWidthPx = constraints.maxWidth.takeIf { it != Constraints.Infinity } ?: 0
+
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Everforest.Bg1)
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    .horizontalScroll(rememberScrollState()),
             ) {
-                for (c in 0 until colCount) {
-                    val cellText = table.headers.getOrElse(c) { "" }
-                    val annotated = remember(cellText) {
-                        parseEverforestInline(
-                            text = cellText,
-                            baseColor = Everforest.Fg,
-                            baseWeight = FontWeight.SemiBold,
-                            codeFontSizeSp = 12f,
-                        )
-                    }
-                    Text(
-                        text = annotated,
-                        fontSize = 13.sp,
-                        lineHeight = 18.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Everforest.Fg,
-                        modifier = Modifier.widthIn(min = 76.dp, max = 240.dp),
-                    )
-                }
-            }
-            HorizontalDivider(color = Everforest.Bg2, thickness = 1.dp)
+                Layout(
+                    modifier = Modifier.drawBehind {
+                        val cx = metrics.colX
+                        val ry = metrics.rowY
+                        if (cx.size < 2 || ry.size < 2) return@drawBehind
+                        val totalW = cx.last().toFloat()
+                        val totalH = ry.last().toFloat()
 
-            table.rows.forEachIndexed { rIdx, row ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 7.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    for (c in 0 until colCount) {
-                        val cellText = row.getOrElse(c) { "" }
-                        val annotated = remember(cellText) {
-                            parseEverforestInline(
-                                text = cellText,
-                                baseColor = Everforest.Fg,
-                                codeFontSizeSp = 12f,
+                        // 1. Header background
+                        drawRect(
+                            color = Everforest.Bg1,
+                            topLeft = Offset.Zero,
+                            size = Size(totalW, ry[1].toFloat()),
+                        )
+
+                        // 2. Subtle alternating body row tint for easy horizontal scanning
+                        for (r in 1 until ry.size - 1) {
+                            if (r % 2 == 0) {
+                                drawRect(
+                                    color = Everforest.Bg1.copy(alpha = 0.28f),
+                                    topLeft = Offset(0f, ry[r].toFloat()),
+                                    size = Size(totalW, (ry[r + 1] - ry[r]).toFloat()),
+                                )
+                            }
+                        }
+
+                        // 3. Horizontal row dividers (stronger below header, subtle between body rows)
+                        drawLine(
+                            color = Everforest.Bg3,
+                            start = Offset(0f, ry[1].toFloat()),
+                            end = Offset(totalW, ry[1].toFloat()),
+                            strokeWidth = 1.dp.toPx(),
+                        )
+                        val bodyStroke = 0.75.dp.toPx()
+                        for (r in 2 until ry.size - 1) {
+                            val y = ry[r].toFloat()
+                            drawLine(
+                                color = Everforest.Bg2,
+                                start = Offset(0f, y),
+                                end = Offset(totalW, y),
+                                strokeWidth = bodyStroke,
                             )
                         }
-                        Text(
-                            text = annotated,
-                            fontSize = 13.sp,
-                            lineHeight = 19.sp,
-                            color = Everforest.Fg,
-                            modifier = Modifier.widthIn(min = 76.dp, max = 240.dp),
-                        )
+
+                        // 4. Vertical column dividers so columns never visually run into each other
+                        for (c in 1 until cx.size - 1) {
+                            val x = cx[c].toFloat()
+                            drawLine(
+                                color = Everforest.Bg2.copy(alpha = 0.85f),
+                                start = Offset(x, 0f),
+                                end = Offset(x, totalH),
+                                strokeWidth = bodyStroke,
+                            )
+                        }
+                    },
+                    content = {
+                        // Row 0: Headers
+                        for (c in 0 until colCount) {
+                            val align = table.alignments.getOrElse(c) { MdTableAlign.START }
+                            val cellText = table.headers.getOrElse(c) { "" }
+                            val annotated = remember(cellText) {
+                                parseEverforestInline(
+                                    text = cellText,
+                                    baseColor = Everforest.BoldFg,
+                                    baseWeight = FontWeight.SemiBold,
+                                    codeFontSizeSp = 12f,
+                                )
+                            }
+                            Text(
+                                text = annotated,
+                                fontSize = 13.sp,
+                                lineHeight = 18.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Everforest.BoldFg,
+                                textAlign = align.toTextAlign(),
+                                modifier = Modifier.testTag("md_table_cell_0_$c"),
+                            )
+                        }
+
+                        // Rows 1..N: Body cells
+                        table.rows.forEachIndexed { rIdx, row ->
+                            for (c in 0 until colCount) {
+                                val align = table.alignments.getOrElse(c) { MdTableAlign.START }
+                                val cellText = row.getOrElse(c) { "" }
+                                val annotated = remember(cellText) {
+                                    parseEverforestInline(
+                                        text = cellText,
+                                        baseColor = Everforest.Fg,
+                                        codeFontSizeSp = 12f,
+                                    )
+                                }
+                                Text(
+                                    text = annotated,
+                                    fontSize = 13.sp,
+                                    lineHeight = 19.sp,
+                                    color = Everforest.Fg,
+                                    textAlign = align.toTextAlign(),
+                                    modifier = Modifier.testTag("md_table_cell_${rIdx + 1}_$c"),
+                                )
+                            }
+                        }
+                    },
+                ) { measurables, _ ->
+                    val padH = 11.dp.roundToPx()
+                    val padV = 8.dp.roundToPx()
+                    val minColW = 40.dp.roundToPx()
+                    val maxColW = 284.dp.roundToPx()
+                    val minRowH = 32.dp.roundToPx()
+
+                    // Step 1: query each cell's single-line intrinsic width (does not consume measure())
+                    val colWidths = IntArray(colCount) { minColW }
+                    for (r in 0 until rowCount) {
+                        for (c in 0 until colCount) {
+                            val intrinsicW = measurables[r * colCount + c].maxIntrinsicWidth(Constraints.Infinity)
+                            val desired = (intrinsicW + padH * 2).coerceIn(minColW, maxColW)
+                            if (desired > colWidths[c]) colWidths[c] = desired
+                        }
                     }
-                }
-                if (rIdx < table.rows.lastIndex) {
-                    HorizontalDivider(color = Everforest.Bg2.copy(alpha = 0.7f), thickness = 0.5.dp)
+
+                    // Step 2: if narrower than viewport card, expand wider columns preferentially so `#` stays compact
+                    val naturalSum = colWidths.sum()
+                    if (minTableWidthPx > naturalSum && naturalSum > 0) {
+                        val extra = minTableWidthPx - naturalSum
+                        val flexBase = 6.dp.roundToPx()
+                        val weights = LongArray(colCount) { c ->
+                            (colWidths[c] - minColW + flexBase).coerceAtLeast(1).toLong()
+                        }
+                        val weightSum = weights.sum().coerceAtLeast(1L)
+                        var distributed = 0
+                        for (c in 0 until colCount) {
+                            val add = if (c == colCount - 1) {
+                                extra - distributed
+                            } else {
+                                ((extra.toLong() * weights[c]) / weightSum).toInt()
+                            }
+                            colWidths[c] += add
+                            distributed += add
+                        }
+                    }
+
+                    // Step 3: measure each cell ONCE at its exact column inner width so wrapping & alignment are exact
+                    val placeables = Array(measurables.size) { idx ->
+                        val c = idx % colCount
+                        val innerW = (colWidths[c] - padH * 2).coerceAtLeast(1)
+                        measurables[idx].measure(Constraints(minWidth = innerW, maxWidth = innerW))
+                    }
+
+                    val rowHeights = IntArray(rowCount) { minRowH }
+                    for (r in 0 until rowCount) {
+                        for (c in 0 until colCount) {
+                            val p = placeables[r * colCount + c]
+                            val h = p.height + padV * 2
+                            if (h > rowHeights[r]) rowHeights[r] = h
+                        }
+                    }
+
+                    val colX = IntArray(colCount + 1)
+                    for (c in 0 until colCount) {
+                        colX[c + 1] = colX[c] + colWidths[c]
+                    }
+                    val rowY = IntArray(rowCount + 1)
+                    for (r in 0 until rowCount) {
+                        rowY[r + 1] = rowY[r] + rowHeights[r]
+                    }
+                    metrics.colX = colX
+                    metrics.rowY = rowY
+
+                    val totalWidth = colX[colCount]
+                    val totalHeight = rowY[rowCount]
+
+                    layout(totalWidth, totalHeight) {
+                        for (r in 0 until rowCount) {
+                            for (c in 0 until colCount) {
+                                val p = placeables[r * colCount + c]
+                                p.placeRelative(colX[c] + padH, rowY[r] + padV)
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+private fun MdTableAlign.toTextAlign(): TextAlign = when (this) {
+    MdTableAlign.START -> TextAlign.Start
+    MdTableAlign.CENTER -> TextAlign.Center
+    MdTableAlign.END -> TextAlign.End
 }
 
 @Composable
@@ -454,21 +611,25 @@ internal fun parseMarkdownBlocks(raw: String): List<MdBlock> {
             continue
         }
 
-        // 4. Table (| col | col | followed by | --- | --- |)
-        if (
-            trimmed.startsWith("|") &&
-            i + 1 < lines.size &&
-            isTableSeparatorLine(lines[i + 1].trim())
-        ) {
-            val headers = splitTableCells(trimmed)
-            i += 2
-            val rows = mutableListOf<List<String>>()
-            while (i < lines.size && lines[i].trim().startsWith("|")) {
-                rows.add(splitTableCells(lines[i].trim()))
-                i++
+        // 4. GFM Table (with or without outer pipes, code-span-safe `|` splitting, 1+-dash separators)
+        if (i + 1 < lines.size && hasUnescapedTablePipe(trimmed)) {
+            val sepAlignments = parseTableSeparatorAlignments(lines[i + 1].trim())
+            if (sepAlignments != null) {
+                val headers = splitTableCells(trimmed)
+                if (headers.size == sepAlignments.size || trimmed.startsWith("|")) {
+                    i += 2
+                    val rows = mutableListOf<List<String>>()
+                    while (i < lines.size) {
+                        val rowTrim = lines[i].trim()
+                        if (rowTrim.isEmpty() || !hasUnescapedTablePipe(rowTrim)) break
+                        if (rowTrim.startsWith("```") || rowTrim.startsWith("~~~") || rowTrim.startsWith(">")) break
+                        rows.add(splitTableCells(rowTrim))
+                        i++
+                    }
+                    out.add(MdBlock.Table(headers = headers, rows = rows, alignments = sepAlignments))
+                    continue
+                }
             }
-            out.add(MdBlock.Table(headers = headers, rows = rows))
-            continue
         }
 
         // 5. Blockquote (> ...)
@@ -529,7 +690,7 @@ internal fun parseMarkdownBlocks(raw: String): List<MdBlock> {
                 peekTrim.startsWith(">") ||
                 matchHeading(peekTrim) != null ||
                 matchListItem(peek) != null ||
-                (peekTrim.startsWith("|") && i + 1 < lines.size && isTableSeparatorLine(lines[i + 1].trim())) ||
+                (hasUnescapedTablePipe(peekTrim) && i + 1 < lines.size && parseTableSeparatorAlignments(lines[i + 1].trim()) != null) ||
                 (peekTrim.length >= 3 && (peekTrim.all { it == '-' } || peekTrim.all { it == '*' }))
             ) {
                 break
@@ -554,18 +715,109 @@ private fun matchHeading(trimmed: String): Pair<Int, String>? {
     return null
 }
 
-private fun isTableSeparatorLine(trimmed: String): Boolean {
-    if (!trimmed.startsWith("|")) return false
-    val cells = splitTableCells(trimmed)
-    if (cells.isEmpty()) return false
-    return cells.all { cell ->
-        val c = cell.trim()
-        c.length >= 3 && c.all { it == '-' || it == ':' }
+private val HTML_BR_REGEX = Regex("<br\\s*/?>", RegexOption.IGNORE_CASE)
+
+private fun hasUnescapedTablePipe(trimmed: String): Boolean {
+    var inTicks = 0
+    var i = 0
+    while (i < trimmed.length) {
+        val ch = trimmed[i]
+        if (ch == '\\' && i + 1 < trimmed.length) {
+            i += 2
+            continue
+        }
+        if (ch == '`') {
+            var count = 0
+            while (i < trimmed.length && trimmed[i] == '`') {
+                count++
+                i++
+            }
+            if (inTicks == 0) inTicks = count
+            else if (inTicks == count) inTicks = 0
+            continue
+        }
+        if (ch == '|' && inTicks == 0) return true
+        i++
     }
+    return false
 }
 
-private fun splitTableCells(line: String): List<String> =
-    line.trim().removePrefix("|").removeSuffix("|").split('|').map { it.trim() }
+private fun parseTableSeparatorAlignments(trimmed: String): List<MdTableAlign>? {
+    if (!hasUnescapedTablePipe(trimmed)) return null
+    val cells = splitTableCells(trimmed, normalizeBr = false)
+    if (cells.isEmpty()) return null
+    val out = ArrayList<MdTableAlign>(cells.size)
+    for (rawCell in cells) {
+        val compact = rawCell.replace(" ", "").replace("\t", "")
+        if (compact.isEmpty()) return null
+        val leftColon = compact.startsWith(":")
+        val rightColon = compact.endsWith(":")
+        val core = compact.removePrefix(":").removeSuffix(":")
+        if (core.isEmpty() || !core.all { it == '-' }) return null
+        val align = when {
+            leftColon && rightColon -> MdTableAlign.CENTER
+            rightColon -> MdTableAlign.END
+            else -> MdTableAlign.START
+        }
+        out.add(align)
+    }
+    return out
+}
+
+/**
+ * Splits a GFM table row into cells without breaking on `|` inside backtick code spans (`` `a|b` ``)
+ * or escaped `\|`, and normalizes `<br>` / `<br/>` tags into real newlines.
+ */
+internal fun splitTableCells(line: String, normalizeBr: Boolean = true): List<String> {
+    var work = line.trim()
+    if (work.startsWith("|")) work = work.substring(1)
+    if (work.endsWith("|") && !work.endsWith("\\|")) {
+        work = work.substring(0, work.length - 1)
+    }
+
+    val cells = mutableListOf<String>()
+    val cur = StringBuilder()
+    var inTicks = 0
+    var i = 0
+    while (i < work.length) {
+        val ch = work[i]
+        if (ch == '\\' && i + 1 < work.length && inTicks == 0 && work[i + 1] == '|') {
+            cur.append('|')
+            i += 2
+            continue
+        }
+        if (ch == '`') {
+            var count = 0
+            while (i < work.length && work[i] == '`') {
+                cur.append('`')
+                count++
+                i++
+            }
+            if (inTicks == 0) inTicks = count
+            else if (inTicks == count) inTicks = 0
+            continue
+        }
+        if (ch == '|' && inTicks == 0) {
+            cells.add(cleanTableCell(cur.toString(), normalizeBr))
+            cur.setLength(0)
+            i++
+            continue
+        }
+        cur.append(ch)
+        i++
+    }
+    cells.add(cleanTableCell(cur.toString(), normalizeBr))
+    return cells
+}
+
+private fun cleanTableCell(raw: String, normalizeBr: Boolean): String {
+    val trimmed = raw.trim()
+    return if (normalizeBr && trimmed.contains("<br", ignoreCase = true)) {
+        trimmed.replace(HTML_BR_REGEX, "\n")
+    } else {
+        trimmed
+    }
+}
 
 private fun matchListItem(line: String): MdListItem? {
     var spaces = 0

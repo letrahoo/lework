@@ -6,10 +6,13 @@ import dev.lework.protocol.ToolStatus
 import dev.lework.store.ChatTimelineItem
 import dev.lework.ui.CondensedStep
 import dev.lework.ui.Everforest
+import dev.lework.ui.MdBlock
+import dev.lework.ui.MdTableAlign
 import dev.lework.ui.condenseTraceSteps
 import dev.lework.ui.highlightEverforestCode
 import dev.lework.ui.parseCliTool
 import dev.lework.ui.parseEverforestInline
+import dev.lework.ui.parseMarkdownBlocks
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -165,5 +168,33 @@ class ThemeAndTraceTest {
         assertTrue(detail.contains("-const port = 8080"))
         assertTrue(detail.contains("+const port = 64450"))
         assertTrue(detail.contains(" start(port)"))
+    }
+
+    @Test
+    fun `T7_4 parses GFM tables with pipes inside code spans, escaped pipes, short separators, and br tags`() {
+        val md = """
+            | # | 命令示例 | 耗时 |
+            | - | :---: | --: |
+            | 1 | `hub tokens [list | revoke]` | 12ms |
+            | 2 | 支持 a \| b 转义<br/>支持多行 | 4ms |
+
+            阶段 | 状态
+            -- | --
+            M1 | 已完成
+        """.trimIndent()
+
+        val blocks = parseMarkdownBlocks(md)
+        assertEquals(2, blocks.size)
+
+        val t1 = blocks[0] as MdBlock.Table
+        assertEquals(listOf("#", "命令示例", "耗时"), t1.headers)
+        assertEquals(listOf(MdTableAlign.START, MdTableAlign.CENTER, MdTableAlign.END), t1.alignments)
+        assertEquals(2, t1.rows.size)
+        assertEquals("`hub tokens [list | revoke]`", t1.rows[0][1])
+        assertEquals("支持 a | b 转义\n支持多行", t1.rows[1][1])
+
+        val t2 = blocks[1] as MdBlock.Table
+        assertEquals(listOf("阶段", "状态"), t2.headers)
+        assertEquals(listOf("M1", "已完成"), t2.rows[0])
     }
 }
