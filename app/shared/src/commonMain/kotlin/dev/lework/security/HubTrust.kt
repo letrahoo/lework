@@ -101,7 +101,7 @@ fun normalizeHubBaseUrl(raw: String): String {
         t.startsWith("http://") -> "https://" + t.removePrefix("http://")
         t.startsWith("wss://") -> "https://" + t.removePrefix("wss://").substringBefore('/')
         t.startsWith("ws://") -> "https://" + t.removePrefix("ws://").substringBefore('/')
-        else -> "https://$t"
+        else -> if (t.substringBefore('/').contains(':')) "https://$t" else "https://$t:64450"
     }
 }
 

@@ -201,7 +201,7 @@ internal fun AuthEntryView(
                         OutlinedTextField(
                             value = manualHost,
                             onValueChange = { manualHost = it },
-                            label = { Text("主机或中继地址 (如 http://192.168.1.10:64450)", fontSize = 11.5.sp) },
+                            label = { Text("主机或中继地址 (如 https://192.168.1.10:64450)", fontSize = 11.5.sp) },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )

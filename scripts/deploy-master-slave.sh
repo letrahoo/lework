@@ -87,6 +87,7 @@ Description=Lework Stateless Relay (0.0.0.0:64450 -> 127.0.0.1:16450)
 After=network.target
 
 [Service]
+Environment="PATH=%h/.local/bin:%h/.local/share/fnm/aliases/default/bin:/usr/local/bin:/usr/bin:/bin"
 ExecStart=/usr/bin/env node %h/.lework/tcp-relay.mjs
 Restart=always
 RestartSec=2

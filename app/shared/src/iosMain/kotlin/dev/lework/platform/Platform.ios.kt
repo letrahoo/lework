@@ -359,6 +359,10 @@ actual fun candidateHubHttpUrls(): List<String> {
     out.addAll(IosBonjourScanner.urls.value)
     loadLastGoodHubUrl()?.let { out.add(it) }
     out.addAll(loadSavedRelayUrls())
+    (NSBundle.mainBundle.objectForInfoDictionaryKey("LeworkBootstrapRelay") as? String)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() && !it.startsWith("$(") }
+        ?.let { out.add(dev.lework.security.normalizeHubBaseUrl(it)) }
     out.add("https://127.0.0.1:64450")
     return out.distinct()
 }

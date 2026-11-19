@@ -215,6 +215,10 @@ class ConsoleStore(
         } else {
             normalizeHubBaseUrl(trimmedHost)
         }
+        if (baseUrl.isNotBlank() && !baseUrl.contains("127.0.0.1")) {
+            saveLastGoodHubUrl(baseUrl)
+            saveRelayUrls((listOf(baseUrl) + loadSavedRelayUrls()).distinct().take(8))
+        }
         val token = rawToken.trim()
         if (token.isNotEmpty()) {
             saveAuthSession(token, "Owner")
@@ -228,6 +232,9 @@ class ConsoleStore(
                 }
                 return
             }
+        } else if (baseUrl.isNotBlank()) {
+            val wsUrl = hubWsUrlOf(baseUrl)
+            _state.update { it.copy(discoveredBaseUrl = baseUrl, discoveredWsUrl = wsUrl) }
         }
         bootstrapOrConnect()
     }

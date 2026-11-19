@@ -74,6 +74,18 @@ if [[ "$MODE" == "--install" ]]; then
     exit 1
   fi
 
+  BOOTSTRAP_RELAY="${LEWORK_BOOTSTRAP_RELAY:-}"
+  if [[ -z "$BOOTSTRAP_RELAY" && -f "$HOME/.lework/config.json" ]]; then
+    BOOTSTRAP_RELAY="$(node -e '
+      try {
+        const fs = require("node:fs");
+        const cfg = JSON.parse(fs.readFileSync(process.env.HOME + "/.lework/config.json", "utf8"));
+        const raw = Array.isArray(cfg.relayUrls) && cfg.relayUrls[0] ? String(cfg.relayUrls[0]).trim() : "";
+        process.stdout.write(raw.replace(/^https?:\/\//i, "").replace(/\/+$/, ""));
+      } catch {}
+    ')"
+  fi
+
   echo "==> Building & signing Lework for physical iPhone ($DEVICE_ID, Team $TEAM_ID, $BUNDLE_ID)..."
   xcodebuild \
     -project "$IOS_DIR/iosApp.xcodeproj" \
@@ -85,6 +97,7 @@ if [[ "$MODE" == "--install" ]]; then
     -allowProvisioningUpdates \
     DEVELOPMENT_TEAM="$TEAM_ID" \
     PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+    LEWORK_BOOTSTRAP_RELAY="$BOOTSTRAP_RELAY" \
     build
 
   APP_BUNDLE="$DERIVED_DATA/Build/Products/Debug-iphoneos/iosApp.app"
