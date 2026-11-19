@@ -43,7 +43,7 @@ interface WatchedHostSession {
   lastLiveStatus?: string
   lastQueuedKey: string
   lastTerminalPollAt: number
-  terminalPolling: boolean
+  terminalPolling: Promise<void> | null
   activePermRequestId: string | null
   activePermEvent: Extract<AgentEvent, { type: 'permission.requested' }> | null
   watcher: fs.FSWatcher | null
@@ -411,6 +411,9 @@ export class HostTaskInspector {
     if (!entry) {
       throw new Error(`Host session "${sessionId}" not found`)
     }
+    if (entry.meta.engineId === 'claude') {
+      this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
+    }
     const claudeRt = entry.meta.engineId === 'claude' ? this.claudeRuntimeMap.get(entry.nativeId) : undefined
     const sent = await this.terminalBridge.sendPermissionKeystroke(
       {
@@ -447,7 +450,15 @@ export class HostTaskInspector {
     ])
     entry.meta = { ...entry.meta, state: 'running', liveStatusText: undefined }
     this.liveCallbacks?.onSessionUpdated(entry.meta)
-    setTimeout(() => this.pollWatchedSession(sessionId), 400)
+    setTimeout(() => {
+      this.pollWatchedSession(sessionId)
+      void this.pollTerminalForWatched(sessionId, true)
+    }, 320)
+  }
+
+  async syncTerminalNow(sessionId: string): Promise<void> {
+    if (!this.watched.has(sessionId)) return
+    await this.pollTerminalForWatched(sessionId, false)
   }
 
   retainWatch(sessionId: string): void {
@@ -476,7 +487,7 @@ export class HostTaskInspector {
       lastLiveStatus: snap.session.liveStatusText,
       lastQueuedKey: (snap.session.queuedPrompts ?? []).join('\u0000'),
       lastTerminalPollAt: 0,
-      terminalPolling: false,
+      terminalPolling: null,
       activePermRequestId: null,
       activePermEvent: null,
       watcher: null,
@@ -595,11 +606,14 @@ export class HostTaskInspector {
   private async pollTerminalForWatched(sessionId: string, forcePush: boolean): Promise<void> {
     const w = this.watched.get(sessionId)
     const entry = this.hostIndex.get(sessionId)
-    if (!w || !entry || w.terminalPolling) return
-    w.terminalPolling = true
+    if (!w || !entry) return
+    if (w.terminalPolling) {
+      await w.terminalPolling
+      return
+    }
     w.lastTerminalPollAt = Date.now()
 
-    try {
+    const task = (async () => {
       const engineId = entry.meta.engineId
       if (engineId !== 'claude' && engineId !== 'agy') {
         return
@@ -652,11 +666,10 @@ export class HostTaskInspector {
         if (inspected?.targetReachable) {
           perm = {
             requestId: `tty_perm_fallback_${entry.nativeId.slice(0, 10)}`,
-            title: 'Agent 请求执行确认',
+            title: 'Agent 请求执行确认\n终端提示内容较长，若点击未能自动确认请切回电脑终端查看详情。',
             options: [
               { id: 'tty_key:1', name: '1. 允许执行', kind: 'allow_once' },
-              { id: 'tty_key:2', name: '2. 始终允许', kind: 'allow_always' },
-              { id: 'tty_key:3', name: '3. 拒绝', kind: 'reject_once' },
+              { id: 'tty_key:2', name: '2. 拒绝', kind: 'reject_once' },
             ],
           }
         } else {
@@ -679,6 +692,7 @@ export class HostTaskInspector {
           liveStatusText: '等待执行审批…',
         }
         if (w.activePermRequestId !== perm.requestId || forcePush) {
+          const prevPermId = w.activePermRequestId
           w.activePermRequestId = perm.requestId
           const permEv: Extract<AgentEvent, { type: 'permission.requested' }> = {
             seq: Math.max(0, entry.meta.lastSeq),
@@ -690,7 +704,20 @@ export class HostTaskInspector {
             options: perm.options,
           }
           w.activePermEvent = permEv
-          this.liveCallbacks?.onEvents([permEv])
+          const outEvents: AgentEvent[] = []
+          if (prevPermId && prevPermId !== perm.requestId) {
+            outEvents.push({
+              seq: Math.max(0, entry.meta.lastSeq),
+              sessionId,
+              ts: Date.now(),
+              type: 'permission.resolved',
+              requestId: prevPermId,
+              optionId: null,
+              outcome: 'cancelled',
+            })
+          }
+          outEvents.push(permEv)
+          this.liveCallbacks?.onEvents(outEvents)
         }
         if (w.lastState !== 'waiting_permission' || w.lastLiveStatus !== entry.meta.liveStatusText || forcePush) {
           w.lastState = 'waiting_permission'
@@ -746,8 +773,15 @@ export class HostTaskInspector {
         }
         this.liveCallbacks?.onSessionUpdated(entry.meta)
       }
+    })()
+
+    w.terminalPolling = task
+    try {
+      await task
     } finally {
-      w.terminalPolling = false
+      if (w.terminalPolling === task) {
+        w.terminalPolling = null
+      }
     }
   }
 }

@@ -91,7 +91,32 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
       { id: 'tty_key:3', name: '3. Deny', kind: 'reject_once' },
     ])
 
-    // 5. Normal Markdown numbered list in assistant answer MUST NOT false-trigger!
+    // 5. Subagent parallel queue badge (`1 of 1` -> `1 of 3`) keeps stable `requestId` so tapping never races
+    const queue1 = [
+      '────────────────────────────────────────────────────────────────────────────────',
+      ' Bash command                                                             1 of 1',
+      ' Run shell command',
+      ' │ python3 check_pods.py',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No',
+    ]
+    const queue3 = [
+      '────────────────────────────────────────────────────────────────────────────────',
+      ' Bash command                                                             1 of 3',
+      ' Run shell command',
+      ' │ python3 check_pods.py',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No',
+    ]
+    const pq1 = parseTerminalPermissionPrompt('sess-q', queue1)
+    const pq3 = parseTerminalPermissionPrompt('sess-q', queue3)
+    expect(pq1?.requestId).toBeDefined()
+    expect(pq1?.requestId).toBe(pq3?.requestId)
+    expect(pq3?.title).toContain('Bash command · 1 of 3 · Run shell command')
+
+    // 6. Normal Markdown numbered list in assistant answer MUST NOT false-trigger!
     const normalProseScreen = [
       '接下来可以直接这样试：',
       '  1. 验证跨窗口监控：在其中一个 Claude 里发个小任务',

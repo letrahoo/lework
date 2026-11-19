@@ -142,6 +142,8 @@ data class ConsoleUiState(
     val openedDiffContent: String? = null,
     val openedDiffTruncated: Boolean = false,
     val checkpointNotice: String? = null,
+    val submittingApprovalRequestId: String? = null,
+    val approvalErrorText: String? = null,
 ) {
     val activeSession: SessionMeta?
         get() = sessions.firstOrNull { it.id == activeSessionId }
@@ -209,11 +211,16 @@ data class ConsoleUiState(
 
 fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTranscript {
     if (event is AgentEvent.PermissionRequested) {
-        val perms = if (current.pendingPermissions.none { it.requestId == event.requestId }) {
-            current.pendingPermissions + event
+        // A live terminal pane can only display one active `tty_perm_*` prompt at a time: replace any
+        // older `tty_perm_*` entry in-place so `.firstOrNull` / `.lastOrNull` never holds a stale hash!
+        val filtered = if (event.requestId.startsWith("tty_perm_")) {
+            current.pendingPermissions.filterNot {
+                it.requestId == event.requestId || it.requestId.startsWith("tty_perm_")
+            }
         } else {
-            current.pendingPermissions
+            current.pendingPermissions.filterNot { it.requestId == event.requestId }
         }
+        val perms = filtered + event
         val nextSeq = if (event.requestId.startsWith("tty_perm_")) {
             current.lastSeq
         } else {

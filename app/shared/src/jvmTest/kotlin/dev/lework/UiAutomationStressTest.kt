@@ -253,6 +253,35 @@ class UiAutomationStressTest {
 
             assertEquals(50, transport.respondedApprovals.size)
             assertTrue(transport.respondedApprovals.all { it.third == "tty_key:1" })
+
+            // Verify superseded `tty_perm_*` replacement: if `tty_perm_stale_1_of_1` is followed by
+            // `tty_perm_fresh_1_of_3` without an intervening PermissionResolved, clicking `1. Yes`
+            // MUST submit `tty_perm_fresh_1_of_3` (never get stuck on the stale first requestId!)
+            transport.emitEvent(
+                AgentEvent.PermissionRequested(
+                    seq = 51,
+                    sessionId = sid,
+                    ts = 4_001L,
+                    requestId = "tty_perm_stale_1_of_1",
+                    title = "Bash command · 1 of 1\necho old",
+                    options = listOf(PermissionOption("tty_key:1", "1. Yes", PermissionOptionKind.ALLOW_ONCE)),
+                ),
+            )
+            transport.emitEvent(
+                AgentEvent.PermissionRequested(
+                    seq = 51,
+                    sessionId = sid,
+                    ts = 4_002L,
+                    requestId = "tty_perm_fresh_1_of_3",
+                    title = "Bash command · 1 of 3\necho latest",
+                    options = listOf(PermissionOption("tty_key:1", "1. Yes", PermissionOptionKind.ALLOW_ONCE)),
+                ),
+            )
+            waitForIdle()
+            onNodeWithText("1. Yes").performClick()
+            waitForIdle()
+            assertEquals("tty_perm_fresh_1_of_3", transport.respondedApprovals.last().second)
+            onNodeWithTag("inline_approval_banner").assertDoesNotExist()
         }
 
     @Test

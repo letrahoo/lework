@@ -561,7 +561,7 @@ export const Methods = {
     result: z.object({ ok: z.literal(true) }),
   },
   'approval.respond': {
-    params: z.object({ sessionId: z.string(), requestId: z.string(), optionId: z.string().nullable() }),
+    params: z.object({ sessionId: z.string(), requestId: z.string(), optionId: z.string().nullish() }),
     result: z.object({ ok: z.literal(true) }),
   },
   'checkpoint.list': {

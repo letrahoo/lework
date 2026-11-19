@@ -504,7 +504,10 @@ private fun MessageTimelineRow(item: ChatTimelineItem) {
 @Composable
 internal fun InlineApprovalBanner(
     permission: AgentEvent.PermissionRequested,
-    onDecision: (String?) -> Unit,
+    isSubmitting: Boolean = false,
+    errorText: String? = null,
+    onRefresh: (() -> Unit)? = null,
+    onDecision: (requestId: String, optionId: String?, sessionId: String) -> Unit,
 ) {
     val nonBlankLines = remember(permission.title) {
         permission.title.lines().map { it.trim() }.filter { it.isNotEmpty() }
@@ -529,19 +532,35 @@ internal fun InlineApprovalBanner(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Shield,
-                    contentDescription = null,
-                    tint = Everforest.BoldGold,
-                    modifier = Modifier.size(18.dp),
-                )
+                if (isSubmitting) {
+                    CircularProgressIndicator(
+                        color = Everforest.BoldGold,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(16.dp),
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.Shield,
+                        contentDescription = null,
+                        tint = Everforest.BoldGold,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
                 Text(
-                    text = headerTitle,
+                    text = if (isSubmitting) "正在向主机终端发送确认…" else headerTitle,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Everforest.BoldGold,
                     modifier = Modifier.weight(1f),
                 )
+                if (onRefresh != null && permission.options.isEmpty()) {
+                    TextButton(
+                        onClick = onRefresh,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Text("同步选项", fontSize = 11.5.sp, color = Everforest.Green)
+                    }
+                }
             }
             if (!cmdPreview.isNullOrBlank()) {
                 if (permission.options.isEmpty()) {
@@ -572,6 +591,14 @@ internal fun InlineApprovalBanner(
                     }
                 }
             }
+            if (!errorText.isNullOrBlank()) {
+                Text(
+                    text = errorText,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = Everforest.Red,
+                )
+            }
             if (permission.options.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -585,7 +612,8 @@ internal fun InlineApprovalBanner(
                             opt.kind == PermissionOptionKind.REJECT_ALWAYS
                         if (isReject) {
                             OutlinedButton(
-                                onClick = { onDecision(opt.id) },
+                                enabled = !isSubmitting,
+                                onClick = { onDecision(permission.requestId, opt.id, permission.sessionId) },
                                 border = BorderStroke(1.dp, Everforest.Red.copy(alpha = 0.6f)),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Everforest.Red),
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
@@ -594,7 +622,8 @@ internal fun InlineApprovalBanner(
                             }
                         } else {
                             Button(
-                                onClick = { onDecision(opt.id) },
+                                enabled = !isSubmitting,
+                                onClick = { onDecision(permission.requestId, opt.id, permission.sessionId) },
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = Everforest.Green,
                                     contentColor = Everforest.BgDim,
@@ -607,7 +636,8 @@ internal fun InlineApprovalBanner(
                     }
                     if (permission.requestId.startsWith("tty_perm_")) {
                         TextButton(
-                            onClick = { onDecision(null) },
+                            enabled = !isSubmitting,
+                            onClick = { onDecision(permission.requestId, null, permission.sessionId) },
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                         ) {
                             Text("取消 (Esc)", fontSize = 11.5.sp, color = Everforest.CommentGrey)

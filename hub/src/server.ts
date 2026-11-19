@@ -679,14 +679,17 @@ export class HubServer {
       }
       case 'stream.subscribe': {
         const p = params as { sessionId: string; afterSeq: number; beforeSeq?: number; limit?: number }
-        const snap = this.sessionManager.subscribeSnapshot(p.sessionId, p.afterSeq, {
-          beforeSeq: p.beforeSeq,
-          limit: p.limit,
-        })
         if (!conn.subscribedSessions.has(p.sessionId)) {
           conn.subscribedSessions.add(p.sessionId)
           this.sessionManager.retainHostWatch(p.sessionId)
         }
+        if (p.beforeSeq === undefined) {
+          await this.sessionManager.syncHostTerminalNow(p.sessionId)
+        }
+        const snap = this.sessionManager.subscribeSnapshot(p.sessionId, p.afterSeq, {
+          beforeSeq: p.beforeSeq,
+          limit: p.limit,
+        })
         return snap
       }
       case 'stream.unsubscribe': {
@@ -697,9 +700,20 @@ export class HubServer {
         return { ok: true as const }
       }
       case 'approval.respond': {
-        const p = params as { sessionId: string; requestId: string; optionId: string | null }
-        await this.sessionManager.respondPermission(p.sessionId, p.requestId, p.optionId)
-        return { ok: true as const }
+        const p = params as { sessionId: string; requestId: string; optionId?: string | null }
+        const normalizedOptionId = p.optionId ?? null
+        try {
+          await this.sessionManager.respondPermission(p.sessionId, p.requestId, normalizedOptionId)
+          console.log(
+            `[lework-approval] OK session=${p.sessionId} requestId=${p.requestId} option=${normalizedOptionId ?? 'cancel'}`,
+          )
+          return { ok: true as const }
+        } catch (err) {
+          console.warn(
+            `[lework-approval] FAIL session=${p.sessionId} requestId=${p.requestId} option=${normalizedOptionId ?? 'cancel'}: ${err instanceof Error ? err.message : String(err)}`,
+          )
+          throw err
+        }
       }
       case 'checkpoint.list': {
         const p = params as { sessionId: string }

@@ -4204,8 +4204,7 @@
           },
           "required": [
             "sessionId",
-            "requestId",
-            "optionId"
+            "requestId"
           ],
           "additionalProperties": false
         },

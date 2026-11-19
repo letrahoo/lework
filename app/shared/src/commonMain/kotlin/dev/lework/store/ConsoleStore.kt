@@ -702,6 +702,8 @@ class ConsoleStore(
                 openedDiffContent = null,
                 openedDiffTitle = null,
                 checkpointNotice = null,
+                submittingApprovalRequestId = null,
+                approvalErrorText = null,
                 selectedEngineId = targetEngineId,
                 selectedModelId = resolvedModel,
                 selectedEffort = resolvedEffort,
@@ -827,6 +829,13 @@ class ConsoleStore(
 
     fun respondApproval(requestId: String, optionId: String?, sessionId: String? = null) {
         val targetSessionId = sessionId ?: _state.value.activeSessionId ?: return
+        if (_state.value.submittingApprovalRequestId == requestId) return
+        _state.update {
+            it.copy(
+                submittingApprovalRequestId = requestId,
+                approvalErrorText = null,
+            )
+        }
         scope.launch {
             try {
                 rpc.respondApproval(
@@ -835,14 +844,43 @@ class ConsoleStore(
                     optionId = optionId,
                 )
                 _state.update { s ->
-                    val prev = s.transcripts[targetSessionId] ?: return@update s
-                    val updated = prev.copy(
-                        pendingPermissions = prev.pendingPermissions.filterNot { it.requestId == requestId },
+                    val prev = s.transcripts[targetSessionId]
+                    val updatedTranscripts = if (prev != null) {
+                        val updated = prev.copy(
+                            pendingPermissions = prev.pendingPermissions.filterNot {
+                                it.requestId == requestId ||
+                                    (requestId.startsWith("tty_perm_") && it.requestId.startsWith("tty_perm_"))
+                            },
+                        )
+                        s.transcripts + (targetSessionId to updated)
+                    } else {
+                        s.transcripts
+                    }
+                    // Optimistically clear WAITING_PERMISSION on the session until the next Hub update arrives
+                    val updatedSessions = s.sessions.map { meta ->
+                        if (meta.id == targetSessionId && meta.state == SessionState.WAITING_PERMISSION) {
+                            meta.copy(state = SessionState.RUNNING, liveStatusText = "已提交审批，继续执行中…")
+                        } else {
+                            meta
+                        }
+                    }
+                    s.copy(
+                        submittingApprovalRequestId = null,
+                        approvalErrorText = null,
+                        sessions = updatedSessions,
+                        transcripts = updatedTranscripts,
                     )
-                    s.copy(transcripts = s.transcripts + (targetSessionId to updated))
                 }
             } catch (t: Throwable) {
-                _state.update { it.copy(connectionError = t.message) }
+                val msg = t.message?.takeIf { it.isNotBlank() } ?: "审批提交未成功，正在同步最新终端状态…"
+                _state.update {
+                    it.copy(
+                        submittingApprovalRequestId = null,
+                        approvalErrorText = msg,
+                    )
+                }
+                // Immediately re-sync terminal & session events so stale/changed prompts update automatically
+                runCatching { subscribeAndCatchUp(targetSessionId) }
             }
         }
     }
@@ -920,15 +958,31 @@ class ConsoleStore(
                 val built = snap.events.fold(SessionTranscript()) { acc, ev ->
                     reduceTranscript(acc, ev)
                 }
+                val concurrentPerms = s.transcripts[sessionId]?.pendingPermissions.orEmpty()
+                val mergedPerms = if (built.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }) {
+                    built.pendingPermissions
+                } else if (snap.session.state == SessionState.WAITING_PERMISSION) {
+                    (built.pendingPermissions + concurrentPerms).distinctBy { it.requestId }
+                } else {
+                    built.pendingPermissions
+                }
                 built.copy(
                     earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
                     hasMoreBefore = snap.hasMoreBefore == true,
                     loadingOlder = false,
+                    pendingPermissions = mergedPerms,
                 )
             } else {
                 var cur = s.transcripts[sessionId] ?: SessionTranscript()
                 for (ev in snap.events) {
                     cur = reduceTranscript(cur, ev)
+                }
+                if (snap.session.state != SessionState.WAITING_PERMISSION &&
+                    snap.events.none { it is AgentEvent.PermissionRequested }
+                ) {
+                    cur = cur.copy(
+                        pendingPermissions = cur.pendingPermissions.filterNot { it.requestId.startsWith("tty_perm_") },
+                    )
                 }
                 cur
             }
@@ -951,7 +1005,15 @@ class ConsoleStore(
             if (event.sessionId != s.activeSessionId) return@update s
             val prev = s.transcripts[event.sessionId] ?: SessionTranscript()
             val next = reduceTranscript(prev, event)
-            s.copy(transcripts = s.transcripts + (event.sessionId to next))
+            val clearErr = if (event is AgentEvent.PermissionRequested || event is AgentEvent.PermissionResolved) {
+                null
+            } else {
+                s.approvalErrorText
+            }
+            s.copy(
+                approvalErrorText = clearErr,
+                transcripts = s.transcripts + (event.sessionId to next),
+            )
         }
         if (event is AgentEvent.Usage || event is AgentEvent.TurnDone) {
             refreshActiveSessionUsage(event.sessionId)

@@ -424,6 +424,12 @@ export class SessionManager {
     }
   }
 
+  async syncHostTerminalNow(sessionId: string): Promise<void> {
+    if (sessionId.startsWith('host:') && !this.sessions.has(sessionId)) {
+      await this.hostInspector.syncTerminalNow(sessionId)
+    }
+  }
+
   releaseHostWatch(sessionId: string): void {
     if (sessionId.startsWith('host:')) {
       this.hostInspector.releaseWatch(sessionId)

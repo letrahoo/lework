@@ -208,14 +208,14 @@ fun ConsoleApp(
 
                         val activeSessForPerm = state.activeSession?.takeIf { it.id == state.activeSessionId }
                         val pendingPerm = state.activeTranscript.pendingPermissions
-                            .firstOrNull { it.sessionId == state.activeSessionId }
+                            .lastOrNull { it.sessionId == state.activeSessionId }
                             ?: if (activeSessForPerm?.state == SessionState.WAITING_PERMISSION) {
                                 AgentEvent.PermissionRequested(
                                     seq = state.activeTranscript.lastSeq,
                                     sessionId = activeSessForPerm.id,
                                     ts = 0L,
                                     requestId = "fallback_waiting_${activeSessForPerm.id}",
-                                    title = "Agent 正在等待确认\n正在同步终端选项，若未显示操作按钮请回电脑对应窗口确认。",
+                                    title = "Agent 正在等待确认\n正在同步终端选项，若未显示操作按钮请点击右侧刷新或回电脑窗口确认。",
                                     options = emptyList(),
                                 )
                             } else {
@@ -224,8 +224,13 @@ fun ConsoleApp(
                         if (pendingPerm != null) {
                             InlineApprovalBanner(
                                 permission = pendingPerm,
-                                onDecision = { optId ->
-                                    store.respondApproval(pendingPerm.requestId, optId, pendingPerm.sessionId)
+                                isSubmitting = state.submittingApprovalRequestId == pendingPerm.requestId,
+                                errorText = state.approvalErrorText,
+                                onRefresh = {
+                                    pendingPerm.sessionId.takeIf { it.isNotBlank() }?.let { store.selectSession(it) }
+                                },
+                                onDecision = { reqId, optId, sessId ->
+                                    store.respondApproval(reqId, optId, sessId)
                                 },
                             )
                         }

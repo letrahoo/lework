@@ -51,7 +51,7 @@ export interface TerminalBridgeOptions {
 
 type TerminalTarget =
   | { kind: 'iterm2'; id: string; tty: string }
-  | { kind: 'tmux'; id: string; tty: string; socketPath?: string }
+  | { kind: 'tmux'; id: string; tty: string; socketPath?: string; inCopyMode?: boolean }
 
 interface CachedTopology {
   fetchedAt: number
@@ -186,7 +186,7 @@ export class TerminalBridge {
       return { targetReachable: false, hostAppHint }
     }
 
-    const lines = await this.readScreenTail(target, 32)
+    const lines = await this.readScreenTail(target, 45)
     if (!lines || lines.length === 0) {
       return { targetReachable: false }
     }
@@ -218,15 +218,15 @@ export class TerminalBridge {
     if (!target) return false
 
     // SECURITY: never type arbitrary text into a live terminal. Re-read the screen right before
-    // sending and require that the prompt currently displayed is exactly the one the phone approved
+    // sending and require that the prompt currently displayed is the one the phone approved
     // (same `tty_perm_` hash), and that the chosen key is one of that prompt's numbered options.
-    const screen = await this.readScreenTail(target, 32)
+    const screen = await this.readScreenTail(target, 45)
     const livePrompt = screen ? parseTerminalPermissionPrompt(params.nativeId, screen) : undefined
     if (!livePrompt) {
-      throw new TerminalApprovalError('电脑终端上的这条审批已经结束或不在当前屏幕，请刷新后重试')
+      throw new TerminalApprovalError('电脑终端上的这条审批已经结束或不在当前屏幕，已同步最新状态')
     }
     if (livePrompt.requestId !== expectedRequestId) {
-      throw new TerminalApprovalError('电脑终端上的审批内容已变化，为避免误批，请刷新后重新确认')
+      throw new TerminalApprovalError('电脑终端上的审批内容已变化，已为你同步最新选项，请再点一次确认')
     }
     const key = resolveApprovalKey(livePrompt, optionId)
     if (key === null) {
@@ -235,11 +235,17 @@ export class TerminalBridge {
 
     await this.sendRawText(target, key)
 
-    // Verify if the TUI prompt dismissed immediately on digit keystroke; if still visible, confirm with Enter
+    // Verify if the TUI prompt dismissed immediately on digit keystroke; if the exact same prompt
+    // (including any `1 of N` queue counter) is still visible, confirm selection with Enter.
     if (key !== '\u001b') {
       await new Promise(r => setTimeout(r, 280))
-      const afterLines = await this.readScreenTail(target, 14)
-      if (afterLines && parseTerminalPermissionPrompt(params.nativeId, afterLines) !== undefined) {
+      const afterLines = await this.readScreenTail(target, 25)
+      const afterPrompt = afterLines ? parseTerminalPermissionPrompt(params.nativeId, afterLines) : undefined
+      if (
+        afterPrompt &&
+        afterPrompt.requestId === livePrompt.requestId &&
+        afterPrompt.title === livePrompt.title
+      ) {
         await this.sendRawText(target, '\r')
       }
     }
@@ -490,18 +496,18 @@ export class TerminalBridge {
           try {
             // `-u` forces UTF-8 mode and `|` avoids C-locale control-char sanitization (`\t` -> `_`) under launchd!
             const args = sock
-              ? ['-u', '-S', sock, 'list-panes', '-a', '-F', '#{pane_id}|#{pane_tty}']
-              : ['-u', 'list-panes', '-a', '-F', '#{pane_id}|#{pane_tty}']
+              ? ['-u', '-S', sock, 'list-panes', '-a', '-F', '#{pane_id}|#{pane_tty}|#{pane_in_mode}']
+              : ['-u', 'list-panes', '-a', '-F', '#{pane_id}|#{pane_tty}|#{pane_in_mode}']
             const stdout = await this.runCmd(tmuxBin, args, 2_000, env)
             for (const line of stdout.split('\n')) {
               const trimmed = line.trim()
               if (!trimmed) continue
-              const sepIdx = trimmed.includes('|') ? trimmed.indexOf('|') : trimmed.indexOf('\t')
-              if (sepIdx <= 0) continue
-              const paneId = trimmed.slice(0, sepIdx).trim()
-              const paneTty = trimmed.slice(sepIdx + 1).trim()
+              const parts = trimmed.includes('|') ? trimmed.split('|') : trimmed.split('\t')
+              const paneId = parts[0]?.trim()
+              const paneTty = parts[1]?.trim()
+              const inCopyMode = parts[2]?.trim() === '1'
               if (paneId && paneTty) {
-                byTty.set(paneTty, { kind: 'tmux', id: paneId, tty: paneTty, socketPath: sock })
+                byTty.set(paneTty, { kind: 'tmux', id: paneId, tty: paneTty, socketPath: sock, inCopyMode })
               }
             }
           } catch {
@@ -590,6 +596,11 @@ export class TerminalBridge {
       const tmuxBin = this.resolveTmuxBin()
       if (!tmuxBin) throw new Error('tmux not available')
       const prefix = target.socketPath ? ['-u', '-S', target.socketPath] : ['-u']
+      if (target.inCopyMode) {
+        await this.runCmd(tmuxBin, [...prefix, 'send-keys', '-t', target.id, '-X', 'cancel'], 1_200, env).catch(
+          () => undefined,
+        )
+      }
       const keyArgs = text === '\r' ? ['Enter'] : text === '\u001b' ? ['Escape'] : ['-l', text]
       await this.runCmd(tmuxBin, [...prefix, 'send-keys', '-t', target.id, ...keyArgs], 2_500, env)
     }
@@ -680,8 +691,14 @@ export function parseTerminalPermissionPrompt(
 ): DetectedTerminalPermission | undefined {
   let questionIdx = -1
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (APPROVAL_QUESTION_RE.test(lines[i] ?? '')) {
+    const cur = (lines[i] ?? '').trim()
+    const twoLine = i + 1 < lines.length ? `${cur} ${(lines[i + 1] ?? '').trim()}` : cur
+    if (APPROVAL_QUESTION_RE.test(cur)) {
       questionIdx = i
+      break
+    }
+    if (cur && APPROVAL_QUESTION_RE.test(twoLine) && !/^\s*[❯>•*]?\s*[1-9][.)]\s+/.test(lines[i + 1] ?? '')) {
+      questionIdx = i + 1
       break
     }
   }
@@ -735,6 +752,10 @@ export function parseTerminalPermissionPrompt(
               lower.includes('始终')
             ? 'allow_always'
             : 'allow_once'
+      // Skip free-text TUI input rows like `3. Type here to tell Claude what to do differently`
+      if (/^type\s+here\b/i.test(label.trim())) {
+        continue
+      }
       options.push({
         id: `tty_key:${digit}`,
         name: `${digit}. ${label}`,
@@ -747,7 +768,7 @@ export function parseTerminalPermissionPrompt(
   // Extract human context & command preview above `questionIdx`
   const contextHeaders: string[] = []
   const codePreviewLines: string[] = []
-  let topBoxIdx = Math.max(0, questionIdx - 12)
+  let topBoxIdx = Math.max(0, questionIdx - 18)
   for (let i = questionIdx - 1; i >= 0; i--) {
     const t = (lines[i] ?? '').trim()
     if (t.startsWith('───') || t.startsWith('╭──') || t.startsWith('┌──')) {
@@ -765,11 +786,16 @@ export function parseTerminalPermissionPrompt(
     }
     if (raw.startsWith('│') || raw.startsWith('┃')) {
       const clean = raw.replace(/^[│┃]\s?/, '').trim()
-      if (clean && !clean.startsWith('Quoted text in this command') && !clean.startsWith('(permissions.')) {
+      if (
+        clean &&
+        !clean.startsWith('Quoted text in this command') &&
+        !clean.startsWith('code on stdin cannot be checked') &&
+        !clean.startsWith('(permissions.')
+      ) {
         codePreviewLines.push(clean)
       }
     } else {
-      contextHeaders.push(raw)
+      contextHeaders.push(raw.replace(/\s{2,}/g, ' · '))
     }
   }
 
@@ -777,9 +803,18 @@ export function parseTerminalPermissionPrompt(
   const cmdPart = codePreviewLines.join(' ').slice(0, 200)
   const fullTitle = [headerPart, cmdPart].filter(Boolean).join('\n') || 'Agent 请求执行审批'
 
+  // Normalize volatile queue counters (`1 of 2` -> `1 of 3` when another subagent queues behind the
+  // current prompt) so the active prompt's requestId does not churn while the user taps Confirm.
+  const stableTitleForHash = [
+    headerPart.replace(/(?:\s*·\s*|\s+)\d+\s+of\s+\d+\b/gi, '').trim(),
+    cmdPart,
+  ]
+    .filter(Boolean)
+    .join('\n')
+
   const hash = crypto
     .createHash('sha1')
-    .update(`${nativeId}|${fullTitle}|${options.map(o => o.name).join(',')}`)
+    .update(`${nativeId}|${stableTitleForHash}|${options.map(o => o.name).join(',')}`)
     .digest('hex')
     .slice(0, 10)
 
