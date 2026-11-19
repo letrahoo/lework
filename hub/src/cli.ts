@@ -1,10 +1,14 @@
+import crypto from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import qrcode from 'qrcode-terminal'
 import { WebSocket } from 'ws'
 import type { HubRole } from '@qprc/protocol'
 import { loadOrCreateConfig } from './config.ts'
-import { generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
+import { IssuedTokenStore } from './auth/token-store.ts'
+import { defaultDataDir, generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
+import { loadOrCreateHubTls, shortFingerprint } from './security/tls.ts'
 import { HubServer } from './server.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -39,15 +43,18 @@ async function main(): Promise<void> {
   })
 
   if (sub === 'serve') {
+    process.on('unhandledRejection', err => {
+      console.error('[hubd] unhandled rejection:', err instanceof Error ? err.message : err)
+    })
     const server = new HubServer({ config: cfg })
     const { port, host } = await server.start()
     const lanIps = listLanAddresses()
-    console.log(`lework hubd (${cfg.role}) listening on ${host}:${port}`)
-    console.log(`  Hub ID : ${cfg.hubId} (${cfg.name})`)
-    console.log(`  Token  : ${cfg.token}`)
-    console.log(`  WS URL : ws://127.0.0.1:${port}/v1/ws`)
+    console.log(`Lework hubd (${cfg.role}) listening on https://${host}:${port}`)
+    console.log(`  Hub ID      : ${cfg.hubId} (${cfg.name})`)
+    console.log(`  Fingerprint : ${shortFingerprint(server.tlsFingerprint)} (sha256 ${server.tlsFingerprint})`)
+    console.log('  Token       : (hidden — run `hub pair` to display)')
     for (const ip of lanIps) {
-      console.log(`  LAN URL: ws://${ip}:${port}/v1/ws`)
+      console.log(`  LAN URL     : https://${ip}:${port}`)
     }
     const shutdown = async () => {
       console.log('\nShutting down hubd...')
@@ -69,7 +76,8 @@ async function main(): Promise<void> {
     console.log(`  Version  : ${status.hub.version}`)
     console.log(`  Listen   : ${cfg.host}:${cfg.port}`)
     console.log(`  LAN IPs  : ${lanIps.join(', ') || 'none'}`)
-    console.log(`  Token    : ${cfg.token}`)
+    console.log(`  Token    : ${cfg.token.slice(0, 4)}…  (run \`hub pair\` to display)`)
+    console.log(`  TLS FP   : ${shortFingerprint(loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` }).fingerprint)}`)
     console.log('\nProviders:')
     for (const p of status.providers) {
       console.log(`  - [${p.healthy ? 'ONLINE ' : 'OFFLINE'}] ${p.name} (${p.type})`)
@@ -108,18 +116,71 @@ async function main(): Promise<void> {
 
   if (sub === 'pair') {
     const lanIp = listLanAddresses()[0] ?? '127.0.0.1'
+    const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
     const payload = JSON.stringify({
-      v: 1,
+      v: 2,
       hubId: cfg.hubId,
       name: cfg.name,
       role: cfg.role,
-      wsUrl: `ws://${lanIp}:${cfg.port}/v1/ws`,
+      url: `https://${lanIp}:${cfg.port}`,
+      fp: tls.fingerprint,
       token: cfg.token,
     })
-    console.log('Scan or paste into the mobile app:')
-    console.log(`  URL   : ws://${lanIp}:${cfg.port}/v1/ws`)
-    console.log(`  Token : ${cfg.token}\n`)
+    console.log('Scan or paste into the mobile app (keep this secret):')
+    console.log(`  URL         : https://${lanIp}:${cfg.port}`)
+    console.log(`  Token       : ${cfg.token}`)
+    console.log(`  Fingerprint : ${shortFingerprint(tls.fingerprint)}  (App 「主机指纹」应与此一致)\n`)
     qrcode.generate(payload, { small: true })
+    return
+  }
+
+  if (sub === 'token') {
+    // hub token rotate — invalidates the static access token (all paired phones must re-pair)
+    if (args[1] !== 'rotate') {
+      console.log('Usage: hub token rotate')
+      process.exit(1)
+    }
+    const cfgPath = path.join(defaultDataDir(), 'config.json')
+    const stored = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>
+    stored.token = crypto.randomBytes(24).toString('base64url')
+    fs.writeFileSync(cfgPath, JSON.stringify(stored, null, 2) + '\n', { mode: 0o600 })
+    fs.chmodSync(cfgPath, 0o600)
+    console.log('Access token rotated. Restart hubd, then run `hub pair` to re-pair your phone.')
+    return
+  }
+
+  if (sub === 'tokens') {
+    // hub tokens [list] | revoke <kid> | revoke-all   — OAuth-issued device tokens
+    const store = new IssuedTokenStore()
+    const action = args[1] ?? 'list'
+    if (action === 'list') {
+      const rows = store.list()
+      if (rows.length === 0) console.log('No OAuth-issued tokens.')
+      for (const r of rows) {
+        console.log(
+          `  ${r.kid}  ${r.name} (${r.sub})  issued ${new Date(r.issuedAt).toISOString()}  expires ${new Date(r.expiresAt).toISOString()}`,
+        )
+      }
+      return
+    }
+    if (action === 'revoke' && args[2]) {
+      console.log(store.revoke(args[2]) ? `Revoked ${args[2]}` : `No token with kid ${args[2]}`)
+      return
+    }
+    if (action === 'revoke-all') {
+      console.log(`Revoked ${store.revokeAll()} token(s).`)
+      return
+    }
+    console.log('Usage: hub tokens [list | revoke <kid> | revoke-all]')
+    process.exit(1)
+  }
+
+  if (sub === 'slave-token') {
+    const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
+    console.log('On the slave machine run:')
+    console.log(
+      `  LEWORK_JOIN_TOKEN=${cfg.slaveJoinToken} hub join wss://<this-host>:${cfg.port}/v1/slave-ws --fingerprint ${tls.fingerprint}`,
+    )
     return
   }
 
@@ -133,17 +194,33 @@ async function main(): Promise<void> {
 
   if (sub === 'join') {
     const masterUrl = args[1]
-    if (!masterUrl) {
-      console.error('Usage: hub join <ws://master-host:64448/v1/slave-ws> [--token <master-token>]')
+    const fpIdx = args.indexOf('--fingerprint')
+    const expectedFp = fpIdx >= 0 ? (args[fpIdx + 1] ?? '').toLowerCase().replace(/[^0-9a-f]/g, '') : ''
+    const token = process.env.LEWORK_JOIN_TOKEN ?? ''
+    if (!masterUrl || !masterUrl.startsWith('wss://') || expectedFp.length !== 64 || !token) {
+      console.error(
+        'Usage: LEWORK_JOIN_TOKEN=<join-token> hub join <wss://master-host:64450/v1/slave-ws> --fingerprint <sha256>\n' +
+          '       (run `hub slave-token` on the master to get both values)',
+      )
       process.exit(1)
     }
-    const tokenIdx = args.indexOf('--token')
-    const token = tokenIdx >= 0 && args[tokenIdx + 1] ? args[tokenIdx + 1]! : cfg.token
     const server = new HubServer({ config: cfg })
     const status = await server.buildStatus()
-    const selfSlave = status.slaves[0]!
-    const ws = new WebSocket(masterUrl)
+    const s0 = status.slaves[0]!
+    const selfSlave = { id: s0.id, name: s0.name, platform: s0.platform, engines: s0.engines }
+    // Self-signed master certificate: CA validation is replaced by fingerprint pinning, and the
+    // join token is only sent after the pinned fingerprint has been verified.
+    const ws = new WebSocket(masterUrl, { rejectUnauthorized: false })
     await new Promise<void>((resolve, reject) => {
+      ws.once('upgrade', res => {
+        const sock = res.socket as import('node:tls').TLSSocket
+        const raw = sock.getPeerCertificate?.()?.raw
+        const fp = raw ? crypto.createHash('sha256').update(raw).digest('hex') : ''
+        if (fp !== expectedFp) {
+          ws.terminate()
+          reject(new Error(`Master certificate fingerprint mismatch (got ${fp || 'none'})`))
+        }
+      })
       ws.once('open', () => {
         ws.send(JSON.stringify({ token, slave: selfSlave }))
       })
@@ -157,7 +234,9 @@ async function main(): Promise<void> {
     return
   }
 
-  console.log('Usage: hub <serve|status|engines|slaves|pair|join|service-config> [--role master|slave] [--port N]')
+  console.log(
+    'Usage: hub <serve|status|engines|slaves|pair|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
+  )
 }
 
 void main()

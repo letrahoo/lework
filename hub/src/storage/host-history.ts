@@ -421,6 +421,7 @@ export class HostTaskInspector {
         claudeRuntime: claudeRt,
       },
       optionId,
+      requestId,
     )
     if (!sent) {
       throw new Error('未找到对应的本机 iTerm2 或 tmux 终端窗口，请在电脑终端确认')

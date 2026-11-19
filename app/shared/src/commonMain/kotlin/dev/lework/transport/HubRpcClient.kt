@@ -1,9 +1,15 @@
 package dev.lework.transport
 
 import dev.lework.protocol.*
+import dev.lework.security.HubAttestation
+import dev.lework.security.HubTrust
+import dev.lework.security.constantTimeEquals
+import dev.lework.security.hubWsUrlOf
+import dev.lework.security.normalizeHubBaseUrl
+import dev.lework.security.sha256
+import dev.lework.security.toHex
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
-import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -34,6 +40,21 @@ class RpcCallException(
     override val message: String,
 ) : Exception(message)
 
+/** The endpoint could not prove it is the Hub that knows our token — the token was NOT sent. */
+class HubTrustException(message: String) : Exception(message)
+
+@kotlinx.serialization.Serializable
+private data class AttestRequest(val nonce: String, val kid: String)
+
+@kotlinx.serialization.Serializable
+private data class AttestResponse(val fingerprint: String, val proof: String)
+
+@kotlinx.serialization.Serializable
+private data class FeishuStartRequest(val codeChallenge: String)
+
+@kotlinx.serialization.Serializable
+private data class FeishuPollWithVerifier(val sid: String, val codeVerifier: String)
+
 data class DiscoveredEndpoint(
     val baseUrl: String,
     val wsUrl: String,
@@ -50,6 +71,12 @@ interface HubTransport {
         dynamicCandidates: StateFlow<List<String>>? = null,
         waitWindowMs: Long = 6_500L,
     ): DiscoveredEndpoint?
+
+    /**
+     * Verifies (and pins) the Hub's TLS certificate *before* any token is sent to it, using
+     * token-bound attestation. Throws [HubTrustException] if the endpoint cannot prove itself.
+     */
+    suspend fun ensureHubTrusted(baseUrl: String, token: String) {}
 
     suspend fun startFeishuDeviceFlow(baseUrl: String): FeishuStartResult
     suspend fun pollFeishuDeviceFlow(baseUrl: String, sid: String): FeishuPollResponse
@@ -106,8 +133,13 @@ interface HubTransport {
 
 class HubRpcClient(
     private val scope: CoroutineScope,
-    private val httpClient: HttpClient = HttpClient { install(WebSockets) },
+    /** Accepts any certificate (records fingerprints). Never carries the access token. */
+    private val probeClient: HttpClient = createHubHttpClient(pinnedOnly = false),
+    /** Handshake only succeeds with a pinned Hub certificate. Carries the token & all RPC. */
+    private val secureClient: HttpClient = createHubHttpClient(pinnedOnly = true),
 ) : HubTransport {
+    private val feishuVerifiers = mutableMapOf<String, String>()
+
     private var wsSession: DefaultClientWebSocketSession? = null
     private var readerJob: Job? = null
     private var nextId: Int = 1
@@ -141,12 +173,16 @@ class HubRpcClient(
         waitWindowMs: Long,
     ): DiscoveredEndpoint? {
         val winner = CompletableDeferred<DiscoveredEndpoint?>()
+        // Prefer endpoints presenting an already-pinned certificate; an unpinned responder (new
+        // Hub, rotated cert, or impostor) is only used as a fallback and must pass attestation.
+        var firstUnpinned: DiscoveredEndpoint? = null
+        val requirePinned = HubTrust.pinned().isNotEmpty()
         val probedMutex = Mutex()
         val probed = mutableSetOf<String>()
         val jobs = mutableListOf<Job>()
 
         suspend fun launchProbeIfNew(base: String) {
-            val normalized = base.trim().trimEnd('/')
+            val normalized = normalizeHubBaseUrl(base)
             if (normalized.isEmpty()) return
             val shouldStart = probedMutex.withLock { probed.add(normalized) }
             if (!shouldStart) return
@@ -154,20 +190,23 @@ class HubRpcClient(
             val job = scope.launch {
                 try {
                     val res = withTimeout(4_500L) {
-                        httpClient.get("$normalized/v1/auth/discover")
+                        probeClient.get("$normalized/v1/auth/discover")
                     }
                     if (res.status.isSuccess()) {
                         val text = res.bodyAsText()
                         val info = ProtocolJson.decodeFromString(FeishuDiscoverResult.serializer(), text)
-                        val wsScheme = if (normalized.startsWith("https://")) "wss://" else "ws://"
-                        val hostPort = normalized.removePrefix("https://").removePrefix("http://")
-                        winner.complete(
-                            DiscoveredEndpoint(
-                                baseUrl = normalized,
-                                wsUrl = "$wsScheme$hostPort${info.wsPath}",
-                                discover = info,
-                            ),
+                        val endpoint = DiscoveredEndpoint(
+                            baseUrl = normalized,
+                            // Never trust a server-supplied path (could smuggle userinfo/host)
+                            wsUrl = hubWsUrlOf(normalized),
+                            discover = info.copy(relayUrls = emptyList()),
                         )
+                        val fp = HubTrust.observedFor(normalized)
+                        if (!requirePinned || (fp != null && HubTrust.isPinned(fp))) {
+                            winner.complete(endpoint)
+                        } else {
+                            probedMutex.withLock { if (firstUnpinned == null) firstUnpinned = endpoint }
+                        }
                     }
                 } catch (_: Throwable) {
                     // ignore individual candidate failure
@@ -192,38 +231,96 @@ class HubRpcClient(
             scope.launch {
                 val snapshot = probedMutex.withLock { jobs.toList() }
                 snapshot.forEach { it.join() }
-                if (!winner.isCompleted) winner.complete(null)
+                if (!winner.isCompleted) winner.complete(probedMutex.withLock { firstUnpinned })
             }
         }
 
         val result = withTimeoutOrNull(waitWindowMs) {
             winner.await()
-        }
+        } ?: probedMutex.withLock { firstUnpinned }
         dynamicCollector?.cancel()
         val allJobs = probedMutex.withLock { jobs.toList() }
         allJobs.forEach { it.cancel() }
         return result
     }
 
+    /** Once a Hub is pinned, OAuth also runs only against pinned Hubs (no impostor login pages). */
+    private fun oauthClient(): HttpClient = if (HubTrust.pinned().isNotEmpty()) secureClient else probeClient
+
     override suspend fun startFeishuDeviceFlow(baseUrl: String): FeishuStartResult {
+        val base = normalizeHubBaseUrl(baseUrl)
+        // PKCE-style binding: only this client (holding the verifier) can redeem the login.
+        val verifier = HubAttestation.newNonce() + HubAttestation.newNonce()
+        val challenge = sha256(verifier.encodeToByteArray()).toHex()
         val res = withTimeout(8_000L) {
-            httpClient.post("$baseUrl/v1/auth/feishu/start")
+            oauthClient().post("$base/v1/auth/feishu/start") {
+                setBody(ProtocolJson.encodeToString(FeishuStartRequest.serializer(), FeishuStartRequest(challenge)))
+            }
         }
         val body = res.bodyAsText()
         if (!res.status.isSuccess()) {
             throw IllegalStateException("飞书认证初始化失败: $body")
         }
-        return ProtocolJson.decodeFromString(FeishuStartResult.serializer(), body)
+        val result = ProtocolJson.decodeFromString(FeishuStartResult.serializer(), body)
+        pendingMutex.withLock {
+            if (feishuVerifiers.size > 8) feishuVerifiers.clear()
+            feishuVerifiers[result.sid] = verifier
+        }
+        return result
     }
 
     override suspend fun pollFeishuDeviceFlow(baseUrl: String, sid: String): FeishuPollResponse {
-        val reqJson = ProtocolJson.encodeToString(FeishuPollRequest.serializer(), FeishuPollRequest(sid))
+        val base = normalizeHubBaseUrl(baseUrl)
+        val verifier = pendingMutex.withLock { feishuVerifiers[sid] }
+            ?: return FeishuPollResponse(status = "expired")
+        val reqJson = ProtocolJson.encodeToString(
+            FeishuPollWithVerifier.serializer(),
+            FeishuPollWithVerifier(sid, verifier),
+        )
         val res = withTimeout(8_000L) {
-            httpClient.post("$baseUrl/v1/auth/feishu/poll") {
+            oauthClient().post("$base/v1/auth/feishu/poll") {
                 setBody(reqJson)
             }
         }
-        return ProtocolJson.decodeFromString(FeishuPollResponse.serializer(), res.bodyAsText())
+        val parsed = ProtocolJson.decodeFromString(FeishuPollResponse.serializer(), res.bodyAsText())
+        if (parsed.status != "pending") pendingMutex.withLock { feishuVerifiers.remove(sid) }
+        return parsed
+    }
+
+    override suspend fun ensureHubTrusted(baseUrl: String, token: String) {
+        val base = normalizeHubBaseUrl(baseUrl)
+        HubTrust.observedFor(base)?.let { if (HubTrust.isPinned(it)) return }
+
+        val nonce = HubAttestation.newNonce()
+        val res = try {
+            withTimeout(8_000L) {
+                probeClient.post("$base/v1/auth/attest") {
+                    setBody(
+                        ProtocolJson.encodeToString(
+                            AttestRequest.serializer(),
+                            AttestRequest(nonce = nonce, kid = HubAttestation.kid(token)),
+                        ),
+                    )
+                }
+            }
+        } catch (t: Throwable) {
+            throw HubTrustException("无法连接主机进行身份校验: ${t.message ?: "网络错误"}")
+        }
+        if (!res.status.isSuccess()) {
+            throw HubTrustException("主机身份校验未通过（令牌不被该主机认可），已阻止发送令牌")
+        }
+        val att = runCatching {
+            ProtocolJson.decodeFromString(AttestResponse.serializer(), res.bodyAsText())
+        }.getOrNull() ?: throw HubTrustException("主机身份校验响应无效，已阻止发送令牌")
+        val seen = HubTrust.observedFor(base)
+            ?: throw HubTrustException("未获取到主机证书，已阻止发送令牌")
+        val expectedProof = HubAttestation.proof(token, seen, nonce)
+        if (!constantTimeEquals(seen, att.fingerprint.lowercase()) ||
+            !constantTimeEquals(expectedProof, att.proof.lowercase())
+        ) {
+            throw HubTrustException("主机证书与令牌不匹配（可能存在中间人或冒充主机），已阻止发送令牌")
+        }
+        HubTrust.pin(seen)
     }
 
     override suspend fun connectAndHello(
@@ -232,7 +329,7 @@ class HubRpcClient(
         platformName: String,
     ): HubHelloResult {
         disconnect()
-        val session = httpClient.webSocketSession(urlString = wsUrl)
+        val session = secureClient.webSocketSession(urlString = hubWsUrlOf(wsUrl))
         wsSession = session
         readerJob = scope.launch {
             readLoop(session)
@@ -245,7 +342,7 @@ class HubRpcClient(
                     token = token,
                     client = ClientInfo(
                         name = "lework-mobile",
-                        version = "0.3.9",
+                        version = "0.4.0",
                         platform = platformName,
                     ),
                 ),

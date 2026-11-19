@@ -17,6 +17,9 @@ import { HostTaskInspector } from '../src/storage/host-history.ts'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '../..')
 
+// Isolated Hub data dir (TLS identity, issued tokens) for the whole suite
+process.env.QPRC_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-hub-test-'))
+
 class TestRpcClient {
   private ws!: WebSocket
   private nextId = 1
@@ -25,7 +28,8 @@ class TestRpcClient {
   private readonly eventWaiters: Array<(ev: AgentEvent) => boolean> = []
 
   async connect(url: string): Promise<void> {
-    this.ws = new WebSocket(url)
+    // Self-signed Hub certificate: tests verify the pinned fingerprint separately
+    this.ws = new WebSocket(url, { rejectUnauthorized: false })
     await new Promise<void>((resolve, reject) => {
       this.ws.once('open', () => resolve())
       this.ws.once('error', reject)
@@ -124,7 +128,7 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
     })
 
     const { port } = await server.start()
-    const wsUrl = `ws://127.0.0.1:${port}/v1/ws`
+    const wsUrl = `wss://127.0.0.1:${port}/v1/ws`
     const client = new TestRpcClient()
     await client.connect(wsUrl)
 
@@ -331,7 +335,7 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
 
       const { port } = await server.start()
       const client = new TestRpcClient()
-      await client.connect(`ws://127.0.0.1:${port}/v1/ws`)
+      await client.connect(`wss://127.0.0.1:${port}/v1/ws`)
       await client.call('hub.hello', {
         protocolVersion: PROTOCOL_VERSION,
         token: 'secret-lazy-token',

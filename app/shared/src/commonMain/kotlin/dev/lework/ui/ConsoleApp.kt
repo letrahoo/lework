@@ -1466,6 +1466,14 @@ private fun TasksSidebarContent(
                         fontSize = 10.sp,
                         color = Everforest.Grey0,
                     )
+                    state.hubFingerprint?.let { fp ->
+                        // Same short code as `hub pair` prints on the computer — compare to rule out impostors
+                        Text(
+                            text = "已加密 · 主机指纹 $fp",
+                            fontSize = 10.sp,
+                            color = Everforest.Grey0,
+                        )
+                    }
                 }
             }
             TextButton(onClick = onLogout) {

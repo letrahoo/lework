@@ -2,6 +2,12 @@ package dev.lework.store
 
 import dev.lework.platform.*
 import dev.lework.protocol.*
+import dev.lework.security.HubAttestation
+import dev.lework.security.HubTrust
+import dev.lework.security.hubBaseUrlOfWs
+import dev.lework.security.hubWsUrlOf
+import dev.lework.security.isTrustedOAuthUrl
+import dev.lework.security.normalizeHubBaseUrl
 import dev.lework.transport.HubRpcClient
 import dev.lework.transport.HubTransport
 import dev.lework.transport.RpcCallException
@@ -114,6 +120,8 @@ data class ConsoleUiState(
     val feishuChallenge: FeishuStartResult? = null,
     val feishuStatusText: String = "正在发现可用主机节点…",
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCOVERING,
+    /** Short SHA-256 of the pinned Hub certificate, for out-of-band comparison with `hub pair`. */
+    val hubFingerprint: String? = null,
     val connectionError: String? = null,
     val hub: HubInfo? = null,
     val slaves: List<SlaveInfo> = emptyList(),
@@ -465,13 +473,8 @@ class ConsoleStore(
                 return@launch
             }
 
-            if (!found.baseUrl.contains("127.0.0.1")) {
-                saveLastGoodHubUrl(found.baseUrl)
-            }
-            if (found.discover.relayUrls.isNotEmpty()) {
-                saveRelayUrls((loadSavedRelayUrls() + found.discover.relayUrls).distinct())
-            }
-
+            // Nothing learned from (unauthenticated) discovery is persisted; addresses are saved
+            // only after the Hub has proven its identity and accepted our token (connectWithToken).
             _state.update {
                 it.copy(
                     discoveredBaseUrl = found.baseUrl,
@@ -507,22 +510,17 @@ class ConsoleStore(
 
     fun connectManualEndpoint(rawHostOrUrl: String, rawToken: String) {
         val trimmedHost = rawHostOrUrl.trim().trimEnd('/')
-        val baseUrl = when {
-            trimmedHost.isEmpty() -> _state.value.discoveredBaseUrl
-            trimmedHost.startsWith("http://") || trimmedHost.startsWith("https://") -> trimmedHost
-            else -> "http://$trimmedHost"
-        }
-        if (baseUrl.isNotBlank() && !baseUrl.contains("127.0.0.1")) {
-            saveLastGoodHubUrl(baseUrl)
-            saveRelayUrls((listOf(baseUrl) + loadSavedRelayUrls()).distinct())
+        val baseUrl = if (trimmedHost.isEmpty()) {
+            _state.value.discoveredBaseUrl
+        } else {
+            normalizeHubBaseUrl(trimmedHost)
         }
         val token = rawToken.trim()
         if (token.isNotEmpty()) {
             saveFeishuSession(token, "Owner")
             if (baseUrl.isNotBlank()) {
-                val wsScheme = if (baseUrl.startsWith("https://")) "wss://" else "ws://"
-                val hostPort = baseUrl.removePrefix("https://").removePrefix("http://")
-                val wsUrl = "$wsScheme$hostPort/v1/ws"
+                val wsUrl = hubWsUrlOf(baseUrl)
+                _state.update { it.copy(discoveredBaseUrl = baseUrl, discoveredWsUrl = wsUrl) }
                 discoverJob?.cancel()
                 feishuPollJob?.cancel()
                 discoverJob = scope.launch {
@@ -608,12 +606,6 @@ class ConsoleStore(
                 return@launch
             }
 
-            if (!found.baseUrl.contains("127.0.0.1")) {
-                saveLastGoodHubUrl(found.baseUrl)
-            }
-            if (found.discover.relayUrls.isNotEmpty()) {
-                saveRelayUrls((loadSavedRelayUrls() + found.discover.relayUrls).distinct())
-            }
             _state.update {
                 it.copy(
                     discoveredBaseUrl = found.baseUrl,
@@ -699,12 +691,12 @@ class ConsoleStore(
 
     fun launchFeishuAppForAuth() {
         val challenge = _state.value.feishuChallenge ?: return
-        openExternalUrl(challenge.applinkUrl)
+        if (isTrustedOAuthUrl(challenge.applinkUrl)) openExternalUrl(challenge.applinkUrl)
     }
 
     fun openFeishuBrowserFallback() {
         val challenge = _state.value.feishuChallenge ?: return
-        openExternalUrl(challenge.verifyUrl)
+        if (isTrustedOAuthUrl(challenge.verifyUrl)) openExternalUrl(challenge.verifyUrl)
     }
 
     fun logoutFeishu() {
@@ -736,11 +728,21 @@ class ConsoleStore(
             )
         }
         return try {
-            rpc.connectAndHello(
+            // Verify & pin the Hub certificate BEFORE the token leaves the device.
+            val baseUrl = hubBaseUrlOfWs(wsUrl)
+            rpc.ensureHubTrusted(baseUrl, token)
+            val hello = rpc.connectAndHello(
                 wsUrl = wsUrl,
                 token = token,
                 platformName = platformName(),
             )
+            // Authenticated: now it is safe to remember this address and the Hub's relays.
+            if (!baseUrl.contains("127.0.0.1")) saveLastGoodHubUrl(baseUrl)
+            val learned = (hello.relayUrls + if (baseUrl.contains("127.0.0.1")) emptyList() else listOf(baseUrl))
+                .map { normalizeHubBaseUrl(it) }
+            if (learned.isNotEmpty()) {
+                saveRelayUrls((loadSavedRelayUrls().map { normalizeHubBaseUrl(it) } + learned).distinct().take(8))
+            }
             val status = rpc.fetchStatus()
             val workspaces = rpc.listWorkspaces()
             val sessions = rpc.listSessions()
@@ -772,6 +774,7 @@ class ConsoleStore(
                     hasEnteredWorkspace = true,
                     connectionStatus = ConnectionStatus.CONNECTED,
                     connectionError = null,
+                    hubFingerprint = HubTrust.observedFor(baseUrl)?.let { HubAttestation.shortFingerprint(it) },
                     hub = status.hub,
                     slaves = status.slaves,
                     engines = uiEngines.ifEmpty { status.engines },

@@ -101,8 +101,9 @@ fi
 
 sleep 2
 echo "==> Verifying local Mac Hub (127.0.0.1:$HUB_PORT):"
-curl -fsS --max-time 4 "http://127.0.0.1:$HUB_PORT/v1/auth/discover" && echo ""
+# Self-signed Hub certificate (pinned by the app); -k is fine for this unauthenticated health probe
+curl -kfsS --max-time 4 "https://127.0.0.1:$HUB_PORT/v1/auth/discover" && echo ""
 if [[ -n "$RELAY_PUBLIC_URL" ]]; then
   echo "==> Verifying Relay Entry ($RELAY_PUBLIC_URL):"
-  curl -fsS --max-time 5 "$RELAY_PUBLIC_URL/v1/auth/discover" && echo ""
+  curl -kfsS --max-time 5 "${RELAY_PUBLIC_URL/http:\/\//https://}/v1/auth/discover" && echo ""
 fi

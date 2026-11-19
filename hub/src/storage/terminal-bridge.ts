@@ -212,18 +212,26 @@ export class TerminalBridge {
       claudeRuntime?: ClaudeLiveSessionMeta
     },
     optionId: string | null,
+    expectedRequestId: string,
   ): Promise<boolean> {
     const target = await this.findTarget(params)
     if (!target) return false
 
-    const key =
-      optionId === null
-        ? '\u001b'
-        : optionId.startsWith('tty_key:')
-          ? optionId.slice('tty_key:'.length)
-          : optionId.includes('reject') || optionId.includes('deny')
-            ? '2'
-            : '1'
+    // SECURITY: never type arbitrary text into a live terminal. Re-read the screen right before
+    // sending and require that the prompt currently displayed is exactly the one the phone approved
+    // (same `tty_perm_` hash), and that the chosen key is one of that prompt's numbered options.
+    const screen = await this.readScreenTail(target, 32)
+    const livePrompt = screen ? parseTerminalPermissionPrompt(params.nativeId, screen) : undefined
+    if (!livePrompt) {
+      throw new TerminalApprovalError('电脑终端上的这条审批已经结束或不在当前屏幕，请刷新后重试')
+    }
+    if (livePrompt.requestId !== expectedRequestId) {
+      throw new TerminalApprovalError('电脑终端上的审批内容已变化，为避免误批，请刷新后重新确认')
+    }
+    const key = resolveApprovalKey(livePrompt, optionId)
+    if (key === null) {
+      throw new TerminalApprovalError('无效的审批选项')
+    }
 
     await this.sendRawText(target, key)
 
@@ -569,6 +577,10 @@ export class TerminalBridge {
   }
 
   private async sendRawText(target: TerminalTarget, text: string): Promise<void> {
+    // Only single approval digits, Enter or Escape may ever be injected.
+    if (!/^[1-9]$/.test(text) && text !== '\r' && text !== '\u001b') {
+      throw new TerminalApprovalError('Refusing to inject non-approval keystroke')
+    }
     const env = augmentedPathEnv(process.env)
     if (target.kind === 'iterm2') {
       const it2Bin = this.resolveIt2Bin()
@@ -577,11 +589,42 @@ export class TerminalBridge {
     } else {
       const tmuxBin = this.resolveTmuxBin()
       if (!tmuxBin) throw new Error('tmux not available')
-      const keyArg = text === '\r' ? 'Enter' : text === '\u001b' ? 'Escape' : text
       const prefix = target.socketPath ? ['-u', '-S', target.socketPath] : ['-u']
-      await this.runCmd(tmuxBin, [...prefix, 'send-keys', '-t', target.id, keyArg], 2_500, env)
+      const keyArgs = text === '\r' ? ['Enter'] : text === '\u001b' ? ['Escape'] : ['-l', text]
+      await this.runCmd(tmuxBin, [...prefix, 'send-keys', '-t', target.id, ...keyArgs], 2_500, env)
     }
   }
+}
+
+export class TerminalApprovalError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'TerminalApprovalError'
+  }
+}
+
+/**
+ * Maps a phone decision onto a keystroke for the prompt currently on screen.
+ * Returns `null` for anything that is not a legitimate option of that prompt.
+ */
+export function resolveApprovalKey(prompt: DetectedTerminalPermission, optionId: string | null): string | null {
+  if (optionId === null) return '\u001b'
+  const byId = prompt.options.find(o => o.id === optionId)
+  if (byId) {
+    const m = /^tty_key:([1-9])$/.exec(byId.id)
+    return m ? m[1]! : null
+  }
+  // Legacy semantic ids (allow_once / reject_once …) → first option of the matching kind.
+  // Anything else (unknown tty_key:*, free text) is refused.
+  if (!/^[a-z_]{1,32}$/.test(optionId)) return null
+  const wantReject = /reject|deny/.test(optionId)
+  const wantAlways = /always|session/.test(optionId)
+  const pick =
+    prompt.options.find(o =>
+      wantReject ? o.kind === 'reject_once' : wantAlways ? o.kind === 'allow_always' : o.kind === 'allow_once',
+    ) ?? null
+  const m = pick ? /^tty_key:([1-9])$/.exec(pick.id) : null
+  return m ? m[1]! : null
 }
 
 /**

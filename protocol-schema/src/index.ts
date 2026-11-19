@@ -297,8 +297,14 @@ export const ClientInfo = z.object({
 
 export const Methods = {
   'hub.hello': {
-    params: z.object({ protocolVersion: z.number().int(), token: z.string().min(8).max(256), client: ClientInfo }),
-    result: z.object({ protocolVersion: z.number().int(), hub: HubInfo, capabilities: z.array(z.string()) }),
+    params: z.object({ protocolVersion: z.number().int(), token: z.string().min(8).max(1024), client: ClientInfo }),
+    result: z.object({
+      protocolVersion: z.number().int(),
+      hub: HubInfo,
+      capabilities: z.array(z.string()),
+      /** Alternate addresses of this Hub (relays); only revealed after authentication. */
+      relayUrls: z.array(z.string()).optional(),
+    }),
   },
   'hub.status': {
     params: z.object({}).optional(),

@@ -14,12 +14,13 @@ object JvmPlatformTestHooks {
     private val _bonjourUrls = MutableStateFlow<List<String>>(emptyList())
     val bonjourUrls: StateFlow<List<String>> = _bonjourUrls.asStateFlow()
 
-    var candidateUrls: List<String> = listOf("http://127.0.0.1:64450")
+    var candidateUrls: List<String> = listOf("https://127.0.0.1:64450")
     var lastGoodUrl: String? = null
     var savedRelayUrls: List<String> = emptyList()
     var savedToken: String? = "test-feishu-token"
     var savedUserName: String? = "Owner"
     var savedPrefs: SavedSessionPrefs = SavedSessionPrefs(mode = "auto")
+    var pinnedFingerprints: Set<String> = emptySet()
     var bonjourStartedCount: Int = 0
     var clipboardText: String = ""
     val openedUrls = mutableListOf<String>()
@@ -35,12 +36,13 @@ object JvmPlatformTestHooks {
     fun reset() {
         _foreground.value = true
         _bonjourUrls.value = emptyList()
-        candidateUrls = listOf("http://127.0.0.1:64450")
+        candidateUrls = listOf("https://127.0.0.1:64450")
         lastGoodUrl = null
         savedRelayUrls = emptyList()
         savedToken = "test-feishu-token"
         savedUserName = "Owner"
         savedPrefs = SavedSessionPrefs(mode = "auto")
+        pinnedFingerprints = emptySet()
         bonjourStartedCount = 0
         clipboardText = ""
         openedUrls.clear()
@@ -105,4 +107,10 @@ actual fun openExternalUrl(url: String) {
 
 actual fun copyTextToClipboard(text: String) {
     JvmPlatformTestHooks.clipboardText = text
+}
+
+actual fun loadPinnedHubFingerprints(): Set<String> = JvmPlatformTestHooks.pinnedFingerprints
+
+actual fun savePinnedHubFingerprints(fingerprints: Set<String>) {
+    JvmPlatformTestHooks.pinnedFingerprints = fingerprints
 }

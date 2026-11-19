@@ -98,6 +98,9 @@ export class ModelRegistry {
     if (idx >= 0) {
       this.profiles[idx] = profile
     } else {
+      if (this.profiles.length >= 64) {
+        throw new Error('Too many profiles (max 64)')
+      }
       this.profiles.push(profile)
     }
     try {
@@ -105,6 +108,7 @@ export class ModelRegistry {
         encoding: 'utf8',
         mode: 0o600,
       })
+      fs.chmodSync(this.profilesPath, 0o600)
     } catch {
       // ignore
     }

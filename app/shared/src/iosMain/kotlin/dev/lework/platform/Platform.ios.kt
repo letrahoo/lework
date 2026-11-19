@@ -2,10 +2,47 @@
 
 package dev.lework.platform
 
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.UByteVar
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
+import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
+import platform.CoreFoundation.CFDataCreate
+import platform.CoreFoundation.CFDataGetBytePtr
+import platform.CoreFoundation.CFDataGetLength
+import platform.CoreFoundation.CFDataRef
+import platform.CoreFoundation.CFDictionaryAddValue
+import platform.CoreFoundation.CFDictionaryCreateMutable
+import platform.CoreFoundation.CFMutableDictionaryRef
+import platform.CoreFoundation.CFRelease
+import platform.CoreFoundation.CFStringCreateWithCString
+import platform.CoreFoundation.CFTypeRefVar
+import platform.CoreFoundation.kCFBooleanTrue
+import platform.CoreFoundation.kCFStringEncodingUTF8
+import platform.CoreFoundation.kCFTypeDictionaryKeyCallBacks
+import platform.CoreFoundation.kCFTypeDictionaryValueCallBacks
+import platform.Security.SecItemAdd
+import platform.Security.SecItemCopyMatching
+import platform.Security.SecItemDelete
+import platform.Security.errSecSuccess
+import platform.Security.kSecAttrAccessible
+import platform.Security.kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+import platform.Security.kSecAttrAccount
+import platform.Security.kSecAttrService
+import platform.Security.kSecClass
+import platform.Security.kSecClassGenericPassword
+import platform.Security.kSecMatchLimit
+import platform.Security.kSecMatchLimitOne
+import platform.Security.kSecReturnData
+import platform.Security.kSecValueData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -45,6 +82,100 @@ private const val KEY_PREF_MODEL = "qprc.pref.model"
 private const val KEY_PREF_EFFORT = "qprc.pref.effort"
 private const val KEY_PREF_MODE = "qprc.pref.mode"
 private const val KEY_PREF_WORKSPACE = "qprc.pref.workspace"
+private const val KC_ACCOUNT_TOKEN = "hub.access-token"
+private const val KC_ACCOUNT_USER = "hub.user-name"
+private const val KC_ACCOUNT_PINS = "hub.pinned-fingerprints"
+
+/**
+ * Minimal Keychain wrapper (generic passwords, this-device-only, available after first unlock so
+ * background reconnects work; never synced to iCloud / backups).
+ */
+private object IosKeychain {
+    private const val SERVICE = "dev.lework.lework"
+
+    private fun baseQuery(account: String): CFMutableDictionaryRef? {
+        val dict = CFDictionaryCreateMutable(
+            null,
+            0,
+            kCFTypeDictionaryKeyCallBacks.ptr,
+            kCFTypeDictionaryValueCallBacks.ptr,
+        )
+        val svc = CFStringCreateWithCString(null, SERVICE, kCFStringEncodingUTF8)
+        val acc = CFStringCreateWithCString(null, account, kCFStringEncodingUTF8)
+        CFDictionaryAddValue(dict, kSecClass, kSecClassGenericPassword)
+        CFDictionaryAddValue(dict, kSecAttrService, svc)
+        CFDictionaryAddValue(dict, kSecAttrAccount, acc)
+        CFRelease(svc)
+        CFRelease(acc)
+        return dict
+    }
+
+    fun get(account: String): String? {
+        val query = baseQuery(account) ?: return null
+        CFDictionaryAddValue(query, kSecReturnData, kCFBooleanTrue)
+        CFDictionaryAddValue(query, kSecMatchLimit, kSecMatchLimitOne)
+        return memScoped {
+            val out = alloc<CFTypeRefVar>()
+            val status = SecItemCopyMatching(query, out.ptr)
+            CFRelease(query)
+            val ref = out.value
+            if (status != errSecSuccess || ref == null) return@memScoped null
+            try {
+                val data: CFDataRef = ref.reinterpret()
+                val len = CFDataGetLength(data).toInt()
+                val bytes = CFDataGetBytePtr(data)?.reinterpret<ByteVar>()?.readBytes(len) ?: return@memScoped null
+                bytes.decodeToString()
+            } finally {
+                CFRelease(ref)
+            }
+        }
+    }
+
+    fun set(account: String, value: String?) {
+        baseQuery(account)?.let { q ->
+            SecItemDelete(q)
+            CFRelease(q)
+        }
+        if (value.isNullOrEmpty()) return
+        val bytes = value.encodeToByteArray()
+        val data = bytes.usePinned { pin ->
+            CFDataCreate(null, pin.addressOf(0).reinterpret(), bytes.size.convert())
+        } ?: return
+        val query = baseQuery(account)
+        if (query == null) {
+            CFRelease(data)
+            return
+        }
+        CFDictionaryAddValue(query, kSecValueData, data)
+        CFDictionaryAddValue(query, kSecAttrAccessible, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+        SecItemAdd(query, null)
+        CFRelease(data)
+        CFRelease(query)
+    }
+}
+
+/** One-time migration of credentials that older builds kept in plaintext NSUserDefaults. */
+private object CredentialMigration {
+    private var done = false
+
+    fun ensure() {
+        if (done) return
+        done = true
+        val d = NSUserDefaults.standardUserDefaults
+        val legacyToken = d.stringForKey(KEY_FEISHU_TOKEN)
+        if (!legacyToken.isNullOrBlank()) {
+            if (IosKeychain.get(KC_ACCOUNT_TOKEN).isNullOrBlank()) {
+                IosKeychain.set(KC_ACCOUNT_TOKEN, legacyToken)
+                IosKeychain.set(KC_ACCOUNT_USER, d.stringForKey(KEY_FEISHU_USER) ?: "Owner")
+            }
+        }
+        if (d.objectForKey(KEY_FEISHU_TOKEN) != null || d.objectForKey(KEY_FEISHU_USER) != null) {
+            d.removeObjectForKey(KEY_FEISHU_TOKEN)
+            d.removeObjectForKey(KEY_FEISHU_USER)
+            d.synchronize()
+        }
+    }
+}
 
 private object IosBonjourScanner {
     private val _urls = MutableStateFlow<List<String>>(emptyList())
@@ -74,7 +205,7 @@ private object IosBonjourScanner {
                         val b2 = raw[6].toInt()
                         val b3 = raw[7].toInt()
                         if (b0 != 127 && b0 != 0) {
-                            discovered.add("http://$b0.$b1.$b2.$b3:$port")
+                            discovered.add("https://$b0.$b1.$b2.$b3:$port")
                         }
                     }
                 }
@@ -90,7 +221,7 @@ private object IosBonjourScanner {
                     for (ip in csv.split(',')) {
                         val clean = ip.trim()
                         if (clean.isNotEmpty()) {
-                            discovered.add("http://$clean:$port")
+                            discovered.add("https://$clean:$port")
                         }
                     }
                 }
@@ -99,7 +230,7 @@ private object IosBonjourScanner {
             // 3. Bonjour `.local` hostname fallback
             val host = sender.hostName?.trim()?.trimEnd('.')
             if (!host.isNullOrEmpty()) {
-                discovered.add("http://$host:$port")
+                discovered.add("https://$host:$port")
             }
 
             if (discovered.isNotEmpty()) {
@@ -118,7 +249,6 @@ private object IosBonjourScanner {
             if (!activeServices.contains(didFindService)) {
                 activeServices.add(didFindService)
             }
-            didFindService.includesPeerToPeer = true
             didFindService.delegate = serviceDelegate
             didFindService.resolveWithTimeout(5.0)
         }
@@ -131,7 +261,6 @@ private object IosBonjourScanner {
             activeServices.clear()
 
             val nextBrowser = NSNetServiceBrowser()
-            nextBrowser.includesPeerToPeer = true
             nextBrowser.delegate = browserDelegate
             browser = nextBrowser
             nextBrowser.searchForServicesOfType("_qprc._tcp.", inDomain = "local.")
@@ -230,26 +359,40 @@ actual fun candidateHubHttpUrls(): List<String> {
     out.addAll(IosBonjourScanner.urls.value)
     loadLastGoodHubUrl()?.let { out.add(it) }
     out.addAll(loadSavedRelayUrls())
-    out.add("http://127.0.0.1:64450")
+    out.add("https://127.0.0.1:64450")
     return out.distinct()
 }
 
-actual fun loadSavedFeishuToken(): String? =
-    NSUserDefaults.standardUserDefaults.stringForKey(KEY_FEISHU_TOKEN)
+actual fun loadSavedFeishuToken(): String? {
+    CredentialMigration.ensure()
+    return IosKeychain.get(KC_ACCOUNT_TOKEN)?.takeIf { it.isNotBlank() }
+}
 
-actual fun loadSavedFeishuUserName(): String? =
-    NSUserDefaults.standardUserDefaults.stringForKey(KEY_FEISHU_USER)
+actual fun loadSavedFeishuUserName(): String? {
+    CredentialMigration.ensure()
+    return IosKeychain.get(KC_ACCOUNT_USER)
+}
 
 actual fun saveFeishuSession(token: String?, userName: String?) {
-    val defaults = NSUserDefaults.standardUserDefaults
+    CredentialMigration.ensure()
     if (token.isNullOrBlank()) {
-        defaults.removeObjectForKey(KEY_FEISHU_TOKEN)
-        defaults.removeObjectForKey(KEY_FEISHU_USER)
+        IosKeychain.set(KC_ACCOUNT_TOKEN, null)
+        IosKeychain.set(KC_ACCOUNT_USER, null)
     } else {
-        defaults.setObject(token, forKey = KEY_FEISHU_TOKEN)
-        defaults.setObject(userName ?: "Owner", forKey = KEY_FEISHU_USER)
+        IosKeychain.set(KC_ACCOUNT_TOKEN, token)
+        IosKeychain.set(KC_ACCOUNT_USER, userName ?: "Owner")
     }
-    defaults.synchronize()
+}
+
+actual fun loadPinnedHubFingerprints(): Set<String> =
+    IosKeychain.get(KC_ACCOUNT_PINS).orEmpty()
+        .split(',')
+        .map { it.trim().lowercase() }
+        .filter { it.length == 64 }
+        .toSet()
+
+actual fun savePinnedHubFingerprints(fingerprints: Set<String>) {
+    IosKeychain.set(KC_ACCOUNT_PINS, fingerprints.joinToString(",").ifEmpty { null })
 }
 
 actual fun loadSessionPrefs(): SavedSessionPrefs {

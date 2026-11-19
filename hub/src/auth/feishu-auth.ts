@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { defaultDataDir } from '../platform/index.ts'
+import { IssuedTokenStore } from './token-store.ts'
 
 interface FeishuSecretConfig {
   feishuAppId: string
@@ -33,16 +34,27 @@ export type FeishuPollResult =
   | { status: 'forbidden'; name: string; openId: string }
   | { status: 'ok'; user: FeishuUserIdentity; accessToken: string }
 
-const MAX_AGE_MS = 30 * 24 * 3600 * 1000
+const MAX_AGE_MS = 14 * 24 * 3600 * 1000
+const MAX_PENDING_CHALLENGES = 16
+const START_RATE_WINDOW_MS = 60_000
+const START_RATE_MAX = 6
 
 export class FeishuGateAuth {
   private readonly secret: FeishuSecretConfig | null
   private readonly allowedOpenIds: Set<string>
   private readonly allowedEmail: string
   private readonly hmacKey: Buffer
-  private readonly challenges = new Map<string, { deviceCode: string; expiresAt: number }>()
+  private readonly challenges = new Map<
+    string,
+    { deviceCode: string; expiresAt: number; codeChallenge: string }
+  >()
+  private readonly startTimestamps: number[] = []
+  private readonly hubId: string
+  readonly issued: IssuedTokenStore
 
-  constructor() {
+  constructor(opts: { hubId?: string; issued?: IssuedTokenStore } = {}) {
+    this.hubId = opts.hubId ?? 'hub'
+    this.issued = opts.issued ?? new IssuedTokenStore()
     this.secret = this.loadSecret()
     this.allowedOpenIds = new Set(this.secret?.allowedOpenIds ?? [])
     this.allowedEmail = (this.secret?.allowedEmail ?? '').toLowerCase()
@@ -59,7 +71,9 @@ export class FeishuGateAuth {
     const exp = Date.now() + MAX_AGE_MS
     const body = Buffer.from(
       JSON.stringify({
-        v: 2,
+        v: 3,
+        aud: this.hubId,
+        jti: crypto.randomBytes(9).toString('base64url'),
         sub: user.openId,
         name: user.name,
         email: user.email,
@@ -68,7 +82,9 @@ export class FeishuGateAuth {
       'utf8',
     ).toString('base64url')
     const sig = crypto.createHmac('sha256', this.hmacKey).update(body).digest('base64url')
-    return `qprc_fs.${body}.${sig}`
+    const token = `qprc_fs.${body}.${sig}`
+    this.issued.record(token, user.openId, user.name, exp)
+    return token
   }
 
   verifySessionToken(token: string): FeishuUserIdentity | null {
@@ -86,14 +102,18 @@ export class FeishuGateAuth {
     try {
       const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as {
         v?: number
+        aud?: string
         sub?: string
         name?: string
         email?: string
         exp?: number
       }
-      if (payload.v !== 2 || typeof payload.exp !== 'number' || payload.exp <= Date.now()) {
+      if (payload.v !== 3 || typeof payload.exp !== 'number' || payload.exp <= Date.now()) {
         return null
       }
+      if (payload.aud !== this.hubId) return null
+      // Revocation: only tokens still present in the issued-token registry are accepted
+      if (!this.issued.isActive(token)) return null
       const openId = payload.sub ?? ''
       const email = (payload.email ?? '').toLowerCase()
       const allowed = this.allowedOpenIds.has(openId) || (this.allowedEmail && email === this.allowedEmail)
@@ -108,11 +128,27 @@ export class FeishuGateAuth {
     }
   }
 
-  async startDeviceFlow(): Promise<FeishuDeviceChallenge> {
+  /**
+   * @param codeChallenge hex SHA-256 of a client-held random verifier (PKCE-style). The issued
+   *   token is only released to a poller that presents the matching verifier, so a sid that leaks
+   *   (logs, shoulder-surfing, proxies) cannot be redeemed by anyone but the initiating client.
+   */
+  async startDeviceFlow(codeChallenge: string): Promise<FeishuDeviceChallenge> {
     if (!this.secret) {
-      throw new Error('Feishu App credentials not found in ~/.qprc/feishu-secret.json')
+      throw new Error('OAuth device flow is not configured on this Hub')
+    }
+    if (!/^[0-9a-f]{64}$/.test(codeChallenge)) {
+      throw new Error('Invalid code challenge')
     }
     this.cleanChallenges()
+    const now = Date.now()
+    while (this.startTimestamps.length > 0 && this.startTimestamps[0]! < now - START_RATE_WINDOW_MS) {
+      this.startTimestamps.shift()
+    }
+    if (this.startTimestamps.length >= START_RATE_MAX || this.challenges.size >= MAX_PENDING_CHALLENGES) {
+      throw new Error('Too many login attempts, please retry in a minute')
+    }
+    this.startTimestamps.push(now)
     const basic = Buffer.from(`${this.secret.feishuAppId}:${this.secret.feishuAppSecret}`).toString('base64')
     const body = new URLSearchParams({
       client_id: this.secret.feishuAppId,
@@ -143,6 +179,7 @@ export class FeishuGateAuth {
     this.challenges.set(sid, {
       deviceCode: data.device_code,
       expiresAt: Date.now() + expiresIn * 1000,
+      codeChallenge,
     })
     const verifyUrl = data.verification_uri_complete || data.verification_uri
     const applinkUrl = `https://applink.feishu.cn/client/web_url/open?mode=window&url=${encodeURIComponent(verifyUrl)}`
@@ -156,13 +193,18 @@ export class FeishuGateAuth {
     }
   }
 
-  async pollDeviceFlow(sid: string): Promise<FeishuPollResult> {
+  async pollDeviceFlow(sid: string, codeVerifier: string): Promise<FeishuPollResult> {
     if (!this.secret) {
-      return { status: 'expired', detail: 'Feishu secret not configured' }
+      return { status: 'expired', detail: 'not configured' }
     }
     this.cleanChallenges()
     const record = this.challenges.get(sid)
     if (!record) return { status: 'expired' }
+    const presented = crypto.createHash('sha256').update(codeVerifier ?? '', 'utf8').digest()
+    const expected = Buffer.from(record.codeChallenge, 'hex')
+    if (presented.length !== expected.length || !crypto.timingSafeEqual(presented, expected)) {
+      return { status: 'expired', detail: 'verifier mismatch' }
+    }
 
     const body = new URLSearchParams({
       grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
@@ -199,7 +241,9 @@ export class FeishuGateAuth {
 
     const u = userJson.data ?? {}
     const openId = u.open_id ?? ''
-    const email = (u.email || u.enterprise_email || '').toLowerCase()
+    // Only the tenant-verified enterprise email may satisfy `allowedEmail`; the contact `email`
+    // field is user-controlled. open_id allowlisting is preferred.
+    const email = (u.enterprise_email || '').toLowerCase()
     const allowed = this.allowedOpenIds.has(openId) || (this.allowedEmail && email === this.allowedEmail)
 
     if (!allowed) {
@@ -214,7 +258,7 @@ export class FeishuGateAuth {
     const user: FeishuUserIdentity = {
       openId,
       name: u.name || 'Owner',
-      email: email || this.allowedEmail,
+      email,
     }
     const accessToken = this.signSessionToken(user)
     console.log(`[qprc-feishu-gate] ACCEPTED owner Feishu login: name=${user.name} open_id=${user.openId}`)
@@ -241,6 +285,15 @@ export class FeishuGateAuth {
     for (const p of candidates) {
       if (fs.existsSync(p)) {
         try {
+          const mode = fs.statSync(p).mode & 0o077
+          if (mode !== 0) {
+            try {
+              fs.chmodSync(p, 0o600)
+              console.warn(`[lework-auth] Tightened permissions of ${p} to 0600`)
+            } catch {
+              console.warn(`[lework-auth] WARNING: ${p} is readable by other users; chmod 600 it`)
+            }
+          }
           return JSON.parse(fs.readFileSync(p, 'utf8')) as FeishuSecretConfig
         } catch {
           continue

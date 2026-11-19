@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ErrorCode, type CheckpointInfo, type FsEntry } from '@qprc/protocol'
-import { HubRpcError, resolveAllowedWorkspacePath } from '../security/path-guard.ts'
+import { HubRpcError, assertNotSensitive, resolveAllowedWorkspacePath } from '../security/path-guard.ts'
 
 const MAX_READ_BYTES = 64 * 1024
 const MAX_DIR_ENTRIES = 120
@@ -57,6 +57,7 @@ export function readWorkspaceFile(filePath: string, workspaceRoots: string[]): {
     realFile = fs.realpathSync(filePath)
     // Also verify real parent is inside workspaceRoots
     resolveAllowedWorkspacePath(path.dirname(realFile), workspaceRoots)
+    assertNotSensitive(realFile)
     const st = fs.statSync(realFile)
     if (!st.isFile()) {
       throw new HubRpcError(ErrorCode.InvalidParams, 'Target path is not a regular file.')

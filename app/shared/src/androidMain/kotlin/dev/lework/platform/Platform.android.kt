@@ -10,6 +10,8 @@ private var memUser: String? = null
 private var memLastGoodUrl: String? = null
 private var memRelayUrls: List<String> = emptyList()
 private var memPrefs = SavedSessionPrefs()
+// Android build keeps credentials in process memory only (nothing persisted to disk yet).
+private var memPins: Set<String> = emptySet()
 private val emptyBonjourFlow = MutableStateFlow<List<String>>(emptyList())
 private val androidForegroundFlow = MutableStateFlow(true)
 
@@ -42,7 +44,7 @@ actual fun saveRelayUrls(urls: List<String>) {
 actual fun candidateHubHttpUrls(): List<String> = buildList {
     memLastGoodUrl?.let { add(it) }
     addAll(memRelayUrls)
-    add("http://10.0.2.2:64450")
+    add("https://10.0.2.2:64450")
 }.distinct()
 
 actual fun loadSavedFeishuToken(): String? = memToken
@@ -66,4 +68,10 @@ actual fun openExternalUrl(url: String) {
 
 actual fun copyTextToClipboard(text: String) {
     // Handled via Android ClipboardManager when running on Android
+}
+
+actual fun loadPinnedHubFingerprints(): Set<String> = memPins
+
+actual fun savePinnedHubFingerprints(fingerprints: Set<String>) {
+    memPins = fingerprints
 }

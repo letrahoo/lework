@@ -25,6 +25,10 @@ expect fun saveRelayUrls(urls: List<String>)
 expect fun loadSavedFeishuToken(): String?
 expect fun loadSavedFeishuUserName(): String?
 expect fun saveFeishuSession(token: String?, userName: String?)
+
+/** Pinned Hub TLS certificate fingerprints (SHA-256 hex). Stored next to the token (iOS Keychain). */
+expect fun loadPinnedHubFingerprints(): Set<String>
+expect fun savePinnedHubFingerprints(fingerprints: Set<String>)
 expect fun loadSessionPrefs(): SavedSessionPrefs
 expect fun saveSessionPrefs(prefs: SavedSessionPrefs)
 expect fun openExternalUrl(url: String)

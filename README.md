@@ -40,13 +40,27 @@ pnpm --filter @qprc/hub cli engines
 # 查看本机连接地址与访问令牌 (Access Token)
 pnpm --filter @qprc/hub cli pair
 
-# 前台启动 Hub 守护进程 (默认监听 0.0.0.0:64450，自动广播 _qprc._tcp.local)
+# 前台启动 Hub 守护进程 (默认 HTTPS/WSS 监听 0.0.0.0:64450，自动广播 _qprc._tcp.local)
 pnpm hub
 ```
 
 > **中继与认证配置（可选，全部存放在本机 `~/.qprc/`，不入库）**：
-> - 自定义异地中继地址：在 `~/.qprc/config.json` 中配置 `"relayUrls": ["http://<your-relay-host>:64450"]`，手机首次连接后会自动学习并缓存；也可直接在手机登录页手动填写主机地址与访问令牌。
+> - 自定义异地中继地址：在 `~/.qprc/config.json` 中配置 `"relayUrls": ["https://<your-relay-host>:64450"]`，手机**认证通过后**才会学习并缓存；也可直接在手机登录页手动填写主机地址与访问令牌。
 > - 可选 OAuth 设备流认证：在 `~/.qprc/feishu-secret.json`（或环境变量 `LEWORK_OAUTH_SECRET_FILE`）配置应用凭证与允许的用户列表；未配置时自动降级为纯访问令牌模式。
+
+### 安全模型
+
+| 层 | 机制 |
+| --- | --- |
+| 传输加密 | Hub 只提供 **HTTPS / WSS**（自签名证书，`~/.qprc/tls/`）。TLS 在 Hub 进程内终止，中继 / SSH 隧道 / Overlay 网络只转发密文（端到端）。 |
+| 主机身份 | App **钉扎**证书 SHA-256 指纹，不依赖 CA。首次连接用「令牌绑定证明」：Hub 必须用 `HMAC(SHA-256(token), 指纹‖nonce)` 证明自己知道令牌，**证明通过前令牌绝不发出**；冒充的 Bonjour 主机 / 被劫持的中继拿不到令牌。App 侧边栏显示的「主机指纹」应与 `hub pair` 输出一致。 |
+| 凭证存储 | iOS 访问令牌与证书指纹存 **Keychain**（仅本机、首次解锁后可用、不进 iCloud）；旧版明文 `NSUserDefaults` 自动迁移并清除。 |
+| OAuth | 设备流带 PKCE 式校验（只有发起方能领取令牌）、限流；签发的令牌绑定 `aud=hubId`，仅存哈希，可吊销：`hub tokens [list | revoke <kid> | revoke-all]`。 |
+| 访问面 | 拒绝带 `Origin` 的浏览器请求（防 DNS rebinding / 跨站 WS）；未认证连接 10 秒超时、数量上限、1 MiB 帧上限；认证失败延迟并断开；未认证接口不返回中继地址。 |
+| 文件与终端 | `fs.read/list` 硬性屏蔽 `~/.ssh`、`~/.qprc`、`.env`、私钥等凭证；手机代点审批只允许当前屏幕上同一条审批（哈希校验）中的数字选项，杜绝注入任意按键。 |
+| Slave | 使用独立的入网令牌（`hub slave-token`），`hub join` 必须钉扎 Master 证书指纹。 |
+
+常用命令：`hub pair`（显示令牌与指纹）、`hub token rotate`（轮换访问令牌）、`hub tokens revoke-all`（吊销全部 OAuth 令牌）。
 
 ### 3. 构建与安装移动端 App（iOS / Android）
 

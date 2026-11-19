@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.openExternalUrl
+import dev.lework.security.isSafeExternalLink
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -676,7 +677,7 @@ private fun AnnotatedString.Builder.appendInlineRec(
                             LinkAnnotation.Clickable(
                                 tag = url,
                                 styles = TextLinkStyles(style = linkStyle),
-                                linkInteractionListener = { openExternalUrl(url) },
+                                linkInteractionListener = { if (isSafeExternalLink(url)) openExternalUrl(url) },
                             ),
                         ) {
                             append(label)
@@ -771,7 +772,7 @@ private fun AnnotatedString.Builder.appendInlineRec(
                 LinkAnnotation.Clickable(
                     tag = url,
                     styles = TextLinkStyles(style = linkStyle),
-                    linkInteractionListener = { openExternalUrl(url) },
+                    linkInteractionListener = { if (isSafeExternalLink(url)) openExternalUrl(url) },
                 ),
             ) {
                 append(url)

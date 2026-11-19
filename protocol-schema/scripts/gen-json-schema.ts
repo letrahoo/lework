@@ -548,6 +548,7 @@ data class HubHelloResult(
     val protocolVersion: Int,
     val hub: HubInfo,
     val capabilities: List<String>,
+    val relayUrls: List<String> = emptyList(),
 )
 
 @Serializable
