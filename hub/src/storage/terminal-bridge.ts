@@ -55,6 +55,7 @@ type TerminalTarget =
 
 interface CachedTopology {
   fetchedAt: number
+  it2FetchedAt: number
   byTty: Map<string, TerminalTarget>
 }
 
@@ -100,6 +101,7 @@ export class TerminalBridge {
   private topologyCache: CachedTopology | null = null
   private topologyLoading: Promise<CachedTopology> | null = null
   private agyProcCache: CachedAgyProcesses | null = null
+  private readonly pidTtyCache = new Map<number, string | null>()
   private readonly homeDir: string
   private readonly runCmd: TerminalCommandRunner
   private readonly pidAlive: (pid: number) => boolean
@@ -243,28 +245,35 @@ export class TerminalBridge {
     title?: string
     claudeRuntime?: ClaudeLiveSessionMeta
   }): Promise<TerminalTarget | null> {
-    const topo = await this.getTopology()
-    if (topo.byTty.size === 0) return null
-
     if (params.engineId === 'claude') {
       // Strict session isolation: ONLY bind to a terminal when we have a verified live PID
-      // whose sessionId matches `nativeId` and whose OS tty matches an active iTerm2/tmux pane.
+      // whose sessionId matches `nativeId` and whose OS tty matches an active tmux/iTerm2 pane.
       const rt = params.claudeRuntime
       if (!rt?.pid || rt.sessionId !== params.nativeId) {
         return null
       }
       if (!this.pidAlive(rt.pid)) {
+        this.pidTtyCache.delete(rt.pid)
         return null
       }
       const tty = await this.getProcessTty(rt.pid)
-      if (tty && topo.byTty.has(tty)) {
-        return topo.byTty.get(tty)!
+      if (!tty) return null
+
+      // Fast path: check lightweight tmux topology first without touching iTerm2 Python API (`it2`)!
+      const tmuxTopo = await this.getTopology(false)
+      if (tmuxTopo.byTty.has(tty)) {
+        return tmuxTopo.byTty.get(tty)!
       }
-      return null
+      const fullTopo = await this.getTopology(true)
+      return fullTopo.byTty.get(tty) ?? null
     }
 
     if (params.engineId === 'agy') {
-      return this.findAgyTarget(params.nativeId, params.cwd, topo)
+      const tmuxTopo = await this.getTopology(false)
+      const inTmux = await this.findAgyTarget(params.nativeId, params.cwd, tmuxTopo)
+      if (inTmux) return inTmux
+      const fullTopo = await this.getTopology(true)
+      return this.findAgyTarget(params.nativeId, params.cwd, fullTopo)
     }
 
     return null
@@ -352,11 +361,15 @@ export class TerminalBridge {
   }
 
   private async getProcessTty(pid: number): Promise<string | null> {
+    if (this.pidTtyCache.has(pid)) {
+      return this.pidTtyCache.get(pid) ?? null
+    }
     try {
       const stdout = await this.runCmd('ps', ['-o', 'tty=', '-p', String(pid)], 1_500)
       const raw = stdout.trim()
-      if (!raw || raw === '??' || raw === '?') return null
-      return raw.startsWith('/dev/') ? raw : `/dev/${raw}`
+      const tty = !raw || raw === '??' || raw === '?' ? null : raw.startsWith('/dev/') ? raw : `/dev/${raw}`
+      this.pidTtyCache.set(pid, tty)
+      return tty
     } catch {
       return null
     }
@@ -434,18 +447,28 @@ export class TerminalBridge {
     return undefined
   }
 
-  private async getTopology(): Promise<CachedTopology> {
+  private async getTopology(includeIt2 = false): Promise<CachedTopology> {
     const now = Date.now()
-    if (this.topologyCache && now - this.topologyCache.fetchedAt < 4_000) {
+    if (
+      this.topologyCache &&
+      now - this.topologyCache.fetchedAt < 10_000 &&
+      (!includeIt2 || (this.topologyCache.it2FetchedAt > 0 && now - this.topologyCache.it2FetchedAt < 20_000))
+    ) {
       return this.topologyCache
     }
     if (this.topologyLoading) return this.topologyLoading
 
     this.topologyLoading = (async () => {
       const byTty = new Map<string, TerminalTarget>()
+      // Preserve recently fetched iTerm2 entries when only refreshing tmux panes
+      if (!includeIt2 && this.topologyCache && now - this.topologyCache.it2FetchedAt < 20_000) {
+        for (const [k, v] of this.topologyCache.byTty) {
+          if (v.kind === 'iterm2') byTty.set(k, v)
+        }
+      }
       const env = augmentedPathEnv(process.env)
 
-      // 1. Prefer tmux pane mapping first.
+      // 1. Prefer lightweight tmux pane mapping first (~3ms C binary).
       // CRITICAL under macOS `launchd`: `launchd` sets `TMPDIR=/var/folders/.../T/` while user/ccmux
       // tmux servers often listen on `/private/tmp/tmux-<uid>/default`. Probe every discovered socket
       // explicitly with `tmux -S <socketPath>` so launchd daemons never miss live tmux servers!
@@ -469,7 +492,7 @@ export class TerminalBridge {
               if (sepIdx <= 0) continue
               const paneId = trimmed.slice(0, sepIdx).trim()
               const paneTty = trimmed.slice(sepIdx + 1).trim()
-              if (paneId && paneTty && !byTty.has(paneTty)) {
+              if (paneId && paneTty) {
                 byTty.set(paneTty, { kind: 'tmux', id: paneId, tty: paneTty, socketPath: sock })
               }
             }
@@ -479,27 +502,31 @@ export class TerminalBridge {
         }
       }
 
-      // 2. iTerm2 session mapping via `it2`
-      const it2Bin = this.resolveIt2Bin()
-      if (it2Bin) {
-        try {
-          const stdout = await this.runCmd(it2Bin, ['session', 'list', '--json'], 2_500, env)
-          const parsed = JSON.parse(stdout) as Array<{
-            id?: string
-            tty?: string
-          }>
-          for (const item of parsed) {
-            if (!item.id || !item.tty) continue
-            if (!byTty.has(item.tty)) {
-              byTty.set(item.tty, { kind: 'iterm2', id: item.id, tty: item.tty })
+      // 2. Lazy iTerm2 session mapping via `it2` (~300ms Python IPC — ONLY invoked when target TTY isn't in tmux!)
+      let it2FetchedAt = this.topologyCache?.it2FetchedAt ?? 0
+      if (includeIt2) {
+        const it2Bin = this.resolveIt2Bin()
+        if (it2Bin) {
+          try {
+            const stdout = await this.runCmd(it2Bin, ['session', 'list', '--json'], 2_500, env)
+            const parsed = JSON.parse(stdout) as Array<{
+              id?: string
+              tty?: string
+            }>
+            for (const item of parsed) {
+              if (!item.id || !item.tty) continue
+              if (!byTty.has(item.tty)) {
+                byTty.set(item.tty, { kind: 'iterm2', id: item.id, tty: item.tty })
+              }
             }
+          } catch {
+            // iTerm2 not running or API disabled
           }
-        } catch {
-          // iTerm2 not running or API disabled
         }
+        it2FetchedAt = Date.now()
       }
 
-      const next: CachedTopology = { fetchedAt: Date.now(), byTty }
+      const next: CachedTopology = { fetchedAt: Date.now(), it2FetchedAt, byTty }
       this.topologyCache = next
       return next
     })()

@@ -584,7 +584,9 @@ export class HostTaskInspector {
     }
 
     const now = Date.now()
-    if (now - w.lastTerminalPollAt >= 950) {
+    const minIntervalMs =
+      session.state === 'idle' && !w.activePermRequestId ? 6_000 : 1_400
+    if (now - w.lastTerminalPollAt >= minIntervalMs) {
       void this.pollTerminalForWatched(sessionId, false)
     }
   }
@@ -623,6 +625,10 @@ export class HostTaskInspector {
               },
             ])
           }
+          return
+        }
+        // Zero-overhead fast path: when Claude is idle with no pending permission prompt, skip screen capture on background ticks!
+        if (claudeRt.status === 'idle' && !claudeRt.waitingFor && !w.activePermRequestId && !forcePush) {
           return
         }
       }
