@@ -49,6 +49,8 @@ class FakeHubTransport : HubTransport {
     var simulateTailscaleSameUser: Boolean = false
     var tailscaleHandshakeCount: Int = 0
     var pairRedeemCount: Int = 0
+    var emitDisconnectOnClientClose: Boolean = false
+    private var wsConnected: Boolean = false
 
     val unsubscribedIds = mutableListOf<String>()
     val respondedApprovals = mutableListOf<Triple<String, String, String?>>()
@@ -144,6 +146,7 @@ class FakeHubTransport : HubTransport {
         platformName: String,
     ): HubHelloResult {
         connectHelloException?.let { throw it }
+        wsConnected = true
         return HubHelloResult(
             protocolVersion = PROTOCOL_VERSION,
             hub = hubInfo,
@@ -500,5 +503,11 @@ class FakeHubTransport : HubTransport {
             truncated = false,
         )
 
-    override suspend fun disconnect() = Unit
+    override suspend fun disconnect() {
+        val wasConnected = wsConnected
+        wsConnected = false
+        if (wasConnected && emitDisconnectOnClientClose) {
+            _disconnected.tryEmit("Connection closed")
+        }
+    }
 }

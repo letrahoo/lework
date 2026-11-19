@@ -15,6 +15,7 @@ import dev.lework.transport.HubRpcClient
 import dev.lework.transport.HubTransport
 import dev.lework.transport.RpcCallException
 import kotlin.io.encoding.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -53,6 +54,7 @@ class ConsoleStore(
     private var subscribedSessionId: String? = null
     private var subscribeSeqToken: Long = 0L
     private var userManuallyPickedMode: Boolean = false
+    private var manualPairingMode: Boolean = false
 
     private fun switchSubscriptionTo(nextSessionId: String?) {
         val prev = subscribedSessionId
@@ -76,7 +78,7 @@ class ConsoleStore(
         }
         scope.launch {
             observeBonjourHubUrls().collect { urls ->
-                if (urls.isNotEmpty() && !_state.value.hasEnteredWorkspace && _state.value.connectionStatus == ConnectionStatus.ERROR) {
+                if (!manualPairingMode && urls.isNotEmpty() && !_state.value.hasEnteredWorkspace && _state.value.connectionStatus == ConnectionStatus.ERROR) {
                     bootstrapOrConnect()
                 }
             }
@@ -137,7 +139,7 @@ class ConsoleStore(
         scope.launch {
             rpc.disconnected.collect { reason ->
                 val cur = _state.value
-                if (cur.hasEnteredWorkspace) {
+                if (!manualPairingMode && cur.hasEnteredWorkspace) {
                     if (!observeAppForeground().value) {
                         // iOS background / screen locked: keep workspace & Session untouched until foreground return
                         _state.update {
@@ -211,8 +213,11 @@ class ConsoleStore(
     }
 
     private fun bootstrapOrConnectToHost(preferredHubId: String?) {
+        manualPairingMode = false
         discoverJob?.cancel()
         oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        resumeJob?.cancel()
         startBonjourDiscovery()
         _state.update {
             it.copy(
@@ -565,9 +570,11 @@ class ConsoleStore(
             return
         }
 
+        manualPairingMode = false
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
+        resumeJob?.cancel()
         _state.update {
             it.copy(
                 hasEnteredWorkspace = false,
@@ -608,6 +615,8 @@ class ConsoleStore(
                     if (connectWithToken(wsUrl, auth.accessToken)) {
                         return@launch
                     }
+                } catch (ce: CancellationException) {
+                    throw ce
                 } catch (t: Throwable) {
                     lastError = t
                 }
@@ -623,8 +632,10 @@ class ConsoleStore(
 
     fun switchPairedHost(hubId: String) {
         if (hubId == _state.value.hub?.id && _state.value.hasEnteredWorkspace) return
+        manualPairingMode = false
         discoverJob?.cancel()
         oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
         resumeJob?.cancel()
         switchSubscriptionTo(null)
         saveActiveHostId(hubId)
@@ -633,42 +644,53 @@ class ConsoleStore(
         if (!hostToken.isNullOrBlank()) {
             saveAuthSession(hostToken, hostMeta?.userName ?: "Owner")
         }
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = false,
+                connectionStatus = ConnectionStatus.DISCOVERING,
+                connectionError = null,
+                activeHostId = hubId,
+                activeSessionId = null,
+                authUserName = hostMeta?.userName ?: it.authUserName,
+            )
+        }
         scope.launch {
             rpc.disconnect()
-            _state.update {
-                it.copy(
-                    hasEnteredWorkspace = false,
-                    activeHostId = hubId,
-                    activeSessionId = null,
-                    authUserName = hostMeta?.userName ?: it.authUserName,
-                )
-            }
             bootstrapOrConnectToHost(hubId)
         }
     }
 
     fun preparePairAnotherHost() {
+        manualPairingMode = true
         discoverJob?.cancel()
         oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
         resumeJob?.cancel()
         switchSubscriptionTo(null)
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = false,
+                connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                oauthEnabled = false,
+                oauthChallenge = null,
+                connectionError = null,
+                discoveredBaseUrl = "",
+                discoveredWsUrl = "",
+                pairedHosts = loadPairedHosts(),
+                tsnetLoggingIn = false,
+                tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
+                authStatusText = "可扫码配对新主机、使用 Tailscale 同账号发现，或点击已配对主机切换",
+            )
+        }
         scope.launch {
             rpc.disconnect()
             if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
                 runCatching {
                     val st = startMobileTsnet(loadSavedTsnetControlUrl())
-                    _state.update { it.copy(tsnetStatus = st) }
+                    if (manualPairingMode && !_state.value.hasEnteredWorkspace) {
+                        _state.update { it.copy(tsnetStatus = st) }
+                    }
                 }
-            }
-            _state.update {
-                it.copy(
-                    hasEnteredWorkspace = false,
-                    connectionStatus = ConnectionStatus.NEEDS_AUTH,
-                    connectionError = null,
-                    oauthChallenge = null,
-                    tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
-                    authStatusText = "可扫码配对新主机、使用 Tailscale 同账号发现，或手动填写地址",
-                )
             }
         }
     }
@@ -689,6 +711,7 @@ class ConsoleStore(
     }
 
     fun connectManualEndpoint(rawHostOrUrl: String, rawToken: String) {
+        manualPairingMode = false
         val candidatePair = when {
             rawHostOrUrl.trim().startsWith("lework://", ignoreCase = true) ||
                 rawHostOrUrl.trim().startsWith("{") -> rawHostOrUrl.trim()
@@ -776,6 +799,8 @@ class ConsoleStore(
                         return@launch
                     }
                     // Other RPC / zombie-socket failure falls through to full discovery & reconnect
+                } catch (ce: CancellationException) {
+                    throw ce
                 } catch (_: Throwable) {
                     // Zombie TCP socket after iOS sleep — fall through to reconnect
                 }
@@ -882,6 +907,8 @@ class ConsoleStore(
                         }
                     }
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (t: Throwable) {
                 _state.update {
                     it.copy(authStatusText = "授权请求失败: ${t.message}")
@@ -902,18 +929,22 @@ class ConsoleStore(
     }
 
     fun logout() {
+        discoverJob?.cancel()
         oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
         resumeJob?.cancel()
+        switchSubscriptionTo(null)
         saveAuthSession(null, null)
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = false,
+                authUserName = null,
+                connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                connectionError = null,
+            )
+        }
         scope.launch {
             rpc.disconnect()
-            _state.update {
-                it.copy(
-                    hasEnteredWorkspace = false,
-                    authUserName = null,
-                    connectionStatus = ConnectionStatus.NEEDS_AUTH,
-                )
-            }
             if (_state.value.oauthEnabled) {
                 startOAuthLoginFlow()
             }
@@ -991,6 +1022,7 @@ class ConsoleStore(
             val validWs = workspaces.firstOrNull { it.path == current.selectedWorkspacePath }?.path
                 ?: workspaces.firstOrNull()?.path.orEmpty()
 
+            manualPairingMode = false
             _state.update {
                 it.copy(
                     hasEnteredWorkspace = true,
@@ -1019,6 +1051,8 @@ class ConsoleStore(
                 runCatching { subscribeAndCatchUp(current.activeSessionId) }
             }
             true
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             if (t is RpcCallException && t.code == ErrorCode.UNAUTHORIZED) {
                 _state.value.hub?.id?.let { saveHostAccessToken(it, null) }

@@ -403,4 +403,59 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T10_4 preparePairAnotherHost stays on clean NEEDS_AUTH screen without auto-reconnecting via disconnect or Bonjour`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.savedToken = "lework_dt.existing_mac_token"
+        JvmPlatformTestHooks.tsnetAvailable = true
+        JvmPlatformTestHooks.tsnetEnabled = true
+        JvmPlatformTestHooks.tsnetStatus = dev.lework.platform.MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            loginName = "owner@example.com",
+            peers = emptyList(),
+        )
+        val transport = FakeHubTransport().apply {
+            emitDisconnectOnClientClose = true
+        }
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            assertTrue(store.state.value.hasEnteredWorkspace)
+
+            // User taps "配对或连接其他主机" in drawer
+            store.preparePairAnotherHost()
+            runCurrent()
+
+            assertFalse(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.NEEDS_AUTH, store.state.value.connectionStatus)
+            assertFalse(store.state.value.oauthEnabled)
+            assertEquals("", store.state.value.discoveredBaseUrl)
+
+            // Even if user probes tsnet (which errors with 0 peers) and Bonjour emits local Mac URLs,
+            // it MUST NOT yank the user back into the previous Mac workspace automatically!
+            store.searchAndConnectViaTsnet()
+            advanceTimeBy(6_000L)
+            runCurrent()
+            assertEquals(ConnectionStatus.ERROR, store.state.value.connectionStatus)
+            assertFalse(store.state.value.hasEnteredWorkspace)
+
+            JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.31.44:64450"))
+            runCurrent()
+            assertFalse(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.ERROR, store.state.value.connectionStatus)
+
+            // Explicit tap on paired host reconnects cleanly
+            val macHostId = store.state.value.pairedHosts.first().hubId
+            store.switchPairedHost(macHostId)
+            runCurrent()
+            assertTrue(store.state.value.hasEnteredWorkspace)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

@@ -677,10 +677,10 @@ class HubRpcClient(
         )
 
     override suspend fun disconnect() {
-        readerJob?.cancel()
-        readerJob = null
         val s = wsSession
         wsSession = null
+        readerJob?.cancel()
+        readerJob = null
         runCatching { s?.close() }
         failAllPending("Disconnected")
     }
@@ -737,10 +737,19 @@ class HubRpcClient(
                 }
             }
             failAllPending("Connection closed by Hub")
-            _disconnected.tryEmit("Connection closed")
+            if (wsSession === session) {
+                wsSession = null
+                _disconnected.tryEmit("Connection closed")
+            }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            failAllPending("Cancelled")
+            throw ce
         } catch (t: Throwable) {
             failAllPending(t.message ?: "WebSocket error")
-            _disconnected.tryEmit(t.message ?: "Disconnected")
+            if (wsSession === session) {
+                wsSession = null
+                _disconnected.tryEmit(t.message ?: "Disconnected")
+            }
         }
     }
 
