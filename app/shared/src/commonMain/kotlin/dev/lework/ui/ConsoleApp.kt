@@ -105,11 +105,6 @@ fun ConsoleApp(
                                     showUsageSheet = true
                                     scope.launch { drawerState.close() }
                                 },
-                                onOpenDiffAndCheckpoints = {
-                                    store.refreshDiffAndCheckpoints()
-                                    showDiffSheet = true
-                                    scope.launch { drawerState.close() }
-                                },
                                 onSelectFilter = store::setDrawerEngineFilter,
                                 onSelectSession = { sid ->
                                     store.selectSession(sid)
@@ -134,10 +129,6 @@ fun ConsoleApp(
                                 scope.launch { drawerState.open() }
                             },
                             onOpenModelSheet = { showModelSheet = true },
-                            onOpenUsageSheet = {
-                                store.refreshUsageDashboard()
-                                showUsageSheet = true
-                            },
                             onOpenDiffSheet = {
                                 store.refreshDiffAndCheckpoints()
                                 showDiffSheet = true
@@ -146,7 +137,6 @@ fun ConsoleApp(
                                 store.browseDirectory()
                                 showFilesSheet = true
                             },
-                            onNewSession = store::startNewDraftSession,
                         )
 
                         if (state.connectionStatus == ConnectionStatus.RECONNECTING) {
@@ -188,7 +178,6 @@ fun ConsoleApp(
                             if (state.activeSessionId == null && transcript.items.isEmpty()) {
                                 CalmHomeEmptyState(
                                     state = state,
-                                    onOpenWorkspaceSheet = { showWorkspaceSheet = true },
                                     onOpenRunningSession = { sid -> store.selectSession(sid) },
                                 )
                             } else {
@@ -285,7 +274,6 @@ fun ConsoleApp(
                             onSelectEngineAndModel = { engId, modelSpec, effort ->
                                 store.selectEngineAndModel(engId, modelSpec, effort)
                             },
-                            onSelectEffort = store::selectEffort,
                             onDone = { showModelSheet = false },
                         )
                     }
@@ -381,15 +369,13 @@ private fun MinimalTopBar(
     state: ConsoleUiState,
     onOpenDrawer: () -> Unit,
     onOpenModelSheet: () -> Unit,
-    onOpenUsageSheet: () -> Unit,
     onOpenDiffSheet: () -> Unit,
     onOpenFilesSheet: () -> Unit,
-    onNewSession: () -> Unit,
 ) {
     val engineLabel = shortEngineLabel(state.selectedEngineId)
     val modelLabel = state.selectedModelSpec?.name
         ?.removeSuffix(" (Proxy)")
-        ?.let { if (it.length > 18) it.take(17) + "…" else it }
+        ?.let { if (it.length > 24) it.take(23) + "…" else it }
         ?: "默认模型"
     val hasActiveTasks = state.runningSessions.isNotEmpty()
 
@@ -462,17 +448,6 @@ private fun MinimalTopBar(
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(
-                onClick = onOpenUsageSheet,
-                modifier = Modifier.size(36.dp).testTag("topbar_btn_usage"),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.QueryStats,
-                    contentDescription = "用量与额度",
-                    tint = Everforest.Grey2,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-            IconButton(
                 onClick = onOpenDiffSheet,
                 modifier = Modifier.size(36.dp).testTag("topbar_btn_diff"),
             ) {
@@ -489,20 +464,9 @@ private fun MinimalTopBar(
             ) {
                 Icon(
                     imageVector = Icons.Rounded.FolderOpen,
-                    contentDescription = "工作区文件",
+                    contentDescription = "浏览文件",
                     tint = Everforest.Grey2,
                     modifier = Modifier.size(20.dp),
-                )
-            }
-            IconButton(
-                onClick = onNewSession,
-                modifier = Modifier.size(36.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.EditNote,
-                    contentDescription = "新建对话",
-                    tint = Everforest.Fg,
-                    modifier = Modifier.size(22.dp),
                 )
             }
         }
@@ -512,7 +476,6 @@ private fun MinimalTopBar(
 @Composable
 private fun CalmHomeEmptyState(
     state: ConsoleUiState,
-    onOpenWorkspaceSheet: () -> Unit,
     onOpenRunningSession: (String) -> Unit,
 ) {
     Column(
@@ -546,84 +509,65 @@ private fun CalmHomeEmptyState(
             color = Everforest.Fg,
         )
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
 
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = Everforest.Bg1,
-            border = BorderStroke(1.dp, Everforest.Bg3),
-            modifier = Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .clickable { onOpenWorkspaceSheet() },
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Folder,
-                    contentDescription = null,
-                    tint = Everforest.Aqua,
-                    modifier = Modifier.size(15.dp),
-                )
-                Text(
-                    text = state.workspaceDisplayName,
-                    fontSize = 12.sp,
-                    color = Everforest.Grey2,
-                )
-                Icon(
-                    imageVector = Icons.Rounded.UnfoldMore,
-                    contentDescription = null,
-                    tint = Everforest.Grey0,
-                    modifier = Modifier.size(14.dp),
-                )
-            }
-        }
+        Text(
+            text = "在下方直接发起新对话，或从左上角接管本机会话",
+            fontSize = 12.5.sp,
+            color = Everforest.CommentGrey,
+            textAlign = TextAlign.Center,
+        )
 
-        val running = state.runningSessions.firstOrNull()
-        if (running != null) {
-            val isWaiting = running.state == SessionState.WAITING_PERMISSION
-            val bannerText = when {
-                isWaiting -> "${shortEngineLabel(running.engineId)} 等待审批: ${running.title}"
-                !running.liveStatusText.isNullOrBlank() ->
-                    "${shortEngineLabel(running.engineId)} · ${running.title} (${running.liveStatusText})"
-                else -> "${shortEngineLabel(running.engineId)} 正在执行: ${running.title}"
-            }
+        val activeList = state.runningSessions.take(3)
+        if (activeList.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = Everforest.BgYellow,
-                border = BorderStroke(1.dp, Everforest.Yellow.copy(alpha = if (isWaiting) 0.65f else 0.4f)),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onOpenRunningSession(running.id) },
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(
-                        imageVector = if (isWaiting) Icons.Rounded.Shield else Icons.Rounded.PlayCircle,
-                        contentDescription = null,
-                        tint = Everforest.Yellow,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Text(
-                        text = bannerText,
-                        fontSize = 12.sp,
-                        color = Everforest.Fg,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    Icon(
-                        imageVector = Icons.Rounded.ChevronRight,
-                        contentDescription = null,
-                        tint = Everforest.Yellow,
-                        modifier = Modifier.size(16.dp),
-                    )
+                for (running in activeList) {
+                    val isWaiting = running.state == SessionState.WAITING_PERMISSION
+                    val bannerText = when {
+                        isWaiting -> "${shortEngineLabel(running.engineId)} 待审批 · ${running.title}"
+                        !running.liveStatusText.isNullOrBlank() ->
+                            "${shortEngineLabel(running.engineId)} · ${running.title} (${running.liveStatusText})"
+                        else -> "${shortEngineLabel(running.engineId)} 进行中 · ${running.title}"
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Everforest.BgYellow,
+                        border = BorderStroke(1.dp, Everforest.Yellow.copy(alpha = if (isWaiting) 0.65f else 0.4f)),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onOpenRunningSession(running.id) },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (isWaiting) Icons.Rounded.Shield else Icons.Rounded.PlayCircle,
+                                contentDescription = null,
+                                tint = Everforest.Yellow,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = bannerText,
+                                fontSize = 12.sp,
+                                color = Everforest.Fg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            Icon(
+                                imageVector = Icons.Rounded.ChevronRight,
+                                contentDescription = null,
+                                tint = Everforest.Yellow,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
                 }
             }
         }

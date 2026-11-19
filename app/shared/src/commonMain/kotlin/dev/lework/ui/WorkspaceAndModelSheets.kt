@@ -51,7 +51,6 @@ import kotlinx.coroutines.launch
 internal fun EngineModelPickerSheet(
     state: ConsoleUiState,
     onSelectEngineAndModel: (String, EngineModelSpec?, ReasoningEffort?) -> Unit,
-    onSelectEffort: (ReasoningEffort) -> Unit,
     onDone: () -> Unit,
 ) {
     Column(
@@ -78,7 +77,7 @@ internal fun EngineModelPickerSheet(
         }
 
         // 1. Engine Selector
-        Text("引擎底座", fontSize = 12.sp, color = Everforest.Grey1)
+        Text("编码引擎", fontSize = 12.sp, color = Everforest.Grey1)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -122,53 +121,18 @@ internal fun EngineModelPickerSheet(
             }
         }
 
-        // 2. Reasoning Effort Selector
-        val efforts = state.availableEfforts
-        if (efforts.isNotEmpty()) {
-            Text("推理等级 (Reasoning Effort)", fontSize = 12.sp, color = Everforest.Grey1)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                for (eff in efforts) {
-                    val selected = state.selectedEffort == eff
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (selected) Everforest.BgBlue else Everforest.Bg2,
-                        border = BorderStroke(
-                            1.dp,
-                            if (selected) Everforest.Blue else Everforest.Bg3,
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onSelectEffort(eff) },
-                    ) {
-                        Text(
-                            text = effortDisplayLabel(eff),
-                            modifier = Modifier.padding(vertical = 8.dp),
-                            textAlign = TextAlign.Center,
-                            fontSize = 12.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (selected) Everforest.Blue else Everforest.Fg,
-                        )
-                    }
-                }
-            }
-        }
-
-        // 3. Model List inside the chosen Engine
+        // 2. Model List inside the chosen Engine
         Text("可用模型", fontSize = 12.sp, color = Everforest.Grey1)
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 280.dp),
+                .heightIn(max = 360.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             items(state.availableModelsForEngine, key = { "${it.providerId}_${it.id}" }) { m ->
                 val selected = m.id == state.selectedModelSpec?.id
                 val sourceTag = when (m.providerId) {
-                    "cpa_local" -> "CLIProxyAPI"
+                    "cpa_local" -> "本机代理"
                     null -> ""
                     else -> "官方订阅"
                 }
@@ -246,7 +210,7 @@ internal fun WorkspacePickerSheet(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = if (activeSess != null) "会话工作空间" else "选择工作区目录（支持多选关联）",
+                text = if (activeSess != null) "当前会话目录" else "选择工作区目录",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = Everforest.Fg,
@@ -305,7 +269,7 @@ internal fun WorkspacePickerSheet(
                                         color = Everforest.Bg1,
                                     ) {
                                         Text(
-                                            text = if (isInitial) "初始目录" else "关联目录",
+                                            text = if (isInitial) "主目录" else "关联目录",
                                             fontSize = 10.sp,
                                             color = if (isInitial) Everforest.CodeGreen else Everforest.CommentGrey,
                                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
@@ -338,7 +302,7 @@ internal fun WorkspacePickerSheet(
             )
         } else {
             Text(
-                text = "点击行设为主工作区，点右侧「+ 关联」可附加多个工作区",
+                text = "点击行设为主目录，点右侧「+ 关联」可附加多个目录",
                 fontSize = 12.sp,
                 color = Everforest.CommentGrey,
             )
@@ -416,7 +380,7 @@ internal fun WorkspacePickerSheet(
                                     color = Everforest.Bg1,
                                 ) {
                                     Text(
-                                        text = "初始目录",
+                                        text = "主目录",
                                         fontSize = 11.sp,
                                         color = Everforest.CodeGreen,
                                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
@@ -460,6 +424,9 @@ internal fun WorkspaceFileTreeSheet(
     onSwitchWorkspace: () -> Unit,
 ) {
     val activeWsList = state.activeWorkspaces
+    val normalizedCurPath = state.currentBrowsePath.trimEnd('/')
+    val atWorkspaceRoot = activeWsList.any { it.trimEnd('/') == normalizedCurPath }
+    val canGoBack = state.openedFilePath != null || (!atWorkspaceRoot && normalizedCurPath.isNotEmpty())
 
     Column(
         modifier = Modifier
@@ -476,20 +443,29 @@ internal fun WorkspaceFileTreeSheet(
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.weight(1f),
             ) {
-                IconButton(
-                    onClick = {
-                        if (state.openedFilePath != null) onCloseFile() else onNavigateUp()
-                    },
-                    modifier = Modifier.size(32.dp),
-                ) {
+                if (canGoBack) {
+                    IconButton(
+                        onClick = {
+                            if (state.openedFilePath != null) onCloseFile() else onNavigateUp()
+                        },
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = "返回上级",
+                            tint = Everforest.Fg,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                } else {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                        contentDescription = "返回",
-                        tint = Everforest.Fg,
-                        modifier = Modifier.size(18.dp),
+                        imageVector = Icons.Rounded.FolderOpen,
+                        contentDescription = null,
+                        tint = Everforest.Aqua,
+                        modifier = Modifier.size(20.dp),
                     )
                 }
                 Column {
@@ -510,7 +486,7 @@ internal fun WorkspaceFileTreeSheet(
             }
 
             TextButton(onClick = onSwitchWorkspace) {
-                Text("管理工作区", fontSize = 12.sp, color = Everforest.CodeGreen)
+                Text("切换目录", fontSize = 12.sp, color = Everforest.CodeGreen)
             }
         }
 
@@ -525,7 +501,7 @@ internal fun WorkspaceFileTreeSheet(
                     val short = wsPath.trimEnd('/').substringAfterLast('/').ifBlank { wsPath }
                     val isCurrentRoot = state.currentBrowsePath.startsWith(wsPath)
                     SidebarFilterPill(
-                        label = if (idx == 0) "$short (主)" else short,
+                        label = if (idx == 0) "$short · 主目录" else short,
                         selected = isCurrentRoot,
                         onClick = { onSelectActiveWorkspaceTab(wsPath) },
                     )

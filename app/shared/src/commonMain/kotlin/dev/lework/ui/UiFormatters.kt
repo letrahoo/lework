@@ -48,9 +48,9 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 internal fun connectionChannelLabel(baseUrl: String): String = when {
-    loadSavedRelayUrls().any { it.isNotBlank() && baseUrl.startsWith(it) } -> "中继通道直连"
-    baseUrl.isNotBlank() -> "局域网 Wi‑Fi 直连"
-    else -> "已认证连接"
+    loadSavedRelayUrls().any { it.isNotBlank() && baseUrl.startsWith(it) } -> "远程中继"
+    baseUrl.isNotBlank() -> "局域网直连"
+    else -> "已连接"
 }
 
 // ---------------------------------------------------------------------------
@@ -76,19 +76,19 @@ internal fun engineAccentColor(engineId: String): Color = when (engineId) {
 }
 
 internal fun modeDisplayLabel(mode: SessionMode): String = when (mode) {
-    SessionMode.AUTO -> "⏵⏵ Auto"
-    SessionMode.ACCEPT_EDITS -> "⏵⏵ Accept edits"
-    SessionMode.PLAN -> "⏸ Plan"
-    SessionMode.DEFAULT -> "Default"
-    SessionMode.BYPASS_PERMISSIONS -> "⏵⏵ Bypass"
+    SessionMode.AUTO -> "自动模式"
+    SessionMode.ACCEPT_EDITS -> "自动改码"
+    SessionMode.PLAN -> "仅规划"
+    SessionMode.DEFAULT -> "逐步确认"
+    SessionMode.BYPASS_PERMISSIONS -> "免审批"
 }
 
 internal fun effortDisplayLabel(effort: ReasoningEffort): String = when (effort) {
-    ReasoningEffort.LOW -> "Low"
-    ReasoningEffort.MEDIUM -> "Medium"
-    ReasoningEffort.HIGH -> "High"
-    ReasoningEffort.XHIGH -> "XHigh"
-    ReasoningEffort.MAX -> "Max"
+    ReasoningEffort.LOW -> "轻量"
+    ReasoningEffort.MEDIUM -> "标准"
+    ReasoningEffort.HIGH -> "深度"
+    ReasoningEffort.XHIGH -> "超高"
+    ReasoningEffort.MAX -> "极限"
 }
 
 internal fun fileMaterialIcon(entry: FsEntry): ImageVector {

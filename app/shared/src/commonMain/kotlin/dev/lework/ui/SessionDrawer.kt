@@ -53,7 +53,6 @@ internal fun TasksSidebarContent(
     state: ConsoleUiState,
     onNewSession: () -> Unit,
     onOpenUsage: () -> Unit,
-    onOpenDiffAndCheckpoints: () -> Unit,
     onSelectFilter: (String?) -> Unit,
     onSelectSession: (String) -> Unit,
     onRefresh: () -> Unit,
@@ -86,7 +85,7 @@ internal fun TasksSidebarContent(
             IconButton(onClick = onRefresh) {
                 Icon(
                     imageVector = Icons.Rounded.Refresh,
-                    contentDescription = "刷新任务",
+                    contentDescription = "刷新会话",
                     tint = Everforest.Grey2,
                     modifier = Modifier.size(19.dp),
                 )
@@ -126,69 +125,44 @@ internal fun TasksSidebarContent(
 
         Spacer(Modifier.height(8.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = Everforest.Bg1,
+            border = BorderStroke(1.dp, Everforest.Bg3),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { onOpenUsage() }
+                .testTag("drawer_btn_usage"),
         ) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = Everforest.Bg1,
-                border = BorderStroke(1.dp, Everforest.Bg3),
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { onOpenUsage() }
-                    .testTag("drawer_btn_usage"),
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.QueryStats,
                         contentDescription = null,
                         tint = Everforest.Green,
-                        modifier = Modifier.size(15.dp),
+                        modifier = Modifier.size(16.dp),
                     )
                     Text(
                         text = "用量与额度",
-                        fontSize = 12.5.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,
                         color = Everforest.Fg,
-                        maxLines = 1,
                     )
                 }
-            }
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = Everforest.Bg1,
-                border = BorderStroke(1.dp, Everforest.Bg3),
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { onOpenDiffAndCheckpoints() }
-                    .testTag("drawer_btn_diff"),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.CompareArrows,
-                        contentDescription = null,
-                        tint = Everforest.BoldGold,
-                        modifier = Modifier.size(15.dp),
-                    )
-                    Text(
-                        text = "变更与快照",
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Everforest.Fg,
-                        maxLines = 1,
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Rounded.ChevronRight,
+                    contentDescription = null,
+                    tint = Everforest.Grey0,
+                    modifier = Modifier.size(16.dp),
+                )
             }
         }
 
@@ -227,7 +201,7 @@ internal fun TasksSidebarContent(
             if (runningList.isNotEmpty()) {
                 item(key = "hdr_running") {
                     Text(
-                        text = "正在执行",
+                        text = "进行中",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Everforest.Orange,
@@ -246,7 +220,7 @@ internal fun TasksSidebarContent(
 
             item(key = "hdr_history") {
                 Text(
-                    text = "本机历史任务",
+                    text = "历史会话",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Everforest.Grey1,
@@ -315,7 +289,7 @@ internal fun TasksSidebarContent(
                 }
             }
             TextButton(onClick = onLogout) {
-                Text("切换账号", fontSize = 12.sp, color = Everforest.Grey1)
+                Text("退出登录", fontSize = 12.sp, color = Everforest.Grey1)
             }
         }
     }

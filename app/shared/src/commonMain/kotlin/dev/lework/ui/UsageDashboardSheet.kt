@@ -114,7 +114,7 @@ internal fun SessionContextStatusStrip(
                         modifier = Modifier.size(13.dp),
                     )
                     Text(
-                        text = "本会话已交互 ${sessionUsage.totals.requests} 轮 · 点击查看全局用量与额度",
+                        text = "已对话 ${sessionUsage.totals.requests} 轮 · 查看用量与额度",
                         fontSize = 11.sp,
                         color = Everforest.CommentGrey,
                         maxLines = 1,
@@ -128,7 +128,7 @@ internal fun SessionContextStatusStrip(
                         modifier = Modifier.size(13.dp),
                     )
                     Text(
-                        text = "本会话累计 ${formatTokenCompact(fallbackTotal)} tokens · 点击查看详情",
+                        text = "本会话累计 ${formatTokenCompact(fallbackTotal)} Token · 查看详情",
                         fontSize = 11.sp,
                         color = Everforest.Grey2,
                         maxLines = 1,
@@ -265,9 +265,9 @@ internal fun UsageDashboardSheet(
                 )
             }
 
-            // 4. Local API Proxy (CPA)
+            // 4. Local API Proxy
             if (proxy != null) {
-                SectionHeader("本机模型代理 (CPA)")
+                SectionHeader("本机模型代理")
                 ProxyStatsCard(proxy)
             }
         }

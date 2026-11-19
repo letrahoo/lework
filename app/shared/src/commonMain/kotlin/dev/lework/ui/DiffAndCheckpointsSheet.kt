@@ -76,7 +76,7 @@ internal fun DiffAndCheckpointsSheet(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "变更对比与版本快照",
+                    text = "变更与快照",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Everforest.Fg,
@@ -142,7 +142,7 @@ internal fun DiffAndCheckpointsSheet(
         ) {
             val fileCount = gitStatus?.files?.size ?: 0
             SidebarFilterPill(
-                label = if (fileCount > 0) "未提交变更 ($fileCount)" else "未提交变更",
+                label = if (fileCount > 0) "未提交改动 ($fileCount)" else "未提交改动",
                 selected = activeTab == 0,
                 onClick = { activeTab = 0 },
             )
@@ -215,7 +215,7 @@ internal fun DiffAndCheckpointsSheet(
                         },
                     ) {
                         Text(
-                            text = if (copiedDiff) "已复制" else "复制对比",
+                            text = if (copiedDiff) "已复制" else "复制差异",
                             fontSize = 11.5.sp,
                             color = if (copiedDiff) Everforest.Green else Everforest.Grey2,
                         )
@@ -306,7 +306,7 @@ internal fun DiffAndCheckpointsSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
-                            .clickable { onOpenFileDiff(null, null, "全部未提交变更 (${gitStatus.files.size} 个文件)") },
+                            .clickable { onOpenFileDiff(null, null, "全部未提交改动 (${gitStatus.files.size} 个文件)") },
                     ) {
                         Row(
                             modifier = Modifier
@@ -326,7 +326,7 @@ internal fun DiffAndCheckpointsSheet(
                                     modifier = Modifier.size(16.dp),
                                 )
                                 Text(
-                                    text = "查看整仓合并对比 (${gitStatus.files.size} 个文件)",
+                                    text = "查看全部改动 (${gitStatus.files.size} 个文件)",
                                     fontSize = 12.5.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = Everforest.Fg,
@@ -390,7 +390,7 @@ internal fun DiffAndCheckpointsSheet(
                         modifier = Modifier.size(15.dp),
                     )
                     Spacer(Modifier.width(4.dp))
-                    Text("保存当前快照", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("保存快照", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
 
@@ -402,7 +402,7 @@ internal fun DiffAndCheckpointsSheet(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = "暂无版本快照，点击右上角「保存当前快照」即可创建还原点",
+                        text = "暂无快照，点击上方「保存快照」即可记录当前版本",
                         fontSize = 12.sp,
                         color = Everforest.CommentGrey,
                     )
@@ -564,10 +564,10 @@ private fun CheckpointRowCard(
                 if (!isConfirming) {
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = onDiff) {
-                            Text("对比差异", fontSize = 11.5.sp, color = Everforest.Grey2)
+                            Text("对比改动", fontSize = 11.5.sp, color = Everforest.Grey2)
                         }
                         TextButton(onClick = onAskRestore) {
-                            Text("回退到此版本", fontSize = 11.5.sp, color = Everforest.BoldGold)
+                            Text("回退到此快照", fontSize = 11.5.sp, color = Everforest.BoldGold)
                         }
                     }
                 }
