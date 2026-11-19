@@ -1,0 +1,407 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import type { AgentEvent, SessionMeta } from '@lework/protocol'
+import type { ClaudeLiveSessionMeta } from '../terminal-bridge.ts'
+import {
+  classifyRawToolCall,
+  collectRecentFiles,
+  extractProjectRootFromToolInput,
+  mergeUniqueWorkspaces,
+  readFirstAndLastLines,
+  readFullSessionLines,
+  type HostTranscriptEntry,
+  type ParsedHostTranscript,
+} from './common.ts'
+import { readClaudeLocalSettings } from './engine-settings.ts'
+
+export function scanClaudeSessions(
+  homeDir: string,
+  claudeRuntimeMap: Map<string, ClaudeLiveSessionMeta>,
+  out: Map<string, HostTranscriptEntry>,
+): void {
+  const projectsDir = path.join(homeDir, '.claude', 'projects')
+  if (!fs.existsSync(projectsDir)) return
+  const claudeDefaults = readClaudeLocalSettings(homeDir)
+
+  const files = collectRecentFiles(projectsDir, f => f.endsWith('.jsonl'), 24)
+  for (const f of files) {
+    try {
+      const nativeId = path.basename(f.path, '.jsonl')
+      const sessionId = `host:claude:${nativeId}`
+      const slug = path.basename(path.dirname(f.path))
+      const { first, last } = readFirstAndLastLines(f.path, 20, 10)
+      let promptTitle = ''
+      let customTitle = ''
+      let model: string | undefined
+      const cwds: string[] = []
+      for (const l of [...first, ...last]) {
+        try {
+          const o = JSON.parse(l) as {
+            type?: string
+            customTitle?: string
+            cwd?: string
+            message?: { role?: string; model?: string; content?: unknown }
+          }
+          if (typeof o.cwd === 'string' && o.cwd.trim()) {
+            cwds.push(o.cwd.trim())
+          }
+          if (o.type === 'custom-title' && typeof o.customTitle === 'string' && o.customTitle.trim()) {
+            customTitle = o.customTitle.trim()
+          }
+          if (!promptTitle && o.type === 'user' && o.message?.content) {
+            const txt = extractClaudeText(o.message.content)
+            if (txt && !txt.startsWith('<') && !txt.startsWith('Base directory for this skill:')) {
+              promptTitle = txt.replace(/\s+/g, ' ').trim().slice(0, 48)
+            }
+          }
+          if (o.message?.model) model = o.message.model
+        } catch {
+          // ignore
+        }
+      }
+      const rt = claudeRuntimeMap.get(nativeId)
+      const title = rt?.name || customTitle || promptTitle
+      if (!title) continue
+      if (rt?.cwd) cwds.unshift(rt.cwd)
+      const workspaces = mergeUniqueWorkspaces(
+        cwds.length > 0 ? cwds : [decodeClaudeProjectSlug(slug)],
+      )
+      const primaryCwd = workspaces[0] ?? decodeClaudeProjectSlug(slug)
+
+      let state: SessionMeta['state'] = 'idle'
+      if (rt) {
+        // Trust `~/.claude/sessions/*.json` explicitly when interactive CLI is alive
+        if (rt.waitingFor === 'permission prompt') {
+          state = 'waiting_permission'
+        } else if (rt.status === 'running' || rt.status === 'busy') {
+          state = 'running'
+        } else {
+          state = 'idle'
+        }
+      } else if (Date.now() - f.mtimeMs < 45_000 && isClaudeTailActivelyRunning(last)) {
+        state = 'running'
+      }
+
+      out.set(sessionId, {
+        nativeId,
+        filePath: f.path,
+        meta: {
+          id: sessionId,
+          engineId: 'claude',
+          cwd: primaryCwd,
+          workspaces,
+          title,
+          state,
+          liveStatusText: state === 'waiting_permission' ? '等待终端执行审批…' : undefined,
+          createdAt: Math.floor(f.birthtimeMs || f.mtimeMs),
+          updatedAt: Math.floor(Math.max(f.mtimeMs, rt?.updatedAt ?? 0)),
+          lastSeq: 0,
+          model: model ?? claudeDefaults.model,
+          reasoningEffort: claudeDefaults.effort,
+          mode: claudeDefaults.defaultMode,
+          source: 'host',
+        },
+      })
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export function parseClaudeTranscript(
+  sessionId: string,
+  filePath: string,
+): ParsedHostTranscript {
+  const events: AgentEvent[] = []
+  const workspaces: string[] = []
+  const openTools = new Set<string>()
+  const queued: string[] = []
+  let isRunning = false
+  let turnStartedAt: number | undefined
+  const lines = readFullSessionLines(filePath)
+  let seq = 0
+  for (const line of lines) {
+    try {
+      const o = JSON.parse(line) as {
+        type?: string
+        subtype?: string
+        operation?: string
+        isMeta?: boolean
+        content?: unknown
+        cwd?: string
+        uuid?: string
+        timestamp?: string
+        attachment?: {
+          type?: string
+          prompt?: string
+          source_uuid?: string
+          origin?: { kind?: string }
+        }
+        message?: {
+          id?: string
+          role?: string
+          stop_reason?: string | null
+          usage?: { input_tokens?: number; output_tokens?: number }
+          content?: unknown
+        }
+      }
+      if (typeof o.cwd === 'string' && o.cwd.trim()) {
+        workspaces.push(o.cwd.trim())
+      }
+      const ts = o.timestamp ? Date.parse(o.timestamp) || Date.now() : Date.now()
+      if (o.type === 'queue-operation') {
+        if (o.operation === 'enqueue' && typeof o.content === 'string') {
+          const cleanQ = o.content.trim()
+          if (cleanQ && !cleanQ.startsWith('<')) {
+            queued.push(cleanQ)
+          }
+        } else if (o.operation === 'dequeue' || o.operation === 'remove' || o.operation === 'clear') {
+          if (o.operation === 'clear') {
+            queued.length = 0
+          } else if (typeof o.content === 'string' && o.content.trim()) {
+            const targetIdx = queued.indexOf(o.content.trim())
+            if (targetIdx >= 0) queued.splice(targetIdx, 1)
+            else if (queued.length > 0) queued.shift()
+          } else if (queued.length > 0) {
+            queued.shift()
+          }
+        }
+        continue
+      }
+      // Claude Code 2.1.x mid-turn steering: queued follow-ups absorbed during an active turn are
+      // removed from `queue-operation` (`reason: "absorbed_mid_turn"`) and recorded as `attachment.queued_command`
+      // rather than `type: "user"`. Surface them right in place as `message.user` just like Claude's Shell UI!
+      if (o.type === 'attachment' && o.attachment?.type === 'queued_command') {
+        const qcPrompt = typeof o.attachment.prompt === 'string' ? o.attachment.prompt.trim() : ''
+        if (qcPrompt && !qcPrompt.startsWith('<') && o.attachment.origin?.kind !== 'task-notification') {
+          const qIdx = queued.indexOf(qcPrompt)
+          if (qIdx >= 0) queued.splice(qIdx, 1)
+          isRunning = true
+          events.push({
+            seq: seq++,
+            sessionId,
+            ts,
+            type: 'message.user',
+            messageId: o.uuid ?? o.attachment.source_uuid ?? `u_qc_${seq}`,
+            text: qcPrompt,
+          })
+        }
+        continue
+      }
+      if (o.type === 'api-request') {
+        isRunning = true
+        if (!turnStartedAt) turnStartedAt = ts
+        continue
+      }
+      if (o.type === 'system' && o.subtype === 'turn_duration') {
+        isRunning = false
+        turnStartedAt = undefined
+        continue
+      }
+      if (o.type === 'user' && o.message?.role === 'user') {
+        isRunning = true
+        if (!turnStartedAt) turnStartedAt = ts
+        if (Array.isArray(o.message.content)) {
+          for (const item of o.message.content as Array<Record<string, unknown>>) {
+            if (item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
+              const callId = item.tool_use_id
+              if (openTools.has(callId)) {
+                openTools.delete(callId)
+                const outText = extractClaudeToolResultText(item.content)
+                events.push({
+                  seq: seq++,
+                  sessionId,
+                  ts,
+                  type: 'tool.update',
+                  toolCallId: callId,
+                  status: item.is_error === true ? 'failed' : 'completed',
+                  output: outText ? outText.slice(0, 1600) : undefined,
+                })
+              }
+            }
+          }
+        }
+        const txt = extractClaudeText(o.message.content)
+        if (
+          txt &&
+          !o.isMeta &&
+          !txt.startsWith('<') &&
+          !txt.startsWith('Base directory for this skill:') &&
+          !txt.startsWith('Output token limit hit. Resume directly')
+        ) {
+          const qIdx = queued.indexOf(txt.trim())
+          if (qIdx >= 0) queued.splice(qIdx, 1)
+          turnStartedAt = ts
+          events.push({
+            seq: seq++,
+            sessionId,
+            ts,
+            type: 'message.user',
+            messageId: o.uuid ?? `u_${seq}`,
+            text: txt,
+          })
+        }
+      } else if (
+        o.type !== 'api-request-blob' &&
+        o.message?.role === 'assistant' &&
+        Array.isArray(o.message.content)
+      ) {
+        const msgId = o.message.id ?? o.uuid ?? `a_${seq}`
+        let sawToolUse = false
+        for (const part of o.message.content as Array<Record<string, unknown>>) {
+          if (part.type === 'thinking' && typeof part.thinking === 'string' && part.thinking.trim()) {
+            events.push({
+              seq: seq++,
+              sessionId,
+              ts,
+              type: 'reasoning.delta',
+              messageId: `${msgId}_think`,
+              text: part.thinking.trim().slice(0, 1800),
+            })
+          } else if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
+            events.push({
+              seq: seq++,
+              sessionId,
+              ts,
+              type: 'message.assistant.delta',
+              messageId: msgId,
+              text: part.text,
+            })
+          } else if (part.type === 'tool_use' && typeof part.name === 'string') {
+            sawToolUse = true
+            if (part.input && typeof part.input === 'object') {
+              extractProjectRootFromToolInput(part.input as Record<string, unknown>, workspaces)
+            }
+            const rawInput = part.input ? JSON.stringify(part.input) : undefined
+            const normalized = classifyRawToolCall(part.name, rawInput)
+            const callId = String(part.id ?? `tc_${seq}`)
+            openTools.add(callId)
+            events.push({
+              seq: seq++,
+              sessionId,
+              ts,
+              type: 'tool.call',
+              toolCallId: callId,
+              title: normalized.title,
+              kind: normalized.kind,
+              status: 'in_progress',
+              input: normalized.input?.slice(0, 1600),
+            })
+          }
+        }
+        if (o.message.usage && (o.message.usage.input_tokens || o.message.usage.output_tokens)) {
+          events.push({
+            seq: seq++,
+            sessionId,
+            ts,
+            type: 'usage',
+            inputTokens: o.message.usage.input_tokens,
+            outputTokens: o.message.usage.output_tokens,
+          })
+        }
+        isRunning = sawToolUse || o.message.stop_reason === 'tool_use'
+        if (!isRunning) turnStartedAt = undefined
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return {
+    events,
+    workspaces,
+    isRunning: isRunning || openTools.size > 0,
+    turnStartedAt,
+    queuedPrompts: queued.length > 0 ? queued : undefined,
+  }
+}
+
+export function decodeClaudeProjectSlug(slug: string): string {
+  if (!slug.startsWith('-')) return os.homedir()
+  const tokens = slug.slice(1).split('-').filter(Boolean)
+  let current = '/'
+  let i = 0
+  while (i < tokens.length) {
+    // Greedily match longest hyphenated directory name on disk
+    let matched: string | null = null
+    let matchedEnd = i
+    for (let j = tokens.length; j > i; j--) {
+      const candidateName = tokens.slice(i, j).join('-')
+      const candidatePath = path.join(current, candidateName)
+      try {
+        if (fs.statSync(candidatePath).isDirectory()) {
+          matched = candidatePath
+          matchedEnd = j
+          break
+        }
+      } catch {
+        // continue trying shorter hyphen join
+      }
+    }
+    if (matched) {
+      current = matched
+      i = matchedEnd
+    } else {
+      break
+    }
+  }
+  return current !== '/' ? current : os.homedir()
+}
+
+export function extractClaudeText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((item: unknown) => {
+        if (
+          item &&
+          typeof item === 'object' &&
+          (item as { type?: unknown }).type === 'text' &&
+          typeof (item as { text?: unknown }).text === 'string'
+        ) {
+          return (item as { text: string }).text
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  return ''
+}
+
+export function extractClaudeToolResultText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((item: unknown) => {
+        if (item && typeof item === 'object' && typeof (item as { text?: unknown }).text === 'string') {
+          return (item as { text: string }).text
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+  }
+  return ''
+}
+
+export function isClaudeTailActivelyRunning(tailLines: string[]): boolean {
+  for (let i = tailLines.length - 1; i >= 0; i--) {
+    try {
+      const o = JSON.parse(tailLines[i]!) as {
+        type?: string
+        subtype?: string
+        message?: { role?: string; stop_reason?: string | null }
+      }
+      if (o.type === 'system' && o.subtype === 'turn_duration') return false
+      if (o.type === 'api-request') return true
+      if (o.type === 'assistant' || o.message?.role === 'assistant') {
+        return o.message?.stop_reason === 'tool_use'
+      }
+      if (o.type === 'user') return true
+    } catch {
+      // ignore non-json
+    }
+  }
+  return false
+}

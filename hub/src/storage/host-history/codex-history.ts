@@ -1,0 +1,224 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import type { AgentEvent } from '@lework/protocol'
+import {
+  classifyRawToolCall,
+  collectRecentFiles,
+  mergeUniqueWorkspaces,
+  readFirstAndLastLines,
+  readFullSessionLines,
+  type HostTranscriptEntry,
+  type ParsedHostTranscript,
+} from './common.ts'
+import { readCodexLocalSettings } from './engine-settings.ts'
+
+export function scanCodexSessions(
+  homeDir: string,
+  out: Map<string, HostTranscriptEntry>,
+): void {
+  const codexDir = path.join(homeDir, '.codex')
+  const indexFile = path.join(codexDir, 'session_index.jsonl')
+  const sessionsDir = path.join(codexDir, 'sessions')
+  if (!fs.existsSync(sessionsDir)) return
+
+  const titlesById = new Map<string, string>()
+  if (fs.existsSync(indexFile)) {
+    try {
+      const lines = fs.readFileSync(indexFile, 'utf8').trim().split('\n').slice(-80)
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line) as { id?: string; thread_name?: string }
+          if (obj.id && obj.thread_name) titlesById.set(obj.id, obj.thread_name)
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const rolloutFiles = collectRecentFiles(sessionsDir, f => f.endsWith('.jsonl'), 20)
+  for (const f of rolloutFiles) {
+    try {
+      const idMatch = path.basename(f.path).match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i)
+      const nativeId = idMatch?.[1] ?? path.basename(f.path, '.jsonl')
+      const sessionId = `host:codex:${nativeId}`
+      const headAndTail = readFirstAndLastLines(f.path, 10, 10)
+      const wsCandidates: string[] = []
+      for (const l of [...headAndTail.first, ...headAndTail.last]) {
+        try {
+          const o = JSON.parse(l) as {
+            type?: string
+            payload?: { cwd?: string; writable_roots?: string[] }
+          }
+          if (typeof o.payload?.cwd === 'string') {
+            wsCandidates.push(o.payload.cwd)
+          }
+          if (Array.isArray(o.payload?.writable_roots)) {
+            wsCandidates.push(...o.payload.writable_roots.filter((r): r is string => typeof r === 'string'))
+          }
+        } catch {
+          // ignore
+        }
+      }
+      const workspaces = mergeUniqueWorkspaces(wsCandidates)
+      const cwd = workspaces[0] ?? homeDir
+      let startedCount = 0
+      let completedCount = 0
+      for (const l of headAndTail.last) {
+        if (l.includes('"task_started"')) startedCount++
+        if (l.includes('"task_complete"')) completedCount++
+      }
+      const recentlyModified = Date.now() - f.mtimeMs < 90_000
+      const isRunning = recentlyModified && startedCount > completedCount
+
+      const codexDefaults = readCodexLocalSettings(homeDir)
+      const title = titlesById.get(nativeId) ?? `Codex · ${path.basename(cwd)}`
+      out.set(sessionId, {
+        nativeId,
+        filePath: f.path,
+        meta: {
+          id: sessionId,
+          engineId: 'codex',
+          cwd,
+          workspaces: workspaces.length > 0 ? workspaces : [cwd],
+          title,
+          state: isRunning ? 'running' : 'idle',
+          createdAt: Math.floor(f.birthtimeMs || f.mtimeMs),
+          updatedAt: Math.floor(f.mtimeMs),
+          lastSeq: 0,
+          model: codexDefaults.model,
+          reasoningEffort: codexDefaults.effort,
+          mode: codexDefaults.defaultMode,
+          source: 'host',
+        },
+      })
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export function parseCodexTranscript(
+  sessionId: string,
+  filePath: string,
+): ParsedHostTranscript {
+  const events: AgentEvent[] = []
+  const workspaces: string[] = []
+  const openTools = new Set<string>()
+  let activeTurn = false
+  let turnStartedAt: number | undefined
+  const lines = readFullSessionLines(filePath)
+  let seq = 0
+  for (const line of lines) {
+    try {
+      const o = JSON.parse(line) as {
+        timestamp?: string
+        type?: string
+        payload?: {
+          type?: string
+          id?: string
+          call_id?: string
+          cwd?: string
+          writable_roots?: string[]
+          role?: string
+          name?: string
+          arguments?: string
+          input?: string
+          output?: string
+          content?: Array<{ type?: string; text?: string }>
+        }
+      }
+      const ts = o.timestamp ? Date.parse(o.timestamp) || Date.now() : Date.now()
+      if (typeof o.payload?.cwd === 'string') {
+        workspaces.push(o.payload.cwd)
+      }
+      if (Array.isArray(o.payload?.writable_roots)) {
+        workspaces.push(...o.payload.writable_roots.filter((r): r is string => typeof r === 'string'))
+      }
+      if (o.type === 'event_msg' && o.payload?.type === 'task_started') {
+        activeTurn = true
+        turnStartedAt = ts
+      } else if (o.type === 'event_msg' && o.payload?.type === 'task_complete') {
+        activeTurn = false
+      }
+
+      if (o.type === 'response_item' && o.payload?.type === 'message') {
+        const role = o.payload.role
+        const text = (o.payload.content ?? [])
+          .map(c => c.text ?? '')
+          .join('\n')
+          .trim()
+        if (!text) continue
+        if (
+          role === 'user' &&
+          !text.startsWith('# AGENTS.md') &&
+          !text.startsWith('<environment_context>') &&
+          !text.startsWith('<INSTRUCTIONS>') &&
+          !text.startsWith('<skill>')
+        ) {
+          activeTurn = true
+          turnStartedAt = ts
+          events.push({
+            seq: seq++,
+            sessionId,
+            ts,
+            type: 'message.user',
+            messageId: o.payload.id ?? `u_${seq}`,
+            text,
+          })
+        } else if (role === 'assistant') {
+          events.push({
+            seq: seq++,
+            sessionId,
+            ts,
+            type: 'message.assistant.delta',
+            messageId: o.payload.id ?? `a_${seq}`,
+            text,
+          })
+        }
+      } else if (
+        o.type === 'response_item' &&
+        (o.payload?.type === 'function_call' || o.payload?.type === 'custom_tool_call')
+      ) {
+        const callId = o.payload.call_id ?? `cx_tc_${seq}`
+        const rawName = o.payload.name ?? 'tool'
+        const rawArgs = o.payload.arguments ?? o.payload.input ?? ''
+        const normalized = classifyRawToolCall(rawName, rawArgs)
+        openTools.add(callId)
+        events.push({
+          seq: seq++,
+          sessionId,
+          ts,
+          type: 'tool.call',
+          toolCallId: callId,
+          title: normalized.title,
+          kind: normalized.kind,
+          status: 'in_progress',
+          input: normalized.input?.slice(0, 1600),
+        })
+      } else if (
+        o.type === 'response_item' &&
+        (o.payload?.type === 'function_call_output' || o.payload?.type === 'custom_tool_call_output')
+      ) {
+        const callId = o.payload.call_id
+        if (callId && openTools.has(callId)) {
+          openTools.delete(callId)
+          events.push({
+            seq: seq++,
+            sessionId,
+            ts,
+            type: 'tool.update',
+            toolCallId: callId,
+            status: 'completed',
+            output: typeof o.payload.output === 'string' ? o.payload.output.slice(0, 1600) : undefined,
+          })
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return { events, workspaces, isRunning: activeTurn || openTools.size > 0, turnStartedAt }
+}
