@@ -57,7 +57,11 @@ internal fun TasksSidebarContent(
     onSelectSession: (String) -> Unit,
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
+    onSwitchHost: (String) -> Unit = {},
+    onPairAnotherHost: () -> Unit = {},
 ) {
+    var showHostSwitcher by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -69,15 +73,34 @@ internal fun TasksSidebarContent(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Column {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { showHostSwitcher = !showHostSwitcher }
+                    .padding(vertical = 2.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        text = state.hub?.name ?: "本机工作站",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Everforest.Fg,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Icon(
+                        imageVector = if (showHostSwitcher) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = "切换主机",
+                        tint = Everforest.Grey1,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
                 Text(
-                    text = state.hub?.name ?: "本机工作站",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Everforest.Fg,
-                )
-                Text(
-                    text = "${connectionChannelLabel(state.discoveredBaseUrl)} · ${state.authUserName ?: "本人"}",
+                    text = "${connectionChannelLabel(state.discoveredBaseUrl, state.tsnetStatus)} · ${state.authUserName ?: "本人"}",
                     fontSize = 11.sp,
                     color = Everforest.Grey1,
                 )
@@ -89,6 +112,84 @@ internal fun TasksSidebarContent(
                     tint = Everforest.Grey2,
                     modifier = Modifier.size(19.dp),
                 )
+            }
+        }
+
+        if (showHostSwitcher) {
+            Spacer(Modifier.height(6.dp))
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Everforest.Bg1,
+                border = BorderStroke(1.dp, Everforest.Bg3),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    for (host in state.pairedHosts) {
+                        val isCurrent = host.hubId == state.hub?.id
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isCurrent) Everforest.BgGreen else Color.Transparent,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    showHostSwitcher = false
+                                    if (!isCurrent) onSwitchHost(host.hubId)
+                                },
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    text = host.name,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (isCurrent) Everforest.Green else Everforest.Fg,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (isCurrent) {
+                                    Text("当前", fontSize = 10.5.sp, color = Everforest.Green)
+                                }
+                            }
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.Transparent,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                showHostSwitcher = false
+                                onPairAnotherHost()
+                            },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AddLink,
+                                contentDescription = null,
+                                tint = Everforest.BoldGold,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = "配对或连接其他主机",
+                                fontSize = 12.sp,
+                                color = Everforest.BoldGold,
+                            )
+                        }
+                    }
+                }
             }
         }
 

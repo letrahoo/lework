@@ -14,6 +14,9 @@ object JvmPlatformTestHooks {
     private val _bonjourUrls = MutableStateFlow<List<String>>(emptyList())
     val bonjourUrls: StateFlow<List<String>> = _bonjourUrls.asStateFlow()
 
+    private val _incomingPairingUri = MutableStateFlow<String?>(null)
+    val incomingPairingUri: StateFlow<String?> = _incomingPairingUri.asStateFlow()
+
     var candidateUrls: List<String> = listOf("https://127.0.0.1:64450")
     var lastGoodUrl: String? = null
     var savedRelayUrls: List<String> = emptyList()
@@ -25,6 +28,16 @@ object JvmPlatformTestHooks {
     var clipboardText: String = ""
     val openedUrls = mutableListOf<String>()
 
+    var tsnetAvailable: Boolean = false
+    var tsnetEnabled: Boolean = false
+    var tsnetControlUrl: String? = null
+    var tsnetStatus: MobileTsnetStatus = MobileTsnetStatus()
+    var qrScanSupported: Boolean = false
+    var nextScannedQrResult: String? = null
+    var pairedHosts: List<PairedHost> = emptyList()
+    var activeHostId: String? = null
+    val hostTokens = mutableMapOf<String, String>()
+
     fun setForeground(isForeground: Boolean) {
         _foreground.value = isForeground
     }
@@ -33,9 +46,14 @@ object JvmPlatformTestHooks {
         _bonjourUrls.value = urls
     }
 
+    fun emitIncomingPairingUri(uri: String?) {
+        _incomingPairingUri.value = uri
+    }
+
     fun reset() {
         _foreground.value = true
         _bonjourUrls.value = emptyList()
+        _incomingPairingUri.value = null
         candidateUrls = listOf("https://127.0.0.1:64450")
         lastGoodUrl = null
         savedRelayUrls = emptyList()
@@ -46,6 +64,15 @@ object JvmPlatformTestHooks {
         bonjourStartedCount = 0
         clipboardText = ""
         openedUrls.clear()
+        tsnetAvailable = false
+        tsnetEnabled = false
+        tsnetControlUrl = null
+        tsnetStatus = MobileTsnetStatus()
+        qrScanSupported = false
+        nextScannedQrResult = null
+        pairedHosts = emptyList()
+        activeHostId = null
+        hostTokens.clear()
     }
 }
 
@@ -59,6 +86,7 @@ actual fun observeAppForeground(): StateFlow<Boolean> = JvmPlatformTestHooks.for
 
 actual fun candidateHubHttpUrls(): List<String> =
     (JvmPlatformTestHooks.bonjourUrls.value +
+        JvmPlatformTestHooks.tsnetStatus.peers.filter { it.online }.mapNotNull { it.localProxyUrl } +
         listOfNotNull(JvmPlatformTestHooks.lastGoodUrl) +
         JvmPlatformTestHooks.savedRelayUrls +
         JvmPlatformTestHooks.candidateUrls).distinct()
@@ -113,4 +141,61 @@ actual fun loadPinnedHubFingerprints(): Set<String> = JvmPlatformTestHooks.pinne
 
 actual fun savePinnedHubFingerprints(fingerprints: Set<String>) {
     JvmPlatformTestHooks.pinnedFingerprints = fingerprints
+}
+
+actual fun isMobileTsnetAvailable(): Boolean = JvmPlatformTestHooks.tsnetAvailable
+
+actual suspend fun startMobileTsnet(controlUrl: String?): MobileTsnetStatus = JvmPlatformTestHooks.tsnetStatus
+
+actual suspend fun queryMobileTsnetStatus(): MobileTsnetStatus = JvmPlatformTestHooks.tsnetStatus
+
+actual suspend fun loginMobileTsnet(controlUrl: String?, authKey: String?): MobileTsnetStatus =
+    JvmPlatformTestHooks.tsnetStatus
+
+actual suspend fun logoutMobileTsnet(): MobileTsnetStatus {
+    JvmPlatformTestHooks.tsnetStatus = MobileTsnetStatus(available = JvmPlatformTestHooks.tsnetAvailable, backendState = "NeedsLogin")
+    return JvmPlatformTestHooks.tsnetStatus
+}
+
+actual fun loadSavedTsnetEnabled(): Boolean = JvmPlatformTestHooks.tsnetEnabled
+
+actual fun saveTsnetEnabled(enabled: Boolean, controlUrl: String?) {
+    JvmPlatformTestHooks.tsnetEnabled = enabled
+    if (controlUrl != null) JvmPlatformTestHooks.tsnetControlUrl = controlUrl.ifBlank { null }
+}
+
+actual fun loadSavedTsnetControlUrl(): String? = JvmPlatformTestHooks.tsnetControlUrl
+
+actual fun canScanQrCode(): Boolean = JvmPlatformTestHooks.qrScanSupported
+
+actual fun requestQrCodeScan(onResult: (String?) -> Unit) {
+    onResult(JvmPlatformTestHooks.nextScannedQrResult)
+}
+
+actual fun observeIncomingPairingUri(): StateFlow<String?> = JvmPlatformTestHooks.incomingPairingUri
+
+actual fun consumeIncomingPairingUri() {
+    JvmPlatformTestHooks.emitIncomingPairingUri(null)
+}
+
+actual fun loadPairedHosts(): List<PairedHost> = JvmPlatformTestHooks.pairedHosts
+
+actual fun savePairedHosts(hosts: List<PairedHost>) {
+    JvmPlatformTestHooks.pairedHosts = hosts
+}
+
+actual fun loadActiveHostId(): String? = JvmPlatformTestHooks.activeHostId
+
+actual fun saveActiveHostId(hubId: String?) {
+    JvmPlatformTestHooks.activeHostId = hubId?.takeIf { it.isNotBlank() }
+}
+
+actual fun loadHostAccessToken(hubId: String): String? = JvmPlatformTestHooks.hostTokens[hubId]
+
+actual fun saveHostAccessToken(hubId: String, token: String?) {
+    if (token.isNullOrBlank()) {
+        JvmPlatformTestHooks.hostTokens.remove(hubId)
+    } else {
+        JvmPlatformTestHooks.hostTokens[hubId] = token
+    }
 }

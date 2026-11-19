@@ -1,5 +1,10 @@
 package dev.lework.store
 
+import dev.lework.platform.MobileTsnetStatus
+import dev.lework.platform.PairedHost
+import dev.lework.platform.isMobileTsnetAvailable
+import dev.lework.platform.loadActiveHostId
+import dev.lework.platform.loadPairedHosts
 import dev.lework.platform.loadSavedAuthUserName
 import dev.lework.protocol.*
 
@@ -144,6 +149,11 @@ data class ConsoleUiState(
     val checkpointNotice: String? = null,
     val submittingApprovalRequestId: String? = null,
     val approvalErrorText: String? = null,
+    // Embedded Tailscale `tsnet` mesh & multi-host asset book
+    val tsnetStatus: MobileTsnetStatus = MobileTsnetStatus(available = isMobileTsnetAvailable()),
+    val tsnetLoggingIn: Boolean = false,
+    val pairedHosts: List<PairedHost> = loadPairedHosts(),
+    val activeHostId: String? = loadActiveHostId(),
 ) {
     val activeSession: SessionMeta?
         get() = sessions.firstOrNull { it.id == activeSessionId }

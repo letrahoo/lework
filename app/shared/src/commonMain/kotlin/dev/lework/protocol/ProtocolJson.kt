@@ -107,8 +107,35 @@ data class HubDiscoverResult(
     val oauthEnabled: Boolean = false,
     val oauthProvider: String? = null,
     val oauthDisplayName: String? = null,
+    val tailscaleSameUser: Boolean = false,
+    val tailscaleUser: String? = null,
+    val tsnetAvailable: Boolean = false,
     val relayUrls: List<String> = emptyList(),
     val wsPath: String = "/v1/ws",
+)
+
+@Serializable
+data class DirectTokenAuthResult(
+    val ok: Boolean,
+    val accessToken: String,
+    val user: OAuthUser? = null,
+    val fingerprint: String,
+    val proof: String,
+    val hub: HubInfo,
+    val endpoints: List<String> = emptyList(),
+)
+
+@Serializable
+data class QrPairingPayloadDto(
+    val v: Int = 2,
+    val hubId: String = "",
+    val name: String = "",
+    val role: String = "slave",
+    val urls: List<String> = emptyList(),
+    val url: String = "",
+    val fp: String = "",
+    val pairCode: String? = null,
+    val token: String? = null,
 )
 
 @Serializable

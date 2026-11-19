@@ -315,4 +315,54 @@ class ConsoleStoreStateTest {
             storeScope.cancel()
         }
     }
+
+    @Test
+    fun `T10_1 zero-touch Tailscale same-account handshake enters workspace and saves PairedHost`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.savedToken = null
+        val transport = FakeHubTransport().apply {
+            simulateTailscaleSameUser = true
+        }
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            assertEquals(1, transport.tailscaleHandshakeCount)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals("lework_dt.tailscale_mesh_token", JvmPlatformTestHooks.savedToken)
+            assertEquals(1, store.state.value.pairedHosts.size)
+            assertEquals("hub_fake_1", store.state.value.pairedHosts.first().hubId)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
+
+    @Test
+    fun `T10_2 parses lework pair deep link and redeems single-use pairCode into PairedHost`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.savedToken = null
+        val transport = FakeHubTransport()
+        val rawJson = """{"v":2,"hubId":"hub_fake_1","name":"TestMacBook","role":"slave","urls":["https://192.168.1.20:64450"],"url":"https://192.168.1.20:64450","fp":"${"a".repeat(64)}","pairCode":"lwp_0123456789ab_secret1234567890"}"""
+        @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+        val b64 = kotlin.io.encoding.Base64.UrlSafe.encode(rawJson.encodeToByteArray()).trimEnd('=')
+        val deepLink = "lework://pair?d=$b64"
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            JvmPlatformTestHooks.emitIncomingPairingUri(deepLink)
+            runCurrent()
+
+            assertEquals(1, transport.pairRedeemCount)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals("lework_dt.paired_qr_token", JvmPlatformTestHooks.hostTokens["hub_fake_1"])
+            assertEquals(1, store.state.value.pairedHosts.size)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

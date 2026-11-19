@@ -1,6 +1,7 @@
 package dev.lework.platform
 
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.Serializable
 
 data class SavedSessionPrefs(
     val engineId: String = "claude",
@@ -9,6 +10,41 @@ data class SavedSessionPrefs(
     val reasoningEffort: String = "medium",
     val mode: String = "ask",
     val workspacePath: String = "",
+)
+
+@Serializable
+data class MobileTsnetPeer(
+    val hostName: String = "",
+    val dnsName: String = "",
+    val tailscaleIp: String = "",
+    val online: Boolean = false,
+    val isLeworkNode: Boolean = false,
+    val localProxyUrl: String? = null,
+)
+
+@Serializable
+data class MobileTsnetStatus(
+    val available: Boolean = false,
+    val backendState: String = "Unavailable",
+    val authUrl: String? = null,
+    val controlUrl: String? = null,
+    val selfHostName: String? = null,
+    val selfDnsName: String? = null,
+    val tailscaleIps: List<String> = emptyList(),
+    val loginName: String? = null,
+    val displayName: String? = null,
+    val peers: List<MobileTsnetPeer> = emptyList(),
+    val error: String? = null,
+)
+
+@Serializable
+data class PairedHost(
+    val hubId: String,
+    val name: String,
+    val fingerprint: String = "",
+    val endpoints: List<String> = emptyList(),
+    val userName: String = "Owner",
+    val lastConnectedAt: Long = 0L,
 )
 
 expect fun platformName(): String
@@ -33,3 +69,27 @@ expect fun loadSessionPrefs(): SavedSessionPrefs
 expect fun saveSessionPrefs(prefs: SavedSessionPrefs)
 expect fun openExternalUrl(url: String)
 expect fun copyTextToClipboard(text: String)
+
+// Embedded Tailscale `tsnet` client & same-account discovery
+expect fun isMobileTsnetAvailable(): Boolean
+expect suspend fun startMobileTsnet(controlUrl: String? = null): MobileTsnetStatus
+expect suspend fun queryMobileTsnetStatus(): MobileTsnetStatus
+expect suspend fun loginMobileTsnet(controlUrl: String? = null, authKey: String? = null): MobileTsnetStatus
+expect suspend fun logoutMobileTsnet(): MobileTsnetStatus
+expect fun loadSavedTsnetEnabled(): Boolean
+expect fun saveTsnetEnabled(enabled: Boolean, controlUrl: String? = null)
+expect fun loadSavedTsnetControlUrl(): String?
+
+// Native QR scanner & `lework://pair` deep-link observer
+expect fun canScanQrCode(): Boolean
+expect fun requestQrCodeScan(onResult: (String?) -> Unit)
+expect fun observeIncomingPairingUri(): StateFlow<String?>
+expect fun consumeIncomingPairingUri()
+
+// Multi-host asset book & per-host Keychain tokens
+expect fun loadPairedHosts(): List<PairedHost>
+expect fun savePairedHosts(hosts: List<PairedHost>)
+expect fun loadActiveHostId(): String?
+expect fun saveActiveHostId(hubId: String?)
+expect fun loadHostAccessToken(hubId: String): String?
+expect fun saveHostAccessToken(hubId: String, token: String?)

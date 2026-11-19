@@ -23,6 +23,8 @@ export interface IssuedTokenRecord {
 export class IssuedTokenStore {
   private readonly file: string
   private records: IssuedTokenRecord[] = []
+  private lastMtimeMs = -1
+  private lastSize = -1
 
   constructor(file = path.join(defaultDataDir(), 'issued-tokens.json')) {
     this.file = file
@@ -30,6 +32,7 @@ export class IssuedTokenStore {
   }
 
   record(token: string, sub: string, name: string, expiresAt: number): IssuedTokenRecord {
+    this.syncFromDisk()
     this.prune()
     const rec: IssuedTokenRecord = {
       kid: tokenKid(token),
@@ -45,6 +48,7 @@ export class IssuedTokenStore {
   }
 
   isActive(token: string): boolean {
+    this.syncFromDisk()
     const hash = tokenAttestKey(token)
     const now = Date.now()
     return this.records.some(r => {
@@ -55,17 +59,20 @@ export class IssuedTokenStore {
   }
 
   attestKeyForKid(kid: string): Buffer | null {
+    this.syncFromDisk()
     const now = Date.now()
     const rec = this.records.find(r => r.kid === kid && r.expiresAt > now)
     return rec ? Buffer.from(rec.keyHash, 'hex') : null
   }
 
   list(): IssuedTokenRecord[] {
+    this.syncFromDisk()
     this.prune()
     return [...this.records]
   }
 
   revoke(kid: string): boolean {
+    this.syncFromDisk()
     const before = this.records.length
     this.records = this.records.filter(r => r.kid !== kid)
     this.save()
@@ -73,6 +80,7 @@ export class IssuedTokenStore {
   }
 
   revokeAll(): number {
+    this.syncFromDisk()
     const n = this.records.length
     this.records = []
     this.save()
@@ -84,12 +92,28 @@ export class IssuedTokenStore {
     this.records = this.records.filter(r => r.expiresAt > now)
   }
 
+  private syncFromDisk(): void {
+    try {
+      const st = fs.statSync(this.file)
+      if (st.mtimeMs !== this.lastMtimeMs || st.size !== this.lastSize) {
+        this.load()
+      }
+    } catch {
+      // file may not exist yet; keep in-memory state if never written on disk
+    }
+  }
+
   private load(): void {
     try {
+      const st = fs.statSync(this.file)
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')) as { tokens?: IssuedTokenRecord[] }
       this.records = Array.isArray(raw.tokens) ? raw.tokens : []
+      this.lastMtimeMs = st.mtimeMs
+      this.lastSize = st.size
     } catch {
       this.records = []
+      this.lastMtimeMs = -1
+      this.lastSize = -1
     }
   }
 
@@ -98,6 +122,9 @@ export class IssuedTokenStore {
       fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 })
       fs.writeFileSync(this.file, JSON.stringify({ tokens: this.records }, null, 2) + '\n', { mode: 0o600 })
       fs.chmodSync(this.file, 0o600)
+      const st = fs.statSync(this.file)
+      this.lastMtimeMs = st.mtimeMs
+      this.lastSize = st.size
     } catch {
       // ignore (read-only test env)
     }

@@ -1,3 +1,5 @@
+@file:OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+
 package dev.lework.store
 
 import dev.lework.platform.*
@@ -6,11 +8,13 @@ import dev.lework.security.HubAttestation
 import dev.lework.security.HubTrust
 import dev.lework.security.hubBaseUrlOfWs
 import dev.lework.security.hubWsUrlOf
+import dev.lework.security.isSafeExternalLink
 import dev.lework.security.isTrustedOAuthUrl
 import dev.lework.security.normalizeHubBaseUrl
 import dev.lework.transport.HubRpcClient
 import dev.lework.transport.HubTransport
 import dev.lework.transport.RpcCallException
+import kotlin.io.encoding.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -41,6 +45,7 @@ class ConsoleStore(
     val state: StateFlow<ConsoleUiState> = _state.asStateFlow()
     private var discoverJob: Job? = null
     private var oauthPollJob: Job? = null
+    private var tsnetPollJob: Job? = null
     private var resumeJob: Job? = null
     private var subscribedSessionId: String? = null
     private var subscribeSeqToken: Long = 0L
@@ -59,6 +64,14 @@ class ConsoleStore(
 
     init {
         scope.launch {
+            observeIncomingPairingUri().collect { uri ->
+                if (!uri.isNullOrBlank()) {
+                    consumeIncomingPairingUri()
+                    redeemPairingInput(uri)
+                }
+            }
+        }
+        scope.launch {
             observeBonjourHubUrls().collect { urls ->
                 if (urls.isNotEmpty() && !_state.value.hasEnteredWorkspace && _state.value.connectionStatus == ConnectionStatus.ERROR) {
                     bootstrapOrConnect()
@@ -74,6 +87,8 @@ class ConsoleStore(
                     wasBackground = false
                     if (_state.value.hasEnteredWorkspace) {
                         verifyAndResumeForegroundSession()
+                    } else if (_state.value.tsnetLoggingIn) {
+                        checkTsnetAfterForegroundReturn()
                     }
                 }
             }
@@ -145,27 +160,72 @@ class ConsoleStore(
         )
     }
 
+    private fun upsertPairedHost(
+        hub: HubInfo,
+        fingerprint: String?,
+        endpoints: List<String>,
+        userName: String,
+    ) {
+        val cleanEndpoints = endpoints
+            .map { normalizeHubBaseUrl(it) }
+            .filter { it.isNotBlank() && !it.contains("127.0.0.1") }
+            .distinct()
+            .take(8)
+        val existing = loadPairedHosts()
+        val prev = existing.firstOrNull { it.hubId == hub.id }
+        val mergedEndpoints = (cleanEndpoints + prev?.endpoints.orEmpty()).distinct().take(8)
+        val updated = PairedHost(
+            hubId = hub.id,
+            name = hub.name,
+            fingerprint = fingerprint?.lowercase() ?: prev?.fingerprint.orEmpty(),
+            endpoints = mergedEndpoints,
+            userName = userName,
+            lastConnectedAt = epochMillis(),
+        )
+        val nextList = (listOf(updated) + existing.filterNot { it.hubId == hub.id }).take(12)
+        savePairedHosts(nextList)
+        saveActiveHostId(hub.id)
+        _state.update { it.copy(pairedHosts = nextList, activeHostId = hub.id) }
+    }
+
     fun bootstrapOrConnect() {
+        bootstrapOrConnectToHost(loadActiveHostId())
+    }
+
+    private fun bootstrapOrConnectToHost(preferredHubId: String?) {
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         startBonjourDiscovery()
+        if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
+            scope.launch {
+                runCatching {
+                    val st = startMobileTsnet(loadSavedTsnetControlUrl())
+                    _state.update { it.copy(tsnetStatus = st) }
+                }
+            }
+        }
         _state.update {
             it.copy(
                 connectionStatus = ConnectionStatus.DISCOVERING,
                 connectionError = null,
-                authStatusText = "正在自动发现同 Wi‑Fi 局域网或中继主机…",
+                pairedHosts = loadPairedHosts(),
+                activeHostId = preferredHubId,
+                tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
+                authStatusText = "正在自动发现同 Wi‑Fi 局域网、Tailscale 内网或已配对主机…",
             )
         }
         discoverJob = scope.launch {
             val found = rpc.discoverIntranetHub(
                 candidates = candidateHubHttpUrls(),
                 dynamicCandidates = observeBonjourHubUrls(),
+                waitWindowMs = 7_000L,
+                preferredHubId = preferredHubId,
             )
             if (found == null) {
                 _state.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = "未发现可用主机，请确认处于同一路由器 Wi‑Fi，或在下方手动配置主机/中继地址",
+                        connectionError = "未发现可用主机：请确认与主机处于同一 Wi‑Fi，或使用下方「扫码配对」/「Tailscale 同账号组网」接入",
                     )
                 }
                 return@launch
@@ -184,13 +244,39 @@ class ConsoleStore(
                 )
             }
 
-            val cachedToken = loadSavedAccessToken()
+            val hostToken = loadHostAccessToken(found.discover.hub.id)
+            val cachedToken = hostToken ?: loadSavedAccessToken()
             if (!cachedToken.isNullOrBlank()) {
                 val ok = connectWithToken(found.wsUrl, cachedToken)
                 if (ok) return@launch
-                if (!loadSavedAccessToken().isNullOrBlank()) {
+                val stillHasToken =
+                    !(loadHostAccessToken(found.discover.hub.id) ?: loadSavedAccessToken()).isNullOrBlank()
+                if (stillHasToken && !found.discover.tailscaleSameUser) {
                     // Network/transport failure rather than invalid token: stay on retry screen without wiping token
                     return@launch
+                }
+            }
+
+            // Zero-touch Tailscale same-account handshake: when both ends belong to the exact same
+            // Tailscale user, automatically verify, mint a revocable device token, pin TLS, and enter!
+            if (found.discover.tailscaleSameUser) {
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.CONNECTING,
+                        authStatusText = "已识别同账号 Tailscale 主机 ${found.discover.hub.name}，正在自动握手建联…",
+                    )
+                }
+                val hs = runCatching {
+                    rpc.authenticateViaTailscale(found.baseUrl, platformName())
+                }.getOrNull()
+                if (hs != null) {
+                    val userName = hs.user?.name ?: found.discover.tailscaleUser ?: "Owner"
+                    saveAuthSession(hs.accessToken, userName)
+                    saveHostAccessToken(hs.hub.id, hs.accessToken)
+                    upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
+                    _state.update { it.copy(authUserName = userName) }
+                    val ok = connectWithToken(found.wsUrl, hs.accessToken)
+                    if (ok) return@launch
                 }
             }
 
@@ -201,14 +287,277 @@ class ConsoleStore(
                     it.copy(
                         connectionStatus = ConnectionStatus.NEEDS_AUTH,
                         oauthChallenge = null,
-                        authStatusText = "已发现主机 ${found.discover.hub.name}，请输入访问令牌连接",
+                        authStatusText = "已发现主机 ${found.discover.hub.name}，请扫码配对、Tailscale 同账号组网或输入令牌连接",
                     )
                 }
             }
         }
     }
 
+    fun startMobileTsnetLogin(customControlUrl: String? = null) {
+        if (!isMobileTsnetAvailable()) {
+            _state.update {
+                it.copy(
+                    connectionError = "当前设备客户端未内置 Tailscale 模块，请使用扫码配对或手动地址连接",
+                )
+            }
+            return
+        }
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        val cleanCtrl = customControlUrl?.trim()?.takeIf { it.isNotEmpty() }
+        saveTsnetEnabled(true, cleanCtrl ?: "")
+        _state.update {
+            it.copy(
+                tsnetLoggingIn = true,
+                connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                connectionError = null,
+                authStatusText = "正在启动内置 Tailscale 组网节点…",
+            )
+        }
+        tsnetPollJob = scope.launch {
+            val st = loginMobileTsnet(cleanCtrl)
+            _state.update { it.copy(tsnetStatus = st) }
+            if (st.backendState == "Running") {
+                _state.update { it.copy(tsnetLoggingIn = false) }
+                awaitTsnetPeerAndConnect(st)
+                return@launch
+            }
+            val authUrl = st.authUrl
+            if (!authUrl.isNullOrBlank() && isSafeExternalLink(authUrl)) {
+                _state.update {
+                    it.copy(
+                        authStatusText = "请在浏览器登录与电脑主机相同的 Tailscale 账号，完成后自动发现并建联",
+                    )
+                }
+                openExternalUrl(authUrl)
+            } else if (!st.error.isNullOrBlank()) {
+                _state.update {
+                    it.copy(
+                        tsnetLoggingIn = false,
+                        connectionStatus = ConnectionStatus.ERROR,
+                        connectionError = "Tailscale 启动失败: ${st.error}",
+                    )
+                }
+                return@launch
+            }
+
+            while (isActive) {
+                delay(2_000L)
+                val cur = queryMobileTsnetStatus()
+                _state.update { it.copy(tsnetStatus = cur) }
+                if (cur.backendState == "Running") {
+                    _state.update { it.copy(tsnetLoggingIn = false) }
+                    awaitTsnetPeerAndConnect(cur)
+                    break
+                }
+            }
+        }
+    }
+
+    private fun checkTsnetAfterForegroundReturn() {
+        scope.launch {
+            val cur = queryMobileTsnetStatus()
+            _state.update { it.copy(tsnetStatus = cur) }
+            if (cur.backendState == "Running") {
+                tsnetPollJob?.cancel()
+                _state.update { it.copy(tsnetLoggingIn = false) }
+                awaitTsnetPeerAndConnect(cur)
+            }
+        }
+    }
+
+    private suspend fun awaitTsnetPeerAndConnect(initial: MobileTsnetStatus) {
+        _state.update {
+            it.copy(
+                connectionStatus = ConnectionStatus.DISCOVERING,
+                connectionError = null,
+                authStatusText = "已登录 Tailscale (${initial.loginName ?: "同账号"})，正在寻找在线主机…",
+            )
+        }
+        for (attempt in 0 until 8) {
+            val cur = if (attempt == 0) initial else queryMobileTsnetStatus()
+            _state.update { it.copy(tsnetStatus = cur) }
+            if (cur.peers.any { it.online && !it.localProxyUrl.isNullOrBlank() }) {
+                break
+            }
+            delay(1_500L)
+        }
+        bootstrapOrConnect()
+    }
+
+    fun logoutMobileTsnetAccount() {
+        tsnetPollJob?.cancel()
+        saveTsnetEnabled(false)
+        scope.launch {
+            val st = logoutMobileTsnet()
+            _state.update { it.copy(tsnetStatus = st, tsnetLoggingIn = false) }
+        }
+    }
+
+    fun scanQrAndPair() {
+        if (!canScanQrCode()) return
+        requestQrCodeScan { scanned ->
+            if (!scanned.isNullOrBlank()) {
+                redeemPairingInput(scanned)
+            }
+        }
+    }
+
+    fun redeemPairingInput(rawInput: String) {
+        val payload = parsePairingPayload(rawInput)
+        if (payload == null) {
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = "无法识别配对信息，请在电脑主机运行 hub pair 后重新扫码",
+                )
+            }
+            return
+        }
+        val candidates = (payload.urls + listOf(payload.url))
+            .map { normalizeHubBaseUrl(it) }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (candidates.isEmpty()) {
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = "配对二维码缺少有效主机地址",
+                )
+            }
+            return
+        }
+
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = false,
+                connectionStatus = ConnectionStatus.CONNECTING,
+                connectionError = null,
+                authStatusText = "正在与主机 ${payload.name.ifBlank { "Lework Hub" }} 验证指纹并建立安全连接…",
+            )
+        }
+        discoverJob = scope.launch {
+            var lastError: Throwable? = null
+            for (baseUrl in candidates) {
+                try {
+                    val auth = rpc.redeemPairingCode(
+                        baseUrl = baseUrl,
+                        pairCode = payload.pairCode,
+                        staticToken = payload.token,
+                        expectedFingerprint = payload.fp,
+                        deviceName = platformName(),
+                    )
+                    val userName = auth.user?.name ?: "Owner"
+                    saveAuthSession(auth.accessToken, userName)
+                    saveHostAccessToken(auth.hub.id, auth.accessToken)
+                    upsertPairedHost(
+                        hub = auth.hub,
+                        fingerprint = auth.fingerprint,
+                        endpoints = auth.endpoints + candidates,
+                        userName = userName,
+                    )
+                    val wsUrl = hubWsUrlOf(baseUrl)
+                    _state.update {
+                        it.copy(
+                            discoveredBaseUrl = baseUrl,
+                            discoveredWsUrl = wsUrl,
+                            authUserName = userName,
+                            hub = auth.hub,
+                        )
+                    }
+                    if (connectWithToken(wsUrl, auth.accessToken)) {
+                        return@launch
+                    }
+                } catch (t: Throwable) {
+                    lastError = t
+                }
+            }
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = lastError?.message ?: "配对连接失败，请确认手机可访问主机网络",
+                )
+            }
+        }
+    }
+
+    fun switchPairedHost(hubId: String) {
+        if (hubId == _state.value.hub?.id && _state.value.hasEnteredWorkspace) return
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        resumeJob?.cancel()
+        switchSubscriptionTo(null)
+        saveActiveHostId(hubId)
+        val hostToken = loadHostAccessToken(hubId)
+        val hostMeta = loadPairedHosts().firstOrNull { it.hubId == hubId }
+        if (!hostToken.isNullOrBlank()) {
+            saveAuthSession(hostToken, hostMeta?.userName ?: "Owner")
+        }
+        scope.launch {
+            rpc.disconnect()
+            _state.update {
+                it.copy(
+                    hasEnteredWorkspace = false,
+                    activeHostId = hubId,
+                    activeSessionId = null,
+                    authUserName = hostMeta?.userName ?: it.authUserName,
+                )
+            }
+            bootstrapOrConnectToHost(hubId)
+        }
+    }
+
+    fun preparePairAnotherHost() {
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        resumeJob?.cancel()
+        switchSubscriptionTo(null)
+        scope.launch {
+            rpc.disconnect()
+            _state.update {
+                it.copy(
+                    hasEnteredWorkspace = false,
+                    connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                    connectionError = null,
+                    oauthChallenge = null,
+                    authStatusText = "可扫码配对新主机、使用 Tailscale 同账号发现，或手动填写地址",
+                )
+            }
+        }
+    }
+
+    fun removePairedHost(hubId: String) {
+        saveHostAccessToken(hubId, null)
+        val next = loadPairedHosts().filterNot { it.hubId == hubId }
+        savePairedHosts(next)
+        if (loadActiveHostId() == hubId) {
+            saveActiveHostId(next.firstOrNull()?.hubId)
+        }
+        _state.update {
+            it.copy(
+                pairedHosts = next,
+                activeHostId = loadActiveHostId(),
+            )
+        }
+    }
+
     fun connectManualEndpoint(rawHostOrUrl: String, rawToken: String) {
+        val candidatePair = when {
+            rawHostOrUrl.trim().startsWith("lework://", ignoreCase = true) ||
+                rawHostOrUrl.trim().startsWith("{") -> rawHostOrUrl.trim()
+            rawToken.trim().startsWith("lework://", ignoreCase = true) ||
+                rawToken.trim().startsWith("{") -> rawToken.trim()
+            else -> null
+        }
+        if (candidatePair != null) {
+            redeemPairingInput(candidatePair)
+            return
+        }
         val trimmedHost = rawHostOrUrl.trim().trimEnd('/')
         val baseUrl = if (trimmedHost.isEmpty()) {
             _state.value.discoveredBaseUrl
@@ -470,6 +819,15 @@ class ConsoleStore(
             val sessions = rpc.listSessions()
 
             val current = _state.value
+            val observedFp = HubTrust.observedFor(baseUrl)
+            val resolvedUserName = current.authUserName ?: loadSavedAuthUserName() ?: "Owner"
+            saveHostAccessToken(status.hub.id, token)
+            upsertPairedHost(
+                hub = status.hub,
+                fingerprint = observedFp,
+                endpoints = hello.endpoints + hello.relayUrls + listOf(baseUrl),
+                userName = resolvedUserName,
+            )
             val uiEngines = status.engines.filterNot { it.id == "mock" }
             val chosenEngine = uiEngines.firstOrNull { it.id == current.selectedEngineId && it.status.ready }
                 ?: uiEngines.firstOrNull { it.status.ready }
@@ -521,6 +879,7 @@ class ConsoleStore(
             true
         } catch (t: Throwable) {
             if (t is RpcCallException && t.code == ErrorCode.UNAUTHORIZED) {
+                _state.value.hub?.id?.let { saveHostAccessToken(it, null) }
                 saveAuthSession(null, null)
                 _state.update {
                     it.copy(
@@ -1205,4 +1564,34 @@ class ConsoleStore(
             }
         }
     }
+}
+
+internal fun parsePairingPayload(raw: String): QrPairingPayloadDto? {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return null
+    return runCatching {
+        if (trimmed.startsWith("lework://", ignoreCase = true)) {
+            val query = trimmed.substringAfter('?', "")
+            val rawD = query
+                .split('&')
+                .firstOrNull { it.startsWith("d=") }
+                ?.removePrefix("d=")
+                ?.trim()
+                ?: return null
+            val cleanB64 = rawD
+                .replace("%2B", "+")
+                .replace("%2F", "/")
+                .replace("%3D", "=")
+                .replace('+', '-')
+                .replace('/', '_')
+                .trimEnd('=')
+            val padded = cleanB64 + "=".repeat((4 - cleanB64.length % 4) % 4)
+            val json = Base64.UrlSafe.decode(padded).decodeToString()
+            ProtocolJson.decodeFromString(QrPairingPayloadDto.serializer(), json)
+        } else if (trimmed.startsWith("{")) {
+            ProtocolJson.decodeFromString(QrPairingPayloadDto.serializer(), trimmed)
+        } else {
+            null
+        }
+    }.getOrNull()
 }

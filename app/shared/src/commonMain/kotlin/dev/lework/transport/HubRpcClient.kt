@@ -55,6 +55,17 @@ private data class OAuthStartRequest(val codeChallenge: String)
 @kotlinx.serialization.Serializable
 private data class OAuthPollWithVerifier(val sid: String, val codeVerifier: String)
 
+@kotlinx.serialization.Serializable
+private data class TailscaleHandshakeRequest(val nonce: String, val deviceName: String)
+
+@kotlinx.serialization.Serializable
+private data class PairRedeemRequest(
+    val nonce: String,
+    val pairCode: String? = null,
+    val token: String? = null,
+    val deviceName: String,
+)
+
 data class DiscoveredEndpoint(
     val baseUrl: String,
     val wsUrl: String,
@@ -70,6 +81,7 @@ interface HubTransport {
         candidates: List<String>,
         dynamicCandidates: StateFlow<List<String>>? = null,
         waitWindowMs: Long = 6_500L,
+        preferredHubId: String? = null,
     ): DiscoveredEndpoint?
 
     /**
@@ -77,6 +89,20 @@ interface HubTransport {
      * token-bound attestation. Throws [HubTrustException] if the endpoint cannot prove itself.
      */
     suspend fun ensureHubTrusted(baseUrl: String, token: String) {}
+
+    suspend fun authenticateViaTailscale(baseUrl: String, deviceName: String): DirectTokenAuthResult {
+        throw UnsupportedOperationException("Tailscale handshake not implemented in this transport")
+    }
+
+    suspend fun redeemPairingCode(
+        baseUrl: String,
+        pairCode: String?,
+        staticToken: String?,
+        expectedFingerprint: String?,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        throw UnsupportedOperationException("Pairing redeem not implemented in this transport")
+    }
 
     suspend fun startOAuthDeviceFlow(baseUrl: String): OAuthStartResult
     suspend fun pollOAuthDeviceFlow(baseUrl: String, sid: String): OAuthPollResponse
@@ -181,10 +207,11 @@ class HubRpcClient(
         candidates: List<String>,
         dynamicCandidates: StateFlow<List<String>>?,
         waitWindowMs: Long,
+        preferredHubId: String?,
     ): DiscoveredEndpoint? {
         val winner = CompletableDeferred<DiscoveredEndpoint?>()
-        // Prefer endpoints presenting an already-pinned certificate; an unpinned responder (new
-        // Hub, rotated cert, or impostor) is only used as a fallback and must pass attestation.
+        // Prefer endpoints presenting an already-pinned certificate (or a verified same-account
+        // Tailscale node); an unpinned responder is only used as fallback and must pass attestation.
         var firstUnpinned: DiscoveredEndpoint? = null
         val requirePinned = HubTrust.pinned().isNotEmpty()
         val probedMutex = Mutex()
@@ -212,10 +239,17 @@ class HubRpcClient(
                             discover = info.copy(relayUrls = emptyList()),
                         )
                         val fp = HubTrust.observedFor(normalized)
-                        if (!requirePinned || (fp != null && HubTrust.isPinned(fp))) {
+                        val matchesPreferred = preferredHubId == null || info.hub.id == preferredHubId
+                        val trustedOrSameAccount =
+                            !requirePinned || (fp != null && HubTrust.isPinned(fp)) || info.tailscaleSameUser
+                        if (matchesPreferred && trustedOrSameAccount) {
                             winner.complete(endpoint)
                         } else {
-                            probedMutex.withLock { if (firstUnpinned == null) firstUnpinned = endpoint }
+                            probedMutex.withLock {
+                                if (firstUnpinned == null || (preferredHubId != null && info.hub.id == preferredHubId)) {
+                                    firstUnpinned = endpoint
+                                }
+                            }
                         }
                     }
                 } catch (_: Throwable) {
@@ -331,6 +365,97 @@ class HubRpcClient(
             throw HubTrustException("主机证书与令牌不匹配（可能存在中间人或冒充主机），已阻止发送令牌")
         }
         HubTrust.pin(seen)
+    }
+
+    override suspend fun authenticateViaTailscale(
+        baseUrl: String,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        val base = normalizeHubBaseUrl(baseUrl)
+        val nonce = HubAttestation.newNonce()
+        val res = withTimeout(8_000L) {
+            probeClient.post("$base/v1/auth/tailscale") {
+                setBody(
+                    ProtocolJson.encodeToString(
+                        TailscaleHandshakeRequest.serializer(),
+                        TailscaleHandshakeRequest(nonce = nonce, deviceName = deviceName),
+                    ),
+                )
+            }
+        }
+        val body = res.bodyAsText()
+        if (!res.status.isSuccess()) {
+            throw HubTrustException("Tailscale 同账号握手未通过: $body")
+        }
+        val auth = ProtocolJson.decodeFromString(DirectTokenAuthResult.serializer(), body)
+        val seen = HubTrust.observedFor(base)
+            ?: throw HubTrustException("未获取到主机 TLS 证书，已阻止建联")
+        val expectedProof = HubAttestation.proof(auth.accessToken, seen, nonce)
+        if (!constantTimeEquals(seen, auth.fingerprint.lowercase()) ||
+            !constantTimeEquals(expectedProof, auth.proof.lowercase())
+        ) {
+            throw HubTrustException("主机 TLS 证书校验未通过，已阻止建联")
+        }
+        HubTrust.pin(seen)
+        return auth
+    }
+
+    override suspend fun redeemPairingCode(
+        baseUrl: String,
+        pairCode: String?,
+        staticToken: String?,
+        expectedFingerprint: String?,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        val base = normalizeHubBaseUrl(baseUrl)
+        val expectedFp = expectedFingerprint?.trim()?.lowercase()?.takeIf { it.length == 64 }
+        if (expectedFp != null) {
+            if (HubTrust.observedFor(base) == null) {
+                withTimeout(5_000L) {
+                    probeClient.get("$base/v1/auth/discover")
+                }
+            }
+            val preSeen = HubTrust.observedFor(base)
+                ?: throw HubTrustException("未获取到主机 TLS 证书，已阻止配对")
+            if (!constantTimeEquals(preSeen, expectedFp)) {
+                throw HubTrustException("主机证书指纹与配对二维码不一致，已阻止发送凭证")
+            }
+        }
+
+        val nonce = HubAttestation.newNonce()
+        val res = withTimeout(8_000L) {
+            probeClient.post("$base/v1/auth/pair") {
+                setBody(
+                    ProtocolJson.encodeToString(
+                        PairRedeemRequest.serializer(),
+                        PairRedeemRequest(
+                            nonce = nonce,
+                            pairCode = pairCode,
+                            token = staticToken,
+                            deviceName = deviceName,
+                        ),
+                    ),
+                )
+            }
+        }
+        val body = res.bodyAsText()
+        if (!res.status.isSuccess()) {
+            throw HubTrustException("配对码已过期或无效，请在主机重新执行 hub pair")
+        }
+        val auth = ProtocolJson.decodeFromString(DirectTokenAuthResult.serializer(), body)
+        val seen = HubTrust.observedFor(base)
+            ?: throw HubTrustException("未获取到主机 TLS 证书，已阻止保存凭证")
+        if (expectedFp != null && !constantTimeEquals(seen, expectedFp)) {
+            throw HubTrustException("主机证书指纹与配对二维码不匹配")
+        }
+        val expectedProof = HubAttestation.proof(auth.accessToken, seen, nonce)
+        if (!constantTimeEquals(seen, auth.fingerprint.lowercase()) ||
+            !constantTimeEquals(expectedProof, auth.proof.lowercase())
+        ) {
+            throw HubTrustException("主机证书证明校验未通过")
+        }
+        HubTrust.pin(seen)
+        return auth
     }
 
     override suspend fun connectAndHello(

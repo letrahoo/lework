@@ -16,10 +16,12 @@ dist/
 legacy/
 vendor/dsh-channel/
 
-# Kotlin / Gradle / Xcode
+# Kotlin / Gradle / Xcode / Go build outputs
 .gradle/
 .kotlin/
 build/
+tsnet-bridge/bin/
+tsnet-bridge/build/
 local.properties
 *.xcuserstate
 xcuserdata/

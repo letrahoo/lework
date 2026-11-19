@@ -462,6 +462,8 @@ export const Methods = {
       capabilities: z.array(z.string()),
       /** Alternate addresses of this Hub (relays); only revealed after authentication. */
       relayUrls: z.array(z.string()).optional(),
+      /** All connectable HTTPS endpoints (LAN, mDNS, Tailscale IP, Relays) for multi-path roaming. */
+      endpoints: z.array(z.string()).optional(),
     }),
   },
   'hub.status': {

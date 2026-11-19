@@ -2,7 +2,10 @@
 
 移动端多引擎 Agent 控制台（Kotlin Multiplatform + Compose Multiplatform 客户端 + TypeScript Host Hub 守护进程）。
 
-核心设计目标：**零特定云/内网基建强绑定**，开箱支持局域网 mDNS/Bonjour 免配直连、访问令牌（Access Token）配对、可选 OAuth Device Flow 认证，以及任意自定义中继通道（Tailscale / WireGuard / SSH 反向隧道 / 云主机 Relay）。
+核心设计目标：**零特定云/内网基建强绑定**，开箱提供三层渐进式连接与安全握手体系：
+1. **同一局域网免配直连（macOS Bonjour / Linux & Windows 纯 UDP mDNS / Android NSD）**：自动发现 `_lework._tcp.local` 节点。
+2. **Tailscale 同账号内置组网（双端内嵌 `tsnet`）**：电脑与手机无需安装系统级 VPN、不接管全局路由、不与办公 VPN 冲突；两端登录**同一个 Tailscale / Headscale 账号**即可跨网段点对点自动发现并完成免扫码双向身份握手。
+3. **一次性二维码配对（`hub pair`）与自定义中继**：生成 5 分钟有效、单次消费的 `lework://pair` 配对码，手机相机扫码即完成证书指纹钉扎与独立设备令牌签发，并自动同步主机全部可用地址（LAN / Tailscale / 自定义 Relay）。
 
 ## 目录结构
 
@@ -10,6 +13,7 @@
 lework/
 ├─ docs/                       # 架构设计与规划方案 (docs/PLAN.md)
 ├─ protocol-schema/            # 双端协议单一来源 (Zod v4 -> JSON Schema + Kotlin @Serializable 模型)
+├─ tsnet-bridge/               # 双端内嵌用户态 Tailscale tsnet 模块 (Host 侧进程 + iOS C-Archive 静态库)
 ├─ hub/                        # Host Hub 守护进程 (多引擎适配、TUI 审批桥接、历史会话接管、增量用量扫描与快照)
 ├─ app/                        # KMP + Compose Multiplatform 客户端 (shared / iosApp / androidApp)
 └─ scripts/
@@ -37,8 +41,11 @@ pnpm stress:ui
 # 查看本机已安装的 Agent 引擎状态
 pnpm --filter @lework/hub cli engines
 
-# 查看本机连接地址与访问令牌 (Access Token)
+# 生成一次性扫码配对二维码 (lework://pair，5 分钟单次有效)
 pnpm --filter @lework/hub cli pair
+
+# 可选：启用内置 Tailscale 同账号组网（支持 --control-url 接入自建 Headscale）
+pnpm --filter @lework/hub cli tsnet login
 
 # 前台启动 Hub 守护进程 (默认 HTTPS/WSS 监听 0.0.0.0:64450，自动广播 _lework._tcp.local)
 pnpm hub

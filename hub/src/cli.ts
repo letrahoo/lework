@@ -1,12 +1,18 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
+import https from 'node:https'
+import os from 'node:os'
 import path from 'node:path'
+import type { TLSSocket } from 'node:tls'
 import { fileURLToPath } from 'node:url'
 import qrcode from 'qrcode-terminal'
 import { WebSocket } from 'ws'
 import type { HubRole } from '@lework/protocol'
+import { collectLanIpv4Addresses, collectTailscaleIpv4Addresses } from './bonjour.ts'
 import { loadOrCreateConfig } from './config.ts'
+import { encodePairingDeepLink, type QrPairingPayload } from './auth/pair-manager.ts'
 import { IssuedTokenStore } from './auth/token-store.ts'
+import { TsnetManager, type TsnetStatusSnapshot } from './auth/tsnet-manager.ts'
 import { defaultDataDir, generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
 import { loadOrCreateHubTls, shortFingerprint } from './security/tls.ts'
 import { HubServer } from './server.ts'
@@ -30,6 +36,81 @@ function parsePortFlag(args: string[]): number | undefined {
     if (Number.isInteger(n) && n > 0 && n < 65536) return n
   }
   return undefined
+}
+
+function parseStringFlag(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag)
+  if (idx >= 0 && args[idx + 1]) {
+    return args[idx + 1]!.trim() || undefined
+  }
+  return undefined
+}
+
+function callLocalHubAdmin<T>(opts: {
+  port: number
+  expectedFp: string
+  token: string
+  method: 'GET' | 'POST'
+  pathname: string
+  body?: unknown
+}): Promise<T | null> {
+  return new Promise(resolve => {
+    const req = https.request(
+      {
+        host: '127.0.0.1',
+        port: opts.port,
+        method: opts.method,
+        path: opts.pathname,
+        rejectUnauthorized: false,
+        timeout: 4_000,
+        headers: {
+          authorization: `Bearer ${opts.token}`,
+          ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        },
+      },
+      res => {
+        const sock = res.socket as TLSSocket
+        const raw = sock.getPeerCertificate?.()?.raw
+        const fp = raw ? crypto.createHash('sha256').update(raw).digest('hex') : ''
+        if (fp !== opts.expectedFp || (res.statusCode ?? 500) >= 400) {
+          res.resume()
+          resolve(null)
+          return
+        }
+        let buf = ''
+        res.setEncoding('utf8')
+        res.on('data', c => (buf += c))
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(buf) as T)
+          } catch {
+            resolve(null)
+          }
+        })
+      },
+    )
+    req.on('error', () => resolve(null))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(null)
+    })
+    if (opts.body !== undefined) req.write(JSON.stringify(opts.body))
+    req.end()
+  })
+}
+
+function updateStoredConfig(patch: Record<string, unknown>): void {
+  const cfgPath = path.join(defaultDataDir(), 'config.json')
+  let stored: Record<string, unknown> = {}
+  try {
+    stored = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>
+  } catch {
+    stored = {}
+  }
+  Object.assign(stored, patch)
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(cfgPath, JSON.stringify(stored, null, 2) + '\n', { mode: 0o600 })
+  fs.chmodSync(cfgPath, 0o600)
 }
 
 async function main(): Promise<void> {
@@ -115,23 +196,197 @@ async function main(): Promise<void> {
   }
 
   if (sub === 'pair') {
-    const lanIp = listLanAddresses()[0] ?? '127.0.0.1'
     const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
-    const payload = JSON.stringify({
+    const liveTicket = await callLocalHubAdmin<{
+      pairCode: string
+      expiresInSec: number
+      endpoints: string[]
+      fingerprint: string
+      hub: { id: string; name: string; role: string }
+    }>({
+      port: cfg.port,
+      expectedFp: tls.fingerprint,
+      token: cfg.token,
+      method: 'POST',
+      pathname: '/v1/auth/pair/create',
+    })
+
+    const fallbackUrls: string[] = []
+    for (const ip of collectLanIpv4Addresses()) fallbackUrls.push(`https://${ip}:${cfg.port}`)
+    const cleanHost = (cfg.name || os.hostname())
+      .replace(/\.local\.?$/i, '')
+      .replace(/[^A-Za-z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+    if (cleanHost) fallbackUrls.push(`https://${cleanHost}.local:${cfg.port}`)
+    for (const tsIp of collectTailscaleIpv4Addresses()) fallbackUrls.push(`https://${tsIp}:${cfg.port}`)
+    for (const r of cfg.relayUrls ?? []) fallbackUrls.push(r.replace(/^http:\/\//i, 'https://'))
+    if (fallbackUrls.length === 0) fallbackUrls.push(`https://127.0.0.1:${cfg.port}`)
+
+    const endpoints = liveTicket?.endpoints?.length ? liveTicket.endpoints : fallbackUrls
+    const primaryUrl = endpoints[0] ?? `https://127.0.0.1:${cfg.port}`
+    const payload: QrPairingPayload = {
       v: 2,
       hubId: cfg.hubId,
       name: cfg.name,
       role: cfg.role,
-      url: `https://${lanIp}:${cfg.port}`,
+      urls: endpoints,
+      url: primaryUrl,
       fp: tls.fingerprint,
-      token: cfg.token,
-    })
-    console.log('Scan or paste into the mobile app (keep this secret):')
-    console.log(`  URL         : https://${lanIp}:${cfg.port}`)
-    console.log(`  Token       : ${cfg.token}`)
+      ...(liveTicket ? { pairCode: liveTicket.pairCode } : { token: cfg.token }),
+    }
+    const deepLink = encodePairingDeepLink(payload)
+
+    console.log('Scan with Lework App (or iOS Camera) to pair this host:')
+    for (const ep of endpoints) {
+      console.log(`  Endpoint    : ${ep}`)
+    }
+    if (liveTicket) {
+      console.log(`  Pair Code   : ${liveTicket.pairCode}  (single-use, expires in ${liveTicket.expiresInSec}s)`)
+    } else {
+      console.log(`  Token       : ${cfg.token}  (hubd offline — static fallback token)`)
+    }
     console.log(`  Fingerprint : ${shortFingerprint(tls.fingerprint)}  (App 「主机指纹」应与此一致)\n`)
-    qrcode.generate(payload, { small: true })
+    qrcode.generate(deepLink, { small: true })
+    console.log(`\nDeep Link: ${deepLink}`)
     return
+  }
+
+  if (sub === 'tsnet') {
+    const action = args[1] ?? 'status'
+    const controlUrl = parseStringFlag(args, '--control-url')
+    const authKey = parseStringFlag(args, '--auth-key')
+    const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
+
+    const printStatus = (st: TsnetStatusSnapshot) => {
+      console.log(`Tailscale Mesh (${st.mode}):`)
+      console.log(`  State      : ${st.backendState}`)
+      if (st.loginName) console.log(`  Account    : ${st.displayName ? `${st.displayName} <${st.loginName}>` : st.loginName}`)
+      if (st.selfHostName) console.log(`  Node       : ${st.selfHostName}${st.selfDnsName ? ` (${st.selfDnsName})` : ''}`)
+      if (st.tailscaleIps.length > 0) console.log(`  Mesh IPs   : ${st.tailscaleIps.join(', ')}`)
+      if (st.controlUrl) console.log(`  Control    : ${st.controlUrl}`)
+      if (st.authUrl) console.log(`  Login URL  : ${st.authUrl}`)
+      if (st.error) console.log(`  Error      : ${st.error}`)
+      if (st.peers.length > 0) {
+        console.log('  Same-Account Peers:')
+        for (const p of st.peers) {
+          console.log(`    - [${p.online ? 'ONLINE ' : 'OFFLINE'}] ${p.hostName} (${p.tailscaleIp})`)
+        }
+      }
+    }
+
+    if (action === 'status') {
+      const remote = await callLocalHubAdmin<TsnetStatusSnapshot>({
+        port: cfg.port,
+        expectedFp: tls.fingerprint,
+        token: cfg.token,
+        method: 'GET',
+        pathname: '/v1/tsnet/status',
+      })
+      if (remote) {
+        printStatus(remote)
+        return
+      }
+      const mgr = new TsnetManager({
+        hubName: cfg.name,
+        hubPort: cfg.port,
+        controlUrl: controlUrl ?? cfg.tsnetControlUrl,
+        autoStart: false,
+      })
+      const st = await mgr.getStatus()
+      await mgr.stop()
+      printStatus(st)
+      return
+    }
+
+    if (action === 'login') {
+      updateStoredConfig({
+        tsnetEnabled: true,
+        ...(controlUrl ? { tsnetControlUrl: controlUrl } : {}),
+      })
+      const remote = await callLocalHubAdmin<TsnetStatusSnapshot>({
+        port: cfg.port,
+        expectedFp: tls.fingerprint,
+        token: cfg.token,
+        method: 'POST',
+        pathname: '/v1/tsnet/login',
+        body: { controlUrl, authKey },
+      })
+      if (remote) {
+        printStatus(remote)
+        if (remote.authUrl && remote.backendState !== 'Running') {
+          console.log('\nOpen the URL above (or scan QR) with the SAME Tailscale account used on your phone:\n')
+          qrcode.generate(remote.authUrl, { small: true })
+          console.log('\nWaiting for Tailscale login confirmation (Ctrl+C to exit)...')
+          for (let i = 0; i < 90; i++) {
+            await new Promise(r => setTimeout(r, 2_000))
+            const cur = await callLocalHubAdmin<TsnetStatusSnapshot>({
+              port: cfg.port,
+              expectedFp: tls.fingerprint,
+              token: cfg.token,
+              method: 'GET',
+              pathname: '/v1/tsnet/status',
+            })
+            if (cur?.backendState === 'Running') {
+              console.log('\nTailscale same-account mesh is ONLINE!\n')
+              printStatus(cur)
+              return
+            }
+          }
+        }
+        return
+      }
+
+      const mgr = new TsnetManager({
+        hubName: cfg.name,
+        hubPort: cfg.port,
+        controlUrl: controlUrl ?? cfg.tsnetControlUrl,
+        authKey,
+        autoStart: true,
+      })
+      const st = await mgr.startLogin({ controlUrl, authKey })
+      printStatus(st)
+      if (st.authUrl && st.backendState !== 'Running') {
+        console.log('\nOpen the URL above (or scan QR) with the SAME Tailscale account used on your phone:\n')
+        qrcode.generate(st.authUrl, { small: true })
+        console.log('\nWaiting for Tailscale login confirmation (Ctrl+C to exit)...')
+        for (let i = 0; i < 90; i++) {
+          await new Promise(r => setTimeout(r, 2_000))
+          const cur = await mgr.getStatus()
+          if (cur.backendState === 'Running') {
+            console.log('\nTailscale same-account mesh is ONLINE!\n')
+            printStatus(cur)
+            await mgr.stop()
+            return
+          }
+        }
+      }
+      await mgr.stop()
+      return
+    }
+
+    if (action === 'logout') {
+      updateStoredConfig({ tsnetEnabled: false })
+      const remote = await callLocalHubAdmin<TsnetStatusSnapshot>({
+        port: cfg.port,
+        expectedFp: tls.fingerprint,
+        token: cfg.token,
+        method: 'POST',
+        pathname: '/v1/tsnet/logout',
+      })
+      if (remote) {
+        printStatus(remote)
+        return
+      }
+      const mgr = new TsnetManager({ hubName: cfg.name, hubPort: cfg.port, autoStart: false })
+      const st = await mgr.logout()
+      await mgr.stop()
+      printStatus(st)
+      return
+    }
+
+    console.log('Usage: hub tsnet <status|login|logout> [--control-url <url>] [--auth-key <key>]')
+    process.exit(1)
   }
 
   if (sub === 'token') {
@@ -155,7 +410,7 @@ async function main(): Promise<void> {
     const action = args[1] ?? 'list'
     if (action === 'list') {
       const rows = store.list()
-      if (rows.length === 0) console.log('No OAuth-issued tokens.')
+      if (rows.length === 0) console.log('No issued device tokens.')
       for (const r of rows) {
         console.log(
           `  ${r.kid}  ${r.name} (${r.sub})  issued ${new Date(r.issuedAt).toISOString()}  expires ${new Date(r.expiresAt).toISOString()}`,
@@ -235,7 +490,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    'Usage: hub <serve|status|engines|slaves|pair|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
+    'Usage: hub <serve|status|engines|slaves|pair|tsnet|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
   )
 }
 

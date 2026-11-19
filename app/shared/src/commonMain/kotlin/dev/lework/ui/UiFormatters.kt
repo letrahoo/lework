@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lework.platform.MobileTsnetStatus
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.epochMillis
 import dev.lework.platform.loadSavedRelayUrls
@@ -46,8 +47,27 @@ import dev.lework.store.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+internal fun isTailscaleEndpoint(baseUrl: String, tsnetStatus: MobileTsnetStatus? = null): Boolean {
+    if (baseUrl.isBlank()) return false
+    if (tsnetStatus?.peers?.any { !it.localProxyUrl.isNullOrBlank() && baseUrl.startsWith(it.localProxyUrl) } == true) {
+        return true
+    }
+    val host = baseUrl.substringAfter("://").substringBefore('/').substringBefore(':')
+    val parts = host.split('.')
+    if (parts.size == 4) {
+        val o0 = parts[0].toIntOrNull()
+        val o1 = parts[1].toIntOrNull()
+        if (o0 == 100 && o1 != null && o1 in 64..127) return true
+    }
+    return false
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
-internal fun connectionChannelLabel(baseUrl: String): String = when {
+internal fun connectionChannelLabel(
+    baseUrl: String,
+    tsnetStatus: MobileTsnetStatus? = null,
+): String = when {
+    isTailscaleEndpoint(baseUrl, tsnetStatus) -> "Tailscale 内网"
     loadSavedRelayUrls().any { it.isNotBlank() && baseUrl.startsWith(it) } -> "远程中继"
     baseUrl.isNotBlank() -> "局域网直连"
     else -> "已连接"

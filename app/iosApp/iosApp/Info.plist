@@ -21,7 +21,18 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.5.0</string>
 	<key>CFBundleVersion</key>
-	<string>20261119.2108</string>
+	<string>20261120.0005</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.lework.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>lework</string>
+			</array>
+		</dict>
+	</array>
 	<key>LeworkBootstrapRelay</key>
 	<string>$(LEWORK_BOOTSTRAP_RELAY)</string>
 	<key>LSRequiresIPhoneOS</key>

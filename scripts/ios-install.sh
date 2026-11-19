@@ -15,7 +15,11 @@ BUNDLE_ID="${LEWORK_IOS_BUNDLE_ID:-dev.lework.app}"
 TEAM_ID="${APPLE_TEAM_ID:-}"
 
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home}"
-export PATH="$JAVA_HOME/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export PATH="$JAVA_HOME/bin:/usr/local/go/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+if [[ ! -f "$REPO_ROOT/tsnet-bridge/build/ios-device/libtsnetbridge.a" || ! -f "$REPO_ROOT/tsnet-bridge/build/ios-sim/libtsnetbridge.a" ]]; then
+  "$REPO_ROOT/scripts/build-tsnet.sh" --ios
+fi
 
 cd "$IOS_DIR"
 xcodegen generate

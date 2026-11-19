@@ -46,6 +46,9 @@ class FakeHubTransport : HubTransport {
 
     var listSessionsException: Throwable? = null
     var connectHelloException: Throwable? = null
+    var simulateTailscaleSameUser: Boolean = false
+    var tailscaleHandshakeCount: Int = 0
+    var pairRedeemCount: Int = 0
 
     val unsubscribedIds = mutableListOf<String>()
     val respondedApprovals = mutableListOf<Triple<String, String, String?>>()
@@ -69,6 +72,7 @@ class FakeHubTransport : HubTransport {
         candidates: List<String>,
         dynamicCandidates: StateFlow<List<String>>?,
         waitWindowMs: Long,
+        preferredHubId: String?,
     ): DiscoveredEndpoint? {
         val chosen = candidates.firstOrNull() ?: "https://127.0.0.1:64450"
         return DiscoveredEndpoint(
@@ -77,10 +81,47 @@ class FakeHubTransport : HubTransport {
             discover = HubDiscoverResult(
                 ok = true,
                 hub = hubInfo,
-                oauthEnabled = true,
-                oauthProvider = "feishu",
-                oauthDisplayName = "飞书",
+                oauthEnabled = !simulateTailscaleSameUser,
+                oauthProvider = if (simulateTailscaleSameUser) null else "feishu",
+                oauthDisplayName = if (simulateTailscaleSameUser) null else "飞书",
+                tailscaleSameUser = simulateTailscaleSameUser,
+                tailscaleUser = if (simulateTailscaleSameUser) "Owner" else null,
             ),
+        )
+    }
+
+    override suspend fun authenticateViaTailscale(
+        baseUrl: String,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        tailscaleHandshakeCount++
+        return DirectTokenAuthResult(
+            ok = true,
+            accessToken = "lework_dt.tailscale_mesh_token",
+            user = OAuthUser(subject = "tailscale:owner@example.com", name = "Owner", email = "owner@example.com"),
+            fingerprint = "a".repeat(64),
+            proof = "b".repeat(64),
+            hub = hubInfo,
+            endpoints = listOf("https://100.88.12.34:64450"),
+        )
+    }
+
+    override suspend fun redeemPairingCode(
+        baseUrl: String,
+        pairCode: String?,
+        staticToken: String?,
+        expectedFingerprint: String?,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        pairRedeemCount++
+        return DirectTokenAuthResult(
+            ok = true,
+            accessToken = "lework_dt.paired_qr_token",
+            user = OAuthUser(subject = "pair:qr", name = deviceName),
+            fingerprint = expectedFingerprint ?: "a".repeat(64),
+            proof = "b".repeat(64),
+            hub = hubInfo,
+            endpoints = listOf(baseUrl),
         )
     }
 

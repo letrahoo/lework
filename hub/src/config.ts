@@ -17,6 +17,9 @@ export interface HubConfig {
   masterUrl?: string
   /** Separate credential that Slaves use to register with this Master (never the admin token). */
   slaveJoinToken?: string
+  /** Optional embedded Tailscale tsnet mesh configuration. */
+  tsnetEnabled?: boolean
+  tsnetControlUrl?: string
   cpaEndpoint: string
   cpaManagementKey?: string
 }
@@ -64,6 +67,8 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
     relayUrls: overrides.relayUrls ?? stored.relayUrls ?? envRelays,
     masterUrl: overrides.masterUrl ?? stored.masterUrl,
     slaveJoinToken: overrides.slaveJoinToken ?? stored.slaveJoinToken ?? crypto.randomBytes(24).toString('base64url'),
+    tsnetEnabled: overrides.tsnetEnabled ?? stored.tsnetEnabled,
+    tsnetControlUrl: overrides.tsnetControlUrl ?? stored.tsnetControlUrl ?? (process.env.LEWORK_TSNET_CONTROL_URL?.trim() || undefined),
     cpaEndpoint: overrides.cpaEndpoint ?? stored.cpaEndpoint ?? 'http://127.0.0.1:8317',
     cpaManagementKey:
       overrides.cpaManagementKey ??

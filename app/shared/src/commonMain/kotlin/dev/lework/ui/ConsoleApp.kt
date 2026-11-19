@@ -84,6 +84,10 @@ fun ConsoleApp(
                     onManualConnect = store::connectManualEndpoint,
                     onRetry = store::bootstrapOrConnect,
                     onResetCredentials = store::resetCredentialsAndReconnect,
+                    onScanQr = store::scanQrAndPair,
+                    onStartTsnetLogin = store::startMobileTsnetLogin,
+                    onLogoutTsnet = store::logoutMobileTsnetAccount,
+                    onSelectPairedHost = store::switchPairedHost,
                 )
             } else {
                 ModalNavigationDrawer(
@@ -112,6 +116,14 @@ fun ConsoleApp(
                                 },
                                 onRefresh = store::refreshHostSessions,
                                 onLogout = store::logout,
+                                onSwitchHost = { hubId ->
+                                    scope.launch { drawerState.close() }
+                                    store.switchPairedHost(hubId)
+                                },
+                                onPairAnotherHost = {
+                                    scope.launch { drawerState.close() }
+                                    store.preparePairAnotherHost()
+                                },
                             )
                         }
                     },
