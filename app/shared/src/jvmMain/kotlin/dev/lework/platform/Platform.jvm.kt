@@ -81,11 +81,11 @@ actual fun saveRelayUrls(urls: List<String>) {
     JvmPlatformTestHooks.savedRelayUrls = urls.map { it.trim().trimEnd('/') }.filter { it.isNotEmpty() }.distinct()
 }
 
-actual fun loadSavedFeishuToken(): String? = JvmPlatformTestHooks.savedToken
+actual fun loadSavedAccessToken(): String? = JvmPlatformTestHooks.savedToken
 
-actual fun loadSavedFeishuUserName(): String? = JvmPlatformTestHooks.savedUserName
+actual fun loadSavedAuthUserName(): String? = JvmPlatformTestHooks.savedUserName
 
-actual fun saveFeishuSession(token: String?, userName: String?) {
+actual fun saveAuthSession(token: String?, userName: String?) {
     if (token.isNullOrBlank()) {
         JvmPlatformTestHooks.savedToken = null
         JvmPlatformTestHooks.savedUserName = null

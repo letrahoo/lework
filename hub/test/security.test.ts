@@ -6,15 +6,15 @@ import path from 'node:path'
 import type { TLSSocket } from 'node:tls'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
-import { ErrorCode, PROTOCOL_VERSION } from '@qprc/protocol'
+import { ErrorCode, PROTOCOL_VERSION } from '@lework/protocol'
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-sec-'))
-process.env.QPRC_HOME = dataDir
+process.env.LEWORK_HOME = dataDir
 
 const { HubServer } = await import('../src/server.ts')
 const { DiagnosticEchoAdapter } = await import('../src/engines/echo-adapter.ts')
 const { attestProof, tokenAttestKey, tokenKid } = await import('../src/security/tls.ts')
-const { FeishuGateAuth } = await import('../src/auth/feishu-auth.ts')
+const { DeviceFlowAuth } = await import('../src/auth/device-flow-auth.ts')
 const { IssuedTokenStore } = await import('../src/auth/token-store.ts')
 const { isSensitivePath } = await import('../src/security/path-guard.ts')
 
@@ -125,7 +125,7 @@ describe('Hub transport & auth security', () => {
 
   it('refuses browser-originated requests (Origin) on WS upgrade and POST', async () => {
     await expect(openWs(port, '/v1/ws', { Origin: 'https://evil.example' })).rejects.toThrow()
-    const post = await request(port, 'POST', '/v1/auth/feishu/start', {}, { Origin: 'https://evil.example' })
+    const post = await request(port, 'POST', '/v1/auth/oauth/start', {}, { Origin: 'https://evil.example' })
     expect(post.status).toBe(403)
   })
 
@@ -189,7 +189,7 @@ describe('Hub transport & auth security', () => {
 })
 
 describe('OAuth-issued tokens', () => {
-  it('are audience-bound and revocable', () => {
+  it('are audience-bound, revocable, and support both generic oauth.json and legacy feishu-secret.json', () => {
     fs.writeFileSync(
       path.join(dataDir, 'feishu-secret.json'),
       JSON.stringify({
@@ -201,22 +201,39 @@ describe('OAuth-issued tokens', () => {
       { mode: 0o644 },
     )
     const store = new IssuedTokenStore(path.join(dataDir, 'issued-test.json'))
-    const auth = new FeishuGateAuth({ hubId: 'hub_a', issued: store })
+    const auth = new DeviceFlowAuth({ hubId: 'hub_a', issued: store })
     expect(fs.statSync(path.join(dataDir, 'feishu-secret.json')).mode & 0o077).toBe(0)
+    expect(auth.describe()).toEqual({ enabled: true, provider: 'feishu', displayName: '飞书' })
 
-    const token = auth.signSessionToken({ openId: 'ou_owner', name: 'Owner', email: '' })
-    expect(auth.verifySessionToken(token)?.openId).toBe('ou_owner')
+    const token = auth.signSessionToken({ subject: 'ou_owner', name: 'Owner', email: '' })
+    expect(auth.verifySessionToken(token)?.subject).toBe('ou_owner')
     expect(store.attestKeyForKid(tokenKid(token))?.equals(tokenAttestKey(token))).toBe(true)
 
-    const otherHub = new FeishuGateAuth({ hubId: 'hub_b', issued: store })
+    const otherHub = new DeviceFlowAuth({ hubId: 'hub_b', issued: store })
     expect(otherHub.verifySessionToken(token)).toBeNull()
 
     store.revoke(tokenKid(token))
     expect(auth.verifySessionToken(token)).toBeNull()
+
+    // Generic RFC 8628 provider config
+    const ssoAuth = new DeviceFlowAuth({
+      hubId: 'hub_sso',
+      issued: store,
+      config: {
+        provider: 'rfc8628',
+        displayName: 'Company SSO',
+        clientId: 'lework-cli',
+        deviceAuthorizationEndpoint: 'https://sso.example.com/oauth/device',
+        tokenEndpoint: 'https://sso.example.com/oauth/token',
+        userinfoEndpoint: 'https://sso.example.com/oauth/userinfo',
+        allowedSubjects: ['emp_1001'],
+      },
+    })
+    expect(ssoAuth.describe()).toEqual({ enabled: true, provider: 'rfc8628', displayName: 'Company SSO' })
   })
 
   it('rejects device-flow start without a valid PKCE challenge', async () => {
-    const auth = new FeishuGateAuth({ hubId: 'hub_a', issued: new IssuedTokenStore(path.join(dataDir, 'i2.json')) })
+    const auth = new DeviceFlowAuth({ hubId: 'hub_a', issued: new IssuedTokenStore(path.join(dataDir, 'i2.json')) })
     await expect(auth.startDeviceFlow('not-a-hash')).rejects.toThrow(/Invalid code challenge/)
   })
 })

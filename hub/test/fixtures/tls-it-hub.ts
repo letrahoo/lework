@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const token = process.env.LEWORK_IT_TOKEN ?? 'it-genuine-token-0123456789'
-process.env.QPRC_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-it-'))
+process.env.LEWORK_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-it-'))
 
 const { HubServer } = await import('../../src/server.ts')
 const { DiagnosticEchoAdapter } = await import('../../src/engines/echo-adapter.ts')

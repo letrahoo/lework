@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ErrorCode } from '@qprc/protocol'
+import { ErrorCode } from '@lework/protocol'
 
 export class HubRpcError extends Error {
   constructor(
@@ -21,9 +21,9 @@ export class HubRpcError extends Error {
 function sensitiveDirs(): string[] {
   const home = os.homedir()
   const dirs = [
-    process.env.QPRC_HOME ?? path.join(home, '.qprc'),
-    path.join(home, '.qprc'),
+    process.env.LEWORK_HOME ?? path.join(home, '.lework'),
     path.join(home, '.lework'),
+    path.join(home, '.qprc'),
     path.join(home, '.ssh'),
     path.join(home, '.gnupg'),
     path.join(home, '.aws'),

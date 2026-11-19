@@ -10,7 +10,7 @@ import type {
   ReasoningEffort,
   SessionMeta,
   SessionMode,
-} from '@qprc/protocol'
+} from '@lework/protocol'
 import { findExecutable } from '../platform/index.ts'
 import { TerminalBridge, type ClaudeLiveSessionMeta } from './terminal-bridge.ts'
 

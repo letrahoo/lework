@@ -161,7 +161,7 @@ class ConsoleStoreStateTest {
             runCurrent()
 
             assertFalse(store.state.value.hasEnteredWorkspace)
-            assertEquals(ConnectionStatus.NEEDS_FEISHU_AUTH, store.state.value.connectionStatus)
+            assertEquals(ConnectionStatus.NEEDS_AUTH, store.state.value.connectionStatus)
             assertNull(JvmPlatformTestHooks.savedToken)
         } finally {
             storeScope.cancel()

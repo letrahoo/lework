@@ -47,11 +47,11 @@ actual fun candidateHubHttpUrls(): List<String> = buildList {
     add("https://10.0.2.2:64450")
 }.distinct()
 
-actual fun loadSavedFeishuToken(): String? = memToken
+actual fun loadSavedAccessToken(): String? = memToken
 
-actual fun loadSavedFeishuUserName(): String? = memUser
+actual fun loadSavedAuthUserName(): String? = memUser
 
-actual fun saveFeishuSession(token: String?, userName: String?) {
+actual fun saveAuthSession(token: String?, userName: String?) {
     memToken = token
     memUser = userName
 }

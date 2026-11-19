@@ -13,13 +13,13 @@
  */
 import net from 'node:net'
 
-const LISTEN_HOST = process.env.QPRC_LISTEN_HOST ?? '0.0.0.0'
-const LISTEN_PORT = Number(process.env.QPRC_LISTEN_PORT ?? 64450)
-const UPSTREAM_HOST = process.env.QPRC_UPSTREAM_HOST ?? '127.0.0.1'
-const UPSTREAM_PORT = Number(process.env.QPRC_UPSTREAM_PORT ?? 16450)
+const LISTEN_HOST = process.env.LEWORK_LISTEN_HOST ?? '0.0.0.0'
+const LISTEN_PORT = Number(process.env.LEWORK_LISTEN_PORT ?? 64450)
+const UPSTREAM_HOST = process.env.LEWORK_UPSTREAM_HOST ?? '127.0.0.1'
+const UPSTREAM_PORT = Number(process.env.LEWORK_UPSTREAM_PORT ?? 16450)
 
-const MAX_CONN_PER_IP = Number(process.env.QPRC_MAX_CONN_PER_IP ?? 16)
-const MAX_CONN_TOTAL = Number(process.env.QPRC_MAX_CONN_TOTAL ?? 256)
+const MAX_CONN_PER_IP = Number(process.env.LEWORK_MAX_CONN_PER_IP ?? 16)
+const MAX_CONN_TOTAL = Number(process.env.LEWORK_MAX_CONN_TOTAL ?? 256)
 const perIp = new Map()
 let total = 0
 

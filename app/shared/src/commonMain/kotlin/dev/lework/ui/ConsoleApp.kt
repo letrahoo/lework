@@ -74,10 +74,10 @@ fun ConsoleApp(
             color = Everforest.Bg0,
         ) {
             if (!state.hasEnteredWorkspace) {
-                FeishuAuthView(
+                AuthEntryView(
                     state = state,
-                    onLaunchFeishu = store::launchFeishuAppForAuth,
-                    onOpenBrowser = store::openFeishuBrowserFallback,
+                    onLaunchOAuth = store::launchOAuthApp,
+                    onOpenBrowser = store::openOAuthBrowserFallback,
                     onManualConnect = store::connectManualEndpoint,
                     onRetry = store::bootstrapOrConnect,
                 )
@@ -102,7 +102,7 @@ fun ConsoleApp(
                                     scope.launch { drawerState.close() }
                                 },
                                 onRefresh = store::refreshHostSessions,
-                                onLogout = store::logoutFeishu,
+                                onLogout = store::logout,
                             )
                         }
                     },
@@ -1308,7 +1308,7 @@ private fun TasksSidebarContent(
                     color = Everforest.Fg,
                 )
                 Text(
-                    text = "${connectionChannelLabel(state.discoveredBaseUrl)} · ${state.feishuUserName ?: "本人"}",
+                    text = "${connectionChannelLabel(state.discoveredBaseUrl)} · ${state.authUserName ?: "本人"}",
                     fontSize = 11.sp,
                     color = Everforest.Grey1,
                 )
@@ -2188,15 +2188,15 @@ private fun WorkspaceFileTreeSheet(
 }
 
 @Composable
-private fun FeishuAuthView(
+private fun AuthEntryView(
     state: ConsoleUiState,
-    onLaunchFeishu: () -> Unit,
+    onLaunchOAuth: () -> Unit,
     onOpenBrowser: () -> Unit,
     onManualConnect: (String, String) -> Unit,
     onRetry: () -> Unit,
 ) {
-    var showManualForm by remember(state.feishuEnabled, state.connectionStatus) {
-        mutableStateOf(!state.feishuEnabled && state.connectionStatus == ConnectionStatus.NEEDS_FEISHU_AUTH)
+    var showManualForm by remember(state.oauthEnabled, state.connectionStatus) {
+        mutableStateOf(!state.oauthEnabled && state.connectionStatus == ConnectionStatus.NEEDS_AUTH)
     }
     var manualHost by remember(state.discoveredBaseUrl) {
         mutableStateOf(state.discoveredBaseUrl)
@@ -2262,17 +2262,18 @@ private fun FeishuAuthView(
                             modifier = Modifier.size(28.dp),
                         )
                         Text(
-                            text = state.feishuStatusText,
+                            text = state.authStatusText,
                             fontSize = 12.sp,
                             color = Everforest.Grey1,
                         )
                     }
-                    ConnectionStatus.NEEDS_FEISHU_AUTH -> {
-                        val challenge = state.feishuChallenge
-                        if (state.feishuEnabled) {
+                    ConnectionStatus.NEEDS_AUTH -> {
+                        val challenge = state.oauthChallenge
+                        val providerLabel = state.oauthDisplayName ?: "SSO"
+                        if (state.oauthEnabled) {
                             if (challenge != null) {
                                 Button(
-                                    onClick = onLaunchFeishu,
+                                    onClick = onLaunchOAuth,
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = Everforest.Green,
                                         contentColor = Everforest.BgDim,
@@ -2282,7 +2283,7 @@ private fun FeishuAuthView(
                                         .fillMaxWidth()
                                         .height(46.dp),
                                 ) {
-                                    Text("唤起授权一键确认", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                    Text("唤起${providerLabel}授权一键确认", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                                 }
                                 TextButton(onClick = onOpenBrowser) {
                                     Text("在浏览器中打开授权页 (${challenge.userCode})", fontSize = 12.sp, color = Everforest.Grey2)
@@ -2296,7 +2297,7 @@ private fun FeishuAuthView(
                             }
                         }
                         Text(
-                            text = state.feishuStatusText,
+                            text = state.authStatusText,
                             fontSize = 12.sp,
                             color = Everforest.Grey1,
                             textAlign = TextAlign.Center,

@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { HubRole } from '@qprc/protocol'
+import type { HubRole } from '@lework/protocol'
 import { defaultDataDir, detectPlatform } from './platform/index.ts'
 
 export interface HubConfig {
@@ -56,8 +56,8 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
     name: overrides.name ?? stored.name ?? os.hostname(),
     role: overrides.role ?? stored.role ?? (platform === 'linux' ? 'master' : 'slave'),
     host: overrides.host ?? stored.host ?? '0.0.0.0',
-    port: overrides.port ?? stored.port ?? Number(process.env.QPRC_PORT ?? 64450),
-    token: overrides.token ?? stored.token ?? process.env.QPRC_TOKEN ?? crypto.randomBytes(24).toString('base64url'),
+    port: overrides.port ?? stored.port ?? Number(process.env.LEWORK_PORT ?? 64450),
+    token: overrides.token ?? stored.token ?? process.env.LEWORK_TOKEN ?? crypto.randomBytes(24).toString('base64url'),
     // $HOME is intentionally not a default root; credential paths are additionally hard-denied in path-guard.
     workspaceRoots: overrides.workspaceRoots ?? stored.workspaceRoots ?? (defaultRoots.length > 0 ? defaultRoots : [os.homedir()]),
     relayUrls: overrides.relayUrls ?? stored.relayUrls ?? envRelays,

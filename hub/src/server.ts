@@ -20,10 +20,10 @@ import {
   type SessionMode,
   type SlaveInfo,
   type Workspace,
-} from '@qprc/protocol'
+} from '@lework/protocol'
 import type { HubConfig } from './config.ts'
 import { BonjourAdvertiser } from './bonjour.ts'
-import { FeishuGateAuth } from './auth/feishu-auth.ts'
+import { DeviceFlowAuth } from './auth/device-flow-auth.ts'
 import { AgyEngineAdapter } from './engines/agy-adapter.ts'
 import { ClaudeCodeAdapter } from './engines/claude-adapter.ts'
 import { CodexEngineAdapter } from './engines/codex-adapter.ts'
@@ -52,7 +52,7 @@ export interface HubServerOptions {
   config: HubConfig
   adapters?: EngineAdapter[]
   hostInspector?: HostTaskInspector
-  /** TLS identity; defaults to the persistent self-signed identity under `~/.qprc/tls`. */
+  /** TLS identity; defaults to the persistent self-signed identity under `~/.lework/tls`. */
   tls?: HubTlsMaterial
 }
 
@@ -79,7 +79,7 @@ export class HubServer {
   private readonly remoteSlaves = new Map<string, SlaveInfo>()
   private readonly sessionManager: SessionManager
   private readonly registry: ModelRegistry
-  private readonly feishuAuth: FeishuGateAuth
+  private readonly deviceAuth: DeviceFlowAuth
   private readonly config: HubConfig
   private bonjour: BonjourAdvertiser | null = null
   private readonly tls: HubTlsMaterial
@@ -87,7 +87,7 @@ export class HubServer {
   constructor(opts: HubServerOptions) {
     this.config = opts.config
     this.tls = opts.tls ?? loadOrCreateHubTls({ commonName: `lework-${opts.config.hubId}` })
-    this.feishuAuth = new FeishuGateAuth({ hubId: this.config.hubId })
+    this.deviceAuth = new DeviceFlowAuth({ hubId: this.config.hubId })
     const defaultCwd = this.discoverWorkspaces()[0]?.path
     this.registry = new ModelRegistry(this.config.hubId, this.config.cpaEndpoint, defaultCwd)
 
@@ -275,14 +275,14 @@ export class HubServer {
   }
 
   private isValidToken(token: string): boolean {
-    if (this.feishuAuth.verifySessionToken(token)) return true
+    if (this.deviceAuth.verifySessionToken(token)) return true
     return timingSafeEqualStr(token, this.config.token)
   }
 
   /** Attestation key (SHA-256 of the bearer token) for a public key-id, if the token is valid. */
   private attestKeyForKid(kid: string): Buffer | null {
     if (kid === tokenKid(this.config.token)) return tokenAttestKey(this.config.token)
-    return this.feishuAuth.issued.attestKeyForKid(kid)
+    return this.deviceAuth.issued.attestKeyForKid(kid)
   }
 
   private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -303,10 +303,13 @@ export class HubServer {
     if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/v1/auth/discover')) {
       // Unauthenticated: reveal only what the login screen needs. Relay URLs are returned
       // after authentication (hub.hello) so an impostor cannot be "learned" from here.
+      const oauth = this.deviceAuth.describe()
       json(200, {
         ok: true,
         hub: this.getHubInfo(),
-        feishuEnabled: this.feishuAuth.isConfigured(),
+        oauthEnabled: oauth.enabled,
+        oauthProvider: oauth.provider,
+        oauthDisplayName: oauth.displayName,
         wsPath: '/v1/ws',
         tls: true,
       })
@@ -338,10 +341,10 @@ export class HubServer {
       }
       return
     }
-    if (req.method === 'POST' && url.pathname === '/v1/auth/feishu/start') {
+    if (req.method === 'POST' && (url.pathname === '/v1/auth/oauth/start' || url.pathname === '/v1/auth/feishu/start')) {
       try {
         const parsed = JSON.parse((await readRequestBody(req)) || '{}') as { codeChallenge?: unknown }
-        const challenge = await this.feishuAuth.startDeviceFlow(
+        const challenge = await this.deviceAuth.startDeviceFlow(
           typeof parsed.codeChallenge === 'string' ? parsed.codeChallenge : '',
         )
         json(200, challenge)
@@ -352,14 +355,14 @@ export class HubServer {
       }
       return
     }
-    if (req.method === 'POST' && url.pathname === '/v1/auth/feishu/poll') {
+    if (req.method === 'POST' && (url.pathname === '/v1/auth/oauth/poll' || url.pathname === '/v1/auth/feishu/poll')) {
       try {
         const parsed = JSON.parse((await readRequestBody(req)) || '{}') as { sid?: unknown; codeVerifier?: unknown }
         if (typeof parsed.sid !== 'string' || typeof parsed.codeVerifier !== 'string') {
           json(400, { status: 'expired', detail: 'Missing sid' })
           return
         }
-        const pollRes = await this.feishuAuth.pollDeviceFlow(parsed.sid, parsed.codeVerifier)
+        const pollRes = await this.deviceAuth.pollDeviceFlow(parsed.sid, parsed.codeVerifier)
         json(200, pollRes)
       } catch {
         json(500, { status: 'expired', detail: 'Login failed' })

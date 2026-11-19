@@ -11,7 +11,7 @@ RELAY_SSH_HOST="${LEWORK_RELAY_SSH_HOST:-}"
 RELAY_PUBLIC_URL="${LEWORK_RELAY_URL:-}"
 LAUNCH_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$HOME/Library/Logs"
-mkdir -p "$LAUNCH_DIR" "$LOG_DIR" "$HOME/.qprc"
+mkdir -p "$LAUNCH_DIR" "$LOG_DIR" "$HOME/.lework"
 
 # 1. Mac hubd LaunchAgent
 HUB_PLIST="$LAUNCH_DIR/dev.lework.hub-slave.plist"
@@ -39,8 +39,8 @@ cat > "$HUB_PLIST" <<EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>5</integer>
-  <key>StandardOutPath</key><string>$LOG_DIR/qprc-hub-slave.log</string>
-  <key>StandardErrorPath</key><string>$LOG_DIR/qprc-hub-slave.log</string>
+  <key>StandardOutPath</key><string>$LOG_DIR/lework-hub.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/lework-hub.log</string>
 </dict>
 </plist>
 EOF
@@ -70,8 +70,8 @@ if [[ -n "$RELAY_SSH_HOST" ]]; then
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>$LOG_DIR/qprc-ssh-tunnel.log</string>
-  <key>StandardErrorPath</key><string>$LOG_DIR/qprc-ssh-tunnel.log</string>
+  <key>StandardOutPath</key><string>$LOG_DIR/lework-ssh-tunnel.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/lework-ssh-tunnel.log</string>
 </dict>
 </plist>
 EOF
@@ -79,15 +79,15 @@ EOF
   launchctl bootout "gui/$UID_NUM/dev.lework.ssh-tunnel" 2>/dev/null || true
   launchctl bootstrap "gui/$UID_NUM" "$TUN_PLIST"
 
-  ssh -o ControlMaster=no "$RELAY_SSH_HOST" 'mkdir -p ~/.qprc ~/.config/systemd/user'
-  scp -q -o ControlMaster=no "$REPO_ROOT/scripts/devbox-master-relay.mjs" "$RELAY_SSH_HOST:~/.qprc/master-relay.mjs"
-  ssh -o ControlMaster=no "$RELAY_SSH_HOST" 'cat > ~/.config/systemd/user/qprc-master-relay.service <<UNIT
+  ssh -o ControlMaster=no "$RELAY_SSH_HOST" 'mkdir -p ~/.lework ~/.config/systemd/user'
+  scp -q -o ControlMaster=no "$REPO_ROOT/scripts/tcp-relay.mjs" "$RELAY_SSH_HOST:~/.lework/tcp-relay.mjs"
+  ssh -o ControlMaster=no "$RELAY_SSH_HOST" 'cat > ~/.config/systemd/user/lework-relay.service <<UNIT
 [Unit]
 Description=Lework Stateless Relay (0.0.0.0:64450 -> 127.0.0.1:16450)
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/env node %h/.qprc/master-relay.mjs
+ExecStart=/usr/bin/env node %h/.lework/tcp-relay.mjs
 Restart=always
 RestartSec=2
 
@@ -95,8 +95,8 @@ RestartSec=2
 WantedBy=default.target
 UNIT
 systemctl --user daemon-reload
-systemctl --user enable --now qprc-master-relay.service
-systemctl --user restart qprc-master-relay.service'
+systemctl --user enable --now lework-relay.service
+systemctl --user restart lework-relay.service'
 fi
 
 sleep 2

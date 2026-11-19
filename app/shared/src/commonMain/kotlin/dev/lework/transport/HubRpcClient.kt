@@ -50,15 +50,15 @@ private data class AttestRequest(val nonce: String, val kid: String)
 private data class AttestResponse(val fingerprint: String, val proof: String)
 
 @kotlinx.serialization.Serializable
-private data class FeishuStartRequest(val codeChallenge: String)
+private data class OAuthStartRequest(val codeChallenge: String)
 
 @kotlinx.serialization.Serializable
-private data class FeishuPollWithVerifier(val sid: String, val codeVerifier: String)
+private data class OAuthPollWithVerifier(val sid: String, val codeVerifier: String)
 
 data class DiscoveredEndpoint(
     val baseUrl: String,
     val wsUrl: String,
-    val discover: FeishuDiscoverResult,
+    val discover: HubDiscoverResult,
 )
 
 interface HubTransport {
@@ -78,8 +78,8 @@ interface HubTransport {
      */
     suspend fun ensureHubTrusted(baseUrl: String, token: String) {}
 
-    suspend fun startFeishuDeviceFlow(baseUrl: String): FeishuStartResult
-    suspend fun pollFeishuDeviceFlow(baseUrl: String, sid: String): FeishuPollResponse
+    suspend fun startOAuthDeviceFlow(baseUrl: String): OAuthStartResult
+    suspend fun pollOAuthDeviceFlow(baseUrl: String, sid: String): OAuthPollResponse
 
     suspend fun connectAndHello(
         wsUrl: String,
@@ -138,7 +138,7 @@ class HubRpcClient(
     /** Handshake only succeeds with a pinned Hub certificate. Carries the token & all RPC. */
     private val secureClient: HttpClient = createHubHttpClient(pinnedOnly = true),
 ) : HubTransport {
-    private val feishuVerifiers = mutableMapOf<String, String>()
+    private val oauthVerifiers = mutableMapOf<String, String>()
 
     private var wsSession: DefaultClientWebSocketSession? = null
     private var readerJob: Job? = null
@@ -194,7 +194,7 @@ class HubRpcClient(
                     }
                     if (res.status.isSuccess()) {
                         val text = res.bodyAsText()
-                        val info = ProtocolJson.decodeFromString(FeishuDiscoverResult.serializer(), text)
+                        val info = ProtocolJson.decodeFromString(HubDiscoverResult.serializer(), text)
                         val endpoint = DiscoveredEndpoint(
                             baseUrl = normalized,
                             // Never trust a server-supplied path (could smuggle userinfo/host)
@@ -247,43 +247,43 @@ class HubRpcClient(
     /** Once a Hub is pinned, OAuth also runs only against pinned Hubs (no impostor login pages). */
     private fun oauthClient(): HttpClient = if (HubTrust.pinned().isNotEmpty()) secureClient else probeClient
 
-    override suspend fun startFeishuDeviceFlow(baseUrl: String): FeishuStartResult {
+    override suspend fun startOAuthDeviceFlow(baseUrl: String): OAuthStartResult {
         val base = normalizeHubBaseUrl(baseUrl)
         // PKCE-style binding: only this client (holding the verifier) can redeem the login.
         val verifier = HubAttestation.newNonce() + HubAttestation.newNonce()
         val challenge = sha256(verifier.encodeToByteArray()).toHex()
         val res = withTimeout(8_000L) {
-            oauthClient().post("$base/v1/auth/feishu/start") {
-                setBody(ProtocolJson.encodeToString(FeishuStartRequest.serializer(), FeishuStartRequest(challenge)))
+            oauthClient().post("$base/v1/auth/oauth/start") {
+                setBody(ProtocolJson.encodeToString(OAuthStartRequest.serializer(), OAuthStartRequest(challenge)))
             }
         }
         val body = res.bodyAsText()
         if (!res.status.isSuccess()) {
-            throw IllegalStateException("飞书认证初始化失败: $body")
+            throw IllegalStateException("身份授权初始化失败: $body")
         }
-        val result = ProtocolJson.decodeFromString(FeishuStartResult.serializer(), body)
+        val result = ProtocolJson.decodeFromString(OAuthStartResult.serializer(), body)
         pendingMutex.withLock {
-            if (feishuVerifiers.size > 8) feishuVerifiers.clear()
-            feishuVerifiers[result.sid] = verifier
+            if (oauthVerifiers.size > 8) oauthVerifiers.clear()
+            oauthVerifiers[result.sid] = verifier
         }
         return result
     }
 
-    override suspend fun pollFeishuDeviceFlow(baseUrl: String, sid: String): FeishuPollResponse {
+    override suspend fun pollOAuthDeviceFlow(baseUrl: String, sid: String): OAuthPollResponse {
         val base = normalizeHubBaseUrl(baseUrl)
-        val verifier = pendingMutex.withLock { feishuVerifiers[sid] }
-            ?: return FeishuPollResponse(status = "expired")
+        val verifier = pendingMutex.withLock { oauthVerifiers[sid] }
+            ?: return OAuthPollResponse(status = "expired")
         val reqJson = ProtocolJson.encodeToString(
-            FeishuPollWithVerifier.serializer(),
-            FeishuPollWithVerifier(sid, verifier),
+            OAuthPollWithVerifier.serializer(),
+            OAuthPollWithVerifier(sid, verifier),
         )
         val res = withTimeout(8_000L) {
-            oauthClient().post("$base/v1/auth/feishu/poll") {
+            oauthClient().post("$base/v1/auth/oauth/poll") {
                 setBody(reqJson)
             }
         }
-        val parsed = ProtocolJson.decodeFromString(FeishuPollResponse.serializer(), res.bodyAsText())
-        if (parsed.status != "pending") pendingMutex.withLock { feishuVerifiers.remove(sid) }
+        val parsed = ProtocolJson.decodeFromString(OAuthPollResponse.serializer(), res.bodyAsText())
+        if (parsed.status != "pending") pendingMutex.withLock { oauthVerifiers.remove(sid) }
         return parsed
     }
 

@@ -72,16 +72,16 @@ import platform.darwin.dispatch_get_main_queue
 import platform.posix.AF_INET
 import platform.posix.sockaddr
 
-private const val KEY_FEISHU_TOKEN = "qprc.feishu.token"
-private const val KEY_FEISHU_USER = "qprc.feishu.user"
-private const val KEY_LAST_GOOD_URL = "qprc.last.good.url"
-private const val KEY_RELAY_URLS = "qprc.relay.urls"
-private const val KEY_PREF_ENGINE = "qprc.pref.engine"
-private const val KEY_PREF_PROVIDER = "qprc.pref.provider"
-private const val KEY_PREF_MODEL = "qprc.pref.model"
-private const val KEY_PREF_EFFORT = "qprc.pref.effort"
-private const val KEY_PREF_MODE = "qprc.pref.mode"
-private const val KEY_PREF_WORKSPACE = "qprc.pref.workspace"
+private const val KEY_LEGACY_TOKEN = "qprc.feishu.token"
+private const val KEY_LEGACY_USER = "qprc.feishu.user"
+private const val KEY_LAST_GOOD_URL = "lework.last.good.url"
+private const val KEY_RELAY_URLS = "lework.relay.urls"
+private const val KEY_PREF_ENGINE = "lework.pref.engine"
+private const val KEY_PREF_PROVIDER = "lework.pref.provider"
+private const val KEY_PREF_MODEL = "lework.pref.model"
+private const val KEY_PREF_EFFORT = "lework.pref.effort"
+private const val KEY_PREF_MODE = "lework.pref.mode"
+private const val KEY_PREF_WORKSPACE = "lework.pref.workspace"
 private const val KC_ACCOUNT_TOKEN = "hub.access-token"
 private const val KC_ACCOUNT_USER = "hub.user-name"
 private const val KC_ACCOUNT_PINS = "hub.pinned-fingerprints"
@@ -162,16 +162,16 @@ private object CredentialMigration {
         if (done) return
         done = true
         val d = NSUserDefaults.standardUserDefaults
-        val legacyToken = d.stringForKey(KEY_FEISHU_TOKEN)
+        val legacyToken = d.stringForKey(KEY_LEGACY_TOKEN)
         if (!legacyToken.isNullOrBlank()) {
             if (IosKeychain.get(KC_ACCOUNT_TOKEN).isNullOrBlank()) {
                 IosKeychain.set(KC_ACCOUNT_TOKEN, legacyToken)
-                IosKeychain.set(KC_ACCOUNT_USER, d.stringForKey(KEY_FEISHU_USER) ?: "Owner")
+                IosKeychain.set(KC_ACCOUNT_USER, d.stringForKey(KEY_LEGACY_USER) ?: "Owner")
             }
         }
-        if (d.objectForKey(KEY_FEISHU_TOKEN) != null || d.objectForKey(KEY_FEISHU_USER) != null) {
-            d.removeObjectForKey(KEY_FEISHU_TOKEN)
-            d.removeObjectForKey(KEY_FEISHU_USER)
+        if (d.objectForKey(KEY_LEGACY_TOKEN) != null || d.objectForKey(KEY_LEGACY_USER) != null) {
+            d.removeObjectForKey(KEY_LEGACY_TOKEN)
+            d.removeObjectForKey(KEY_LEGACY_USER)
             d.synchronize()
         }
     }
@@ -263,7 +263,7 @@ private object IosBonjourScanner {
             val nextBrowser = NSNetServiceBrowser()
             nextBrowser.delegate = browserDelegate
             browser = nextBrowser
-            nextBrowser.searchForServicesOfType("_qprc._tcp.", inDomain = "local.")
+            nextBrowser.searchForServicesOfType("_lework._tcp.", inDomain = "local.")
         }
     }
 }
@@ -363,17 +363,17 @@ actual fun candidateHubHttpUrls(): List<String> {
     return out.distinct()
 }
 
-actual fun loadSavedFeishuToken(): String? {
+actual fun loadSavedAccessToken(): String? {
     CredentialMigration.ensure()
     return IosKeychain.get(KC_ACCOUNT_TOKEN)?.takeIf { it.isNotBlank() }
 }
 
-actual fun loadSavedFeishuUserName(): String? {
+actual fun loadSavedAuthUserName(): String? {
     CredentialMigration.ensure()
     return IosKeychain.get(KC_ACCOUNT_USER)
 }
 
-actual fun saveFeishuSession(token: String?, userName: String?) {
+actual fun saveAuthSession(token: String?, userName: String?) {
     CredentialMigration.ensure()
     if (token.isNullOrBlank()) {
         IosKeychain.set(KC_ACCOUNT_TOKEN, null)

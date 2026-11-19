@@ -70,26 +70,32 @@ class FakeHubTransport : HubTransport {
         dynamicCandidates: StateFlow<List<String>>?,
         waitWindowMs: Long,
     ): DiscoveredEndpoint? {
-        val chosen = candidates.firstOrNull() ?: "http://127.0.0.1:64450"
+        val chosen = candidates.firstOrNull() ?: "https://127.0.0.1:64450"
         return DiscoveredEndpoint(
             baseUrl = chosen,
-            wsUrl = "ws://127.0.0.1:64450/v1/ws",
-            discover = FeishuDiscoverResult(ok = true, hub = hubInfo, feishuEnabled = true),
+            wsUrl = "wss://127.0.0.1:64450/v1/ws",
+            discover = HubDiscoverResult(
+                ok = true,
+                hub = hubInfo,
+                oauthEnabled = true,
+                oauthProvider = "feishu",
+                oauthDisplayName = "飞书",
+            ),
         )
     }
 
-    override suspend fun startFeishuDeviceFlow(baseUrl: String): FeishuStartResult =
-        FeishuStartResult(
-            sid = "feishu_sid_1",
+    override suspend fun startOAuthDeviceFlow(baseUrl: String): OAuthStartResult =
+        OAuthStartResult(
+            sid = "oauth_sid_1",
             userCode = "ABCD-1234",
             verifyUrl = "https://open.feishu.cn/verify",
-            applinkUrl = "lark://applink/verify",
+            appLaunchUrl = "https://applink.feishu.cn/client/web_url/open?mode=window",
             expiresIn = 300,
             interval = 60,
         )
 
-    override suspend fun pollFeishuDeviceFlow(baseUrl: String, sid: String): FeishuPollResponse =
-        FeishuPollResponse(status = "pending")
+    override suspend fun pollOAuthDeviceFlow(baseUrl: String, sid: String): OAuthPollResponse =
+        OAuthPollResponse(status = "pending")
 
     override suspend fun connectAndHello(
         wsUrl: String,

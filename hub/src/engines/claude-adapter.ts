@@ -6,7 +6,7 @@ import type {
   EngineStatus,
   ModelOption,
   PermissionOption,
-} from '@qprc/protocol'
+} from '@lework/protocol'
 import { findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'

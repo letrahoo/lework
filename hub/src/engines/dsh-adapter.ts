@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { EngineCapabilities, EngineStatus } from '@qprc/protocol'
+import type { EngineCapabilities, EngineStatus } from '@lework/protocol'
 import { findExecutable } from '../platform/index.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
 

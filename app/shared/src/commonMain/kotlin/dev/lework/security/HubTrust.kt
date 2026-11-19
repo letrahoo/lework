@@ -110,14 +110,21 @@ fun hubWsUrlOf(baseUrl: String, wsPath: String = "/v1/ws"): String =
 
 fun hubBaseUrlOfWs(wsUrl: String): String = normalizeHubBaseUrl(wsUrl)
 
-private val TRUSTED_OAUTH_HOST_SUFFIXES = listOf(".feishu.cn", ".larksuite.com", ".feishu.net", ".larkoffice.com")
+private val FEISHU_HOST_SUFFIXES = listOf(".feishu.cn", ".larksuite.com", ".feishu.net", ".larkoffice.com")
 
-/** Only open OAuth pages on the IdP's own HTTPS hosts (a rogue Hub cannot redirect to a phishing page). */
-fun isTrustedOAuthUrl(url: String): Boolean {
+/**
+ * Validates OAuth verification / app-launch URLs returned by the Hub:
+ * - Always requires HTTPS with a valid hostname and no `@` userinfo smuggling.
+ * - When the Hub's OAuth provider is `feishu`, further restricts to official Feishu / Lark domains.
+ */
+fun isTrustedOAuthUrl(url: String, provider: String? = null): Boolean {
     if (!url.startsWith("https://")) return false
     val host = url.removePrefix("https://").substringBefore('/').substringBefore('?').substringBefore(':').lowercase()
-    if (host.contains('@')) return false
-    return TRUSTED_OAUTH_HOST_SUFFIXES.any { host.endsWith(it) }
+    if (host.isEmpty() || host.contains('@')) return false
+    if (provider == "feishu") {
+        return FEISHU_HOST_SUFFIXES.any { host.endsWith(it) }
+    }
+    return true
 }
 
 /** Links rendered from agent output may only open as plain web links. */

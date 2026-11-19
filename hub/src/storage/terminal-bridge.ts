@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import type { PermissionOption, SessionMode } from '@qprc/protocol'
+import type { PermissionOption, SessionMode } from '@lework/protocol'
 import { augmentedPathEnv, findExecutable } from '../platform/index.ts'
 
 const execFileAsync = promisify(execFile)

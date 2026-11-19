@@ -7,9 +7,9 @@
     "test": "pnpm -r test",
     "test:kmp": "./app/gradlew -p ./app :shared:jvmTest",
     "stress:ui": "./app/gradlew -p ./app :shared:jvmTest --tests dev.lework.UiAutomationStressTest --rerun-tasks",
-    "verify": "pnpm --filter @qprc/protocol gen && pnpm -r check && pnpm -r test && ./app/gradlew -p ./app :shared:jvmTest",
+    "verify": "pnpm --filter @lework/protocol gen && pnpm -r check && pnpm -r test && ./app/gradlew -p ./app :shared:jvmTest",
     "check": "pnpm -r check",
-    "hub": "pnpm --filter @qprc/hub start"
+    "hub": "pnpm --filter @lework/hub start"
   },
   "engines": {
     "node": ">=22"

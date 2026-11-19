@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { ProfileInfo, ProviderInfo } from '@qprc/protocol'
+import type { ProfileInfo, ProviderInfo } from '@lework/protocol'
 import { defaultDataDir } from '../platform/index.ts'
 
 const LOCAL_CPA_CONFIG_PATH =
@@ -25,7 +25,7 @@ export class ModelRegistry {
   }
 
   getCpaApiKey(): string | undefined {
-    if (process.env.QPRC_CPA_KEY) return process.env.QPRC_CPA_KEY
+    if (process.env.LEWORK_CPA_KEY) return process.env.LEWORK_CPA_KEY
     if (this.cachedCpaKey) return this.cachedCpaKey
     try {
       if (fs.existsSync(LOCAL_CPA_CONFIG_PATH)) {

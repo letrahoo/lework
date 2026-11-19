@@ -10,8 +10,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$REPO_ROOT/app"
 IOS_DIR="$APP_DIR/iosApp"
 DERIVED_DATA="$APP_DIR/build/ios-derived"
-[[ -f "$HOME/.qprc/ios.env" ]] && source "$HOME/.qprc/ios.env"
-BUNDLE_ID="${LEWORK_IOS_BUNDLE_ID:-dev.lework}"
+[[ -f "$HOME/.lework/ios.env" ]] && source "$HOME/.lework/ios.env"
+BUNDLE_ID="${LEWORK_IOS_BUNDLE_ID:-dev.lework.app}"
 TEAM_ID="${APPLE_TEAM_ID:-}"
 
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home}"
@@ -70,7 +70,7 @@ if [[ "$MODE" == "--install" ]]; then
   fi
 
   if [[ -z "$TEAM_ID" ]]; then
-    echo "Error: APPLE_TEAM_ID is not set (set env APPLE_TEAM_ID or configure ~/.qprc/ios.env)." >&2
+    echo "Error: APPLE_TEAM_ID is not set (set env APPLE_TEAM_ID or configure ~/.lework/ios.env)." >&2
     exit 1
   fi
 

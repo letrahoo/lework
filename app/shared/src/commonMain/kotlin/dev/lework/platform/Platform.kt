@@ -22,9 +22,9 @@ expect fun loadLastGoodHubUrl(): String?
 expect fun saveLastGoodHubUrl(url: String?)
 expect fun loadSavedRelayUrls(): List<String>
 expect fun saveRelayUrls(urls: List<String>)
-expect fun loadSavedFeishuToken(): String?
-expect fun loadSavedFeishuUserName(): String?
-expect fun saveFeishuSession(token: String?, userName: String?)
+expect fun loadSavedAccessToken(): String?
+expect fun loadSavedAuthUserName(): String?
+expect fun saveAuthSession(token: String?, userName: String?)
 
 /** Pinned Hub TLS certificate fingerprints (SHA-256 hex). Stored next to the token (iOS Keychain). */
 expect fun loadPinnedHubFingerprints(): Set<String>

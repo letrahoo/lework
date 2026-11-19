@@ -6,7 +6,7 @@ import type {
   ModelOption,
   ReasoningEffort,
   SessionMode,
-} from '@qprc/protocol'
+} from '@lework/protocol'
 
 export type EmitAgentEvent = (body: AgentEventBody) => void
 

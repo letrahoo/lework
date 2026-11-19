@@ -32,7 +32,7 @@ describe('protocol-schema v1', () => {
       params: {
         protocolVersion: PROTOCOL_VERSION,
         token: 'dev-secret-token',
-        client: { name: 'qprc-ios', version: '0.1.0', platform: 'ios' },
+        client: { name: 'lework-ios', version: '0.1.0', platform: 'ios' },
       },
     })
     const helloParams = Methods['hub.hello'].params.parse(req.params)

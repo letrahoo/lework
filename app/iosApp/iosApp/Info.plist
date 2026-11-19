@@ -28,7 +28,7 @@
 	<string>用于在同一路由器 Wi‑Fi 下通过 Bonjour 自动发现并直连你的本地主机。</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_qprc._tcp</string>
+		<string>_lework._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>用于扫描 Hub 配对二维码。</string>

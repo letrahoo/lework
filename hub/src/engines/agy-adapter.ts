@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
-import type { EngineCapabilities, EngineStatus } from '@qprc/protocol'
+import type { EngineCapabilities, EngineStatus } from '@lework/protocol'
 import { augmentedPathEnv, findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { classifyRawToolCall } from '../storage/host-history.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'

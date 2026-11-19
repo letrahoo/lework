@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
-import { ErrorCode, PROTOCOL_VERSION, type AgentEvent } from '@qprc/protocol'
+import { ErrorCode, PROTOCOL_VERSION, type AgentEvent } from '@lework/protocol'
 import { AgyEngineAdapter } from '../src/engines/agy-adapter.ts'
 import { ClaudeCodeAdapter } from '../src/engines/claude-adapter.ts'
 import { DshEngineAdapter } from '../src/engines/dsh-adapter.ts'
@@ -18,7 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '../..')
 
 // Isolated Hub data dir (TLS identity, issued tokens) for the whole suite
-process.env.QPRC_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-hub-test-'))
+process.env.LEWORK_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-hub-test-'))
 
 class TestRpcClient {
   private ws!: WebSocket

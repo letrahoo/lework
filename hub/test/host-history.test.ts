@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { AgentEvent, SessionMeta } from '@qprc/protocol'
+import type { AgentEvent, SessionMeta } from '@lework/protocol'
 import { collectLanIpv4Addresses } from '../src/bonjour.ts'
 import {
   HostTaskInspector,

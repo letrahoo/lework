@@ -43,7 +43,7 @@ export function collectLanIpv4Addresses(
 }
 
 /**
- * Publishes `_qprc._tcp.local.` via macOS native mDNSResponder (`dns-sd -R`)
+ * Publishes `_lework._tcp.local.` via macOS native mDNSResponder (`dns-sd -R`)
  * and automatically refreshes TXT `ips=` when Wi-Fi / LAN addresses change.
  */
 export class BonjourAdvertiser {
@@ -105,7 +105,7 @@ export class BonjourAdvertiser {
     try {
       const child = spawn(
         DNS_SD_BIN,
-        ['-R', instanceName, '_qprc._tcp', 'local', String(this.opts.port), ...txtRecords],
+        ['-R', instanceName, '_lework._tcp', 'local', String(this.opts.port), ...txtRecords],
         { stdio: 'ignore' },
       )
       child.on('error', () => {
@@ -114,7 +114,7 @@ export class BonjourAdvertiser {
       child.unref()
       this.proc = child
       console.log(
-        `[qprc-bonjour] Advertising "${instanceName}" _qprc._tcp.local:${this.opts.port} (LAN IPs: ${this.lastIpsCsv || 'none'})`,
+        `[lework-bonjour] Advertising "${instanceName}" _lework._tcp.local:${this.opts.port} (LAN IPs: ${this.lastIpsCsv || 'none'})`,
       )
     } catch {
       // Ignore spawn failure

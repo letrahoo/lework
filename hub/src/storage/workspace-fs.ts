@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ErrorCode, type CheckpointInfo, type FsEntry } from '@qprc/protocol'
+import { ErrorCode, type CheckpointInfo, type FsEntry } from '@lework/protocol'
 import { HubRpcError, assertNotSensitive, resolveAllowedWorkspacePath } from '../security/path-guard.ts'
 
 const MAX_READ_BYTES = 64 * 1024
@@ -97,7 +97,7 @@ export class CheckpointManager {
     const headSha = headRes.status === 0 ? headRes.stdout.trim() : 'working-tree'
 
     // Create a git stash commit object without modifying the working tree (`git stash create`)
-    const stashRes = spawnSync('git', ['stash', 'create', label ?? `qprc-${sessionId}`], {
+    const stashRes = spawnSync('git', ['stash', 'create', label ?? `lework-${sessionId}`], {
       cwd,
       encoding: 'utf8',
       timeout: 5_000,

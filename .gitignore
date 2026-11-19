@@ -10,7 +10,7 @@ dist/
 *.local.yaml
 *.local.sh
 .claude/settings.local.json
-.qprc/
+.lework/
 
 # Legacy / vendor untracked artifacts
 legacy/

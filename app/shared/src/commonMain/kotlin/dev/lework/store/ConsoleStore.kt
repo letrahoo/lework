@@ -24,7 +24,7 @@ import kotlinx.coroutines.withTimeout
 
 enum class ConnectionStatus {
     DISCOVERING,
-    NEEDS_FEISHU_AUTH,
+    NEEDS_AUTH,
     CONNECTING,
     RECONNECTING,
     CONNECTED,
@@ -115,10 +115,12 @@ data class ConsoleUiState(
     val hasEnteredWorkspace: Boolean = false,
     val discoveredBaseUrl: String = "",
     val discoveredWsUrl: String = "",
-    val feishuEnabled: Boolean = false,
-    val feishuUserName: String? = loadSavedFeishuUserName(),
-    val feishuChallenge: FeishuStartResult? = null,
-    val feishuStatusText: String = "正在发现可用主机节点…",
+    val oauthEnabled: Boolean = false,
+    val oauthProvider: String? = null,
+    val oauthDisplayName: String? = null,
+    val authUserName: String? = loadSavedAuthUserName(),
+    val oauthChallenge: OAuthStartResult? = null,
+    val authStatusText: String = "正在发现可用主机节点…",
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCOVERING,
     /** Short SHA-256 of the pinned Hub certificate, for out-of-band comparison with `hub pair`. */
     val hubFingerprint: String? = null,
@@ -342,7 +344,7 @@ class ConsoleStore(
     )
     val state: StateFlow<ConsoleUiState> = _state.asStateFlow()
     private var discoverJob: Job? = null
-    private var feishuPollJob: Job? = null
+    private var oauthPollJob: Job? = null
     private var resumeJob: Job? = null
     private var subscribedSessionId: String? = null
     private var subscribeSeqToken: Long = 0L
@@ -449,13 +451,13 @@ class ConsoleStore(
 
     fun bootstrapOrConnect() {
         discoverJob?.cancel()
-        feishuPollJob?.cancel()
+        oauthPollJob?.cancel()
         startBonjourDiscovery()
         _state.update {
             it.copy(
                 connectionStatus = ConnectionStatus.DISCOVERING,
                 connectionError = null,
-                feishuStatusText = "正在自动发现同 Wi‑Fi 局域网或中继主机…",
+                authStatusText = "正在自动发现同 Wi‑Fi 局域网或中继主机…",
             )
         }
         discoverJob = scope.launch {
@@ -479,29 +481,31 @@ class ConsoleStore(
                 it.copy(
                     discoveredBaseUrl = found.baseUrl,
                     discoveredWsUrl = found.wsUrl,
-                    feishuEnabled = found.discover.feishuEnabled,
+                    oauthEnabled = found.discover.oauthEnabled,
+                    oauthProvider = found.discover.oauthProvider,
+                    oauthDisplayName = found.discover.oauthDisplayName,
                     hub = found.discover.hub,
                 )
             }
 
-            val cachedToken = loadSavedFeishuToken()
+            val cachedToken = loadSavedAccessToken()
             if (!cachedToken.isNullOrBlank()) {
                 val ok = connectWithToken(found.wsUrl, cachedToken)
                 if (ok) return@launch
-                if (!loadSavedFeishuToken().isNullOrBlank()) {
+                if (!loadSavedAccessToken().isNullOrBlank()) {
                     // Network/transport failure rather than invalid token: stay on retry screen without wiping token
                     return@launch
                 }
             }
 
-            if (found.discover.feishuEnabled) {
-                startFeishuAuthFlow(found.baseUrl, found.wsUrl)
+            if (found.discover.oauthEnabled) {
+                startOAuthLoginFlow(found.baseUrl, found.wsUrl)
             } else {
                 _state.update {
                     it.copy(
-                        connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
-                        feishuChallenge = null,
-                        feishuStatusText = "已发现主机 ${found.discover.hub.name}，请输入访问令牌连接",
+                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                        oauthChallenge = null,
+                        authStatusText = "已发现主机 ${found.discover.hub.name}，请输入访问令牌连接",
                     )
                 }
             }
@@ -517,12 +521,12 @@ class ConsoleStore(
         }
         val token = rawToken.trim()
         if (token.isNotEmpty()) {
-            saveFeishuSession(token, "Owner")
+            saveAuthSession(token, "Owner")
             if (baseUrl.isNotBlank()) {
                 val wsUrl = hubWsUrlOf(baseUrl)
                 _state.update { it.copy(discoveredBaseUrl = baseUrl, discoveredWsUrl = wsUrl) }
                 discoverJob?.cancel()
-                feishuPollJob?.cancel()
+                oauthPollJob?.cancel()
                 discoverJob = scope.launch {
                     connectWithToken(wsUrl, token)
                 }
@@ -534,23 +538,23 @@ class ConsoleStore(
 
     /**
      * Triggered when returning to foreground on iOS after a lock-screen or background suspension.
-     * Silently verifies Feishu token permission & Hub reachability:
+     * Silently verifies token permission & Hub reachability:
      * - Pass: resumes the active Session context seamlessly and catches up missed events (`afterSeq`).
-     * - Fail: transitions back to the current version's reconnect / Feishu auth screen (`hasEnteredWorkspace = false`).
+     * - Fail: transitions back to the reconnect / auth screen (`hasEnteredWorkspace = false`).
      */
     fun verifyAndResumeForegroundSession() {
         if (resumeJob?.isActive == true) return
         resumeJob = scope.launch {
-            val cachedToken = loadSavedFeishuToken()
+            val cachedToken = loadSavedAccessToken()
             if (cachedToken.isNullOrBlank()) {
                 _state.update {
                     it.copy(
                         hasEnteredWorkspace = false,
-                        feishuUserName = null,
-                        connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                        authUserName = null,
+                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
                     )
                 }
-                startFeishuAuthFlow()
+                startOAuthLoginFlow()
                 return@launch
             }
 
@@ -566,15 +570,15 @@ class ConsoleStore(
                     return@launch
                 } catch (e: RpcCallException) {
                     if (e.code == ErrorCode.UNAUTHORIZED) {
-                        saveFeishuSession(null, null)
+                        saveAuthSession(null, null)
                         _state.update {
                             it.copy(
                                 hasEnteredWorkspace = false,
-                                feishuUserName = null,
-                                connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                                authUserName = null,
+                                connectionStatus = ConnectionStatus.NEEDS_AUTH,
                             )
                         }
-                        startFeishuAuthFlow()
+                        startOAuthLoginFlow()
                         return@launch
                     }
                     // Other RPC / zombie-socket failure falls through to full discovery & reconnect
@@ -610,7 +614,9 @@ class ConsoleStore(
                 it.copy(
                     discoveredBaseUrl = found.baseUrl,
                     discoveredWsUrl = found.wsUrl,
-                    feishuEnabled = found.discover.feishuEnabled,
+                    oauthEnabled = found.discover.oauthEnabled,
+                    oauthProvider = found.discover.oauthProvider,
+                    oauthDisplayName = found.discover.oauthDisplayName,
                     hub = found.discover.hub,
                 )
             }
@@ -623,7 +629,7 @@ class ConsoleStore(
         }
     }
 
-    fun startFeishuAuthFlow(
+    fun startOAuthLoginFlow(
         baseUrl: String = _state.value.discoveredBaseUrl,
         wsUrl: String = _state.value.discoveredWsUrl,
     ) {
@@ -631,37 +637,38 @@ class ConsoleStore(
             bootstrapOrConnect()
             return
         }
-        feishuPollJob?.cancel()
+        oauthPollJob?.cancel()
+        val label = _state.value.oauthDisplayName ?: "SSO"
         _state.update {
             it.copy(
-                connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                connectionStatus = ConnectionStatus.NEEDS_AUTH,
                 connectionError = null,
-                feishuStatusText = "正在获取飞书授权码…",
+                authStatusText = "正在获取 $label 授权码…",
             )
         }
-        feishuPollJob = scope.launch {
+        oauthPollJob = scope.launch {
             try {
-                val challenge = rpc.startFeishuDeviceFlow(baseUrl)
+                val challenge = rpc.startOAuthDeviceFlow(baseUrl)
                 _state.update {
                     it.copy(
-                        feishuChallenge = challenge,
-                        feishuStatusText = "点击按钮在飞书中确认后将自动进入",
+                        oauthChallenge = challenge,
+                        authStatusText = "点击按钮在 $label 中确认后将自动进入",
                     )
                 }
                 while (isActive) {
                     delay(2_000L)
-                    val poll = runCatching { rpc.pollFeishuDeviceFlow(baseUrl, challenge.sid) }.getOrNull()
+                    val poll = runCatching { rpc.pollOAuthDeviceFlow(baseUrl, challenge.sid) }.getOrNull()
                         ?: continue
                     when (poll.status) {
                         "ok" -> {
                             val token = poll.accessToken ?: continue
                             val userName = poll.user?.name ?: "Owner"
-                            saveFeishuSession(token, userName)
+                            saveAuthSession(token, userName)
                             _state.update {
                                 it.copy(
-                                    feishuUserName = userName,
-                                    feishuChallenge = null,
-                                    feishuStatusText = "已验证，正在进入工作台…",
+                                    authUserName = userName,
+                                    oauthChallenge = null,
+                                    authStatusText = "已验证，正在进入工作台…",
                                 )
                             }
                             connectWithToken(wsUrl, token)
@@ -670,49 +677,52 @@ class ConsoleStore(
                         "forbidden" -> {
                             _state.update {
                                 it.copy(
-                                    feishuStatusText = "当前飞书账号 (${poll.name ?: ""}) 无权访问此主机",
+                                    authStatusText = "当前账号 (${poll.name ?: ""}) 无权访问此主机",
                                 )
                             }
                             break
                         }
                         "expired" -> {
-                            startFeishuAuthFlow(baseUrl, wsUrl)
+                            startOAuthLoginFlow(baseUrl, wsUrl)
                             break
                         }
                     }
                 }
             } catch (t: Throwable) {
                 _state.update {
-                    it.copy(feishuStatusText = "飞书授权请求失败: ${t.message}")
+                    it.copy(authStatusText = "授权请求失败: ${t.message}")
                 }
             }
         }
     }
 
-    fun launchFeishuAppForAuth() {
-        val challenge = _state.value.feishuChallenge ?: return
-        if (isTrustedOAuthUrl(challenge.applinkUrl)) openExternalUrl(challenge.applinkUrl)
+    fun launchOAuthApp() {
+        val challenge = _state.value.oauthChallenge ?: return
+        val target = challenge.appLaunchUrl.ifBlank { challenge.verifyUrl }
+        if (isTrustedOAuthUrl(target, _state.value.oauthProvider)) openExternalUrl(target)
     }
 
-    fun openFeishuBrowserFallback() {
-        val challenge = _state.value.feishuChallenge ?: return
-        if (isTrustedOAuthUrl(challenge.verifyUrl)) openExternalUrl(challenge.verifyUrl)
+    fun openOAuthBrowserFallback() {
+        val challenge = _state.value.oauthChallenge ?: return
+        if (isTrustedOAuthUrl(challenge.verifyUrl, _state.value.oauthProvider)) openExternalUrl(challenge.verifyUrl)
     }
 
-    fun logoutFeishu() {
-        feishuPollJob?.cancel()
+    fun logout() {
+        oauthPollJob?.cancel()
         resumeJob?.cancel()
-        saveFeishuSession(null, null)
+        saveAuthSession(null, null)
         scope.launch {
             rpc.disconnect()
             _state.update {
                 it.copy(
                     hasEnteredWorkspace = false,
-                    feishuUserName = null,
-                    connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                    authUserName = null,
+                    connectionStatus = ConnectionStatus.NEEDS_AUTH,
                 )
             }
-            startFeishuAuthFlow()
+            if (_state.value.oauthEnabled) {
+                startOAuthLoginFlow()
+            }
         }
     }
 
@@ -799,17 +809,17 @@ class ConsoleStore(
             true
         } catch (t: Throwable) {
             if (t is RpcCallException && t.code == ErrorCode.UNAUTHORIZED) {
-                saveFeishuSession(null, null)
+                saveAuthSession(null, null)
                 _state.update {
                     it.copy(
                         hasEnteredWorkspace = false,
-                        feishuUserName = null,
-                        connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                        authUserName = null,
+                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
                         connectionError = null,
                     )
                 }
-                if (isForegroundResume) {
-                    startFeishuAuthFlow(_state.value.discoveredBaseUrl, wsUrl)
+                if (isForegroundResume && _state.value.oauthEnabled) {
+                    startOAuthLoginFlow(_state.value.discoveredBaseUrl, wsUrl)
                 }
             } else {
                 _state.update {

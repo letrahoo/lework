@@ -1,4 +1,4 @@
-import type { EngineCapabilities, EngineStatus } from '@qprc/protocol'
+import type { EngineCapabilities, EngineStatus } from '@lework/protocol'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
 
 /**

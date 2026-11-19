@@ -10,7 +10,7 @@ import {
   type ReasoningEffort,
   type SessionMeta,
   type SessionMode,
-} from '@qprc/protocol'
+} from '@lework/protocol'
 import type { EngineAdapter, EngineSession } from './engines/types.ts'
 import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'

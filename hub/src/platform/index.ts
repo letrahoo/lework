@@ -11,8 +11,29 @@ export function detectPlatform(): SupportedPlatform {
   return 'other'
 }
 
+let legacyMigrated = false
+
+/**
+ * Hub data directory (`$LEWORK_HOME`, default `~/.lework`). Older builds used `~/.qprc`; it is
+ * moved over once on first use and a compatibility symlink is left behind.
+ */
 export function defaultDataDir(): string {
-  return process.env.QPRC_HOME ?? path.join(os.homedir(), '.qprc')
+  if (process.env.LEWORK_HOME) return process.env.LEWORK_HOME
+  const dir = path.join(os.homedir(), '.lework')
+  if (!legacyMigrated) {
+    legacyMigrated = true
+    const legacy = path.join(os.homedir(), '.qprc')
+    try {
+      if (!fs.existsSync(dir) && fs.existsSync(legacy) && !fs.lstatSync(legacy).isSymbolicLink()) {
+        fs.renameSync(legacy, dir)
+        fs.symlinkSync(dir, legacy)
+        console.log(`[lework] Migrated data dir ${legacy} -> ${dir}`)
+      }
+    } catch {
+      // best effort
+    }
+  }
+  return dir
 }
 
 export function extraSearchPaths(): string[] {
@@ -199,7 +220,7 @@ export function generateServiceDescriptor(opts: {
   }
 
   // Linux / systemd --user (Devbox Master or Linux Slave)
-  const unitName = `qprc-hub-${opts.role}.service`
+  const unitName = `lework-hub-${opts.role}.service`
   const pathHint = path.join(home, '.config', 'systemd', 'user', unitName)
   const content = `[Unit]
 Description=lework Hub (${opts.role})
