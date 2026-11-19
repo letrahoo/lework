@@ -18,6 +18,7 @@ export interface HubConfig {
   /** Separate credential that Slaves use to register with this Master (never the admin token). */
   slaveJoinToken?: string
   cpaEndpoint: string
+  cpaManagementKey?: string
 }
 
 export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfig {
@@ -64,6 +65,10 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
     masterUrl: overrides.masterUrl ?? stored.masterUrl,
     slaveJoinToken: overrides.slaveJoinToken ?? stored.slaveJoinToken ?? crypto.randomBytes(24).toString('base64url'),
     cpaEndpoint: overrides.cpaEndpoint ?? stored.cpaEndpoint ?? 'http://127.0.0.1:8317',
+    cpaManagementKey:
+      overrides.cpaManagementKey ??
+      stored.cpaManagementKey ??
+      (process.env.LEWORK_CPA_MANAGEMENT_KEY?.trim() || undefined),
   }
 
   try {

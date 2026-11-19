@@ -239,6 +239,137 @@ export const PlanEntry = z.object({
 })
 
 // ---------------------------------------------------------------------------
+// Usage, context window & subscription quota models
+// ---------------------------------------------------------------------------
+
+export const UsageTotals = z.object({
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  requests: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative().optional(),
+})
+export type UsageTotals = z.infer<typeof UsageTotals>
+
+export const DailyUsageEntry = z.object({
+  date: z.string(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  requests: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative().optional(),
+})
+export type DailyUsageEntry = z.infer<typeof DailyUsageEntry>
+
+export const EngineUsageEntry = z.object({
+  engineId: z.string(),
+  supported: z.boolean(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  requests: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative().optional(),
+  note: z.string().optional(),
+})
+export type EngineUsageEntry = z.infer<typeof EngineUsageEntry>
+
+export const ModelUsageEntry = z.object({
+  model: z.string(),
+  engineId: z.string(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  requests: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative().optional(),
+})
+export type ModelUsageEntry = z.infer<typeof ModelUsageEntry>
+
+export const UsageSummaryResult = z.object({
+  days: z.number().int().min(1).max(90),
+  generatedAt: z.number().int(),
+  totals: UsageTotals,
+  daily: z.array(DailyUsageEntry),
+  byEngine: z.array(EngineUsageEntry),
+  byModel: z.array(ModelUsageEntry),
+})
+export type UsageSummaryResult = z.infer<typeof UsageSummaryResult>
+
+export const QuotaWindowKind = z.enum(['five_hour', 'weekly'])
+export type QuotaWindowKind = z.infer<typeof QuotaWindowKind>
+
+export const QuotaSource = z.enum(['reported', 'estimated'])
+export type QuotaSource = z.infer<typeof QuotaSource>
+
+export const QuotaWindowInfo = z.object({
+  id: z.string(),
+  engineId: z.string(),
+  windowKind: QuotaWindowKind,
+  label: z.string(),
+  source: QuotaSource,
+  active: z.boolean(),
+  usedPercent: z.number().min(0).max(100).optional(),
+  usedTokens: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative().optional(),
+  burnRateTokensPerMin: z.number().nonnegative().optional(),
+  projectedTokens: z.number().int().nonnegative().optional(),
+  windowMinutes: z.number().int().positive(),
+  startedAt: z.number().int().optional(),
+  resetsAt: z.number().int().optional(),
+})
+export type QuotaWindowInfo = z.infer<typeof QuotaWindowInfo>
+
+export const UsageQuotaResult = z.object({
+  generatedAt: z.number().int(),
+  windows: z.array(QuotaWindowInfo),
+})
+export type UsageQuotaResult = z.infer<typeof UsageQuotaResult>
+
+export const SessionUsageResult = z.object({
+  sessionId: z.string(),
+  engineId: z.string(),
+  model: z.string().optional(),
+  supported: z.boolean(),
+  contextTokens: z.number().int().nonnegative(),
+  contextWindow: z.number().int().nonnegative(),
+  contextPercent: z.number().min(0).max(100),
+  cacheHitPercent: z.number().min(0).max(100).optional(),
+  lastInputTokens: z.number().int().nonnegative(),
+  lastOutputTokens: z.number().int().nonnegative(),
+  totals: UsageTotals,
+  note: z.string().optional(),
+})
+export type SessionUsageResult = z.infer<typeof SessionUsageResult>
+
+export const ProxyModelUsageEntry = z.object({
+  model: z.string(),
+  requests: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+})
+export type ProxyModelUsageEntry = z.infer<typeof ProxyModelUsageEntry>
+
+export const ProxyUsageResult = z.object({
+  endpoint: z.string(),
+  reachable: z.boolean(),
+  exposedModels: z.number().int().nonnegative(),
+  managementEnabled: z.boolean(),
+  totalRequests: z.number().int().nonnegative().optional(),
+  successCount: z.number().int().nonnegative().optional(),
+  failureCount: z.number().int().nonnegative().optional(),
+  totalTokens: z.number().int().nonnegative().optional(),
+  byModel: z.array(ProxyModelUsageEntry),
+  note: z.string().optional(),
+})
+export type ProxyUsageResult = z.infer<typeof ProxyUsageResult>
+
+// ---------------------------------------------------------------------------
 // Agent events (normalized across engines)
 // ---------------------------------------------------------------------------
 
@@ -417,6 +548,27 @@ export const Methods = {
   'checkpoint.restore': {
     params: z.object({ sessionId: z.string(), checkpointId: z.string() }),
     result: z.object({ ok: z.literal(true) }),
+  },
+  'usage.summary': {
+    params: z
+      .object({
+        days: z.number().int().min(1).max(90).optional(),
+        engineId: z.string().optional(),
+      })
+      .optional(),
+    result: UsageSummaryResult,
+  },
+  'usage.quota': {
+    params: z.object({}).optional(),
+    result: UsageQuotaResult,
+  },
+  'usage.session': {
+    params: z.object({ sessionId: z.string().min(1) }),
+    result: SessionUsageResult,
+  },
+  'usage.proxy': {
+    params: z.object({}).optional(),
+    result: ProxyUsageResult,
   },
 } as const
 

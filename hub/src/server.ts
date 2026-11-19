@@ -38,6 +38,7 @@ import { attestProof, loadOrCreateHubTls, tokenAttestKey, tokenKid, type HubTlsM
 import { SessionManager } from './session-manager.ts'
 import type { HostTaskInspector } from './storage/host-history.ts'
 import { listWorkspaceDirectory, readWorkspaceFile } from './storage/workspace-fs.ts'
+import { UsageService } from './usage/index.ts'
 
 const HUB_VERSION = '0.3.0'
 
@@ -52,6 +53,7 @@ export interface HubServerOptions {
   config: HubConfig
   adapters?: EngineAdapter[]
   hostInspector?: HostTaskInspector
+  usageService?: UsageService
   /** TLS identity; defaults to the persistent self-signed identity under `~/.lework/tls`. */
   tls?: HubTlsMaterial
 }
@@ -79,6 +81,7 @@ export class HubServer {
   private readonly remoteSlaves = new Map<string, SlaveInfo>()
   private readonly sessionManager: SessionManager
   private readonly registry: ModelRegistry
+  private readonly usageService: UsageService
   private readonly deviceAuth: DeviceFlowAuth
   private readonly config: HubConfig
   private bonjour: BonjourAdvertiser | null = null
@@ -110,6 +113,26 @@ export class HubServer {
       this.registry,
       opts.hostInspector,
     )
+
+    const sessionSnapshotProvider = (sessionId: string) => {
+      try {
+        const snap = this.sessionManager.subscribeSnapshot(sessionId, -1)
+        return { session: snap.session, events: snap.events }
+      } catch {
+        return null
+      }
+    }
+
+    if (opts.usageService) {
+      opts.usageService.setSessionSnapshotProvider(sessionSnapshotProvider)
+      this.usageService = opts.usageService
+    } else {
+      this.usageService = new UsageService({
+        cpaEndpoint: this.config.cpaEndpoint,
+        cpaManagementKey: this.config.cpaManagementKey,
+        getSessionSnapshot: sessionSnapshotProvider,
+      })
+    }
 
     // TLS terminates here (end-to-end): relays / SSH tunnels only forward ciphertext.
     this.httpServer = https.createServer(
@@ -566,6 +589,7 @@ export class HubServer {
             'approval.interactive.v1',
             'workspace.fs-readonly.v1',
             'workspace.checkpoint.v1',
+            'usage.stats.v1',
           ],
         }
       }
@@ -684,6 +708,20 @@ export class HubServer {
         const p = params as { sessionId: string; checkpointId: string }
         this.sessionManager.restoreCheckpoint(p.sessionId, p.checkpointId)
         return { ok: true as const }
+      }
+      case 'usage.summary': {
+        const p = (params ?? {}) as { days?: number; engineId?: string }
+        return this.usageService.getSummary(p)
+      }
+      case 'usage.quota': {
+        return this.usageService.getQuota()
+      }
+      case 'usage.session': {
+        const p = params as { sessionId: string }
+        return this.usageService.getSessionUsage(p.sessionId)
+      }
+      case 'usage.proxy': {
+        return await this.usageService.getProxyUsage()
       }
     }
   }
