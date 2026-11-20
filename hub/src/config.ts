@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { HubRole } from '@lework/protocol'
+import type { NotificationConfig } from './notifications/notifier.ts'
 import { defaultDataDir, detectPlatform } from './platform/index.ts'
 
 export interface HubConfig {
@@ -20,6 +21,8 @@ export interface HubConfig {
   /** Optional embedded Tailscale tsnet mesh configuration. */
   tsnetEnabled?: boolean
   tsnetControlUrl?: string
+  /** Optional pluggable offline push / webhook notification configuration. */
+  notifications?: NotificationConfig
   cpaEndpoint: string
   cpaManagementKey?: string
 }
@@ -69,6 +72,7 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
     slaveJoinToken: overrides.slaveJoinToken ?? stored.slaveJoinToken ?? crypto.randomBytes(24).toString('base64url'),
     tsnetEnabled: overrides.tsnetEnabled ?? stored.tsnetEnabled,
     tsnetControlUrl: overrides.tsnetControlUrl ?? stored.tsnetControlUrl ?? (process.env.LEWORK_TSNET_CONTROL_URL?.trim() || undefined),
+    notifications: overrides.notifications ?? stored.notifications,
     cpaEndpoint: overrides.cpaEndpoint ?? stored.cpaEndpoint ?? 'http://127.0.0.1:8317',
     cpaManagementKey:
       overrides.cpaManagementKey ??

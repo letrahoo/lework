@@ -5,7 +5,7 @@ import type { EngineCapabilities, EngineStatus } from '@lework/protocol'
 import { augmentedPathEnv, findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { classifyRawToolCall } from '../storage/host-history.ts'
 import { readAgyLocalSettings } from '../storage/host-history/engine-settings.ts'
-import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
+import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 export interface AgyAdapterOptions {
   binary?: string
@@ -185,7 +185,7 @@ class AgyStreamSession implements EngineSession {
     })
   }
 
-  async prompt(turnId: string, text: string): Promise<void> {
+  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
     if (!this.proc || this.proc.exitCode !== null || this.proc.killed) {
       await this.spawnWorker()
     }
@@ -194,12 +194,18 @@ class AgyStreamSession implements EngineSession {
     this.currentMsgId = `msg_${turnId}`
     this.init.emit({ type: 'session.state', state: 'running' })
 
+    const imgHeader =
+      images && images.length > 0
+        ? `[用户附加了本地图片文件，请使用 read_file 查看：${images.map(i => i.stagedPath).join(', ')}]\n\n`
+        : ''
+    const effectiveContent = `${imgHeader}${text.trim() || '请结合所附图片进行分析。'}`
+
     try {
       await new Promise<void>((resolve, reject) => {
         this.pendingTurn = { turnId, resolve, reject }
         const payload = JSON.stringify({
           event: 'user',
-          message: { content: text },
+          message: { content: effectiveContent },
         })
         this.proc!.stdin.write(payload + '\n')
       })

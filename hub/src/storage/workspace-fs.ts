@@ -10,6 +10,101 @@ const MAX_READ_BYTES = 64 * 1024
 const MAX_DIFF_BYTES = 96 * 1024
 const MAX_DIR_ENTRIES = 120
 const MAX_CHANGED_FILES = 150
+const MAX_INDEXED_FILES = 4_000
+const SKIP_WALK_DIRS = new Set([
+  '.git',
+  'node_modules',
+  '.gradle',
+  '.kotlin',
+  'build',
+  'dist',
+  'DerivedData',
+  '.next',
+  'target',
+  '__pycache__',
+  '.venv',
+])
+
+export function searchWorkspaceFiles(
+  dirPath: string,
+  workspaceRoots: string[],
+  opts: { query?: string; limit?: number } = {},
+): { path: string; files: string[] } {
+  const realDir = resolveAllowedWorkspacePath(dirPath, workspaceRoots)
+  const maxOut = Math.min(Math.max(opts.limit ?? 50, 1), 200)
+  const rawQuery = (opts.query ?? '').trim().replace(/^@+/, '').toLowerCase()
+
+  let candidates: string[] = []
+  const gitRes = spawnSync(
+    'git',
+    ['ls-files', '--cached', '--others', '--exclude-standard'],
+    {
+      cwd: realDir,
+      encoding: 'utf8',
+      timeout: 3_000,
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  )
+
+  if (gitRes.status === 0 && gitRes.stdout) {
+    for (const line of gitRes.stdout.split('\n')) {
+      const rel = line.trim()
+      if (!rel) continue
+      const full = path.join(realDir, rel)
+      if (isSensitivePath(full)) continue
+      candidates.push(rel)
+      if (candidates.length >= MAX_INDEXED_FILES) break
+    }
+  } else {
+    // Bounded BFS walk fallback for non-git workspaces
+    const queue: string[] = ['']
+    while (queue.length > 0 && candidates.length < MAX_INDEXED_FILES) {
+      const relDir = queue.shift()!
+      const absDir = relDir ? path.join(realDir, relDir) : realDir
+      let entries: fs.Dirent[]
+      try {
+        entries = fs.readdirSync(absDir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const d of entries) {
+        if (d.name === '.DS_Store' || SKIP_WALK_DIRS.has(d.name)) continue
+        const relPath = relDir ? `${relDir}/${d.name}` : d.name
+        const absPath = path.join(realDir, relPath)
+        if (isSensitivePath(absPath)) continue
+        if (d.isDirectory()) {
+          if (relPath.split('/').length <= 6) queue.push(relPath)
+        } else if (d.isFile()) {
+          candidates.push(relPath)
+          if (candidates.length >= MAX_INDEXED_FILES) break
+        }
+      }
+    }
+  }
+
+  if (!rawQuery) {
+    candidates.sort((a, b) => a.length - b.length || a.localeCompare(b))
+    return { path: realDir, files: candidates.slice(0, maxOut) }
+  }
+
+  const scored: { rel: string; score: number }[] = []
+  for (const rel of candidates) {
+    const lower = rel.toLowerCase()
+    const base = path.posix.basename(lower)
+    let score = -1
+    if (base === rawQuery) score = 0
+    else if (base.startsWith(rawQuery)) score = 1
+    else if (lower.startsWith(rawQuery)) score = 2
+    else if (base.includes(rawQuery)) score = 3
+    else if (lower.includes(rawQuery)) score = 4
+    if (score >= 0) {
+      scored.push({ rel, score })
+    }
+  }
+
+  scored.sort((a, b) => a.score - b.score || a.rel.length - b.rel.length || a.rel.localeCompare(b.rel))
+  return { path: realDir, files: scored.slice(0, maxOut).map(s => s.rel) }
+}
 
 export function listWorkspaceDirectory(dirPath: string, workspaceRoots: string[]): {
   path: string

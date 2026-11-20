@@ -458,4 +458,109 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T11_1 lework session deep link opens target session both on cold start and while connected`() = runTest {
+        JvmPlatformTestHooks.reset()
+        val transport = FakeHubTransport().apply {
+            sessions.add(
+                SessionMeta(
+                    id = "host:claude:deep_1",
+                    engineId = "claude",
+                    cwd = "/workspace/lework",
+                    title = "DeepLinked Session",
+                    state = SessionState.WAITING_PERMISSION,
+                    createdAt = 1_000L,
+                    updatedAt = 2_000L,
+                    lastSeq = 0,
+                ),
+            )
+            sessions.add(
+                SessionMeta(
+                    id = "host:claude:deep_2",
+                    engineId = "claude",
+                    cwd = "/workspace/lework",
+                    title = "Second Session",
+                    state = SessionState.IDLE,
+                    createdAt = 1_000L,
+                    updatedAt = 3_000L,
+                    lastSeq = 0,
+                ),
+            )
+        }
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            // Cold-start deep link before workspace connection
+            JvmPlatformTestHooks.emitIncomingPairingUri("lework://session?id=host%3Aclaude%3Adeep_1&hubId=hub_fake_1")
+            runCurrent()
+
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals("host:claude:deep_1", store.state.value.activeSessionId)
+
+            // In-workspace deep link switches immediately
+            JvmPlatformTestHooks.emitIncomingPairingUri("lework://session/host%3Aclaude%3Adeep_2")
+            runCurrent()
+            assertEquals("host:claude:deep_2", store.state.value.activeSessionId)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
+
+    @Test
+    fun `T11_2 composer @file mention queries workspace files and replaces trailing token cleanly`() = runTest {
+        JvmPlatformTestHooks.reset()
+        val transport = FakeHubTransport()
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            store.updateComposerTextForMentions("请检查一下 @serv")
+            advanceTimeBy(150L)
+            runCurrent()
+
+            assertEquals("serv", store.state.value.mentionQuery)
+            assertEquals(listOf("hub/src/server.ts"), store.state.value.workspaceFileSuggestions)
+
+            val replaced = dev.lework.store.replaceTrailingMention("请检查一下 @serv", "hub/src/server.ts")
+            assertEquals("请检查一下 @hub/src/server.ts ", replaced)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
+
+    @Test
+    fun `T11_3 pickAndAttachImage attaches screenshot and supports sending image-only prompt`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.nextPickedImage = dev.lework.platform.PickedImagePayload(
+            fileName = "ui_issue.jpg",
+            mimeType = "image/jpeg",
+            dataBase64 = "aGVsbG8=",
+        )
+        val transport = FakeHubTransport()
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            store.pickAndAttachImage()
+            assertEquals(1, store.state.value.composerAttachedImages.size)
+            assertEquals("ui_issue.jpg", store.state.value.composerAttachedImages.first().fileName)
+
+            store.sendPrompt("")
+            runCurrent()
+
+            assertTrue(store.state.value.composerAttachedImages.isEmpty())
+            assertEquals(1, transport.sentPromptImages.size)
+            assertEquals("ui_issue.jpg", transport.sentPromptImages.first().second.first().fileName)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

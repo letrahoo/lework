@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { EngineCapabilities, EngineStatus, SessionMode } from '@lework/protocol'
 import type { ModelRegistry } from '../registry/model-registry.ts'
-import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
+import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 /**
  * Self-built embedded Pi Engine (§5 of PLAN.md).
@@ -37,7 +37,7 @@ export class PiEngineAdapter implements EngineAdapter {
   capabilities(): EngineCapabilities {
     return {
       permissions: true,
-      images: false,
+      images: true,
       modelSwitch: true,
       modes: true,
       history: true,
@@ -67,7 +67,7 @@ class PiEmbeddedSession implements EngineSession {
   private selectedModel: string
   private mode: SessionMode
   private readonly sessionAllowedWriteOrExec = new Set<string>()
-  private readonly history: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
+  private readonly history: Array<{ role: 'system' | 'user' | 'assistant'; content: unknown }> = []
   private pendingApprovalResolve: ((opt: string | null) => void) | null = null
   private pendingRequestId: string | null = null
   private abortController: AbortController | null = null
@@ -98,7 +98,7 @@ class PiEmbeddedSession implements EngineSession {
     })
   }
 
-  async prompt(turnId: string, text: string): Promise<void> {
+  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
     this.abortController = new AbortController()
     const msgId = `msg_${turnId}`
     this.init.emit({ type: 'session.state', state: 'running' })
@@ -219,13 +219,27 @@ class PiEmbeddedSession implements EngineSession {
       }
 
       // 4. Query CLIProxyAPI (:8317) if available, with graceful local synthesis fallback
-      this.history.push({ role: 'user', content: `[Workspace files: ${entries.join(', ')}]\n\n${text}` })
+      const effectiveText = text.trim() || (images?.length ? '请分析所附图片。' : '')
+      const textPrompt = `[Workspace files: ${entries.join(', ')}]\n\n${effectiveText}`
+      if (images && images.length > 0) {
+        const parts: Array<Record<string, unknown>> = [{ type: 'text', text: textPrompt }]
+        for (const img of images) {
+          parts.push({
+            type: 'image_url',
+            image_url: { url: `data:${img.mimeType};base64,${img.dataBase64}` },
+          })
+        }
+        this.history.push({ role: 'user', content: parts })
+      } else {
+        this.history.push({ role: 'user', content: textPrompt })
+      }
       const streamedFromCpa = await this.tryStreamFromCpa(msgId, this.abortController.signal)
       if (!streamedFromCpa) {
+        const imgNote = images?.length ? `（含 ${images.length} 张附图）` : ''
         const reply =
           `[Pi Engine · ${this.selectedModel}]\n` +
           `已扫描工作区 \`${this.cwd}\`（共发现 ${entries.length} 个顶层条目：${entries.slice(0, 8).join(', ')}）。\n` +
-          `针对你的指令「${text}」，已完成工作区上下文读取与工具执行。`
+          `针对你的指令「${effectiveText}」${imgNote}，已完成工作区上下文读取与工具执行。`
         this.init.emit({
           type: 'message.assistant.delta',
           messageId: msgId,

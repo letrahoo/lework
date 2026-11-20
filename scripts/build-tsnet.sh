@@ -88,4 +88,16 @@ if [[ "$MODE" == "--all" || "$MODE" == "--ios" ]] && [[ "$(uname -s)" == "Darwin
     -o "$TSNET_DIR/build/ios-sim/libtsnetbridge.a" ./ios
 fi
 
+if [[ "$MODE" == "--all" || "$MODE" == "--android" ]]; then
+  ANDROID_JNI_DIR="$REPO_ROOT/app/androidApp/src/main/jniLibs"
+  mkdir -p "$ANDROID_JNI_DIR/arm64-v8a" "$ANDROID_JNI_DIR/x86_64"
+  echo "==> Building Android embedded tsnet binaries (arm64-v8a & x86_64, zero-NDK static Linux ELF)..."
+  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+    "$GO_BIN" build -trimpath -ldflags="-s -w" \
+    -o "$ANDROID_JNI_DIR/arm64-v8a/libtsnetbridge.so" ./cmd/lework-tsnet
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    "$GO_BIN" build -trimpath -ldflags="-s -w" \
+    -o "$ANDROID_JNI_DIR/x86_64/libtsnetbridge.so" ./cmd/lework-tsnet
+fi
+
 echo "==> tsnet-bridge build complete."

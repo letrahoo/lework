@@ -4,26 +4,76 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
 import dev.lework.protocol.ProtocolJson
+import java.io.BufferedReader
+import java.io.File
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.KeyStore
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+
+interface AndroidNativeDelegate {
+    fun presentQrScanner(onResult: (String?) -> Unit)
+    fun presentImagePicker(onResult: (PickedImagePayload?) -> Unit)
+}
 
 object AndroidPlatformRuntime {
     @Volatile
     internal var appContext: Context? = null
-    internal val bonjourUrls = MutableStateFlow<List<String>>(emptyList())
+    @Volatile
+    internal var nativeDelegate: AndroidNativeDelegate? = null
+
+    private val _combinedUrls = MutableStateFlow<List<String>>(emptyList())
+    internal val combinedUrls: StateFlow<List<String>> = _combinedUrls.asStateFlow()
+    private var nsdUrls: List<String> = emptyList()
+    internal var tsnetProxyUrls: List<String> = emptyList()
+
     internal val foregroundFlow = MutableStateFlow(true)
     internal val incomingUriFlow = MutableStateFlow<String?>(null)
     private var activeDiscoveryListener: NsdManager.DiscoveryListener? = null
 
     fun attach(context: Context) {
         appContext = context.applicationContext
+    }
+
+    fun registerDelegate(delegate: AndroidNativeDelegate?) {
+        nativeDelegate = delegate
+    }
+
+    internal fun updateNsdUrls(urls: List<String>) {
+        nsdUrls = urls
+        _combinedUrls.value = (nsdUrls + tsnetProxyUrls).distinct()
+    }
+
+    internal fun updateTsnetProxies(urls: List<String>) {
+        tsnetProxyUrls = urls
+        _combinedUrls.value = (nsdUrls + tsnetProxyUrls).distinct()
     }
 
     fun onForegroundChanged(isForeground: Boolean) {
@@ -77,7 +127,7 @@ object AndroidPlatformRuntime {
                                     }
                                 }
                                 if (found.isNotEmpty()) {
-                                    bonjourUrls.value = (found + bonjourUrls.value).distinct()
+                                    updateNsdUrls((found + nsdUrls).distinct())
                                 }
                             }
                         },
@@ -89,6 +139,242 @@ object AndroidPlatformRuntime {
         runCatching {
             nsd.discoverServices("_lework._tcp.", NsdManager.PROTOCOL_DNS_SD, listener)
         }
+    }
+}
+
+/**
+ * Hardware-backed Android Keystore AES-256-GCM vault for access tokens & pinned TLS fingerprints.
+ * Automatically migrates pre-v0.6.0 plaintext SharedPreferences entries on first read.
+ */
+private object AndroidKeyStoreVault {
+    private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
+    private const val KEY_ALIAS = "dev.lework.vault.aes256"
+    private const val PREFIX = "enc:v1:"
+
+    private fun getOrCreateSecretKey(): SecretKey? = runCatching {
+        val ks = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
+        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return@runCatching it }
+        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE_PROVIDER)
+        val spec = KeyGenParameterSpec.Builder(
+            KEY_ALIAS,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .build()
+        gen.init(spec)
+        gen.generateKey()
+    }.getOrNull()
+
+    fun get(prefKey: String): String? {
+        val p = prefs() ?: return null
+        val raw = p.getString(prefKey, null)?.takeIf { it.isNotBlank() } ?: return null
+        if (!raw.startsWith(PREFIX)) {
+            // Transparently upgrade legacy plaintext credential into Keystore-encrypted form
+            set(prefKey, raw)
+            return raw
+        }
+        val secretKey = getOrCreateSecretKey() ?: return null
+        return runCatching {
+            val parts = raw.removePrefix(PREFIX).split(':', limit = 2)
+            if (parts.size != 2) return null
+            val iv = Base64.decode(parts[0], Base64.NO_WRAP)
+            val cipherBytes = Base64.decode(parts[1], Base64.NO_WRAP)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+            cipher.doFinal(cipherBytes).decodeToString()
+        }.getOrNull()
+    }
+
+    fun set(prefKey: String, plaintext: String?) {
+        val p = prefs() ?: return
+        if (plaintext.isNullOrBlank()) {
+            p.edit().remove(prefKey).apply()
+            return
+        }
+        val secretKey = getOrCreateSecretKey()
+        if (secretKey == null) {
+            p.edit().putString(prefKey, plaintext).apply()
+            return
+        }
+        runCatching {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+            val iv = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
+            val encrypted = Base64.encodeToString(cipher.doFinal(plaintext.encodeToByteArray()), Base64.NO_WRAP)
+            p.edit().putString(prefKey, "$PREFIX$iv:$encrypted").apply()
+        }
+    }
+}
+
+/**
+ * Manages the embedded Go `libtsnetbridge.so` userspace Tailscale mesh child process on Android.
+ */
+private object AndroidTsnetDaemon {
+    private val mutex = Mutex()
+    private var proc: Process? = null
+    private var controlPort: Int = 0
+    private var secret: String = ""
+
+    @Serializable
+    private data class ConfigurePayload(
+        val controlUrl: String = "",
+        val authKey: String = "",
+    )
+
+    private fun resolveBinary(): File? {
+        val ctx = AndroidPlatformRuntime.appContext ?: return null
+        val f = File(ctx.applicationInfo.nativeLibraryDir, "libtsnetbridge.so")
+        return if (f.exists() && f.canExecute()) f else null
+    }
+
+    fun isAvailable(): Boolean = resolveBinary() != null
+
+    private fun detectActiveDnsServers(ctx: Context): String {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val servers = runCatching {
+            val net = cm?.activeNetwork
+            val props = if (net != null) cm.getLinkProperties(net) else null
+            props?.dnsServers?.mapNotNull { it.hostAddress?.takeIf { a -> !a.contains('%') } }.orEmpty()
+        }.getOrDefault(emptyList())
+        return (servers + listOf("223.5.5.5", "1.1.1.1", "8.8.8.8")).distinct().take(5).joinToString(",")
+    }
+
+    private fun sanitizedHostname(): String {
+        val raw = Build.MODEL?.lowercase()?.replace(Regex("[^a-z0-9-]+"), "-")?.trim('-') ?: "android"
+        return "lework-android-${raw.ifEmpty { "phone" }}".take(48)
+    }
+
+    suspend fun ensureStarted(controlUrl: String?): Boolean = mutex.withLock {
+        val alive = proc?.isAlive == true && controlPort > 0
+        if (alive) return@withLock true
+        val ctx = AndroidPlatformRuntime.appContext ?: return@withLock false
+        val bin = resolveBinary() ?: return@withLock false
+
+        withContext(Dispatchers.IO) {
+            runCatching { proc?.destroy() }
+            proc = null
+            controlPort = 0
+
+            val stateDir = File(ctx.filesDir, "tsnet").apply { mkdirs() }
+            val secBytes = ByteArray(24).also { SecureRandom().nextBytes(it) }
+            val newSecret = secBytes.joinToString("") { "%02x".format(it) }
+            val cmd = mutableListOf(
+                bin.absolutePath,
+                "--client-only",
+                "--state-dir",
+                stateDir.absolutePath,
+                "--hostname",
+                sanitizedHostname(),
+                "--hub-port",
+                "64450",
+                "--dns",
+                detectActiveDnsServers(ctx),
+            )
+            if (!controlUrl.isNullOrBlank()) {
+                cmd.add("--control-url")
+                cmd.add(controlUrl.trim())
+            }
+
+            val pb = ProcessBuilder(cmd).apply {
+                environment()["LEWORK_TSNET_SECRET"] = newSecret
+                environment()["HOME"] = ctx.filesDir.absolutePath
+                environment()["SSL_CERT_DIR"] = "/system/etc/security/cacerts"
+            }
+
+            val started = runCatching { pb.start() }.getOrNull() ?: return@withContext false
+            // Drain stderr asynchronously
+            Thread {
+                runCatching { started.errorStream.bufferedReader().forEachLine { /* drain */ } }
+            }.apply { isDaemon = true }.start()
+
+            val reader = BufferedReader(InputStreamReader(started.inputStream))
+            var foundPort = 0
+            val deadline = System.currentTimeMillis() + 8_000L
+            while (System.currentTimeMillis() < deadline && started.isAlive) {
+                val line = runCatching { reader.readLine() }.getOrNull() ?: break
+                val trimmed = line.trim()
+                if (trimmed.startsWith("{")) {
+                    val obj = runCatching {
+                        ProtocolJson.parseToJsonElement(trimmed) as? JsonObject
+                    }.getOrNull()
+                    val ready = obj?.get("ready")?.jsonPrimitive?.booleanOrNull == true
+                    val port = obj?.get("controlPort")?.jsonPrimitive?.intOrNull ?: 0
+                    if (ready && port > 0) {
+                        foundPort = port
+                        break
+                    }
+                }
+            }
+            if (foundPort <= 0) {
+                runCatching { started.destroy() }
+                return@withContext false
+            }
+            // Keep draining stdout in background
+            Thread {
+                runCatching { reader.forEachLine { /* drain */ } }
+            }.apply { isDaemon = true }.start()
+
+            proc = started
+            controlPort = foundPort
+            secret = newSecret
+            true
+        }
+    }
+
+    suspend fun callControl(path: String, method: String = "GET", jsonBody: String? = null): MobileTsnetStatus {
+        val avail = isAvailable()
+        if (!avail || controlPort <= 0 || secret.isEmpty()) {
+            return MobileTsnetStatus(available = avail, backendState = if (avail) "Stopped" else "Unavailable")
+        }
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val conn = (URL("http://127.0.0.1:$controlPort$path").openConnection() as HttpURLConnection).apply {
+                    requestMethod = method
+                    connectTimeout = 5_000
+                    readTimeout = 14_000
+                    setRequestProperty("Authorization", "Bearer $secret")
+                    if (jsonBody != null) {
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    }
+                }
+                if (jsonBody != null) {
+                    conn.outputStream.use { it.write(jsonBody.encodeToByteArray()) }
+                }
+                val raw = conn.inputStream.bufferedReader().use { it.readText() }
+                val parsed = ProtocolJson.decodeFromString(MobileTsnetStatus.serializer(), raw)
+                val withAvail = parsed.copy(available = true)
+                val proxies = withAvail.peers.mapNotNull { it.localProxyUrl?.takeIf { u -> u.isNotBlank() } }
+                AndroidPlatformRuntime.updateTsnetProxies(proxies)
+                withAvail
+            }.getOrElse { err ->
+                MobileTsnetStatus(
+                    available = avail,
+                    backendState = "Error",
+                    error = err.message ?: "Android tsnet bridge error",
+                )
+            }
+        }
+    }
+
+    suspend fun configureAndCall(controlUrl: String?, authKey: String?, nextPath: String): MobileTsnetStatus {
+        if (!ensureStarted(controlUrl)) {
+            return MobileTsnetStatus(
+                available = isAvailable(),
+                backendState = if (isAvailable()) "Error" else "Unavailable",
+                error = if (isAvailable()) "Failed to start embedded tsnet daemon" else null,
+            )
+        }
+        if (!controlUrl.isNullOrBlank() || !authKey.isNullOrBlank()) {
+            val body = ProtocolJson.encodeToString(
+                ConfigurePayload.serializer(),
+                ConfigurePayload(controlUrl = controlUrl?.trim().orEmpty(), authKey = authKey?.trim().orEmpty()),
+            )
+            callControl("/v1/configure", "POST", body)
+        }
+        return callControl(nextPath, if (nextPath == "/v1/status") "GET" else "POST", if (nextPath == "/v1/status") null else "{}")
     }
 }
 
@@ -109,13 +395,13 @@ private fun prefs() =
 
 actual fun platformName(): String = "Android ${Build.VERSION.RELEASE}"
 
-actual fun appVersionLabel(): String = "v0.5.0 (20261119.2355)"
+actual fun appVersionLabel(): String = "v0.6.0 (20261120.1530)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
 actual fun observeAppForeground(): StateFlow<Boolean> = AndroidPlatformRuntime.foregroundFlow.asStateFlow()
 
-actual fun observeBonjourHubUrls(): StateFlow<List<String>> = AndroidPlatformRuntime.bonjourUrls.asStateFlow()
+actual fun observeBonjourHubUrls(): StateFlow<List<String>> = AndroidPlatformRuntime.combinedUrls
 
 actual fun startBonjourDiscovery() {
     AndroidPlatformRuntime.startNsdDiscovery()
@@ -144,7 +430,8 @@ actual fun saveRelayUrls(urls: List<String>) {
 }
 
 actual fun candidateHubHttpUrls(): List<String> = buildList {
-    addAll(AndroidPlatformRuntime.bonjourUrls.value)
+    addAll(AndroidPlatformRuntime.combinedUrls.value)
+    addAll(AndroidPlatformRuntime.tsnetProxyUrls)
     val activeId = loadActiveHostId()
     if (activeId != null) {
         loadPairedHosts().firstOrNull { it.hubId == activeId }?.let { addAll(it.endpoints) }
@@ -156,7 +443,7 @@ actual fun candidateHubHttpUrls(): List<String> = buildList {
 }.distinct()
 
 actual fun loadSavedAccessToken(): String? =
-    prefs()?.getString("auth_token", null)?.takeIf { it.isNotBlank() } ?: memToken
+    AndroidKeyStoreVault.get("auth_token")?.takeIf { it.isNotBlank() } ?: memToken
 
 actual fun loadSavedAuthUserName(): String? =
     prefs()?.getString("auth_user", null)?.takeIf { it.isNotBlank() } ?: memUser
@@ -164,10 +451,8 @@ actual fun loadSavedAuthUserName(): String? =
 actual fun saveAuthSession(token: String?, userName: String?) {
     memToken = token?.takeIf { it.isNotBlank() }
     memUser = if (memToken == null) null else (userName ?: "Owner")
-    prefs()?.edit()
-        ?.putString("auth_token", memToken)
-        ?.putString("auth_user", memUser)
-        ?.apply()
+    AndroidKeyStoreVault.set("auth_token", memToken)
+    prefs()?.edit()?.putString("auth_user", memUser)?.apply()
 }
 
 actual fun loadSessionPrefs(): SavedSessionPrefs {
@@ -211,25 +496,37 @@ actual fun copyTextToClipboard(text: String) {
 }
 
 actual fun loadPinnedHubFingerprints(): Set<String> {
-    val raw = prefs()?.getString("pinned_fps", null) ?: return memPins
+    val raw = AndroidKeyStoreVault.get("pinned_fps") ?: return memPins
     return raw.split(',').map { it.trim().lowercase() }.filter { it.length == 64 }.toSet()
 }
 
 actual fun savePinnedHubFingerprints(fingerprints: Set<String>) {
     memPins = fingerprints
-    prefs()?.edit()?.putString("pinned_fps", fingerprints.joinToString(","))?.apply()
+    AndroidKeyStoreVault.set("pinned_fps", fingerprints.joinToString(","))
 }
 
-actual fun isMobileTsnetAvailable(): Boolean = false
+actual fun isMobileTsnetAvailable(): Boolean = AndroidTsnetDaemon.isAvailable()
 
-actual suspend fun startMobileTsnet(controlUrl: String?): MobileTsnetStatus = MobileTsnetStatus()
+actual suspend fun startMobileTsnet(controlUrl: String?): MobileTsnetStatus {
+    val ctrl = controlUrl ?: loadSavedTsnetControlUrl()
+    if (!AndroidTsnetDaemon.ensureStarted(ctrl)) {
+        return MobileTsnetStatus(available = AndroidTsnetDaemon.isAvailable(), backendState = "Unavailable")
+    }
+    return AndroidTsnetDaemon.callControl("/v1/status")
+}
 
-actual suspend fun queryMobileTsnetStatus(): MobileTsnetStatus = MobileTsnetStatus()
+actual suspend fun queryMobileTsnetStatus(): MobileTsnetStatus {
+    if (!AndroidTsnetDaemon.isAvailable()) return MobileTsnetStatus()
+    return AndroidTsnetDaemon.callControl("/v1/status")
+}
 
 actual suspend fun loginMobileTsnet(controlUrl: String?, authKey: String?): MobileTsnetStatus =
-    MobileTsnetStatus(available = false, backendState = "Unavailable")
+    AndroidTsnetDaemon.configureAndCall(controlUrl ?: loadSavedTsnetControlUrl(), authKey, "/v1/login")
 
-actual suspend fun logoutMobileTsnet(): MobileTsnetStatus = MobileTsnetStatus()
+actual suspend fun logoutMobileTsnet(): MobileTsnetStatus {
+    AndroidPlatformRuntime.updateTsnetProxies(emptyList())
+    return AndroidTsnetDaemon.callControl("/v1/logout", "POST", "{}")
+}
 
 actual fun loadSavedTsnetEnabled(): Boolean = prefs()?.getBoolean("tsnet_enabled", memTsnetEnabled) ?: memTsnetEnabled
 
@@ -247,10 +544,11 @@ actual fun saveTsnetEnabled(enabled: Boolean, controlUrl: String?) {
 actual fun loadSavedTsnetControlUrl(): String? =
     prefs()?.getString("tsnet_control_url", null)?.takeIf { it.isNotBlank() } ?: memTsnetControlUrl
 
-actual fun canScanQrCode(): Boolean = false
+actual fun canScanQrCode(): Boolean = AndroidPlatformRuntime.nativeDelegate != null
 
 actual fun requestQrCodeScan(onResult: (String?) -> Unit) {
-    onResult(null)
+    val d = AndroidPlatformRuntime.nativeDelegate
+    if (d == null) onResult(null) else d.presentQrScanner(onResult)
 }
 
 actual fun observeIncomingPairingUri(): StateFlow<String?> = AndroidPlatformRuntime.incomingUriFlow.asStateFlow()
@@ -263,13 +561,18 @@ actual fun loadPairedHosts(): List<PairedHost> {
     val raw = prefs()?.getString("paired_hosts_json", null) ?: return memPairedHosts
     return runCatching {
         ProtocolJson.decodeFromString(ListSerializer(PairedHost.serializer()), raw)
-    }.getOrDefault(memPairedHosts)
+    }.getOrDefault(emptyList())
 }
 
 actual fun savePairedHosts(hosts: List<PairedHost>) {
     memPairedHosts = hosts
-    val raw = ProtocolJson.encodeToString(ListSerializer(PairedHost.serializer()), hosts)
-    prefs()?.edit()?.putString("paired_hosts_json", raw)?.apply()
+    val p = prefs() ?: return
+    if (hosts.isEmpty()) {
+        p.edit().remove("paired_hosts_json").apply()
+    } else {
+        val raw = ProtocolJson.encodeToString(ListSerializer(PairedHost.serializer()), hosts)
+        p.edit().putString("paired_hosts_json", raw).apply()
+    }
 }
 
 actual fun loadActiveHostId(): String? =
@@ -281,10 +584,19 @@ actual fun saveActiveHostId(hubId: String?) {
 }
 
 actual fun loadHostAccessToken(hubId: String): String? =
-    prefs()?.getString("host_tok_$hubId", null)?.takeIf { it.isNotBlank() } ?: memHostTokens[hubId]
+    AndroidKeyStoreVault.get("host_token_$hubId")?.takeIf { it.isNotBlank() } ?: memHostTokens[hubId]
 
 actual fun saveHostAccessToken(hubId: String, token: String?) {
     val clean = token?.takeIf { it.isNotBlank() }
     if (clean == null) memHostTokens.remove(hubId) else memHostTokens[hubId] = clean
-    prefs()?.edit()?.putString("host_tok_$hubId", clean)?.apply()
+    AndroidKeyStoreVault.set("host_token_$hubId", clean)
 }
+
+actual fun canPickImages(): Boolean = AndroidPlatformRuntime.nativeDelegate != null
+
+actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
+    val d = AndroidPlatformRuntime.nativeDelegate
+    if (d == null) onResult(null) else d.presentImagePicker(onResult)
+}
+
+actual fun signingExpiryRemainingHours(): Int? = null

@@ -4,11 +4,16 @@ import type {
   EngineInfo,
   EngineStatus,
   ModelOption,
+  PromptImageAttachment,
   ReasoningEffort,
   SessionMode,
 } from '@lework/protocol'
 
 export type EmitAgentEvent = (body: AgentEventBody) => void
+
+export interface StagedPromptImage extends PromptImageAttachment {
+  stagedPath: string
+}
 
 export interface EngineSessionInit {
   sessionId: string
@@ -26,7 +31,7 @@ export interface EngineSessionInit {
 export interface EngineSession {
   readonly sessionId: string
   readonly cwd: string
-  prompt(turnId: string, text: string): Promise<void>
+  prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void>
   cancel(): Promise<void>
   respondPermission(requestId: string, optionId: string | null): Promise<void>
   setModel?(modelId: string): Promise<void>

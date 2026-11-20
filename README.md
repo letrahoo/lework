@@ -53,6 +53,12 @@ lework pair
 # 可选：启用内置 Tailscale 同账号组网（支持 --control-url 接入自建 Headscale）
 lework tsnet login
 
+# 可选：配置锁屏离线推送（待审批 / 长任务完成自动推送，点击直达对应会话）
+lework notify bark https://api.day.app/<YOUR_BARK_KEY>
+# 或飞书机器人 / Telegram / 通用 Webhook：
+# lework notify feishu https://open.feishu.cn/open-apis/bot/v2/hook/<ID> [--secret <SEC>]
+lework notify test
+
 # 前台启动 Hub 守护进程 (默认 HTTPS/WSS 监听 0.0.0.0:64450，自动广播 _lework._tcp.local)
 lework serve
 ```
@@ -65,6 +71,9 @@ lework serve
 ### 核心工作台能力
 
 - **多引擎与本机终端无缝接管**：支持 Claude Code、Codex、AGY、DSH 与内置 Pi 引擎；自动发现电脑 Shell 中正在运行或历史的会话，支持手机代点 `tmux` / `iTerm2` 终端审批、同步排队指令与断点续传。
+- **多模态输入与 `@文件` 引用补全**：移动端输入框支持一键添加相册截图直传多模态引擎分析，输入 `@` 实时模糊检索工作区文件（自动过滤敏感凭证文件）；iOS 个人开发描述文件剩余不足 36 小时自动温和提醒续签。
+- **离线审批与任务完成推送**：可插拔对接 Bark、飞书机器人、Telegram 或自定义 Webhook；手机锁屏期间若 Agent 卡在待审批或长耗时任务执行完毕，自动推送带 `lework://session` 深链的通知，点击直接跳转对应会话。
+- **iOS 与 Android 双端全能力对齐**：双端均内置硬件级加密凭证库（iOS Keychain / Android Keystore AES-256-GCM）、原生相机扫码配对（AVFoundation / CameraX + ZXing）、局域网发现（Bonjour / NSD）及用户态 `tsnet` 同账号自动组网。
 - **上下文窗口与多引擎用量看板**：会话内实时显示当前上下文容量占用 %、缓存命中率与估算账单；全局看板按字节偏移增量扫描本机 Claude / Codex / AGY 日志（零后台轮询开销），展示按日趋势、5 小时计费窗口与周额度重置倒计时，以及本机 CPA 代理统计。
 - **变更对比与版本快照回退**：查看当前工作区未提交的 Git 变更列表与逐文件红绿对比，编辑类工具调用自动生成行级前后对比；每轮对话前自动打无损快照（`git stash create`），支持手动存快照、跨快照对比差异与一键安全回退（回退前自动备份）。
 

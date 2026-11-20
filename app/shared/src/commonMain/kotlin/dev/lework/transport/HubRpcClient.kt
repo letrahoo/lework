@@ -120,6 +120,11 @@ interface HubTransport {
 
     suspend fun fetchStatus(): HubStatusResult
     suspend fun listWorkspaces(): List<Workspace>
+    suspend fun searchWorkspaceFiles(
+        path: String,
+        query: String? = null,
+        limit: Int = 50,
+    ): WorkspaceFilesResult = WorkspaceFilesResult(path = path, files = emptyList())
     suspend fun listDirectory(path: String): FsListResult
     suspend fun readFile(path: String): FsReadResult
     suspend fun upsertProfile(profile: ProfileInfo): List<ProfileInfo>
@@ -139,6 +144,7 @@ interface HubTransport {
     suspend fun sendPrompt(
         sessionId: String,
         text: String,
+        images: List<PromptImageAttachment>? = null,
         modelId: String? = null,
         reasoningEffort: ReasoningEffort? = null,
         mode: SessionMode? = null,
@@ -517,6 +523,16 @@ class HubRpcClient(
     override suspend fun listWorkspaces(): List<Workspace> =
         call<WorkspaceListResult>("workspace.list").workspaces
 
+    override suspend fun searchWorkspaceFiles(
+        path: String,
+        query: String?,
+        limit: Int,
+    ): WorkspaceFilesResult =
+        call(
+            "workspace.files",
+            encodeParams(WorkspaceFilesParams(path = path, query = query, limit = limit)),
+        )
+
     override suspend fun listDirectory(path: String): FsListResult =
         call("fs.list", encodeParams(FsListParams(path = path)))
 
@@ -558,6 +574,7 @@ class HubRpcClient(
     override suspend fun sendPrompt(
         sessionId: String,
         text: String,
+        images: List<PromptImageAttachment>?,
         modelId: String?,
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
@@ -568,6 +585,7 @@ class HubRpcClient(
                 SessionPromptParams(
                     sessionId = sessionId,
                     text = text,
+                    images = images,
                     modelId = modelId,
                     reasoningEffort = reasoningEffort,
                     mode = mode,

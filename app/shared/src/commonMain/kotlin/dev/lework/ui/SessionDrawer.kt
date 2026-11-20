@@ -40,8 +40,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.appVersionLabel
+import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.epochMillis
 import dev.lework.platform.loadSavedRelayUrls
+import dev.lework.platform.signingExpiryRemainingHours
 import dev.lework.protocol.*
 import dev.lework.store.*
 import kotlinx.coroutines.delay
@@ -59,8 +61,10 @@ internal fun TasksSidebarContent(
     onLogout: () -> Unit,
     onSwitchHost: (String) -> Unit = {},
     onPairAnotherHost: () -> Unit = {},
+    onDismissSigningReminder: () -> Unit = {},
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
+    val remainingSignHours = remember { signingExpiryRemainingHours() }
 
     Column(
         modifier = Modifier
@@ -68,6 +72,59 @@ internal fun TasksSidebarContent(
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
+        if (remainingSignHours != null && remainingSignHours <= 36 && !state.signingExpiryDismissed) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Everforest.BgYellow,
+                border = BorderStroke(1.dp, Everforest.BoldGold.copy(alpha = 0.5f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+                    .testTag("drawer_signing_expiry_banner"),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (remainingSignHours <= 0) "应用签名已临近失效" else "应用签名约剩 ${remainingSignHours} 小时到期",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.BoldGold,
+                        )
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "关闭提醒",
+                            tint = Everforest.Grey1,
+                            modifier = Modifier
+                                .size(15.dp)
+                                .clickable { onDismissSigningReminder() },
+                        )
+                    }
+                    Text(
+                        text = "个人开发描述文件有效期 7 天，连电脑执行重装即可无损续期。",
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        color = Everforest.Grey2,
+                    )
+                    Text(
+                        text = "复制续签命令",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Everforest.Green,
+                        modifier = Modifier.clickable {
+                            copyTextToClipboard("./scripts/ios-install.sh --install")
+                        },
+                    )
+                }
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,

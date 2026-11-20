@@ -13,6 +13,7 @@ import { loadOrCreateConfig } from './config.ts'
 import { encodePairingDeepLink, type QrPairingPayload } from './auth/pair-manager.ts'
 import { IssuedTokenStore } from './auth/token-store.ts'
 import { TsnetManager, type TsnetStatusSnapshot } from './auth/tsnet-manager.ts'
+import { NotificationDispatcher, type NotificationConfig } from './notifications/notifier.ts'
 import { defaultDataDir, ensureUserCliLinks, generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
 import { loadOrCreateHubTls, shortFingerprint } from './security/tls.ts'
 import { HubServer } from './server.ts'
@@ -404,6 +405,107 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  if (sub === 'notify') {
+    const action = args[1] ?? 'status'
+    const secret = parseStringFlag(args, '--secret')
+    const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
+
+    if (action === 'status') {
+      const n = cfg.notifications
+      if (!n?.enabled) {
+        console.log('Offline Notifications: DISABLED')
+        console.log('  Enable Bark   : lework notify bark https://api.day.app/<YOUR_KEY>')
+        console.log('  Enable Feishu : lework notify feishu https://open.feishu.cn/open-apis/bot/v2/hook/<ID> [--secret <SEC>]')
+        console.log('  Enable Webhook: lework notify webhook https://example.com/hook [--secret <SEC>]')
+        return
+      }
+      console.log(`Offline Notifications: ENABLED (${n.provider})`)
+      if (n.url) console.log(`  Endpoint          : ${n.url}`)
+      if (n.telegramChatId) console.log(`  Telegram Chat ID  : ${n.telegramChatId}`)
+      console.log(`  Approval Grace    : ${n.approvalDelayMs ?? 12_000}ms (1500ms when phone offline)`)
+      console.log(`  Min Turn Duration : ${n.minTurnDurationMs ?? 15_000}ms`)
+      return
+    }
+
+    if (action === 'bark' || action === 'feishu' || action === 'webhook') {
+      const targetUrl = args[2]?.trim()
+      if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+        console.error(`Usage: lework notify ${action} <https://...> [--secret <secret>]`)
+        process.exit(1)
+      }
+      const nextCfg: NotificationConfig = {
+        enabled: true,
+        provider: action,
+        url: targetUrl,
+        ...(secret ? { secret } : {}),
+      }
+      updateStoredConfig({ notifications: nextCfg })
+      console.log(`Saved ${action} notification channel. Run 'lework notify test' to verify push delivery.`)
+      return
+    }
+
+    if (action === 'telegram') {
+      const botToken = args[2]?.trim()
+      const chatId = args[3]?.trim()
+      if (!botToken || !chatId) {
+        console.error('Usage: lework notify telegram <botToken> <chatId>')
+        process.exit(1)
+      }
+      const nextCfg: NotificationConfig = {
+        enabled: true,
+        provider: 'telegram',
+        telegramBotToken: botToken,
+        telegramChatId: chatId,
+      }
+      updateStoredConfig({ notifications: nextCfg })
+      console.log(`Saved Telegram notification channel. Run 'lework notify test' to verify push delivery.`)
+      return
+    }
+
+    if (action === 'disable') {
+      updateStoredConfig({
+        notifications: cfg.notifications ? { ...cfg.notifications, enabled: false } : { enabled: false, provider: 'webhook' },
+      })
+      console.log('Offline notifications disabled.')
+      return
+    }
+
+    if (action === 'test') {
+      const liveRes = await callLocalHubAdmin<{ ok: boolean; error?: string }>({
+        port: cfg.port,
+        expectedFp: tls.fingerprint,
+        token: cfg.token,
+        method: 'POST',
+        pathname: '/v1/notify/test',
+        body: {},
+      })
+      const res =
+        liveRes ??
+        (await new NotificationDispatcher({
+          getConfig: () => cfg.notifications,
+          getHubInfo: () => ({
+            id: cfg.hubId,
+            name: cfg.name,
+            role: cfg.role,
+            platform: 'darwin',
+            version: '0.6.0',
+          }),
+          getSessionMeta: () => undefined,
+          getActiveSubscriberCount: () => 0,
+        }).sendTestNotification())
+      if (res.ok) {
+        console.log('Test notification delivered!')
+      } else {
+        console.error(`Test notification failed: ${res.error ?? 'unknown error'}`)
+        process.exit(1)
+      }
+      return
+    }
+
+    console.log('Usage: lework notify <status | bark <url> | feishu <url> [--secret S] | telegram <token> <chatId> | webhook <url> [--secret S] | test | disable>')
+    process.exit(1)
+  }
+
   if (sub === 'token') {
     // hub token rotate — invalidates the static access token (all paired phones must re-pair)
     if (args[1] !== 'rotate') {
@@ -505,7 +607,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    'Usage: lework <serve|status|engines|slaves|pair|tsnet|install-cli|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
+    'Usage: lework <serve|status|engines|slaves|pair|tsnet|notify|install-cli|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
   )
 }
 

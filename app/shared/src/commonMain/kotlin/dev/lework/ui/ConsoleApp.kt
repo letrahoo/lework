@@ -125,6 +125,7 @@ fun ConsoleApp(
                                     scope.launch { drawerState.close() }
                                     store.preparePairAnotherHost()
                                 },
+                                onDismissSigningReminder = store::dismissSigningExpiryReminder,
                             )
                         }
                     },
@@ -252,7 +253,10 @@ fun ConsoleApp(
                         ClaudeStyleComposer(
                             state = state,
                             text = promptText,
-                            onTextChange = { promptText = it },
+                            onTextChange = { next ->
+                                promptText = next
+                                store.updateComposerTextForMentions(next)
+                            },
                             onOpenWorkspaceSheet = { showWorkspaceSheet = true },
                             onCycleMode = {
                                 val modes = state.availableModes
@@ -272,6 +276,13 @@ fun ConsoleApp(
                                 store.sendPrompt(msg)
                             },
                             onCancel = store::cancelActiveTurn,
+                            onPickImage = store::pickAndAttachImage,
+                            onRemoveImage = store::removeAttachedImage,
+                            onSelectMentionFile = { relPath ->
+                                promptText = replaceTrailingMention(promptText, relPath)
+                                store.dismissMentionSuggestions()
+                            },
+                            onDismissMention = store::dismissMentionSuggestions,
                         )
                     }
                 }

@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import type { EngineCapabilities, EngineStatus, PermissionOption } from '@lework/protocol'
 import { findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
-import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
+import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 export interface CodexAdapterOptions {
   binary?: string
@@ -177,7 +177,7 @@ class CodexAppServerSession implements EngineSession {
     ])
   }
 
-  async prompt(turnId: string, text: string): Promise<void> {
+  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
     if (!this.rpc || !this.threadId) {
       throw new Error('Codex session is not initialized')
     }
@@ -188,12 +188,21 @@ class CodexAppServerSession implements EngineSession {
       this.turnWaiter = { resolve, reject }
     })
 
+    const inputItems: Array<Record<string, unknown>> = []
+    for (const img of images ?? []) {
+      inputItems.push({ type: 'localImage', path: img.stagedPath })
+    }
+    const effectiveText = text.trim() || (images?.length ? '请结合所附图片进行分析。' : '')
+    if (effectiveText) {
+      inputItems.push({ type: 'text', text: effectiveText })
+    }
+
     try {
       const startRes = (await this.rpc.request(
         'turn/start',
         {
           threadId: this.threadId,
-          input: [{ type: 'text', text }],
+          input: inputItems,
           ...(this.selectedModel ? { model: this.selectedModel } : {}),
           ...(this.selectedEffort ? { effort: this.selectedEffort } : {}),
         },
