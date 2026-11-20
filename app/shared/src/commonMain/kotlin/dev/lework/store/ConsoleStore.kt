@@ -55,6 +55,7 @@ class ConsoleStore(
     private var subscribeSeqToken: Long = 0L
     private var userManuallyPickedMode: Boolean = false
     private var manualPairingMode: Boolean = false
+    private var pairingInFlight: Boolean = false
     private var pendingDeepLinkSessionId: String? = null
     private var mentionJob: Job? = null
 
@@ -216,6 +217,9 @@ class ConsoleStore(
     }
 
     fun bootstrapOrConnect() {
+        if (pairingInFlight || !observeIncomingPairingUri().value.isNullOrBlank()) {
+            return
+        }
         bootstrapOrConnectToHost(loadActiveHostId())
     }
 
@@ -578,6 +582,7 @@ class ConsoleStore(
         }
 
         manualPairingMode = false
+        pairingInFlight = true
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
@@ -591,48 +596,52 @@ class ConsoleStore(
             )
         }
         discoverJob = scope.launch {
-            var lastError: Throwable? = null
-            for (baseUrl in candidates) {
-                try {
-                    val auth = rpc.redeemPairingCode(
-                        baseUrl = baseUrl,
-                        pairCode = payload.pairCode,
-                        staticToken = payload.token,
-                        expectedFingerprint = payload.fp,
-                        deviceName = platformName(),
-                    )
-                    val userName = auth.user?.name ?: "Owner"
-                    saveAuthSession(auth.accessToken, userName)
-                    saveHostAccessToken(auth.hub.id, auth.accessToken)
-                    upsertPairedHost(
-                        hub = auth.hub,
-                        fingerprint = auth.fingerprint,
-                        endpoints = auth.endpoints + candidates,
-                        userName = userName,
-                    )
-                    val wsUrl = hubWsUrlOf(baseUrl)
-                    _state.update {
-                        it.copy(
-                            discoveredBaseUrl = baseUrl,
-                            discoveredWsUrl = wsUrl,
-                            authUserName = userName,
-                            hub = auth.hub,
+            try {
+                var lastError: Throwable? = null
+                for (baseUrl in candidates) {
+                    try {
+                        val auth = rpc.redeemPairingCode(
+                            baseUrl = baseUrl,
+                            pairCode = payload.pairCode,
+                            staticToken = payload.token,
+                            expectedFingerprint = payload.fp,
+                            deviceName = platformName(),
                         )
+                        val userName = auth.user?.name ?: "Owner"
+                        saveAuthSession(auth.accessToken, userName)
+                        saveHostAccessToken(auth.hub.id, auth.accessToken)
+                        upsertPairedHost(
+                            hub = auth.hub,
+                            fingerprint = auth.fingerprint,
+                            endpoints = auth.endpoints + candidates,
+                            userName = userName,
+                        )
+                        val wsUrl = hubWsUrlOf(baseUrl)
+                        _state.update {
+                            it.copy(
+                                discoveredBaseUrl = baseUrl,
+                                discoveredWsUrl = wsUrl,
+                                authUserName = userName,
+                                hub = auth.hub,
+                            )
+                        }
+                        if (connectWithToken(wsUrl, auth.accessToken)) {
+                            return@launch
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (t: Throwable) {
+                        lastError = t
                     }
-                    if (connectWithToken(wsUrl, auth.accessToken)) {
-                        return@launch
-                    }
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (t: Throwable) {
-                    lastError = t
                 }
-            }
-            _state.update {
-                it.copy(
-                    connectionStatus = ConnectionStatus.ERROR,
-                    connectionError = lastError?.message ?: "配对连接失败，请确认手机可访问主机网络",
-                )
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.ERROR,
+                        connectionError = lastError?.message ?: "配对连接失败，请确认手机可访问主机网络",
+                    )
+                }
+            } finally {
+                pairingInFlight = false
             }
         }
     }

@@ -563,4 +563,31 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T11_4 cold-start lework pair deep link is not cancelled when LaunchedEffect calls bootstrapOrConnect`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.savedToken = null
+        val transport = FakeHubTransport()
+        val rawJson = """{"v":2,"hubId":"hub_fake_1","name":"TestMacBook","role":"slave","urls":["https://192.168.1.20:64450"],"url":"https://192.168.1.20:64450","fp":"${"a".repeat(64)}","pairCode":"lwp_0123456789ab_secret1234567890"}"""
+        @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+        val b64 = kotlin.io.encoding.Base64.UrlSafe.encode(rawJson.encodeToByteArray()).trimEnd('=')
+        // Pre-populate incoming URI before ConsoleStore init (simulates Android MainActivity.onCreate cold start)
+        JvmPlatformTestHooks.emitIncomingPairingUri("lework://pair?d=$b64")
+
+        val storeScope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            // ConsoleApp LaunchedEffect(store, autoBootstrap) immediately calls bootstrapOrConnect()
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            assertEquals(1, transport.pairRedeemCount)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals("lework_dt.paired_qr_token", JvmPlatformTestHooks.hostTokens["hub_fake_1"])
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }
