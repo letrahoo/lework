@@ -15,12 +15,12 @@ kotlin {
 
 android {
     namespace = "dev.lework.android"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "dev.lework.app"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 6
         versionName = "0.6.0"
         ndk {

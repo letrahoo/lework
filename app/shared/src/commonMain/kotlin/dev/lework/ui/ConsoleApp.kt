@@ -97,6 +97,7 @@ fun ConsoleApp(
                         ModalDrawerSheet(
                             drawerContainerColor = Everforest.BgDim,
                             drawerContentColor = Everforest.Fg,
+                            windowInsets = WindowInsets(0, 0, 0, 0),
                             modifier = Modifier.width(316.dp),
                         ) {
                             TasksSidebarContent(
