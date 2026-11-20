@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "setup": "bash ./scripts/setup.sh",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "test:kmp": "./app/gradlew -p ./app :shared:jvmTest",

@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TSNET_DIR="$REPO_ROOT/tsnet-bridge"
 GO_BIN="${GO_BIN:-}"
 if [[ -z "$GO_BIN" ]]; then
-  for candidate in /opt/homebrew/bin/go /usr/local/go/bin/go "$(command -v go 2>/dev/null || true)"; do
+  for candidate in /opt/homebrew/bin/go /usr/local/go/bin/go "$HOME/go/bin/go" "$(command -v go 2>/dev/null || true)"; do
     if [[ -n "$candidate" && -x "$candidate" ]]; then
       GO_BIN="$candidate"
       break
@@ -21,12 +21,28 @@ if [[ -z "$GO_BIN" ]]; then
 fi
 
 MODE="${1:---all}"
-export GOPROXY="${LEWORK_GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}"
-export GOSUMDB="${LEWORK_GOSUMDB:-sum.golang.google.cn}"
+if [[ -n "${LEWORK_GOPROXY:-}" ]]; then
+  export GOPROXY="$LEWORK_GOPROXY"
+elif [[ "${CI:-}" == "true" ]]; then
+  export GOPROXY="https://proxy.golang.org,direct"
+else
+  export GOPROXY="https://goproxy.cn,https://proxy.golang.org,direct"
+fi
+
+if [[ -n "${LEWORK_GOSUMDB:-}" ]]; then
+  export GOSUMDB="$LEWORK_GOSUMDB"
+elif [[ "${CI:-}" == "true" ]]; then
+  export GOSUMDB="sum.golang.org"
+else
+  export GOSUMDB="sum.golang.google.cn"
+fi
+
 cd "$TSNET_DIR"
 
-echo "==> Tidying & testing tsnet-bridge Go module ($("$GO_BIN" version))..."
-"$GO_BIN" mod tidy
+echo "==> Testing tsnet-bridge Go module ($("$GO_BIN" version))..."
+if [[ ! -f go.sum ]]; then
+  "$GO_BIN" mod tidy
+fi
 "$GO_BIN" test ./internal/mesh/...
 
 if [[ "$MODE" == "--all" || "$MODE" == "--host" ]]; then
@@ -40,6 +56,15 @@ if [[ "$MODE" == "--all" || "$MODE" == "--host" ]]; then
 fi
 
 if [[ "$MODE" == "--all" || "$MODE" == "--ios" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
+  if ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1; then
+    if [[ "$MODE" == "--ios" ]]; then
+      echo "Error: Xcode iOS SDK not found (install Xcode and run sudo xcode-select -s /Applications/Xcode.app)." >&2
+      exit 1
+    fi
+    echo "==> [skip] Xcode iOS SDK not detected; skipping iOS static C-archives."
+    exit 0
+  fi
+
   IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
   IOS_CC="$(xcrun --sdk iphoneos -f clang)"
   mkdir -p "$TSNET_DIR/build/ios-device"

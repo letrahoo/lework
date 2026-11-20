@@ -17,6 +17,8 @@ lework/
 ├─ hub/                        # Host Hub 守护进程 (多引擎适配、TUI 审批桥接、历史会话接管、增量用量扫描与快照)
 ├─ app/                        # KMP + Compose Multiplatform 客户端 (shared / iosApp / androidApp)
 └─ scripts/
+   ├─ setup.sh                 # 一键初始化：依赖安装 + 协议生成 + tsnet 桥接编译 + 全局命令挂载
+   ├─ build-tsnet.sh           # 编译主机侧 lework-tsnet 与 iOS C-Archive 静态库
    ├─ ios-install.sh           # XcodeGen + 自动签名验签 + devicectl 真机/模拟器构建安装
    ├─ deploy-master-slave.sh   # 本机 LaunchAgent 与可选 SSH 反向隧道中继一键部署
    ├─ tcp-relay.mjs            # 轻量无状态 TCP 密文中继转发服务
@@ -25,30 +27,34 @@ lework/
 
 ## 快速开始
 
-### 1. 协议生成与四层防回归门禁
+### 1. 一键初始化与四层防回归门禁
 
 ```bash
-# 一键执行：协议生成 -> TS 类型检查 -> Hub 单测与集成测试 -> KMP 状态机与无头 Compose UI 测试
+# 首次克隆一键初始化（幂等）：安装依赖 -> 生成协议 -> 编译内嵌 tsnet 模块 -> 注册全局 lework / hub 命令
+pnpm setup
+
+# 一键执行门禁：协议生成 -> TS 类型检查 -> Hub 单测与集成测试 -> KMP 状态机与无头 Compose UI 测试
 pnpm verify
 
 # 单独执行高频 UI 自动化压测
 pnpm stress:ui
 ```
 
-### 2. 启动本机 Host Hub 与查看配对令牌
+### 2. 启动本机 Host Hub 与设备配对（`pnpm setup` 后可在任意目录执行）
 
 ```bash
-# 查看本机已安装的 Agent 引擎状态
-pnpm --filter @lework/hub cli engines
+# 查看本机已安装的 Agent 引擎与模型通道状态
+lework engines
+lework status
 
 # 生成一次性扫码配对二维码 (lework://pair，5 分钟单次有效)
-pnpm --filter @lework/hub cli pair
+lework pair
 
 # 可选：启用内置 Tailscale 同账号组网（支持 --control-url 接入自建 Headscale）
-pnpm --filter @lework/hub cli tsnet login
+lework tsnet login
 
 # 前台启动 Hub 守护进程 (默认 HTTPS/WSS 监听 0.0.0.0:64450，自动广播 _lework._tcp.local)
-pnpm hub
+lework serve
 ```
 
 > **中继与认证配置（可选，全部存放在本机 `~/.lework/`，不入库）**：
