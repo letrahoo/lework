@@ -10,7 +10,7 @@ import {
   type ReasoningEffort,
   type SessionMeta,
   type SessionMode,
-} from '@qprc/protocol'
+} from '@lework/protocol'
 import type { EngineAdapter, EngineSession } from './engines/types.ts'
 import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
@@ -132,14 +132,9 @@ export class SessionManager {
     if (!adapter) {
       throw new HubRpcError(ErrorCode.EngineUnavailable, `Unknown engine "${params.engineId}"`)
     }
-    const status = await adapter.probe()
-    if (!status.ready) {
-      throw new HubRpcError(
-        ErrorCode.EngineUnavailable,
-        status.detail ?? `Engine "${adapter.displayName}" is not ready`,
-      )
-    }
 
+    // Enforce compliance & provider/model guardrails BEFORE probing local CLI binaries so invalid
+    // provider combinations deterministically reject with InvalidParams on any host.
     let extraEnv: NodeJS.ProcessEnv = {}
     if (this.registry) {
       try {
@@ -150,6 +145,14 @@ export class SessionManager {
           err instanceof Error ? err.message : String(err),
         )
       }
+    }
+
+    const status = await adapter.probe()
+    if (!status.ready) {
+      throw new HubRpcError(
+        ErrorCode.EngineUnavailable,
+        status.detail ?? `Engine "${adapter.displayName}" is not ready`,
+      )
     }
 
     const realCwd = resolveAllowedWorkspacePath(params.cwd, this.workspaceRoots)
@@ -273,6 +276,19 @@ export class SessionManager {
       this.callbacks.onSessionUpdated(managed.meta)
     }
 
+    // Auto-snapshot working tree right before launching a new turn so the user can always roll back
+    try {
+      const summary = text.replace(/\s+/g, ' ').trim().slice(0, 18)
+      this.checkpoints.create(
+        sessionId,
+        managed.meta.cwd,
+        summary ? `对话前自动快照 · ${summary}` : '对话前自动快照',
+        { deduplicateUnchanged: true },
+      )
+    } catch {
+      // Non-git directories gracefully skip checkpointing
+    }
+
     this.sleepInhibitor.acquire()
     void managed.handle
       .prompt(turnId, text)
@@ -344,19 +360,33 @@ export class SessionManager {
     this.sessions.delete(sessionId)
   }
 
+  private resolveSessionWorkspaceCwd(sessionId: string): string {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      return resolveAllowedWorkspacePath(managed.meta.cwd, this.workspaceRoots)
+    }
+    if (sessionId.startsWith('host:')) {
+      const hostEntry = this.hostInspector.getHostSession(sessionId)
+      if (hostEntry?.meta.cwd) {
+        return resolveAllowedWorkspacePath(hostEntry.meta.cwd, this.workspaceRoots)
+      }
+    }
+    throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+  }
+
   listCheckpoints(sessionId: string): CheckpointInfo[] {
-    this.requireSession(sessionId)
-    return this.checkpoints.list(sessionId)
+    const cwd = this.resolveSessionWorkspaceCwd(sessionId)
+    return this.checkpoints.list(sessionId, cwd)
   }
 
   createCheckpoint(sessionId: string, label?: string): CheckpointInfo {
-    const managed = this.requireSession(sessionId)
-    return this.checkpoints.create(sessionId, managed.meta.cwd, label)
+    const cwd = this.resolveSessionWorkspaceCwd(sessionId)
+    return this.checkpoints.create(sessionId, cwd, label)
   }
 
   restoreCheckpoint(sessionId: string, checkpointId: string): void {
-    const managed = this.requireSession(sessionId)
-    this.checkpoints.restore(sessionId, managed.meta.cwd, checkpointId)
+    const cwd = this.resolveSessionWorkspaceCwd(sessionId)
+    this.checkpoints.restore(sessionId, cwd, checkpointId)
   }
 
   subscribeSnapshot(
@@ -394,6 +424,12 @@ export class SessionManager {
   retainHostWatch(sessionId: string): void {
     if (sessionId.startsWith('host:') && !this.sessions.has(sessionId)) {
       this.hostInspector.retainWatch(sessionId)
+    }
+  }
+
+  async syncHostTerminalNow(sessionId: string): Promise<void> {
+    if (sessionId.startsWith('host:') && !this.sessions.has(sessionId)) {
+      await this.hostInspector.syncTerminalNow(sessionId)
     }
   }
 

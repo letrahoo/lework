@@ -1,12 +1,25 @@
+@file:OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+
 package dev.lework.store
 
 import dev.lework.platform.*
 import dev.lework.protocol.*
+import dev.lework.security.HubAttestation
+import dev.lework.security.HubTrust
+import dev.lework.security.hubBaseUrlOfWs
+import dev.lework.security.hubWsUrlOf
+import dev.lework.security.isSafeExternalLink
+import dev.lework.security.isTrustedOAuthUrl
+import dev.lework.security.normalizeHubBaseUrl
 import dev.lework.transport.HubRpcClient
 import dev.lework.transport.HubTransport
 import dev.lework.transport.RpcCallException
+import kotlin.io.encoding.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,306 +28,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
-
-enum class ConnectionStatus {
-    DISCOVERING,
-    NEEDS_FEISHU_AUTH,
-    CONNECTING,
-    RECONNECTING,
-    CONNECTED,
-    ERROR,
-}
-
-sealed interface ChatTimelineItem {
-    val id: String
-
-    data class User(
-        override val id: String,
-        val text: String,
-    ) : ChatTimelineItem
-
-    data class Reasoning(
-        override val id: String,
-        val text: String,
-    ) : ChatTimelineItem
-
-    data class Assistant(
-        override val id: String,
-        val text: String,
-    ) : ChatTimelineItem
-
-    data class Tool(
-        override val id: String,
-        val title: String,
-        val kind: ToolKind,
-        val status: ToolStatus,
-        val input: String? = null,
-        val output: String? = null,
-    ) : ChatTimelineItem
-
-    data class Notice(
-        override val id: String,
-        val text: String,
-        val isError: Boolean = false,
-    ) : ChatTimelineItem
-}
-
-data class SessionTranscript(
-    val earliestSeq: Int? = null,
-    val lastSeq: Int = -1,
-    val hasMoreBefore: Boolean = false,
-    val loadingOlder: Boolean = false,
-    val items: List<ChatTimelineItem> = emptyList(),
-    val pendingPermissions: List<AgentEvent.PermissionRequested> = emptyList(),
-    val planEntries: List<PlanEntry> = emptyList(),
-    val inputTokens: Int = 0,
-    val outputTokens: Int = 0,
-)
-
-private fun parseEffort(raw: String): ReasoningEffort = when (raw.lowercase()) {
-    "low" -> ReasoningEffort.LOW
-    "high" -> ReasoningEffort.HIGH
-    "xhigh" -> ReasoningEffort.XHIGH
-    "max" -> ReasoningEffort.MAX
-    else -> ReasoningEffort.MEDIUM
-}
-
-private fun effortToWire(e: ReasoningEffort): String = when (e) {
-    ReasoningEffort.LOW -> "low"
-    ReasoningEffort.MEDIUM -> "medium"
-    ReasoningEffort.HIGH -> "high"
-    ReasoningEffort.XHIGH -> "xhigh"
-    ReasoningEffort.MAX -> "max"
-}
-
-private fun parseMode(raw: String): SessionMode = when (raw.lowercase()) {
-    "auto" -> SessionMode.AUTO
-    "acceptedits", "auto-edit", "auto_edit" -> SessionMode.ACCEPT_EDITS
-    "plan" -> SessionMode.PLAN
-    "bypasspermissions", "yolo" -> SessionMode.BYPASS_PERMISSIONS
-    "default", "manual" -> SessionMode.DEFAULT
-    // Legacy `"ask"` was written by older builds as hardcoded default; upgrade to computer default (`AUTO`)
-    else -> SessionMode.AUTO
-}
-
-private fun modeToWire(m: SessionMode): String = when (m) {
-    SessionMode.DEFAULT -> "default"
-    SessionMode.ACCEPT_EDITS -> "acceptEdits"
-    SessionMode.PLAN -> "plan"
-    SessionMode.AUTO -> "auto"
-    SessionMode.BYPASS_PERMISSIONS -> "bypassPermissions"
-}
-
-data class ConsoleUiState(
-    val hasEnteredWorkspace: Boolean = false,
-    val discoveredBaseUrl: String = "",
-    val discoveredWsUrl: String = "",
-    val feishuEnabled: Boolean = false,
-    val feishuUserName: String? = loadSavedFeishuUserName(),
-    val feishuChallenge: FeishuStartResult? = null,
-    val feishuStatusText: String = "正在发现可用主机节点…",
-    val connectionStatus: ConnectionStatus = ConnectionStatus.DISCOVERING,
-    val connectionError: String? = null,
-    val hub: HubInfo? = null,
-    val slaves: List<SlaveInfo> = emptyList(),
-    val engines: List<EngineInfo> = emptyList(),
-    val providers: List<ProviderInfo> = emptyList(),
-    val workspaces: List<Workspace> = emptyList(),
-    val selectedEngineId: String = "claude",
-    val selectedProviderId: String? = null,
-    val selectedModelId: String? = null,
-    val selectedEffort: ReasoningEffort = ReasoningEffort.MEDIUM,
-    val selectedMode: SessionMode = SessionMode.AUTO,
-    val selectedWorkspacePath: String = "",
-    val selectedExtraWorkspaces: List<String> = emptyList(),
-    val drawerEngineFilter: String? = null,
-    val sessions: List<SessionMeta> = emptyList(),
-    val activeSessionId: String? = null,
-    val transcripts: Map<String, SessionTranscript> = emptyMap(),
-    val checkpoints: List<CheckpointInfo> = emptyList(),
-    val currentBrowsePath: String = "",
-    val dirEntries: List<FsEntry> = emptyList(),
-    val openedFilePath: String? = null,
-    val openedFileContent: String? = null,
-) {
-    val activeSession: SessionMeta?
-        get() = sessions.firstOrNull { it.id == activeSessionId }
-
-    val activeTranscript: SessionTranscript
-        get() = activeSessionId?.let { transcripts[it] } ?: SessionTranscript()
-
-    val selectedEngine: EngineInfo?
-        get() = engines.firstOrNull { it.id == selectedEngineId }
-
-    val availableModelsForEngine: List<EngineModelSpec>
-        get() = selectedEngine?.models.orEmpty()
-
-    val selectedModelSpec: EngineModelSpec?
-        get() = availableModelsForEngine.firstOrNull { it.id == selectedModelId }
-            ?: availableModelsForEngine.firstOrNull()
-
-    val availableEfforts: List<ReasoningEffort>
-        get() = selectedModelSpec?.efforts?.ifEmpty { null }
-            ?: listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH)
-
-    val availableModes: List<SessionMode>
-        get() = selectedEngine?.supportedModes?.ifEmpty { null }
-            ?: listOf(SessionMode.AUTO, SessionMode.ACCEPT_EDITS, SessionMode.PLAN, SessionMode.DEFAULT)
-
-    val activeWorkspaces: List<String>
-        get() {
-            val sess = activeSession
-            return if (sess != null) {
-                val fromMeta = sess.workspaces?.filter { it.isNotBlank() }.orEmpty()
-                if (fromMeta.isNotEmpty()) fromMeta.distinct()
-                else listOfNotNull(sess.cwd.takeIf { it.isNotBlank() })
-            } else {
-                (listOf(selectedWorkspacePath) + selectedExtraWorkspaces)
-                    .filter { it.isNotBlank() }
-                    .distinct()
-            }
-        }
-
-    val workspaceDisplayName: String
-        get() {
-            val list = activeWorkspaces
-            val primary = list.firstOrNull().orEmpty()
-            if (primary.isBlank()) return "选择工作区"
-            val shortName = primary.trimEnd('/').substringAfterLast('/').ifBlank { primary }
-            return if (list.size > 1) "$shortName +${list.size - 1}" else shortName
-        }
-
-    val runningSessions: List<SessionMeta>
-        get() = sessions
-            .filter {
-                it.state == SessionState.RUNNING || it.state == SessionState.WAITING_PERMISSION
-            }
-            .sortedBy { if (it.state == SessionState.WAITING_PERMISSION) 0 else 1 }
-
-    val filteredHistorySessions: List<SessionMeta>
-        get() {
-            val base = if (drawerEngineFilter == null) sessions
-            else sessions.filter { it.engineId == drawerEngineFilter }
-            return base.filterNot {
-                it.state == SessionState.RUNNING || it.state == SessionState.WAITING_PERMISSION
-            }
-        }
-}
-
-fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTranscript {
-    if (event is AgentEvent.PermissionRequested) {
-        val perms = if (current.pendingPermissions.none { it.requestId == event.requestId }) {
-            current.pendingPermissions + event
-        } else {
-            current.pendingPermissions
-        }
-        val nextSeq = if (event.requestId.startsWith("tty_perm_")) {
-            current.lastSeq
-        } else {
-            maxOf(current.lastSeq, event.seq)
-        }
-        return current.copy(lastSeq = nextSeq, pendingPermissions = perms)
-    }
-    if (event is AgentEvent.PermissionResolved) {
-        val perms = current.pendingPermissions.filterNot { it.requestId == event.requestId }
-        val nextSeq = if (event.requestId.startsWith("tty_perm_")) {
-            current.lastSeq
-        } else {
-            maxOf(current.lastSeq, event.seq)
-        }
-        return current.copy(lastSeq = nextSeq, pendingPermissions = perms)
-    }
-
-    if (event.seq <= current.lastSeq) return current
-
-    val items = current.items.toMutableList()
-    val perms = current.pendingPermissions.toMutableList()
-    var plans = current.planEntries
-    var inTok = current.inputTokens
-    var outTok = current.outputTokens
-
-    when (event) {
-        is AgentEvent.UserMessage -> {
-            items.add(ChatTimelineItem.User(id = event.messageId, text = event.text))
-        }
-        is AgentEvent.ReasoningDelta -> {
-            val idx = items.indexOfLast { it is ChatTimelineItem.Reasoning && it.id == event.messageId }
-            if (idx >= 0) {
-                val prev = items[idx] as ChatTimelineItem.Reasoning
-                items[idx] = prev.copy(text = prev.text + event.text)
-            } else {
-                items.add(ChatTimelineItem.Reasoning(id = event.messageId, text = event.text))
-            }
-        }
-        is AgentEvent.AssistantDelta -> {
-            val idx = items.indexOfLast { it is ChatTimelineItem.Assistant && it.id == event.messageId }
-            if (idx >= 0) {
-                val prev = items[idx] as ChatTimelineItem.Assistant
-                items[idx] = prev.copy(text = prev.text + event.text)
-            } else {
-                items.add(ChatTimelineItem.Assistant(id = event.messageId, text = event.text))
-            }
-        }
-        is AgentEvent.ToolCall -> {
-            val idx = items.indexOfLast { it is ChatTimelineItem.Tool && it.id == event.toolCallId }
-            val toolItem = ChatTimelineItem.Tool(
-                id = event.toolCallId,
-                title = event.title,
-                kind = event.kind,
-                status = event.status,
-                input = event.input,
-                output = event.output,
-            )
-            if (idx >= 0) items[idx] = toolItem else items.add(toolItem)
-        }
-        is AgentEvent.ToolUpdate -> {
-            val idx = items.indexOfLast { it is ChatTimelineItem.Tool && it.id == event.toolCallId }
-            if (idx >= 0) {
-                val prev = items[idx] as ChatTimelineItem.Tool
-                items[idx] = prev.copy(
-                    title = event.title ?: prev.title,
-                    status = event.status ?: prev.status,
-                    output = event.output ?: prev.output,
-                )
-            }
-        }
-        is AgentEvent.PermissionRequested -> {
-            if (perms.none { it.requestId == event.requestId }) {
-                perms.add(event)
-            }
-        }
-        is AgentEvent.PermissionResolved -> {
-            perms.removeAll { it.requestId == event.requestId }
-        }
-        is AgentEvent.PlanUpdated -> {
-            plans = event.entries
-        }
-        is AgentEvent.Usage -> {
-            inTok += event.inputTokens ?: 0
-            outTok += event.outputTokens ?: 0
-        }
-        is AgentEvent.ErrorEvent -> {
-            items.add(
-                ChatTimelineItem.Notice(
-                    id = "err_${event.seq}",
-                    text = event.message,
-                    isError = true,
-                ),
-            )
-        }
-        is AgentEvent.SessionStateChanged,
-        is AgentEvent.TurnDone -> Unit
-    }
-
-    return current.copy(
-        lastSeq = event.seq,
-        items = items,
-        pendingPermissions = perms,
-        planEntries = plans,
-        inputTokens = inTok,
-        outputTokens = outTok,
-    )
-}
+import kotlinx.coroutines.withTimeoutOrNull
 
 class ConsoleStore(
     private val scope: CoroutineScope,
@@ -334,11 +48,13 @@ class ConsoleStore(
     )
     val state: StateFlow<ConsoleUiState> = _state.asStateFlow()
     private var discoverJob: Job? = null
-    private var feishuPollJob: Job? = null
+    private var oauthPollJob: Job? = null
+    private var tsnetPollJob: Job? = null
     private var resumeJob: Job? = null
     private var subscribedSessionId: String? = null
     private var subscribeSeqToken: Long = 0L
     private var userManuallyPickedMode: Boolean = false
+    private var manualPairingMode: Boolean = false
 
     private fun switchSubscriptionTo(nextSessionId: String?) {
         val prev = subscribedSessionId
@@ -353,8 +69,16 @@ class ConsoleStore(
 
     init {
         scope.launch {
+            observeIncomingPairingUri().collect { uri ->
+                if (!uri.isNullOrBlank()) {
+                    consumeIncomingPairingUri()
+                    redeemPairingInput(uri)
+                }
+            }
+        }
+        scope.launch {
             observeBonjourHubUrls().collect { urls ->
-                if (urls.isNotEmpty() && !_state.value.hasEnteredWorkspace && _state.value.connectionStatus == ConnectionStatus.ERROR) {
+                if (!manualPairingMode && urls.isNotEmpty() && !_state.value.hasEnteredWorkspace && _state.value.connectionStatus == ConnectionStatus.ERROR) {
                     bootstrapOrConnect()
                 }
             }
@@ -368,6 +92,8 @@ class ConsoleStore(
                     wasBackground = false
                     if (_state.value.hasEnteredWorkspace) {
                         verifyAndResumeForegroundSession()
+                    } else if (_state.value.tsnetLoggingIn) {
+                        checkTsnetAfterForegroundReturn()
                     }
                 }
             }
@@ -391,14 +117,29 @@ class ConsoleStore(
                     } else {
                         s.selectedMode
                     }
-                    s.copy(sessions = nextList, selectedMode = syncMode)
+                    val syncModel = if (s.activeSessionId == updated.id && !updated.model.isNullOrBlank()) {
+                        updated.model
+                    } else {
+                        s.selectedModelId
+                    }
+                    val syncEffort = if (s.activeSessionId == updated.id && updated.reasoningEffort != null) {
+                        updated.reasoningEffort
+                    } else {
+                        s.selectedEffort
+                    }
+                    s.copy(
+                        sessions = nextList,
+                        selectedMode = syncMode,
+                        selectedModelId = syncModel,
+                        selectedEffort = syncEffort,
+                    )
                 }
             }
         }
         scope.launch {
             rpc.disconnected.collect { reason ->
                 val cur = _state.value
-                if (cur.hasEnteredWorkspace) {
+                if (!manualPairingMode && cur.hasEnteredWorkspace) {
                     if (!observeAppForeground().value) {
                         // iOS background / screen locked: keep workspace & Session untouched until foreground return
                         _state.update {
@@ -439,120 +180,598 @@ class ConsoleStore(
         )
     }
 
+    private fun upsertPairedHost(
+        hub: HubInfo,
+        fingerprint: String?,
+        endpoints: List<String>,
+        userName: String,
+    ) {
+        val cleanEndpoints = endpoints
+            .map { normalizeHubBaseUrl(it) }
+            .filter { it.isNotBlank() && !it.contains("127.0.0.1") }
+            .distinct()
+            .take(8)
+        val existing = loadPairedHosts()
+        val prev = existing.firstOrNull { it.hubId == hub.id }
+        val mergedEndpoints = (cleanEndpoints + prev?.endpoints.orEmpty()).distinct().take(8)
+        val updated = PairedHost(
+            hubId = hub.id,
+            name = hub.name,
+            fingerprint = fingerprint?.lowercase() ?: prev?.fingerprint.orEmpty(),
+            endpoints = mergedEndpoints,
+            userName = userName,
+            lastConnectedAt = epochMillis(),
+        )
+        val nextList = (listOf(updated) + existing.filterNot { it.hubId == hub.id }).take(12)
+        savePairedHosts(nextList)
+        saveActiveHostId(hub.id)
+        _state.update { it.copy(pairedHosts = nextList, activeHostId = hub.id) }
+    }
+
     fun bootstrapOrConnect() {
+        bootstrapOrConnectToHost(loadActiveHostId())
+    }
+
+    private fun bootstrapOrConnectToHost(preferredHubId: String?) {
+        manualPairingMode = false
         discoverJob?.cancel()
-        feishuPollJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        resumeJob?.cancel()
         startBonjourDiscovery()
         _state.update {
             it.copy(
                 connectionStatus = ConnectionStatus.DISCOVERING,
                 connectionError = null,
-                feishuStatusText = "正在自动发现同 Wi‑Fi 局域网或中继主机…",
+                pairedHosts = loadPairedHosts(),
+                activeHostId = preferredHubId,
+                tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
+                authStatusText = "正在自动发现同 Wi‑Fi 局域网、Tailscale 内网或已配对主机…",
             )
         }
         discoverJob = scope.launch {
+            if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
+                withTimeoutOrNull(2_000L) {
+                    runCatching {
+                        val st = startMobileTsnet(loadSavedTsnetControlUrl())
+                        _state.update { it.copy(tsnetStatus = st) }
+                    }
+                }
+            }
             val found = rpc.discoverIntranetHub(
                 candidates = candidateHubHttpUrls(),
                 dynamicCandidates = observeBonjourHubUrls(),
+                waitWindowMs = 7_000L,
+                preferredHubId = preferredHubId,
             )
             if (found == null) {
                 _state.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = "未发现可用主机，请确认处于同一路由器 Wi‑Fi，或在下方手动配置主机/中继地址",
+                        connectionError = "未发现可用主机：请确认与主机处于同一 Wi‑Fi，或使用下方「扫码配对」/「Tailscale 同账号组网」接入",
                     )
                 }
                 return@launch
             }
 
-            if (!found.baseUrl.contains("127.0.0.1")) {
-                saveLastGoodHubUrl(found.baseUrl)
-            }
-            if (found.discover.relayUrls.isNotEmpty()) {
-                saveRelayUrls((loadSavedRelayUrls() + found.discover.relayUrls).distinct())
-            }
-
+            // Nothing learned from (unauthenticated) discovery is persisted; addresses are saved
+            // only after the Hub has proven its identity and accepted our token (connectWithToken).
             _state.update {
                 it.copy(
                     discoveredBaseUrl = found.baseUrl,
                     discoveredWsUrl = found.wsUrl,
-                    feishuEnabled = found.discover.feishuEnabled,
+                    oauthEnabled = found.discover.oauthEnabled,
+                    oauthProvider = found.discover.oauthProvider,
+                    oauthDisplayName = found.discover.oauthDisplayName,
                     hub = found.discover.hub,
                 )
             }
 
-            val cachedToken = loadSavedFeishuToken()
+            val hostToken = loadHostAccessToken(found.discover.hub.id)
+            val cachedToken = hostToken ?: loadSavedAccessToken()
             if (!cachedToken.isNullOrBlank()) {
                 val ok = connectWithToken(found.wsUrl, cachedToken)
                 if (ok) return@launch
-                if (!loadSavedFeishuToken().isNullOrBlank()) {
+                val stillHasToken =
+                    !(loadHostAccessToken(found.discover.hub.id) ?: loadSavedAccessToken()).isNullOrBlank()
+                if (stillHasToken && !found.discover.tailscaleSameUser) {
                     // Network/transport failure rather than invalid token: stay on retry screen without wiping token
                     return@launch
                 }
             }
 
-            if (found.discover.feishuEnabled) {
-                startFeishuAuthFlow(found.baseUrl, found.wsUrl)
+            // Zero-touch Tailscale same-account handshake: when both ends belong to the exact same
+            // Tailscale user, automatically verify, mint a revocable device token, pin TLS, and enter!
+            if (found.discover.tailscaleSameUser) {
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.CONNECTING,
+                        authStatusText = "已识别同账号 Tailscale 主机 ${found.discover.hub.name}，正在自动握手建联…",
+                    )
+                }
+                val hs = runCatching {
+                    rpc.authenticateViaTailscale(found.baseUrl, platformName())
+                }.getOrNull()
+                if (hs != null) {
+                    val userName = hs.user?.name ?: found.discover.tailscaleUser ?: "Owner"
+                    saveAuthSession(hs.accessToken, userName)
+                    saveHostAccessToken(hs.hub.id, hs.accessToken)
+                    upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
+                    _state.update { it.copy(authUserName = userName) }
+                    val ok = connectWithToken(found.wsUrl, hs.accessToken)
+                    if (ok) return@launch
+                }
+            }
+
+            if (found.discover.oauthEnabled) {
+                startOAuthLoginFlow(found.baseUrl, found.wsUrl)
             } else {
                 _state.update {
                     it.copy(
-                        connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
-                        feishuChallenge = null,
-                        feishuStatusText = "已发现主机 ${found.discover.hub.name}，请输入访问令牌连接",
+                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                        oauthChallenge = null,
+                        authStatusText = "已发现主机 ${found.discover.hub.name}，请扫码配对、Tailscale 同账号组网或输入令牌连接",
                     )
                 }
             }
         }
     }
 
+    fun startMobileTsnetLogin(customControlUrl: String? = null) {
+        if (!isMobileTsnetAvailable()) {
+            _state.update {
+                it.copy(
+                    connectionError = "当前设备客户端未内置 Tailscale 模块，请使用扫码配对或手动地址连接",
+                )
+            }
+            return
+        }
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        val cleanCtrl = customControlUrl?.trim()?.takeIf { it.isNotEmpty() }
+        saveTsnetEnabled(true, cleanCtrl ?: "")
+        _state.update {
+            it.copy(
+                tsnetLoggingIn = true,
+                connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                connectionError = null,
+                authStatusText = "正在启动内置 Tailscale 组网节点…",
+            )
+        }
+        tsnetPollJob = scope.launch {
+            val st = loginMobileTsnet(cleanCtrl)
+            _state.update { it.copy(tsnetStatus = st) }
+            if (st.backendState == "Running") {
+                _state.update { it.copy(tsnetLoggingIn = false) }
+                searchAndConnectViaTsnet()
+                return@launch
+            }
+            val authUrl = st.authUrl
+            if (!authUrl.isNullOrBlank() && isSafeExternalLink(authUrl)) {
+                _state.update {
+                    it.copy(
+                        authStatusText = "请在浏览器登录与电脑主机相同的 Tailscale 账号，完成后自动发现并建联",
+                    )
+                }
+                openExternalUrl(authUrl)
+            } else if (!st.error.isNullOrBlank()) {
+                _state.update {
+                    it.copy(
+                        tsnetLoggingIn = false,
+                        connectionStatus = ConnectionStatus.ERROR,
+                        connectionError = "Tailscale 启动失败: ${st.error}",
+                    )
+                }
+                return@launch
+            }
+
+            while (isActive) {
+                delay(2_000L)
+                val cur = queryMobileTsnetStatus()
+                _state.update { it.copy(tsnetStatus = cur) }
+                if (cur.backendState == "Running") {
+                    _state.update { it.copy(tsnetLoggingIn = false) }
+                    searchAndConnectViaTsnet()
+                    break
+                }
+            }
+        }
+    }
+
+    private fun checkTsnetAfterForegroundReturn() {
+        scope.launch {
+            val cur = queryMobileTsnetStatus()
+            _state.update { it.copy(tsnetStatus = cur) }
+            if (cur.backendState == "Running") {
+                tsnetPollJob?.cancel()
+                _state.update { it.copy(tsnetLoggingIn = false) }
+                searchAndConnectViaTsnet()
+            }
+        }
+    }
+
+    /**
+     * Exclusively searches untagged Tailscale peers under the exact same account via `tsnet`,
+     * probes their `:64450` Hub endpoints directly (never hijacked by LAN / OAuth / old relays),
+     * and performs zero-touch same-account handshake.
+     */
+    fun searchAndConnectViaTsnet() {
+        if (!isMobileTsnetAvailable()) return
+        if (discoverJob?.isActive == true && _state.value.authStatusText.contains("Tailscale")) {
+            return
+        }
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+
+        discoverJob = scope.launch {
+            _state.update {
+                it.copy(
+                    tsnetLoggingIn = false,
+                    connectionStatus = ConnectionStatus.CONNECTING,
+                    connectionError = null,
+                    oauthChallenge = null,
+                    authStatusText = "正在同步 Tailscale 同账号节点列表…",
+                )
+            }
+
+            var status = startMobileTsnet(loadSavedTsnetControlUrl())
+            _state.update { it.copy(tsnetStatus = status) }
+            if (status.backendState != "Running") {
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                        authStatusText = "Tailscale 尚未完成登录，请点击下方按钮登录",
+                    )
+                }
+                return@launch
+            }
+
+            for (attempt in 0 until 4) {
+                if (status.peers.any { !it.localProxyUrl.isNullOrBlank() }) break
+                delay(1_200L)
+                status = queryMobileTsnetStatus()
+                _state.update { it.copy(tsnetStatus = status) }
+            }
+
+            val candidates = status.peers.filter { !it.localProxyUrl.isNullOrBlank() }
+            if (candidates.isEmpty()) {
+                val acct = status.loginName ?: "当前账号"
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.ERROR,
+                        connectionError = "Tailscale ($acct) 下暂未发现其他同账号设备。请在电脑终端执行：lework tsnet login 并登录同一账号",
+                    )
+                }
+                return@launch
+            }
+
+            val peerSummary = candidates.take(4).joinToString(", ") { it.hostName }
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.CONNECTING,
+                    authStatusText = "正在通过 Tailscale 探测同账号节点 ($peerSummary) 并握手…",
+                )
+            }
+
+            val probed = coroutineScope {
+                candidates.map { peer ->
+                    async {
+                        val proxyUrl = peer.localProxyUrl ?: return@async null
+                        val ep = rpc.probeDirectEndpoint(proxyUrl, timeoutMs = 10_000L)
+                        if (ep != null) peer to ep else null
+                    }
+                }.mapNotNull { it.await() }
+            }
+
+            if (probed.isEmpty()) {
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.ERROR,
+                        connectionError = "已发现同账号节点 [$peerSummary]，但未检测到开启 Tailscale 组网的 Lework 主机服务。请在目标电脑执行：lework tsnet login",
+                    )
+                }
+                return@launch
+            }
+
+            val (_, chosen) = probed.firstOrNull { it.second.discover.tailscaleSameUser } ?: probed.first()
+            _state.update {
+                it.copy(
+                    discoveredBaseUrl = chosen.baseUrl,
+                    discoveredWsUrl = chosen.wsUrl,
+                    oauthEnabled = chosen.discover.oauthEnabled,
+                    oauthProvider = chosen.discover.oauthProvider,
+                    oauthDisplayName = chosen.discover.oauthDisplayName,
+                    hub = chosen.discover.hub,
+                )
+            }
+
+            var lastErr: String? = null
+            if (chosen.discover.tailscaleSameUser) {
+                _state.update {
+                    it.copy(
+                        authStatusText = "已验证同账号主机 ${chosen.discover.hub.name}，正在签发设备凭证…",
+                    )
+                }
+                runCatching {
+                    rpc.authenticateViaTailscale(chosen.baseUrl, platformName())
+                }.onSuccess { hs ->
+                    val userName = hs.user?.name ?: chosen.discover.tailscaleUser ?: status.displayName ?: "Owner"
+                    saveAuthSession(hs.accessToken, userName)
+                    saveHostAccessToken(hs.hub.id, hs.accessToken)
+                    upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
+                    _state.update { it.copy(authUserName = userName) }
+                    if (connectWithToken(chosen.wsUrl, hs.accessToken)) {
+                        return@launch
+                    }
+                }.onFailure { err ->
+                    lastErr = err.message
+                }
+            }
+
+            val existingToken = loadHostAccessToken(chosen.discover.hub.id) ?: loadSavedAccessToken()
+            if (!existingToken.isNullOrBlank()) {
+                if (connectWithToken(chosen.wsUrl, existingToken)) {
+                    return@launch
+                }
+            }
+
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = lastErr
+                        ?: "已连通主机 ${chosen.discover.hub.name}，但主机端未开启同账号校验，请在电脑执行：lework tsnet login",
+                )
+            }
+        }
+    }
+
+    fun logoutMobileTsnetAccount() {
+        tsnetPollJob?.cancel()
+        saveTsnetEnabled(false)
+        scope.launch {
+            val st = logoutMobileTsnet()
+            _state.update { it.copy(tsnetStatus = st, tsnetLoggingIn = false) }
+        }
+    }
+
+    fun scanQrAndPair() {
+        if (!canScanQrCode()) return
+        requestQrCodeScan { scanned ->
+            if (!scanned.isNullOrBlank()) {
+                redeemPairingInput(scanned)
+            }
+        }
+    }
+
+    fun redeemPairingInput(rawInput: String) {
+        val payload = parsePairingPayload(rawInput)
+        if (payload == null) {
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = "无法识别配对信息，请在电脑主机运行 hub pair 后重新扫码",
+                )
+            }
+            return
+        }
+        val candidates = (payload.urls + listOf(payload.url))
+            .map { normalizeHubBaseUrl(it) }
+            .filter { it.isNotEmpty() }
+            .distinct()
+        if (candidates.isEmpty()) {
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = "配对二维码缺少有效主机地址",
+                )
+            }
+            return
+        }
+
+        manualPairingMode = false
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        resumeJob?.cancel()
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = false,
+                connectionStatus = ConnectionStatus.CONNECTING,
+                connectionError = null,
+                authStatusText = "正在与主机 ${payload.name.ifBlank { "Lework Hub" }} 验证指纹并建立安全连接…",
+            )
+        }
+        discoverJob = scope.launch {
+            var lastError: Throwable? = null
+            for (baseUrl in candidates) {
+                try {
+                    val auth = rpc.redeemPairingCode(
+                        baseUrl = baseUrl,
+                        pairCode = payload.pairCode,
+                        staticToken = payload.token,
+                        expectedFingerprint = payload.fp,
+                        deviceName = platformName(),
+                    )
+                    val userName = auth.user?.name ?: "Owner"
+                    saveAuthSession(auth.accessToken, userName)
+                    saveHostAccessToken(auth.hub.id, auth.accessToken)
+                    upsertPairedHost(
+                        hub = auth.hub,
+                        fingerprint = auth.fingerprint,
+                        endpoints = auth.endpoints + candidates,
+                        userName = userName,
+                    )
+                    val wsUrl = hubWsUrlOf(baseUrl)
+                    _state.update {
+                        it.copy(
+                            discoveredBaseUrl = baseUrl,
+                            discoveredWsUrl = wsUrl,
+                            authUserName = userName,
+                            hub = auth.hub,
+                        )
+                    }
+                    if (connectWithToken(wsUrl, auth.accessToken)) {
+                        return@launch
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    lastError = t
+                }
+            }
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = lastError?.message ?: "配对连接失败，请确认手机可访问主机网络",
+                )
+            }
+        }
+    }
+
+    fun switchPairedHost(hubId: String) {
+        if (hubId == _state.value.hub?.id && _state.value.hasEnteredWorkspace) return
+        manualPairingMode = false
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        resumeJob?.cancel()
+        switchSubscriptionTo(null)
+        saveActiveHostId(hubId)
+        val hostToken = loadHostAccessToken(hubId)
+        val hostMeta = loadPairedHosts().firstOrNull { it.hubId == hubId }
+        if (!hostToken.isNullOrBlank()) {
+            saveAuthSession(hostToken, hostMeta?.userName ?: "Owner")
+        }
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = false,
+                connectionStatus = ConnectionStatus.DISCOVERING,
+                connectionError = null,
+                activeHostId = hubId,
+                activeSessionId = null,
+                authUserName = hostMeta?.userName ?: it.authUserName,
+            )
+        }
+        scope.launch {
+            rpc.disconnect()
+            bootstrapOrConnectToHost(hubId)
+        }
+    }
+
+    fun preparePairAnotherHost() {
+        manualPairingMode = true
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        resumeJob?.cancel()
+        switchSubscriptionTo(null)
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = false,
+                connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                oauthEnabled = false,
+                oauthChallenge = null,
+                connectionError = null,
+                discoveredBaseUrl = "",
+                discoveredWsUrl = "",
+                pairedHosts = loadPairedHosts(),
+                tsnetLoggingIn = false,
+                tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
+                authStatusText = "可扫码配对新主机、使用 Tailscale 同账号发现，或点击已配对主机切换",
+            )
+        }
+        scope.launch {
+            rpc.disconnect()
+            if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
+                runCatching {
+                    val st = startMobileTsnet(loadSavedTsnetControlUrl())
+                    if (manualPairingMode && !_state.value.hasEnteredWorkspace) {
+                        _state.update { it.copy(tsnetStatus = st) }
+                    }
+                }
+            }
+        }
+    }
+
+    fun removePairedHost(hubId: String) {
+        saveHostAccessToken(hubId, null)
+        val next = loadPairedHosts().filterNot { it.hubId == hubId }
+        savePairedHosts(next)
+        if (loadActiveHostId() == hubId) {
+            saveActiveHostId(next.firstOrNull()?.hubId)
+        }
+        _state.update {
+            it.copy(
+                pairedHosts = next,
+                activeHostId = loadActiveHostId(),
+            )
+        }
+    }
+
     fun connectManualEndpoint(rawHostOrUrl: String, rawToken: String) {
+        manualPairingMode = false
+        val candidatePair = when {
+            rawHostOrUrl.trim().startsWith("lework://", ignoreCase = true) ||
+                rawHostOrUrl.trim().startsWith("{") -> rawHostOrUrl.trim()
+            rawToken.trim().startsWith("lework://", ignoreCase = true) ||
+                rawToken.trim().startsWith("{") -> rawToken.trim()
+            else -> null
+        }
+        if (candidatePair != null) {
+            redeemPairingInput(candidatePair)
+            return
+        }
         val trimmedHost = rawHostOrUrl.trim().trimEnd('/')
-        val baseUrl = when {
-            trimmedHost.isEmpty() -> _state.value.discoveredBaseUrl
-            trimmedHost.startsWith("http://") || trimmedHost.startsWith("https://") -> trimmedHost
-            else -> "http://$trimmedHost"
+        val baseUrl = if (trimmedHost.isEmpty()) {
+            _state.value.discoveredBaseUrl
+        } else {
+            normalizeHubBaseUrl(trimmedHost)
         }
         if (baseUrl.isNotBlank() && !baseUrl.contains("127.0.0.1")) {
             saveLastGoodHubUrl(baseUrl)
-            saveRelayUrls((listOf(baseUrl) + loadSavedRelayUrls()).distinct())
+            saveRelayUrls((listOf(baseUrl) + loadSavedRelayUrls()).distinct().take(8))
         }
         val token = rawToken.trim()
         if (token.isNotEmpty()) {
-            saveFeishuSession(token, "Owner")
+            saveAuthSession(token, "Owner")
             if (baseUrl.isNotBlank()) {
-                val wsScheme = if (baseUrl.startsWith("https://")) "wss://" else "ws://"
-                val hostPort = baseUrl.removePrefix("https://").removePrefix("http://")
-                val wsUrl = "$wsScheme$hostPort/v1/ws"
+                val wsUrl = hubWsUrlOf(baseUrl)
+                _state.update { it.copy(discoveredBaseUrl = baseUrl, discoveredWsUrl = wsUrl) }
                 discoverJob?.cancel()
-                feishuPollJob?.cancel()
+                oauthPollJob?.cancel()
                 discoverJob = scope.launch {
                     connectWithToken(wsUrl, token)
                 }
                 return
             }
+        } else if (baseUrl.isNotBlank()) {
+            val wsUrl = hubWsUrlOf(baseUrl)
+            _state.update { it.copy(discoveredBaseUrl = baseUrl, discoveredWsUrl = wsUrl) }
         }
         bootstrapOrConnect()
     }
 
     /**
      * Triggered when returning to foreground on iOS after a lock-screen or background suspension.
-     * Silently verifies Feishu token permission & Hub reachability:
+     * Silently verifies token permission & Hub reachability:
      * - Pass: resumes the active Session context seamlessly and catches up missed events (`afterSeq`).
-     * - Fail: transitions back to the current version's reconnect / Feishu auth screen (`hasEnteredWorkspace = false`).
+     * - Fail: transitions back to the reconnect / auth screen (`hasEnteredWorkspace = false`).
      */
     fun verifyAndResumeForegroundSession() {
         if (resumeJob?.isActive == true) return
         resumeJob = scope.launch {
-            val cachedToken = loadSavedFeishuToken()
+            val cachedToken = loadSavedAccessToken()
             if (cachedToken.isNullOrBlank()) {
                 _state.update {
                     it.copy(
                         hasEnteredWorkspace = false,
-                        feishuUserName = null,
-                        connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                        authUserName = null,
+                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
                     )
                 }
-                startFeishuAuthFlow()
+                startOAuthLoginFlow()
                 return@launch
             }
 
@@ -568,18 +787,20 @@ class ConsoleStore(
                     return@launch
                 } catch (e: RpcCallException) {
                     if (e.code == ErrorCode.UNAUTHORIZED) {
-                        saveFeishuSession(null, null)
+                        saveAuthSession(null, null)
                         _state.update {
                             it.copy(
                                 hasEnteredWorkspace = false,
-                                feishuUserName = null,
-                                connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                                authUserName = null,
+                                connectionStatus = ConnectionStatus.NEEDS_AUTH,
                             )
                         }
-                        startFeishuAuthFlow()
+                        startOAuthLoginFlow()
                         return@launch
                     }
                     // Other RPC / zombie-socket failure falls through to full discovery & reconnect
+                } catch (ce: CancellationException) {
+                    throw ce
                 } catch (_: Throwable) {
                     // Zombie TCP socket after iOS sleep — fall through to reconnect
                 }
@@ -608,17 +829,13 @@ class ConsoleStore(
                 return@launch
             }
 
-            if (!found.baseUrl.contains("127.0.0.1")) {
-                saveLastGoodHubUrl(found.baseUrl)
-            }
-            if (found.discover.relayUrls.isNotEmpty()) {
-                saveRelayUrls((loadSavedRelayUrls() + found.discover.relayUrls).distinct())
-            }
             _state.update {
                 it.copy(
                     discoveredBaseUrl = found.baseUrl,
                     discoveredWsUrl = found.wsUrl,
-                    feishuEnabled = found.discover.feishuEnabled,
+                    oauthEnabled = found.discover.oauthEnabled,
+                    oauthProvider = found.discover.oauthProvider,
+                    oauthDisplayName = found.discover.oauthDisplayName,
                     hub = found.discover.hub,
                 )
             }
@@ -631,7 +848,7 @@ class ConsoleStore(
         }
     }
 
-    fun startFeishuAuthFlow(
+    fun startOAuthLoginFlow(
         baseUrl: String = _state.value.discoveredBaseUrl,
         wsUrl: String = _state.value.discoveredWsUrl,
     ) {
@@ -639,37 +856,38 @@ class ConsoleStore(
             bootstrapOrConnect()
             return
         }
-        feishuPollJob?.cancel()
+        oauthPollJob?.cancel()
+        val label = _state.value.oauthDisplayName ?: "SSO"
         _state.update {
             it.copy(
-                connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                connectionStatus = ConnectionStatus.NEEDS_AUTH,
                 connectionError = null,
-                feishuStatusText = "正在获取飞书授权码…",
+                authStatusText = "正在获取 $label 授权码…",
             )
         }
-        feishuPollJob = scope.launch {
+        oauthPollJob = scope.launch {
             try {
-                val challenge = rpc.startFeishuDeviceFlow(baseUrl)
+                val challenge = rpc.startOAuthDeviceFlow(baseUrl)
                 _state.update {
                     it.copy(
-                        feishuChallenge = challenge,
-                        feishuStatusText = "点击按钮在飞书中确认后将自动进入",
+                        oauthChallenge = challenge,
+                        authStatusText = "点击按钮在 $label 中确认后将自动进入",
                     )
                 }
                 while (isActive) {
                     delay(2_000L)
-                    val poll = runCatching { rpc.pollFeishuDeviceFlow(baseUrl, challenge.sid) }.getOrNull()
+                    val poll = runCatching { rpc.pollOAuthDeviceFlow(baseUrl, challenge.sid) }.getOrNull()
                         ?: continue
                     when (poll.status) {
                         "ok" -> {
                             val token = poll.accessToken ?: continue
                             val userName = poll.user?.name ?: "Owner"
-                            saveFeishuSession(token, userName)
+                            saveAuthSession(token, userName)
                             _state.update {
                                 it.copy(
-                                    feishuUserName = userName,
-                                    feishuChallenge = null,
-                                    feishuStatusText = "已验证，正在进入工作台…",
+                                    authUserName = userName,
+                                    oauthChallenge = null,
+                                    authStatusText = "已验证，正在进入工作台…",
                                 )
                             }
                             connectWithToken(wsUrl, token)
@@ -678,50 +896,68 @@ class ConsoleStore(
                         "forbidden" -> {
                             _state.update {
                                 it.copy(
-                                    feishuStatusText = "当前飞书账号 (${poll.name ?: ""}) 无权访问此主机",
+                                    authStatusText = "当前账号 (${poll.name ?: ""}) 无权访问此主机",
                                 )
                             }
                             break
                         }
                         "expired" -> {
-                            startFeishuAuthFlow(baseUrl, wsUrl)
+                            startOAuthLoginFlow(baseUrl, wsUrl)
                             break
                         }
                     }
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (t: Throwable) {
                 _state.update {
-                    it.copy(feishuStatusText = "飞书授权请求失败: ${t.message}")
+                    it.copy(authStatusText = "授权请求失败: ${t.message}")
                 }
             }
         }
     }
 
-    fun launchFeishuAppForAuth() {
-        val challenge = _state.value.feishuChallenge ?: return
-        openExternalUrl(challenge.applinkUrl)
+    fun launchOAuthApp() {
+        val challenge = _state.value.oauthChallenge ?: return
+        val target = challenge.appLaunchUrl.ifBlank { challenge.verifyUrl }
+        if (isTrustedOAuthUrl(target, _state.value.oauthProvider)) openExternalUrl(target)
     }
 
-    fun openFeishuBrowserFallback() {
-        val challenge = _state.value.feishuChallenge ?: return
-        openExternalUrl(challenge.verifyUrl)
+    fun openOAuthBrowserFallback() {
+        val challenge = _state.value.oauthChallenge ?: return
+        if (isTrustedOAuthUrl(challenge.verifyUrl, _state.value.oauthProvider)) openExternalUrl(challenge.verifyUrl)
     }
 
-    fun logoutFeishu() {
-        feishuPollJob?.cancel()
+    fun logout() {
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
         resumeJob?.cancel()
-        saveFeishuSession(null, null)
+        switchSubscriptionTo(null)
+        saveAuthSession(null, null)
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = false,
+                authUserName = null,
+                connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                connectionError = null,
+            )
+        }
         scope.launch {
             rpc.disconnect()
-            _state.update {
-                it.copy(
-                    hasEnteredWorkspace = false,
-                    feishuUserName = null,
-                    connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
-                )
+            if (_state.value.oauthEnabled) {
+                startOAuthLoginFlow()
             }
-            startFeishuAuthFlow()
         }
+    }
+
+    fun resetCredentialsAndReconnect() {
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        resumeJob?.cancel()
+        saveAuthSession(null, null)
+        HubTrust.clearPins()
+        bootstrapOrConnect()
     }
 
     private suspend fun connectWithToken(
@@ -736,16 +972,35 @@ class ConsoleStore(
             )
         }
         return try {
-            rpc.connectAndHello(
+            // Verify & pin the Hub certificate BEFORE the token leaves the device.
+            val baseUrl = hubBaseUrlOfWs(wsUrl)
+            rpc.ensureHubTrusted(baseUrl, token)
+            val hello = rpc.connectAndHello(
                 wsUrl = wsUrl,
                 token = token,
                 platformName = platformName(),
             )
+            // Authenticated: now it is safe to remember this address and the Hub's relays.
+            if (!baseUrl.contains("127.0.0.1")) saveLastGoodHubUrl(baseUrl)
+            val learned = (hello.relayUrls + if (baseUrl.contains("127.0.0.1")) emptyList() else listOf(baseUrl))
+                .map { normalizeHubBaseUrl(it) }
+            if (learned.isNotEmpty()) {
+                saveRelayUrls((loadSavedRelayUrls().map { normalizeHubBaseUrl(it) } + learned).distinct().take(8))
+            }
             val status = rpc.fetchStatus()
             val workspaces = rpc.listWorkspaces()
             val sessions = rpc.listSessions()
 
             val current = _state.value
+            val observedFp = HubTrust.observedFor(baseUrl)
+            val resolvedUserName = current.authUserName ?: loadSavedAuthUserName() ?: "Owner"
+            saveHostAccessToken(status.hub.id, token)
+            upsertPairedHost(
+                hub = status.hub,
+                fingerprint = observedFp,
+                endpoints = hello.endpoints + hello.relayUrls + listOf(baseUrl),
+                userName = resolvedUserName,
+            )
             val uiEngines = status.engines.filterNot { it.id == "mock" }
             val chosenEngine = uiEngines.firstOrNull { it.id == current.selectedEngineId && it.status.ready }
                 ?: uiEngines.firstOrNull { it.status.ready }
@@ -767,11 +1022,13 @@ class ConsoleStore(
             val validWs = workspaces.firstOrNull { it.path == current.selectedWorkspacePath }?.path
                 ?: workspaces.firstOrNull()?.path.orEmpty()
 
+            manualPairingMode = false
             _state.update {
                 it.copy(
                     hasEnteredWorkspace = true,
                     connectionStatus = ConnectionStatus.CONNECTED,
                     connectionError = null,
+                    hubFingerprint = HubTrust.observedFor(baseUrl)?.let { HubAttestation.shortFingerprint(it) },
                     hub = status.hub,
                     slaves = status.slaves,
                     engines = uiEngines.ifEmpty { status.engines },
@@ -794,19 +1051,22 @@ class ConsoleStore(
                 runCatching { subscribeAndCatchUp(current.activeSessionId) }
             }
             true
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             if (t is RpcCallException && t.code == ErrorCode.UNAUTHORIZED) {
-                saveFeishuSession(null, null)
+                _state.value.hub?.id?.let { saveHostAccessToken(it, null) }
+                saveAuthSession(null, null)
                 _state.update {
                     it.copy(
                         hasEnteredWorkspace = false,
-                        feishuUserName = null,
-                        connectionStatus = ConnectionStatus.NEEDS_FEISHU_AUTH,
+                        authUserName = null,
+                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
                         connectionError = null,
                     )
                 }
-                if (isForegroundResume) {
-                    startFeishuAuthFlow(_state.value.discoveredBaseUrl, wsUrl)
+                if (isForegroundResume && _state.value.oauthEnabled) {
+                    startOAuthLoginFlow(_state.value.discoveredBaseUrl, wsUrl)
                 }
             } else {
                 _state.update {
@@ -844,9 +1104,19 @@ class ConsoleStore(
         switchSubscriptionTo(null)
         _state.update { s ->
             val eng = s.selectedEngine
+            val defaultModel = eng?.models?.firstOrNull { it.id == eng.defaultModel }
+                ?: eng?.models?.firstOrNull { it.id == s.selectedModelId }
+                ?: eng?.models?.firstOrNull()
             s.copy(
                 activeSessionId = null,
                 checkpoints = emptyList(),
+                activeSessionUsage = null,
+                openedDiffContent = null,
+                openedDiffTitle = null,
+                checkpointNotice = null,
+                selectedProviderId = defaultModel?.providerId ?: s.selectedProviderId,
+                selectedModelId = eng?.defaultModel ?: defaultModel?.id ?: s.selectedModelId,
+                selectedEffort = eng?.defaultEffort ?: defaultModel?.defaultEffort ?: s.selectedEffort,
                 selectedMode = eng?.defaultMode ?: s.selectedMode,
             )
         }
@@ -941,6 +1211,10 @@ class ConsoleStore(
             it.copy(
                 activeSessionId = null,
                 checkpoints = emptyList(),
+                activeSessionUsage = null,
+                openedDiffContent = null,
+                openedDiffTitle = null,
+                checkpointNotice = null,
                 selectedWorkspacePath = path,
                 selectedExtraWorkspaces = emptyList(),
                 currentBrowsePath = path,
@@ -965,20 +1239,33 @@ class ConsoleStore(
             s.copy(
                 activeSessionId = sessionId,
                 checkpoints = emptyList(),
+                activeSessionUsage = null,
+                openedDiffContent = null,
+                openedDiffTitle = null,
+                checkpointNotice = null,
+                submittingApprovalRequestId = null,
+                approvalErrorText = null,
                 selectedEngineId = targetEngineId,
                 selectedModelId = resolvedModel,
                 selectedEffort = resolvedEffort,
                 selectedMode = resolvedMode,
                 selectedWorkspacePath = meta?.cwd ?: s.selectedWorkspacePath,
                 currentBrowsePath = meta?.cwd ?: s.currentBrowsePath,
+                currentDiffWorkspacePath = meta?.cwd ?: s.selectedWorkspacePath,
             )
         }
         scope.launch {
+            runCatching { subscribeAndCatchUp(sessionId) }
             runCatching {
-                subscribeAndCatchUp(sessionId)
-                if (!sessionId.startsWith("host:") && _state.value.activeSessionId == sessionId) {
-                    val ckpts = rpc.listCheckpoints(sessionId)
+                val ckpts = rpc.listCheckpoints(sessionId)
+                if (_state.value.activeSessionId == sessionId) {
                     _state.update { it.copy(checkpoints = ckpts) }
+                }
+            }
+            runCatching {
+                val usage = rpc.fetchSessionUsage(sessionId)
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update { it.copy(activeSessionUsage = usage) }
                 }
             }
         }
@@ -1083,6 +1370,13 @@ class ConsoleStore(
 
     fun respondApproval(requestId: String, optionId: String?, sessionId: String? = null) {
         val targetSessionId = sessionId ?: _state.value.activeSessionId ?: return
+        if (_state.value.submittingApprovalRequestId == requestId) return
+        _state.update {
+            it.copy(
+                submittingApprovalRequestId = requestId,
+                approvalErrorText = null,
+            )
+        }
         scope.launch {
             try {
                 rpc.respondApproval(
@@ -1091,14 +1385,43 @@ class ConsoleStore(
                     optionId = optionId,
                 )
                 _state.update { s ->
-                    val prev = s.transcripts[targetSessionId] ?: return@update s
-                    val updated = prev.copy(
-                        pendingPermissions = prev.pendingPermissions.filterNot { it.requestId == requestId },
+                    val prev = s.transcripts[targetSessionId]
+                    val updatedTranscripts = if (prev != null) {
+                        val updated = prev.copy(
+                            pendingPermissions = prev.pendingPermissions.filterNot {
+                                it.requestId == requestId ||
+                                    (requestId.startsWith("tty_perm_") && it.requestId.startsWith("tty_perm_"))
+                            },
+                        )
+                        s.transcripts + (targetSessionId to updated)
+                    } else {
+                        s.transcripts
+                    }
+                    // Optimistically clear WAITING_PERMISSION on the session until the next Hub update arrives
+                    val updatedSessions = s.sessions.map { meta ->
+                        if (meta.id == targetSessionId && meta.state == SessionState.WAITING_PERMISSION) {
+                            meta.copy(state = SessionState.RUNNING, liveStatusText = "已提交审批，继续执行中…")
+                        } else {
+                            meta
+                        }
+                    }
+                    s.copy(
+                        submittingApprovalRequestId = null,
+                        approvalErrorText = null,
+                        sessions = updatedSessions,
+                        transcripts = updatedTranscripts,
                     )
-                    s.copy(transcripts = s.transcripts + (targetSessionId to updated))
                 }
             } catch (t: Throwable) {
-                _state.update { it.copy(connectionError = t.message) }
+                val msg = t.message?.takeIf { it.isNotBlank() } ?: "审批提交未成功，正在同步最新终端状态…"
+                _state.update {
+                    it.copy(
+                        submittingApprovalRequestId = null,
+                        approvalErrorText = msg,
+                    )
+                }
+                // Immediately re-sync terminal & session events so stale/changed prompts update automatically
+                runCatching { subscribeAndCatchUp(targetSessionId) }
             }
         }
     }
@@ -1176,21 +1499,39 @@ class ConsoleStore(
                 val built = snap.events.fold(SessionTranscript()) { acc, ev ->
                     reduceTranscript(acc, ev)
                 }
+                val concurrentPerms = s.transcripts[sessionId]?.pendingPermissions.orEmpty()
+                val mergedPerms = if (built.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }) {
+                    built.pendingPermissions
+                } else if (snap.session.state == SessionState.WAITING_PERMISSION) {
+                    (built.pendingPermissions + concurrentPerms).distinctBy { it.requestId }
+                } else {
+                    built.pendingPermissions
+                }
                 built.copy(
                     earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
                     hasMoreBefore = snap.hasMoreBefore == true,
                     loadingOlder = false,
+                    pendingPermissions = mergedPerms,
                 )
             } else {
                 var cur = s.transcripts[sessionId] ?: SessionTranscript()
                 for (ev in snap.events) {
                     cur = reduceTranscript(cur, ev)
                 }
+                if (snap.session.state != SessionState.WAITING_PERMISSION &&
+                    snap.events.none { it is AgentEvent.PermissionRequested }
+                ) {
+                    cur = cur.copy(
+                        pendingPermissions = cur.pendingPermissions.filterNot { it.requestId.startsWith("tty_perm_") },
+                    )
+                }
                 cur
             }
             val eng = s.engines.firstOrNull { it.id == snap.session.engineId }
             s.copy(
                 sessions = updatedSessions,
+                selectedEngineId = snap.session.engineId,
+                selectedModelId = snap.session.model ?: eng?.defaultModel ?: s.selectedModelId,
                 selectedMode = snap.session.mode ?: eng?.defaultMode ?: s.selectedMode,
                 selectedEffort = snap.session.reasoningEffort ?: eng?.defaultEffort ?: s.selectedEffort,
                 selectedWorkspacePath = snap.session.cwd,
@@ -1207,7 +1548,234 @@ class ConsoleStore(
             if (event.sessionId != s.activeSessionId) return@update s
             val prev = s.transcripts[event.sessionId] ?: SessionTranscript()
             val next = reduceTranscript(prev, event)
-            s.copy(transcripts = s.transcripts + (event.sessionId to next))
+            val clearErr = if (event is AgentEvent.PermissionRequested || event is AgentEvent.PermissionResolved) {
+                null
+            } else {
+                s.approvalErrorText
+            }
+            s.copy(
+                approvalErrorText = clearErr,
+                transcripts = s.transcripts + (event.sessionId to next),
+            )
+        }
+        if (event is AgentEvent.Usage || event is AgentEvent.TurnDone) {
+            refreshActiveSessionUsage(event.sessionId)
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Usage & Subscription Quota Telemetry Actions
+    // -----------------------------------------------------------------------
+
+    fun refreshActiveSessionUsage(sessionId: String = _state.value.activeSessionId.orEmpty()) {
+        if (sessionId.isBlank()) return
+        scope.launch {
+            runCatching {
+                val usage = rpc.fetchSessionUsage(sessionId)
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update { it.copy(activeSessionUsage = usage) }
+                }
+            }
+        }
+    }
+
+    fun refreshUsageDashboard(days: Int = _state.value.usageSelectedDays) {
+        val clampedDays = days.coerceIn(1, 90)
+        _state.update { it.copy(usageSelectedDays = clampedDays, usageLoading = true) }
+        val activeSid = _state.value.activeSessionId
+        scope.launch {
+            val summary = runCatching { rpc.fetchUsageSummary(days = clampedDays) }.getOrNull()
+            val quota = runCatching { rpc.fetchUsageQuota() }.getOrNull()
+            val proxy = runCatching { rpc.fetchProxyUsage() }.getOrNull()
+            val sessUsage = activeSid?.let { sid -> runCatching { rpc.fetchSessionUsage(sid) }.getOrNull() }
+            _state.update { s ->
+                s.copy(
+                    usageLoading = false,
+                    usageSummary = summary ?: s.usageSummary,
+                    usageQuota = quota ?: s.usageQuota,
+                    proxyUsage = proxy ?: s.proxyUsage,
+                    activeSessionUsage = if (activeSid != null && s.activeSessionId == activeSid) {
+                        sessUsage ?: s.activeSessionUsage
+                    } else {
+                        s.activeSessionUsage
+                    },
+                )
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Workspace Git Diff & Snapshot Checkpoints Actions
+    // -----------------------------------------------------------------------
+
+    fun refreshDiffAndCheckpoints(workspacePath: String? = null) {
+        val resolvedPath = (workspacePath ?: _state.value.currentDiffWorkspacePath)
+            .ifBlank { _state.value.activeWorkspaces.firstOrNull().orEmpty() }
+            .ifBlank { _state.value.selectedWorkspacePath }
+        if (resolvedPath.isBlank()) return
+        val activeSid = _state.value.activeSessionId
+        _state.update {
+            it.copy(
+                currentDiffWorkspacePath = resolvedPath,
+                gitLoading = true,
+                checkpointNotice = null,
+            )
+        }
+        scope.launch {
+            val status = runCatching { rpc.fetchGitStatus(resolvedPath) }.getOrNull()
+            val ckpts = activeSid?.let { sid -> runCatching { rpc.listCheckpoints(sid) }.getOrNull() }
+            _state.update { s ->
+                s.copy(
+                    gitLoading = false,
+                    gitStatus = status ?: s.gitStatus,
+                    checkpoints = ckpts ?: s.checkpoints,
+                )
+            }
+        }
+    }
+
+    fun switchDiffWorkspace(path: String) {
+        if (path.isBlank()) return
+        _state.update {
+            it.copy(
+                currentDiffWorkspacePath = path,
+                openedDiffContent = null,
+                openedDiffTitle = null,
+                openedDiffTruncated = false,
+            )
+        }
+        refreshDiffAndCheckpoints(path)
+    }
+
+    fun openGitDiff(filePath: String?, baseCommitSha: String?, title: String) {
+        val wsPath = _state.value.currentDiffWorkspacePath
+            .ifBlank { _state.value.activeWorkspaces.firstOrNull().orEmpty() }
+            .ifBlank { _state.value.selectedWorkspacePath }
+        if (wsPath.isBlank()) return
+        _state.update { it.copy(gitLoading = true) }
+        scope.launch {
+            runCatching {
+                val res = rpc.fetchGitDiff(
+                    path = wsPath,
+                    filePath = filePath,
+                    baseCommitSha = baseCommitSha,
+                )
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        openedDiffTitle = title,
+                        openedDiffContent = res.diff,
+                        openedDiffTruncated = res.truncated,
+                    )
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        openedDiffTitle = title,
+                        openedDiffContent = "无法读取对比差异: ${err.message}",
+                        openedDiffTruncated = false,
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeGitDiff() {
+        _state.update {
+            it.copy(
+                openedDiffTitle = null,
+                openedDiffContent = null,
+                openedDiffTruncated = false,
+            )
+        }
+    }
+
+    fun createManualCheckpoint(label: String? = null) {
+        val sid = _state.value.activeSessionId ?: return
+        _state.update { it.copy(gitLoading = true, checkpointNotice = null) }
+        scope.launch {
+            runCatching {
+                val created = rpc.createCheckpoint(sid, label)
+                val list = rpc.listCheckpoints(sid)
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        checkpoints = list,
+                        checkpointNotice = "已保存快照：${created.label}",
+                    )
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        checkpointNotice = "保存快照失败：${err.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun restoreCheckpoint(checkpoint: CheckpointInfo) {
+        val sid = _state.value.activeSessionId ?: return
+        _state.update { it.copy(gitLoading = true, checkpointNotice = null) }
+        scope.launch {
+            runCatching {
+                rpc.restoreCheckpoint(sid, checkpoint.id)
+                val wsPath = _state.value.currentDiffWorkspacePath
+                    .ifBlank { _state.value.activeWorkspaces.firstOrNull().orEmpty() }
+                val nextStatus = wsPath.takeIf { it.isNotBlank() }?.let {
+                    runCatching { rpc.fetchGitStatus(it) }.getOrNull()
+                }
+                val list = rpc.listCheckpoints(sid)
+                _state.update { s ->
+                    s.copy(
+                        gitLoading = false,
+                        gitStatus = nextStatus ?: s.gitStatus,
+                        checkpoints = list,
+                        openedDiffContent = null,
+                        openedDiffTitle = null,
+                        checkpointNotice = "已回退至「${checkpoint.label}」（回退前改动已自动备份）",
+                    )
+                }
+            }.onFailure { err ->
+                _state.update {
+                    it.copy(
+                        gitLoading = false,
+                        checkpointNotice = "回退失败：${err.message}",
+                    )
+                }
+            }
+        }
+    }
+}
+
+internal fun parsePairingPayload(raw: String): QrPairingPayloadDto? {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return null
+    return runCatching {
+        if (trimmed.startsWith("lework://", ignoreCase = true)) {
+            val query = trimmed.substringAfter('?', "")
+            val rawD = query
+                .split('&')
+                .firstOrNull { it.startsWith("d=") }
+                ?.removePrefix("d=")
+                ?.trim()
+                ?: return null
+            val cleanB64 = rawD
+                .replace("%2B", "+")
+                .replace("%2F", "/")
+                .replace("%3D", "=")
+                .replace('+', '-')
+                .replace('/', '_')
+                .trimEnd('=')
+            val padded = cleanB64 + "=".repeat((4 - cleanB64.length % 4) % 4)
+            val json = Base64.UrlSafe.decode(padded).decodeToString()
+            ProtocolJson.decodeFromString(QrPairingPayloadDto.serializer(), json)
+        } else if (trimmed.startsWith("{")) {
+            ProtocolJson.decodeFromString(QrPairingPayloadDto.serializer(), trimmed)
+        } else {
+            null
+        }
+    }.getOrNull()
 }

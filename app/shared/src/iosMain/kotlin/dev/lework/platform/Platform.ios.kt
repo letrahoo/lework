@@ -2,26 +2,71 @@
 
 package dev.lework.platform
 
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.UByteVar
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.convert
 import kotlinx.cinterop.get
+import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
+import platform.CoreFoundation.CFDataCreate
+import platform.CoreFoundation.CFDataGetBytePtr
+import platform.CoreFoundation.CFDataGetLength
+import platform.CoreFoundation.CFDataRef
+import platform.CoreFoundation.CFDictionaryAddValue
+import platform.CoreFoundation.CFDictionaryCreateMutable
+import platform.CoreFoundation.CFMutableDictionaryRef
+import platform.CoreFoundation.CFRelease
+import platform.CoreFoundation.CFStringCreateWithCString
+import platform.CoreFoundation.CFTypeRefVar
+import platform.CoreFoundation.kCFBooleanTrue
+import platform.CoreFoundation.kCFStringEncodingUTF8
+import platform.CoreFoundation.kCFTypeDictionaryKeyCallBacks
+import platform.CoreFoundation.kCFTypeDictionaryValueCallBacks
+import platform.Security.SecItemAdd
+import platform.Security.SecItemCopyMatching
+import platform.Security.SecItemDelete
+import platform.Security.errSecSuccess
+import platform.Security.kSecAttrAccessible
+import platform.Security.kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+import platform.Security.kSecAttrAccount
+import platform.Security.kSecAttrService
+import platform.Security.kSecClass
+import platform.Security.kSecClassGenericPassword
+import platform.Security.kSecMatchLimit
+import platform.Security.kSecMatchLimitOne
+import platform.Security.kSecReturnData
+import platform.Security.kSecValueData
+import dev.lework.protocol.ProtocolJson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.builtins.ListSerializer
+import kotlin.coroutines.resume
+import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSBundle
 import platform.Foundation.NSData
 import platform.Foundation.NSDate
+import platform.Foundation.NSFileManager
 import platform.Foundation.NSNetService
 import platform.Foundation.NSNetServiceBrowser
 import platform.Foundation.NSNetServiceBrowserDelegateProtocol
 import platform.Foundation.NSNetServiceDelegateProtocol
 import platform.Foundation.NSNotificationCenter
 import platform.Foundation.NSOperationQueue
+import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.Foundation.NSString
 import platform.Foundation.NSURL
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.NSUserDefaults
+import platform.Foundation.NSUserDomainMask
 import platform.Foundation.create
 import platform.Foundation.timeIntervalSince1970
 import platform.UIKit.UIApplication
@@ -35,16 +80,180 @@ import platform.darwin.dispatch_get_main_queue
 import platform.posix.AF_INET
 import platform.posix.sockaddr
 
-private const val KEY_FEISHU_TOKEN = "qprc.feishu.token"
-private const val KEY_FEISHU_USER = "qprc.feishu.user"
-private const val KEY_LAST_GOOD_URL = "qprc.last.good.url"
-private const val KEY_RELAY_URLS = "qprc.relay.urls"
-private const val KEY_PREF_ENGINE = "qprc.pref.engine"
-private const val KEY_PREF_PROVIDER = "qprc.pref.provider"
-private const val KEY_PREF_MODEL = "qprc.pref.model"
-private const val KEY_PREF_EFFORT = "qprc.pref.effort"
-private const val KEY_PREF_MODE = "qprc.pref.mode"
-private const val KEY_PREF_WORKSPACE = "qprc.pref.workspace"
+private const val KEY_LEGACY_TOKEN = "qprc.feishu.token"
+private const val KEY_LEGACY_USER = "qprc.feishu.user"
+private const val KEY_LAST_GOOD_URL = "lework.last.good.url"
+private const val KEY_RELAY_URLS = "lework.relay.urls"
+private const val KEY_PREF_ENGINE = "lework.pref.engine"
+private const val KEY_PREF_PROVIDER = "lework.pref.provider"
+private const val KEY_PREF_MODEL = "lework.pref.model"
+private const val KEY_PREF_EFFORT = "lework.pref.effort"
+private const val KEY_PREF_MODE = "lework.pref.mode"
+private const val KEY_PREF_WORKSPACE = "lework.pref.workspace"
+private const val KEY_TSNET_ENABLED = "lework.tsnet.enabled"
+private const val KEY_TSNET_CONTROL_URL = "lework.tsnet.control.url"
+private const val KEY_PAIRED_HOSTS = "lework.paired.hosts.json"
+private const val KEY_ACTIVE_HOST_ID = "lework.active.host.id"
+private const val KC_ACCOUNT_TOKEN = "hub.access-token"
+private const val KC_ACCOUNT_USER = "hub.user-name"
+private const val KC_ACCOUNT_PINS = "hub.pinned-fingerprints"
+
+interface IosNativeDelegate {
+    fun tsnetStart(stateDir: String, hostname: String, controlUrl: String, authKey: String, reqId: Long)
+    fun tsnetStatus(reqId: Long)
+    fun tsnetLogin(controlUrl: String, authKey: String, reqId: Long)
+    fun tsnetLogout(reqId: Long)
+    fun presentQrScanner(reqId: Long)
+}
+
+/**
+ * Bridge registered by Swift (`NativeBridges.swift`) at app launch to connect:
+ * 1. Embedded Go `libtsnetbridge.a` (`LeworkTsnet*` C functions)
+ * 2. `AVCaptureSession` QR code scanner sheet
+ * 3. `.onOpenURL` (`lework://pair?d=...`) deep-link forwarding
+ */
+object IosNativeBridge {
+    internal var delegate: IosNativeDelegate? = null
+    private var nextReqId: Long = 1L
+    private val pendingTsnet = mutableMapOf<Long, (String) -> Unit>()
+    private val pendingQr = mutableMapOf<Long, (String?) -> Unit>()
+
+    internal val incomingUriFlow = MutableStateFlow<String?>(null)
+    internal var tsnetProxyUrls: List<String> = emptyList()
+
+    fun registerDelegate(delegate: IosNativeDelegate) {
+        this.delegate = delegate
+    }
+
+    internal fun allocTsnetCallback(cb: (String) -> Unit): Long {
+        val id = nextReqId++
+        pendingTsnet[id] = cb
+        return id
+    }
+
+    internal fun allocQrCallback(cb: (String?) -> Unit): Long {
+        val id = nextReqId++
+        pendingQr[id] = cb
+        return id
+    }
+
+    fun completeTsnetRequest(reqId: Long, json: String) {
+        pendingTsnet.remove(reqId)?.invoke(json)
+    }
+
+    fun completeQrScan(reqId: Long, scannedText: String?) {
+        pendingQr.remove(reqId)?.invoke(scannedText)
+    }
+
+    fun handleIncomingUrl(url: String) {
+        val trimmed = url.trim()
+        if (trimmed.startsWith("lework://", ignoreCase = true)) {
+            incomingUriFlow.value = trimmed
+        }
+    }
+}
+
+private object IosDiscoveryBus {
+    private val _combined = MutableStateFlow<List<String>>(emptyList())
+    val combined: StateFlow<List<String>> = _combined.asStateFlow()
+    private var bonjourList: List<String> = emptyList()
+    private var tsnetList: List<String> = emptyList()
+
+    fun updateBonjour(urls: List<String>) {
+        bonjourList = urls
+        _combined.value = (bonjourList + tsnetList).distinct()
+    }
+
+    fun updateTsnetProxies(urls: List<String>) {
+        IosNativeBridge.tsnetProxyUrls = urls
+        tsnetList = urls
+        _combined.value = (bonjourList + tsnetList).distinct()
+    }
+}
+
+/**
+ * Minimal Keychain wrapper (generic passwords, this-device-only, available after first unlock so
+ * background reconnects work; never synced to iCloud / backups).
+ */
+private object IosKeychain {
+    private const val SERVICE = "dev.lework.lework"
+
+    private fun baseQuery(account: String): CFMutableDictionaryRef? {
+        val dict = CFDictionaryCreateMutable(
+            null,
+            0,
+            kCFTypeDictionaryKeyCallBacks.ptr,
+            kCFTypeDictionaryValueCallBacks.ptr,
+        )
+        val svc = CFStringCreateWithCString(null, SERVICE, kCFStringEncodingUTF8)
+        val acc = CFStringCreateWithCString(null, account, kCFStringEncodingUTF8)
+        CFDictionaryAddValue(dict, kSecClass, kSecClassGenericPassword)
+        CFDictionaryAddValue(dict, kSecAttrService, svc)
+        CFDictionaryAddValue(dict, kSecAttrAccount, acc)
+        CFRelease(svc)
+        CFRelease(acc)
+        return dict
+    }
+
+    fun get(account: String): String? {
+        val query = baseQuery(account) ?: return null
+        CFDictionaryAddValue(query, kSecReturnData, kCFBooleanTrue)
+        CFDictionaryAddValue(query, kSecMatchLimit, kSecMatchLimitOne)
+        return memScoped {
+            val out = alloc<CFTypeRefVar>()
+            val status = SecItemCopyMatching(query, out.ptr)
+            CFRelease(query)
+            val ref = out.value
+            if (status != errSecSuccess || ref == null) return@memScoped null
+            try {
+                val data: CFDataRef = ref.reinterpret()
+                val len = CFDataGetLength(data).toInt()
+                val bytes = CFDataGetBytePtr(data)?.reinterpret<ByteVar>()?.readBytes(len) ?: return@memScoped null
+                bytes.decodeToString()
+            } finally {
+                CFRelease(ref)
+            }
+        }
+    }
+
+    fun set(account: String, value: String?) {
+        baseQuery(account)?.let { q ->
+            SecItemDelete(q)
+            CFRelease(q)
+        }
+        if (value.isNullOrEmpty()) return
+        val bytes = value.encodeToByteArray()
+        val data = bytes.usePinned { pin ->
+            CFDataCreate(null, pin.addressOf(0).reinterpret(), bytes.size.convert())
+        } ?: return
+        val query = baseQuery(account)
+        if (query == null) {
+            CFRelease(data)
+            return
+        }
+        CFDictionaryAddValue(query, kSecValueData, data)
+        CFDictionaryAddValue(query, kSecAttrAccessible, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+        SecItemAdd(query, null)
+        CFRelease(data)
+        CFRelease(query)
+    }
+}
+
+/** One-time cleanup of legacy pre-TLS plaintext NSUserDefaults credentials (v0.3.x). */
+private object CredentialMigration {
+    private var done = false
+
+    fun ensure() {
+        if (done) return
+        done = true
+        val d = NSUserDefaults.standardUserDefaults
+        if (d.objectForKey(KEY_LEGACY_TOKEN) != null || d.objectForKey(KEY_LEGACY_USER) != null) {
+            d.removeObjectForKey(KEY_LEGACY_TOKEN)
+            d.removeObjectForKey(KEY_LEGACY_USER)
+            d.synchronize()
+        }
+    }
+}
 
 private object IosBonjourScanner {
     private val _urls = MutableStateFlow<List<String>>(emptyList())
@@ -74,7 +283,7 @@ private object IosBonjourScanner {
                         val b2 = raw[6].toInt()
                         val b3 = raw[7].toInt()
                         if (b0 != 127 && b0 != 0) {
-                            discovered.add("http://$b0.$b1.$b2.$b3:$port")
+                            discovered.add("https://$b0.$b1.$b2.$b3:$port")
                         }
                     }
                 }
@@ -90,7 +299,7 @@ private object IosBonjourScanner {
                     for (ip in csv.split(',')) {
                         val clean = ip.trim()
                         if (clean.isNotEmpty()) {
-                            discovered.add("http://$clean:$port")
+                            discovered.add("https://$clean:$port")
                         }
                     }
                 }
@@ -99,12 +308,13 @@ private object IosBonjourScanner {
             // 3. Bonjour `.local` hostname fallback
             val host = sender.hostName?.trim()?.trimEnd('.')
             if (!host.isNullOrEmpty()) {
-                discovered.add("http://$host:$port")
+                discovered.add("https://$host:$port")
             }
 
             if (discovered.isNotEmpty()) {
                 val merged = (discovered + _urls.value).distinct()
                 _urls.value = merged
+                IosDiscoveryBus.updateBonjour(merged)
             }
         }
     }
@@ -118,7 +328,6 @@ private object IosBonjourScanner {
             if (!activeServices.contains(didFindService)) {
                 activeServices.add(didFindService)
             }
-            didFindService.includesPeerToPeer = true
             didFindService.delegate = serviceDelegate
             didFindService.resolveWithTimeout(5.0)
         }
@@ -131,10 +340,9 @@ private object IosBonjourScanner {
             activeServices.clear()
 
             val nextBrowser = NSNetServiceBrowser()
-            nextBrowser.includesPeerToPeer = true
             nextBrowser.delegate = browserDelegate
             browser = nextBrowser
-            nextBrowser.searchForServicesOfType("_qprc._tcp.", inDomain = "local.")
+            nextBrowser.searchForServicesOfType("_lework._tcp.", inDomain = "local.")
         }
     }
 }
@@ -174,7 +382,7 @@ actual fun platformName(): String =
 
 actual fun appVersionLabel(): String {
     val info = NSBundle.mainBundle.infoDictionary
-    val shortVer = info?.get("CFBundleShortVersionString") as? String ?: "0.3.0"
+    val shortVer = info?.get("CFBundleShortVersionString") as? String ?: "0.5.0"
     val buildVer = info?.get("CFBundleVersion") as? String ?: "1"
     return "v$shortVer ($buildVer)"
 }
@@ -187,7 +395,7 @@ actual fun observeAppForeground(): StateFlow<Boolean> {
     return IosAppLifecycle.isForeground
 }
 
-actual fun observeBonjourHubUrls(): StateFlow<List<String>> = IosBonjourScanner.urls
+actual fun observeBonjourHubUrls(): StateFlow<List<String>> = IosDiscoveryBus.combined
 
 actual fun startBonjourDiscovery() {
     IosBonjourScanner.startOrRefresh()
@@ -228,28 +436,55 @@ actual fun saveRelayUrls(urls: List<String>) {
 actual fun candidateHubHttpUrls(): List<String> {
     val out = mutableListOf<String>()
     out.addAll(IosBonjourScanner.urls.value)
+    out.addAll(IosNativeBridge.tsnetProxyUrls)
+    val activeId = loadActiveHostId()
+    val hosts = loadPairedHosts()
+    if (activeId != null) {
+        hosts.firstOrNull { it.hubId == activeId }?.let { out.addAll(it.endpoints) }
+    }
     loadLastGoodHubUrl()?.let { out.add(it) }
     out.addAll(loadSavedRelayUrls())
-    out.add("http://127.0.0.1:64450")
+    for (h in hosts) {
+        out.addAll(h.endpoints)
+    }
+    (NSBundle.mainBundle.objectForInfoDictionaryKey("LeworkBootstrapRelay") as? String)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() && !it.startsWith("$(") }
+        ?.let { out.add(dev.lework.security.normalizeHubBaseUrl(it)) }
+    out.add("https://127.0.0.1:64450")
     return out.distinct()
 }
 
-actual fun loadSavedFeishuToken(): String? =
-    NSUserDefaults.standardUserDefaults.stringForKey(KEY_FEISHU_TOKEN)
+actual fun loadSavedAccessToken(): String? {
+    CredentialMigration.ensure()
+    return IosKeychain.get(KC_ACCOUNT_TOKEN)?.takeIf { it.isNotBlank() }
+}
 
-actual fun loadSavedFeishuUserName(): String? =
-    NSUserDefaults.standardUserDefaults.stringForKey(KEY_FEISHU_USER)
+actual fun loadSavedAuthUserName(): String? {
+    CredentialMigration.ensure()
+    return IosKeychain.get(KC_ACCOUNT_USER)
+}
 
-actual fun saveFeishuSession(token: String?, userName: String?) {
-    val defaults = NSUserDefaults.standardUserDefaults
+actual fun saveAuthSession(token: String?, userName: String?) {
+    CredentialMigration.ensure()
     if (token.isNullOrBlank()) {
-        defaults.removeObjectForKey(KEY_FEISHU_TOKEN)
-        defaults.removeObjectForKey(KEY_FEISHU_USER)
+        IosKeychain.set(KC_ACCOUNT_TOKEN, null)
+        IosKeychain.set(KC_ACCOUNT_USER, null)
     } else {
-        defaults.setObject(token, forKey = KEY_FEISHU_TOKEN)
-        defaults.setObject(userName ?: "Owner", forKey = KEY_FEISHU_USER)
+        IosKeychain.set(KC_ACCOUNT_TOKEN, token)
+        IosKeychain.set(KC_ACCOUNT_USER, userName ?: "Owner")
     }
-    defaults.synchronize()
+}
+
+actual fun loadPinnedHubFingerprints(): Set<String> =
+    IosKeychain.get(KC_ACCOUNT_PINS).orEmpty()
+        .split(',')
+        .map { it.trim().lowercase() }
+        .filter { it.length == 64 }
+        .toSet()
+
+actual fun savePinnedHubFingerprints(fingerprints: Set<String>) {
+    IosKeychain.set(KC_ACCOUNT_PINS, fingerprints.joinToString(",").ifEmpty { null })
 }
 
 actual fun loadSessionPrefs(): SavedSessionPrefs {
@@ -288,4 +523,190 @@ actual fun openExternalUrl(url: String) {
 
 actual fun copyTextToClipboard(text: String) {
     UIPasteboard.generalPasteboard.string = text
+}
+
+private fun iosTsnetStateDir(): String {
+    val dirs = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true)
+    val base = (dirs.firstOrNull() as? String)?.takeIf { it.isNotBlank() } ?: "/tmp"
+    val target = "$base/lework-tsnet"
+    runCatching {
+        NSFileManager.defaultManager.createDirectoryAtPath(
+            path = target,
+            withIntermediateDirectories = true,
+            attributes = null,
+            error = null,
+        )
+    }
+    return target
+}
+
+private fun iosTsnetHostname(): String {
+    val raw = UIDevice.currentDevice.name
+        .lowercase()
+        .replace(Regex("[^a-z0-9]+"), "-")
+        .trim('-')
+        .ifEmpty { "iphone" }
+    return "lework-ios-${raw.take(24)}"
+}
+
+private fun parseMobileTsnetJson(rawJson: String): MobileTsnetStatus {
+    val hasBridge = IosNativeBridge.delegate != null
+    val parsed = runCatching {
+        ProtocolJson.decodeFromString(MobileTsnetStatus.serializer(), rawJson)
+    }.getOrElse { err ->
+        MobileTsnetStatus(
+            available = hasBridge,
+            backendState = "Error",
+            error = err.message ?: "Invalid tsnet JSON",
+        )
+    }
+    val withAvail = parsed.copy(available = hasBridge)
+    val liveProxies = withAvail.peers
+        .mapNotNull { it.localProxyUrl?.takeIf { u -> u.isNotBlank() } }
+    IosDiscoveryBus.updateTsnetProxies(liveProxies)
+    return withAvail
+}
+
+actual fun isMobileTsnetAvailable(): Boolean = IosNativeBridge.delegate != null
+
+actual suspend fun startMobileTsnet(controlUrl: String?): MobileTsnetStatus {
+    val d = IosNativeBridge.delegate
+        ?: return MobileTsnetStatus(available = false, backendState = "Unavailable")
+    val stateDir = iosTsnetStateDir()
+    val host = iosTsnetHostname()
+    val ctrl = (controlUrl ?: loadSavedTsnetControlUrl()).orEmpty()
+    val raw = suspendCancellableCoroutine<String> { cont ->
+        dispatch_async(dispatch_get_main_queue()) {
+            val id = IosNativeBridge.allocTsnetCallback { json ->
+                if (cont.isActive) cont.resume(json)
+            }
+            d.tsnetStart(stateDir, host, ctrl, "", id)
+        }
+    }
+    return parseMobileTsnetJson(raw)
+}
+
+actual suspend fun queryMobileTsnetStatus(): MobileTsnetStatus {
+    val d = IosNativeBridge.delegate
+        ?: return MobileTsnetStatus(available = false, backendState = "Unavailable")
+    val raw = suspendCancellableCoroutine<String> { cont ->
+        dispatch_async(dispatch_get_main_queue()) {
+            val id = IosNativeBridge.allocTsnetCallback { json ->
+                if (cont.isActive) cont.resume(json)
+            }
+            d.tsnetStatus(id)
+        }
+    }
+    return parseMobileTsnetJson(raw)
+}
+
+actual suspend fun loginMobileTsnet(controlUrl: String?, authKey: String?): MobileTsnetStatus {
+    val d = IosNativeBridge.delegate
+        ?: return MobileTsnetStatus(available = false, backendState = "Unavailable")
+    val stateDir = iosTsnetStateDir()
+    val host = iosTsnetHostname()
+    val ctrl = (controlUrl ?: loadSavedTsnetControlUrl()).orEmpty()
+    val key = authKey.orEmpty()
+    val raw = suspendCancellableCoroutine<String> { cont ->
+        dispatch_async(dispatch_get_main_queue()) {
+            val startId = IosNativeBridge.allocTsnetCallback { _ ->
+                val loginId = IosNativeBridge.allocTsnetCallback { json ->
+                    if (cont.isActive) cont.resume(json)
+                }
+                d.tsnetLogin(ctrl, key, loginId)
+            }
+            d.tsnetStart(stateDir, host, ctrl, key, startId)
+        }
+    }
+    return parseMobileTsnetJson(raw)
+}
+
+actual suspend fun logoutMobileTsnet(): MobileTsnetStatus {
+    val d = IosNativeBridge.delegate
+        ?: return MobileTsnetStatus(available = false, backendState = "Unavailable")
+    val raw = suspendCancellableCoroutine<String> { cont ->
+        dispatch_async(dispatch_get_main_queue()) {
+            val id = IosNativeBridge.allocTsnetCallback { json ->
+                if (cont.isActive) cont.resume(json)
+            }
+            d.tsnetLogout(id)
+        }
+    }
+    IosDiscoveryBus.updateTsnetProxies(emptyList())
+    return parseMobileTsnetJson(raw)
+}
+
+actual fun loadSavedTsnetEnabled(): Boolean =
+    NSUserDefaults.standardUserDefaults.boolForKey(KEY_TSNET_ENABLED)
+
+actual fun saveTsnetEnabled(enabled: Boolean, controlUrl: String?) {
+    val d = NSUserDefaults.standardUserDefaults
+    d.setBool(enabled, forKey = KEY_TSNET_ENABLED)
+    if (controlUrl != null) {
+        val clean = controlUrl.trim()
+        if (clean.isEmpty()) d.removeObjectForKey(KEY_TSNET_CONTROL_URL)
+        else d.setObject(clean, forKey = KEY_TSNET_CONTROL_URL)
+    }
+    d.synchronize()
+}
+
+actual fun loadSavedTsnetControlUrl(): String? =
+    NSUserDefaults.standardUserDefaults.stringForKey(KEY_TSNET_CONTROL_URL)?.takeIf { it.isNotBlank() }
+
+actual fun canScanQrCode(): Boolean = IosNativeBridge.delegate != null
+
+actual fun requestQrCodeScan(onResult: (String?) -> Unit) {
+    val d = IosNativeBridge.delegate
+    if (d == null) {
+        onResult(null)
+    } else {
+        dispatch_async(dispatch_get_main_queue()) {
+            val id = IosNativeBridge.allocQrCallback(onResult)
+            d.presentQrScanner(id)
+        }
+    }
+}
+
+actual fun observeIncomingPairingUri(): StateFlow<String?> = IosNativeBridge.incomingUriFlow.asStateFlow()
+
+actual fun consumeIncomingPairingUri() {
+    IosNativeBridge.incomingUriFlow.value = null
+}
+
+actual fun loadPairedHosts(): List<PairedHost> {
+    val raw = NSUserDefaults.standardUserDefaults.stringForKey(KEY_PAIRED_HOSTS) ?: return emptyList()
+    return runCatching {
+        ProtocolJson.decodeFromString(ListSerializer(PairedHost.serializer()), raw)
+    }.getOrDefault(emptyList())
+}
+
+actual fun savePairedHosts(hosts: List<PairedHost>) {
+    val d = NSUserDefaults.standardUserDefaults
+    if (hosts.isEmpty()) {
+        d.removeObjectForKey(KEY_PAIRED_HOSTS)
+    } else {
+        val raw = ProtocolJson.encodeToString(ListSerializer(PairedHost.serializer()), hosts)
+        d.setObject(raw, forKey = KEY_PAIRED_HOSTS)
+    }
+    d.synchronize()
+}
+
+actual fun loadActiveHostId(): String? =
+    NSUserDefaults.standardUserDefaults.stringForKey(KEY_ACTIVE_HOST_ID)?.takeIf { it.isNotBlank() }
+
+actual fun saveActiveHostId(hubId: String?) {
+    val d = NSUserDefaults.standardUserDefaults
+    if (hubId.isNullOrBlank()) d.removeObjectForKey(KEY_ACTIVE_HOST_ID)
+    else d.setObject(hubId, forKey = KEY_ACTIVE_HOST_ID)
+    d.synchronize()
+}
+
+actual fun loadHostAccessToken(hubId: String): String? {
+    CredentialMigration.ensure()
+    return IosKeychain.get("hub.token.$hubId")?.takeIf { it.isNotBlank() }
+}
+
+actual fun saveHostAccessToken(hubId: String, token: String?) {
+    CredentialMigration.ensure()
+    IosKeychain.set("hub.token.$hubId", token?.takeIf { it.isNotBlank() })
 }

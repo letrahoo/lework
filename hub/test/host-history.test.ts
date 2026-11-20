@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { AgentEvent, SessionMeta } from '@qprc/protocol'
+import type { AgentEvent, SessionMeta } from '@lework/protocol'
 import { collectLanIpv4Addresses } from '../src/bonjour.ts'
 import {
   HostTaskInspector,
@@ -377,5 +377,51 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
       ],
     })
     expect(ips).toEqual(['192.168.31.88'])
+  })
+
+  it('[T6.3] resolves Claude ANTHROPIC_DEFAULT_*_MODEL alias (e.g. opus -> gpt-6.2-astra) and AGY Gemini 4 Carbon model echo', () => {
+    const home = makeFakeHome()
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+    fs.writeFileSync(
+      path.join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        model: 'opus',
+        env: {
+          ANTHROPIC_BASE_URL: 'http://127.0.0.1:8317',
+          ANTHROPIC_DEFAULT_OPUS_MODEL: 'gpt-6.2-astra',
+          ANTHROPIC_DEFAULT_SONNET_MODEL: 'gpt-6.2-astra',
+        },
+      }),
+    )
+
+    const agyDir = path.join(home, '.gemini', 'antigravity-cli')
+    const convDir = path.join(agyDir, 'brain', 'conv-carbon-1', '.system_generated', 'logs')
+    fs.mkdirSync(convDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(agyDir, 'settings.json'),
+      JSON.stringify({
+        model: 'Gemini 4 Carbon (High)',
+      }),
+    )
+    fs.writeFileSync(
+      path.join(convDir, 'transcript.jsonl'),
+      JSON.stringify({
+        step_index: 0,
+        type: 'USER_INPUT',
+        created_at: '2026-11-20T00:00:00Z',
+        content:
+          '<USER_REQUEST>\n检查模型回显\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 4 Carbon (High). No need to comment.\n</USER_SETTINGS_CHANGE>',
+      }) + '\n',
+    )
+
+    const inspector = new HostTaskInspector({ homeDir: home })
+    expect(inspector.getEngineHostDefaults('claude').defaultModel).toBe('gpt-6.2-astra')
+    expect(inspector.getEngineHostDefaults('agy').defaultModel).toBe('gemini-4-carbon')
+    expect(inspector.getEngineHostDefaults('agy').defaultEffort).toBe('high')
+
+    const agySessions = inspector.discoverHostSessions(true).filter(s => s.engineId === 'agy')
+    expect(agySessions).toHaveLength(1)
+    expect(agySessions[0]?.model).toBe('gemini-4-carbon')
+    expect(agySessions[0]?.reasoningEffort).toBe('high')
   })
 })

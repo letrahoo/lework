@@ -1,9 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
-import type { EngineCapabilities, EngineStatus } from '@qprc/protocol'
+import type { EngineCapabilities, EngineStatus } from '@lework/protocol'
 import { augmentedPathEnv, findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { classifyRawToolCall } from '../storage/host-history.ts'
+import { readAgyLocalSettings } from '../storage/host-history/engine-settings.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
 
 export interface AgyAdapterOptions {
@@ -97,10 +98,16 @@ class AgyStreamSession implements EngineSession {
   }
 
   async start(): Promise<void> {
-    this.init.onModelsChanged?.(this.modelFlag ?? 'gemini-2.5-pro', [
-      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro (AGY)' },
-      { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5 (AGY)' },
-    ])
+    const hostAgy = readAgyLocalSettings()
+    if (!this.modelFlag && hostAgy.model) {
+      this.modelFlag = hostAgy.model
+    }
+    if (!this.effortFlag && hostAgy.effort) {
+      this.effortFlag = hostAgy.effort
+    }
+    if (this.modelFlag) {
+      this.init.onModelsChanged?.(this.modelFlag, [])
+    }
     await this.spawnWorker()
   }
 

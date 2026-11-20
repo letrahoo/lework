@@ -161,7 +161,7 @@ class ConsoleStoreStateTest {
             runCurrent()
 
             assertFalse(store.state.value.hasEnteredWorkspace)
-            assertEquals(ConnectionStatus.NEEDS_FEISHU_AUTH, store.state.value.connectionStatus)
+            assertEquals(ConnectionStatus.NEEDS_AUTH, store.state.value.connectionStatus)
             assertNull(JvmPlatformTestHooks.savedToken)
         } finally {
             storeScope.cancel()
@@ -219,6 +219,243 @@ class ConsoleStoreStateTest {
             assertEquals("回答 #299", (afterPage.items.last() as ChatTimelineItem.Assistant).text)
         } finally {
             storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `T9_1 loads session context window occupancy and global usage quota dashboard`() = runTest {
+        val transport = FakeHubTransport()
+        val sess = SessionMeta(
+            id = "host:claude:ctx_demo",
+            engineId = "claude",
+            cwd = "/workspace/lework",
+            title = "Context Demo",
+            state = SessionState.IDLE,
+            createdAt = 1_000L,
+            updatedAt = 2_000L,
+            lastSeq = 1,
+        )
+        transport.sessions.add(sess)
+        transport.sessionEventsMap[sess.id] = mutableListOf(
+            AgentEvent.UserMessage(0, sess.id, 1_000L, "u_0", "hello"),
+            AgentEvent.AssistantDelta(1, sess.id, 1_100L, "a_1", "world"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sess.id)
+            runCurrent()
+
+            val sessUsage = store.state.value.activeSessionUsage
+            assertEquals("host:claude:ctx_demo", sessUsage?.sessionId)
+            assertEquals(34.2, sessUsage?.contextPercent)
+            assertEquals(68_400L, sessUsage?.contextTokens)
+
+            store.refreshUsageDashboard(days = 7)
+            runCurrent()
+
+            assertEquals(7, store.state.value.usageSelectedDays)
+            assertEquals(1_040_000L, store.state.value.usageSummary?.totals?.totalTokens)
+            assertEquals(2, store.state.value.usageQuota?.windows?.size)
+            assertEquals(true, store.state.value.proxyUsage?.reachable)
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `T9_2 loads workspace git diff and creates and restores checkpoints across host sessions`() = runTest {
+        val transport = FakeHubTransport()
+        val sess = SessionMeta(
+            id = "host:claude:diff_demo",
+            engineId = "claude",
+            cwd = "/workspace/lework",
+            title = "Diff Demo",
+            state = SessionState.IDLE,
+            createdAt = 1_000L,
+            updatedAt = 2_000L,
+            lastSeq = 0,
+        )
+        transport.sessions.add(sess)
+        transport.sessionEventsMap[sess.id] = mutableListOf(
+            AgentEvent.UserMessage(0, sess.id, 1_000L, "u_0", "refactor"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sess.id)
+            runCurrent()
+
+            store.refreshDiffAndCheckpoints()
+            runCurrent()
+            assertEquals("main", store.state.value.gitStatus?.branch)
+            assertEquals(1, store.state.value.gitStatus?.files?.size)
+
+            store.openGitDiff("hub/src/server.ts", null, "hub/src/server.ts")
+            runCurrent()
+            assertTrue(store.state.value.openedDiffContent.orEmpty().contains("+new line"))
+
+            store.createManualCheckpoint("重要节点")
+            runCurrent()
+            assertEquals(1, store.state.value.checkpoints.size)
+            val created = store.state.value.checkpoints.first()
+            assertEquals("重要节点", created.label)
+
+            store.restoreCheckpoint(created)
+            runCurrent()
+            assertEquals(listOf(sess.id to created.id), transport.restoredCheckpoints)
+            assertTrue(store.state.value.checkpointNotice.orEmpty().contains("已回退至"))
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `T10_1 zero-touch Tailscale same-account handshake enters workspace and saves PairedHost`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.savedToken = null
+        val transport = FakeHubTransport().apply {
+            simulateTailscaleSameUser = true
+        }
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            assertEquals(1, transport.tailscaleHandshakeCount)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals("lework_dt.tailscale_mesh_token", JvmPlatformTestHooks.savedToken)
+            assertEquals(1, store.state.value.pairedHosts.size)
+            assertEquals("hub_fake_1", store.state.value.pairedHosts.first().hubId)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
+
+    @Test
+    fun `T10_2 parses lework pair deep link and redeems single-use pairCode into PairedHost`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.savedToken = null
+        val transport = FakeHubTransport()
+        val rawJson = """{"v":2,"hubId":"hub_fake_1","name":"TestMacBook","role":"slave","urls":["https://192.168.1.20:64450"],"url":"https://192.168.1.20:64450","fp":"${"a".repeat(64)}","pairCode":"lwp_0123456789ab_secret1234567890"}"""
+        @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+        val b64 = kotlin.io.encoding.Base64.UrlSafe.encode(rawJson.encodeToByteArray()).trimEnd('=')
+        val deepLink = "lework://pair?d=$b64"
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            JvmPlatformTestHooks.emitIncomingPairingUri(deepLink)
+            runCurrent()
+
+            assertEquals(1, transport.pairRedeemCount)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals("lework_dt.paired_qr_token", JvmPlatformTestHooks.hostTokens["hub_fake_1"])
+            assertEquals(1, store.state.value.pairedHosts.size)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
+
+    @Test
+    fun `T10_3 searchAndConnectViaTsnet exclusively probes tsnet peers without LAN OAuth hijack`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.tsnetAvailable = true
+        JvmPlatformTestHooks.tsnetEnabled = true
+        JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.31.44:64450"))
+        JvmPlatformTestHooks.tsnetStatus = dev.lework.platform.MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            loginName = "owner@example.com",
+            peers = listOf(
+                dev.lework.platform.MobileTsnetPeer(
+                    hostName = "lework-hub-mac",
+                    tailscaleIp = "100.88.1.2",
+                    online = false, // even before NetMap flips online, forwarder is ready
+                    isLeworkNode = true,
+                    localProxyUrl = "https://127.0.0.1:59123",
+                ),
+            ),
+        )
+        val transport = FakeHubTransport().apply {
+            simulateTailscaleSameUser = true
+        }
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+
+            assertEquals(1, transport.tailscaleHandshakeCount)
+            assertEquals("https://127.0.0.1:59123", store.state.value.discoveredBaseUrl)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
+
+    @Test
+    fun `T10_4 preparePairAnotherHost stays on clean NEEDS_AUTH screen without auto-reconnecting via disconnect or Bonjour`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.savedToken = "lework_dt.existing_mac_token"
+        JvmPlatformTestHooks.tsnetAvailable = true
+        JvmPlatformTestHooks.tsnetEnabled = true
+        JvmPlatformTestHooks.tsnetStatus = dev.lework.platform.MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            loginName = "owner@example.com",
+            peers = emptyList(),
+        )
+        val transport = FakeHubTransport().apply {
+            emitDisconnectOnClientClose = true
+        }
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            assertTrue(store.state.value.hasEnteredWorkspace)
+
+            // User taps "配对或连接其他主机" in drawer
+            store.preparePairAnotherHost()
+            runCurrent()
+
+            assertFalse(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.NEEDS_AUTH, store.state.value.connectionStatus)
+            assertFalse(store.state.value.oauthEnabled)
+            assertEquals("", store.state.value.discoveredBaseUrl)
+
+            // Even if user probes tsnet (which errors with 0 peers) and Bonjour emits local Mac URLs,
+            // it MUST NOT yank the user back into the previous Mac workspace automatically!
+            store.searchAndConnectViaTsnet()
+            advanceTimeBy(6_000L)
+            runCurrent()
+            assertEquals(ConnectionStatus.ERROR, store.state.value.connectionStatus)
+            assertFalse(store.state.value.hasEnteredWorkspace)
+
+            JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.31.44:64450"))
+            runCurrent()
+            assertFalse(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.ERROR, store.state.value.connectionStatus)
+
+            // Explicit tap on paired host reconnects cleanly
+            val macHostId = store.state.value.pairedHosts.first().hubId
+            store.switchPairedHost(macHostId)
+            runCurrent()
+            assertTrue(store.state.value.hasEnteredWorkspace)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
         }
     }
 }

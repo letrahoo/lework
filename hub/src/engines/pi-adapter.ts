@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { EngineCapabilities, EngineStatus, SessionMode } from '@qprc/protocol'
+import type { EngineCapabilities, EngineStatus, SessionMode } from '@lework/protocol'
 import type { ModelRegistry } from '../registry/model-registry.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
 

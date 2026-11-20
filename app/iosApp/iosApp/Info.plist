@@ -19,16 +19,29 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.9</string>
+	<string>0.5.0</string>
 	<key>CFBundleVersion</key>
-	<string>20261119.1515</string>
+	<string>20261120.0102</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.lework.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>lework</string>
+			</array>
+		</dict>
+	</array>
+	<key>LeworkBootstrapRelay</key>
+	<string>$(LEWORK_BOOTSTRAP_RELAY)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于在同一路由器 Wi‑Fi 下通过 Bonjour 自动发现并直连你的本地主机。</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_qprc._tcp</string>
+		<string>_lework._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>用于扫描 Hub 配对二维码。</string>

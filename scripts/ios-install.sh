@@ -10,12 +10,16 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$REPO_ROOT/app"
 IOS_DIR="$APP_DIR/iosApp"
 DERIVED_DATA="$APP_DIR/build/ios-derived"
-[[ -f "$HOME/.qprc/ios.env" ]] && source "$HOME/.qprc/ios.env"
-BUNDLE_ID="${LEWORK_IOS_BUNDLE_ID:-dev.lework}"
+[[ -f "$HOME/.lework/ios.env" ]] && source "$HOME/.lework/ios.env"
+BUNDLE_ID="${LEWORK_IOS_BUNDLE_ID:-dev.lework.app}"
 TEAM_ID="${APPLE_TEAM_ID:-}"
 
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home}"
-export PATH="$JAVA_HOME/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export PATH="$JAVA_HOME/bin:/usr/local/go/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+if [[ ! -f "$REPO_ROOT/tsnet-bridge/build/ios-device/libtsnetbridge.a" || ! -f "$REPO_ROOT/tsnet-bridge/build/ios-sim/libtsnetbridge.a" ]]; then
+  "$REPO_ROOT/scripts/build-tsnet.sh" --ios
+fi
 
 cd "$IOS_DIR"
 xcodegen generate
@@ -70,22 +74,38 @@ if [[ "$MODE" == "--install" ]]; then
   fi
 
   if [[ -z "$TEAM_ID" ]]; then
-    echo "Error: APPLE_TEAM_ID is not set (set env APPLE_TEAM_ID or configure ~/.qprc/ios.env)." >&2
+    echo "Error: APPLE_TEAM_ID is not set (set env APPLE_TEAM_ID or configure ~/.lework/ios.env)." >&2
     exit 1
   fi
 
+  BOOTSTRAP_RELAY="${LEWORK_BOOTSTRAP_RELAY:-}"
+  if [[ -z "$BOOTSTRAP_RELAY" && -f "$HOME/.lework/config.json" ]]; then
+    BOOTSTRAP_RELAY="$(node -e '
+      try {
+        const fs = require("node:fs");
+        const cfg = JSON.parse(fs.readFileSync(process.env.HOME + "/.lework/config.json", "utf8"));
+        const raw = Array.isArray(cfg.relayUrls) && cfg.relayUrls[0] ? String(cfg.relayUrls[0]).trim() : "";
+        process.stdout.write(raw.replace(/^https?:\/\//i, "").replace(/\/+$/, ""));
+      } catch {}
+    ')"
+  fi
+
   echo "==> Building & signing Lework for physical iPhone ($DEVICE_ID, Team $TEAM_ID, $BUNDLE_ID)..."
-  xcodebuild \
-    -project "$IOS_DIR/iosApp.xcodeproj" \
-    -scheme iosApp \
-    -configuration Debug \
-    -sdk iphoneos \
-    -destination "generic/platform=iOS" \
-    -derivedDataPath "$DERIVED_DATA" \
-    -allowProvisioningUpdates \
-    DEVELOPMENT_TEAM="$TEAM_ID" \
-    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
-    build
+  XCODE_ARGS=(
+    -project "$IOS_DIR/iosApp.xcodeproj"
+    -scheme iosApp
+    -configuration Debug
+    -sdk iphoneos
+    -destination "generic/platform=iOS"
+    -derivedDataPath "$DERIVED_DATA"
+    DEVELOPMENT_TEAM="$TEAM_ID"
+    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+    LEWORK_BOOTSTRAP_RELAY="$BOOTSTRAP_RELAY"
+  )
+  if ! xcodebuild "${XCODE_ARGS[@]}" build; then
+    echo "==> Cached provisioning profile unavailable; retrying with -allowProvisioningUpdates..."
+    xcodebuild "${XCODE_ARGS[@]}" -allowProvisioningUpdates build
+  fi
 
   APP_BUNDLE="$DERIVED_DATA/Build/Products/Debug-iphoneos/iosApp.app"
   echo "==> Verifying signature..."

@@ -101,40 +101,64 @@ inline fun <reified T> decodeResult(element: JsonElement?): T {
 }
 
 @Serializable
-data class FeishuDiscoverResult(
+data class HubDiscoverResult(
     val ok: Boolean,
     val hub: HubInfo,
-    val feishuEnabled: Boolean = false,
+    val oauthEnabled: Boolean = false,
+    val oauthProvider: String? = null,
+    val oauthDisplayName: String? = null,
+    val tailscaleSameUser: Boolean = false,
+    val tailscaleUser: String? = null,
+    val tsnetAvailable: Boolean = false,
     val relayUrls: List<String> = emptyList(),
     val wsPath: String = "/v1/ws",
 )
 
 @Serializable
-data class FeishuStartResult(
+data class DirectTokenAuthResult(
+    val ok: Boolean,
+    val accessToken: String,
+    val user: OAuthUser? = null,
+    val fingerprint: String,
+    val proof: String,
+    val hub: HubInfo,
+    val endpoints: List<String> = emptyList(),
+)
+
+@Serializable
+data class QrPairingPayloadDto(
+    val v: Int = 2,
+    val hubId: String = "",
+    val name: String = "",
+    val role: String = "slave",
+    val urls: List<String> = emptyList(),
+    val url: String = "",
+    val fp: String = "",
+    val pairCode: String? = null,
+    val token: String? = null,
+)
+
+@Serializable
+data class OAuthStartResult(
     val sid: String,
     val userCode: String,
     val verifyUrl: String,
-    val applinkUrl: String,
+    val appLaunchUrl: String = "",
     val expiresIn: Int = 300,
     val interval: Int = 2,
 )
 
 @Serializable
-data class FeishuUser(
-    val openId: String,
+data class OAuthUser(
+    val subject: String = "",
     val name: String,
     val email: String = "",
 )
 
 @Serializable
-data class FeishuPollRequest(
-    val sid: String,
-)
-
-@Serializable
-data class FeishuPollResponse(
+data class OAuthPollResponse(
     val status: String,
-    val user: FeishuUser? = null,
+    val user: OAuthUser? = null,
     val accessToken: String? = null,
     val name: String? = null,
     val detail: String? = null,

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { ErrorCode } from '@qprc/protocol'
+import { ErrorCode } from '@lework/protocol'
 
 export class HubRpcError extends Error {
   constructor(
@@ -9,6 +10,59 @@ export class HubRpcError extends Error {
   ) {
     super(message)
     this.name = 'HubRpcError'
+  }
+}
+
+/**
+ * Credential / secret locations that must never be listed, read, or used as a session cwd from
+ * the phone, even if they live inside a configured workspace root (e.g. when `$HOME` is a root).
+ * Checked against the *real* (symlink-resolved) path.
+ */
+function sensitiveDirs(): string[] {
+  const home = os.homedir()
+  const dirs = [
+    process.env.LEWORK_HOME ?? path.join(home, '.lework'),
+    path.join(home, '.lework'),
+    path.join(home, '.qprc'),
+    path.join(home, '.ssh'),
+    path.join(home, '.gnupg'),
+    path.join(home, '.aws'),
+    path.join(home, '.azure'),
+    path.join(home, '.kube'),
+    path.join(home, '.docker'),
+    path.join(home, '.config', 'gcloud'),
+    path.join(home, '.config', 'gh'),
+    path.join(home, '.password-store'),
+    path.join(home, 'Library', 'Keychains'),
+    path.join(home, 'Library', 'Cookies'),
+  ]
+  const out: string[] = []
+  for (const d of dirs) {
+    out.push(d)
+    try {
+      out.push(fs.realpathSync(d))
+    } catch {
+      // not present
+    }
+  }
+  return [...new Set(out)]
+}
+
+const SENSITIVE_FILE_RE =
+  /^(id_(rsa|dsa|ecdsa|ed25519)(_sk)?|\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials|\.env(\.(?!example$|sample$|template$)[\w.-]+)?)$|\.(pem|key|p12|pfx|keystore|jks|kdbx)$/i
+
+export function isSensitivePath(realPath: string): boolean {
+  for (const dir of sensitiveDirs()) {
+    if (realPath === dir || realPath.startsWith(dir + path.sep)) return true
+  }
+  const secretFile = process.env.LEWORK_OAUTH_SECRET_FILE
+  if (secretFile && path.resolve(secretFile) === realPath) return true
+  return SENSITIVE_FILE_RE.test(path.basename(realPath))
+}
+
+export function assertNotSensitive(realPath: string): void {
+  if (isSensitivePath(realPath)) {
+    throw new HubRpcError(ErrorCode.PathNotAllowed, 'Access to credential / secret files is blocked.')
   }
 }
 
@@ -42,6 +96,7 @@ export function resolveAllowedWorkspacePath(candidate: string, workspaceRoots: s
     try {
       const realRoot = fs.realpathSync(root)
       if (realCandidate === realRoot || realCandidate.startsWith(realRoot + path.sep)) {
+        assertNotSensitive(realCandidate)
         return realCandidate
       }
     } catch {

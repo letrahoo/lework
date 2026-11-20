@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Self-healing SSH reverse tunnel (Local 127.0.0.1:64450 -> Relay Host 127.0.0.1:16450).
-# Configure target SSH alias via LEWORK_RELAY_SSH_HOST (defaults to "devbox").
+# Configure target SSH alias via LEWORK_RELAY_SSH_HOST (e.g. a Linux relay host).
 set -euo pipefail
 
-RELAY_HOST="${LEWORK_RELAY_SSH_HOST:-devbox}"
+RELAY_HOST="${LEWORK_RELAY_SSH_HOST:?LEWORK_RELAY_SSH_HOST must be set}"
 LOCAL_PORT="${LEWORK_HUB_PORT:-64450}"
 REMOTE_TUNNEL_PORT="${LEWORK_TUNNEL_PORT:-16450}"
 

@@ -1,10 +1,20 @@
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import https from 'node:https'
+import os from 'node:os'
 import path from 'node:path'
+import type { TLSSocket } from 'node:tls'
 import { fileURLToPath } from 'node:url'
 import qrcode from 'qrcode-terminal'
 import { WebSocket } from 'ws'
-import type { HubRole } from '@qprc/protocol'
+import type { HubRole } from '@lework/protocol'
+import { collectLanIpv4Addresses, collectTailscaleIpv4Addresses } from './bonjour.ts'
 import { loadOrCreateConfig } from './config.ts'
-import { generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
+import { encodePairingDeepLink, type QrPairingPayload } from './auth/pair-manager.ts'
+import { IssuedTokenStore } from './auth/token-store.ts'
+import { TsnetManager, type TsnetStatusSnapshot } from './auth/tsnet-manager.ts'
+import { defaultDataDir, ensureUserCliLinks, generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
+import { loadOrCreateHubTls, shortFingerprint } from './security/tls.ts'
 import { HubServer } from './server.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -28,9 +38,96 @@ function parsePortFlag(args: string[]): number | undefined {
   return undefined
 }
 
+function parseStringFlag(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag)
+  if (idx >= 0 && args[idx + 1]) {
+    return args[idx + 1]!.trim() || undefined
+  }
+  return undefined
+}
+
+function callLocalHubAdmin<T>(opts: {
+  port: number
+  expectedFp: string
+  token: string
+  method: 'GET' | 'POST'
+  pathname: string
+  body?: unknown
+}): Promise<T | null> {
+  return new Promise(resolve => {
+    const req = https.request(
+      {
+        host: '127.0.0.1',
+        port: opts.port,
+        method: opts.method,
+        path: opts.pathname,
+        rejectUnauthorized: false,
+        timeout: 4_000,
+        headers: {
+          authorization: `Bearer ${opts.token}`,
+          ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        },
+      },
+      res => {
+        const sock = res.socket as TLSSocket
+        const raw = sock.getPeerCertificate?.()?.raw
+        const fp = raw ? crypto.createHash('sha256').update(raw).digest('hex') : ''
+        if (fp !== opts.expectedFp || (res.statusCode ?? 500) >= 400) {
+          res.resume()
+          resolve(null)
+          return
+        }
+        let buf = ''
+        res.setEncoding('utf8')
+        res.on('data', c => (buf += c))
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(buf) as T)
+          } catch {
+            resolve(null)
+          }
+        })
+      },
+    )
+    req.on('error', () => resolve(null))
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(null)
+    })
+    if (opts.body !== undefined) req.write(JSON.stringify(opts.body))
+    req.end()
+  })
+}
+
+function updateStoredConfig(patch: Record<string, unknown>): void {
+  const cfgPath = path.join(defaultDataDir(), 'config.json')
+  let stored: Record<string, unknown> = {}
+  try {
+    stored = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>
+  } catch {
+    stored = {}
+  }
+  Object.assign(stored, patch)
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(cfgPath, JSON.stringify(stored, null, 2) + '\n', { mode: 0o600 })
+  fs.chmodSync(cfgPath, 0o600)
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const sub = args[0] ?? 'status'
+
+  if (sub === 'install-cli') {
+    const linked = ensureUserCliLinks(repoRoot)
+    if (linked.length > 0) {
+      console.log('Installed global CLI commands:')
+      for (const p of linked) console.log(`  - ${p}`)
+    } else {
+      console.log('No CLI links updated (check permissions on ~/.local/bin).')
+    }
+    return
+  }
+
   const roleOverride = parseRoleFlag(args)
   const portOverride = parsePortFlag(args)
   const cfg = loadOrCreateConfig({
@@ -39,15 +136,21 @@ async function main(): Promise<void> {
   })
 
   if (sub === 'serve') {
+    if (!process.env.VITEST && !process.env.LEWORK_HOME) {
+      ensureUserCliLinks(repoRoot)
+    }
+    process.on('unhandledRejection', err => {
+      console.error('[hubd] unhandled rejection:', err instanceof Error ? err.message : err)
+    })
     const server = new HubServer({ config: cfg })
     const { port, host } = await server.start()
     const lanIps = listLanAddresses()
-    console.log(`lework hubd (${cfg.role}) listening on ${host}:${port}`)
-    console.log(`  Hub ID : ${cfg.hubId} (${cfg.name})`)
-    console.log(`  Token  : ${cfg.token}`)
-    console.log(`  WS URL : ws://127.0.0.1:${port}/v1/ws`)
+    console.log(`Lework hubd (${cfg.role}) listening on https://${host}:${port}`)
+    console.log(`  Hub ID      : ${cfg.hubId} (${cfg.name})`)
+    console.log(`  Fingerprint : ${shortFingerprint(server.tlsFingerprint)} (sha256 ${server.tlsFingerprint})`)
+    console.log('  Token       : (hidden — run `hub pair` to display)')
     for (const ip of lanIps) {
-      console.log(`  LAN URL: ws://${ip}:${port}/v1/ws`)
+      console.log(`  LAN URL     : https://${ip}:${port}`)
     }
     const shutdown = async () => {
       console.log('\nShutting down hubd...')
@@ -69,7 +172,8 @@ async function main(): Promise<void> {
     console.log(`  Version  : ${status.hub.version}`)
     console.log(`  Listen   : ${cfg.host}:${cfg.port}`)
     console.log(`  LAN IPs  : ${lanIps.join(', ') || 'none'}`)
-    console.log(`  Token    : ${cfg.token}`)
+    console.log(`  Token    : ${cfg.token.slice(0, 4)}…  (run \`hub pair\` to display)`)
+    console.log(`  TLS FP   : ${shortFingerprint(loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` }).fingerprint)}`)
     console.log('\nProviders:')
     for (const p of status.providers) {
       console.log(`  - [${p.healthy ? 'ONLINE ' : 'OFFLINE'}] ${p.name} (${p.type})`)
@@ -107,19 +211,246 @@ async function main(): Promise<void> {
   }
 
   if (sub === 'pair') {
-    const lanIp = listLanAddresses()[0] ?? '127.0.0.1'
-    const payload = JSON.stringify({
-      v: 1,
+    const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
+    const liveTicket = await callLocalHubAdmin<{
+      pairCode: string
+      expiresInSec: number
+      endpoints: string[]
+      fingerprint: string
+      hub: { id: string; name: string; role: string }
+    }>({
+      port: cfg.port,
+      expectedFp: tls.fingerprint,
+      token: cfg.token,
+      method: 'POST',
+      pathname: '/v1/auth/pair/create',
+    })
+
+    const fallbackUrls: string[] = []
+    for (const ip of collectLanIpv4Addresses()) fallbackUrls.push(`https://${ip}:${cfg.port}`)
+    const cleanHost = (cfg.name || os.hostname())
+      .replace(/\.local\.?$/i, '')
+      .replace(/[^A-Za-z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+    if (cleanHost) fallbackUrls.push(`https://${cleanHost}.local:${cfg.port}`)
+    for (const tsIp of collectTailscaleIpv4Addresses()) fallbackUrls.push(`https://${tsIp}:${cfg.port}`)
+    for (const r of cfg.relayUrls ?? []) fallbackUrls.push(r.replace(/^http:\/\//i, 'https://'))
+    if (fallbackUrls.length === 0) fallbackUrls.push(`https://127.0.0.1:${cfg.port}`)
+
+    const endpoints = liveTicket?.endpoints?.length ? liveTicket.endpoints : fallbackUrls
+    const primaryUrl = endpoints[0] ?? `https://127.0.0.1:${cfg.port}`
+    const payload: QrPairingPayload = {
+      v: 2,
       hubId: cfg.hubId,
       name: cfg.name,
       role: cfg.role,
-      wsUrl: `ws://${lanIp}:${cfg.port}/v1/ws`,
-      token: cfg.token,
-    })
-    console.log('Scan or paste into the mobile app:')
-    console.log(`  URL   : ws://${lanIp}:${cfg.port}/v1/ws`)
-    console.log(`  Token : ${cfg.token}\n`)
-    qrcode.generate(payload, { small: true })
+      urls: endpoints,
+      url: primaryUrl,
+      fp: tls.fingerprint,
+      ...(liveTicket ? { pairCode: liveTicket.pairCode } : { token: cfg.token }),
+    }
+    const deepLink = encodePairingDeepLink(payload)
+
+    console.log('Scan with Lework App (or iOS Camera) to pair this host:')
+    for (const ep of endpoints) {
+      console.log(`  Endpoint    : ${ep}`)
+    }
+    if (liveTicket) {
+      console.log(`  Pair Code   : ${liveTicket.pairCode}  (single-use, expires in ${liveTicket.expiresInSec}s)`)
+    } else {
+      console.log(`  Token       : ${cfg.token}  (hubd offline — static fallback token)`)
+    }
+    console.log(`  Fingerprint : ${shortFingerprint(tls.fingerprint)}  (App 「主机指纹」应与此一致)\n`)
+    qrcode.generate(deepLink, { small: true })
+    console.log(`\nDeep Link: ${deepLink}`)
+    return
+  }
+
+  if (sub === 'tsnet') {
+    const action = args[1] ?? 'status'
+    const controlUrl = parseStringFlag(args, '--control-url')
+    const authKey = parseStringFlag(args, '--auth-key')
+    const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
+
+    const printStatus = (st: TsnetStatusSnapshot) => {
+      console.log(`Tailscale Mesh (${st.mode}):`)
+      console.log(`  State      : ${st.backendState}`)
+      if (st.loginName) console.log(`  Account    : ${st.displayName ? `${st.displayName} <${st.loginName}>` : st.loginName}`)
+      if (st.selfHostName) console.log(`  Node       : ${st.selfHostName}${st.selfDnsName ? ` (${st.selfDnsName})` : ''}`)
+      if (st.tailscaleIps.length > 0) console.log(`  Mesh IPs   : ${st.tailscaleIps.join(', ')}`)
+      if (st.controlUrl) console.log(`  Control    : ${st.controlUrl}`)
+      if (st.authUrl) console.log(`  Login URL  : ${st.authUrl}`)
+      if (st.error) console.log(`  Error      : ${st.error}`)
+      if (st.peers.length > 0) {
+        console.log('  Same-Account Peers:')
+        for (const p of st.peers) {
+          console.log(`    - [${p.online ? 'ONLINE ' : 'OFFLINE'}] ${p.hostName} (${p.tailscaleIp})`)
+        }
+      }
+    }
+
+    if (action === 'status') {
+      const remote = await callLocalHubAdmin<TsnetStatusSnapshot>({
+        port: cfg.port,
+        expectedFp: tls.fingerprint,
+        token: cfg.token,
+        method: 'GET',
+        pathname: '/v1/tsnet/status',
+      })
+      if (remote) {
+        printStatus(remote)
+        return
+      }
+      const mgr = new TsnetManager({
+        hubName: cfg.name,
+        hubPort: cfg.port,
+        controlUrl: controlUrl ?? cfg.tsnetControlUrl,
+        autoStart: false,
+      })
+      const st = await mgr.getStatus()
+      await mgr.stop()
+      printStatus(st)
+      return
+    }
+
+    if (action === 'login') {
+      updateStoredConfig({
+        tsnetEnabled: true,
+        ...(controlUrl ? { tsnetControlUrl: controlUrl } : {}),
+      })
+      const remote = await callLocalHubAdmin<TsnetStatusSnapshot>({
+        port: cfg.port,
+        expectedFp: tls.fingerprint,
+        token: cfg.token,
+        method: 'POST',
+        pathname: '/v1/tsnet/login',
+        body: { controlUrl, authKey },
+      })
+      if (remote) {
+        printStatus(remote)
+        if (remote.authUrl && remote.backendState !== 'Running') {
+          console.log('\nOpen the URL above (or scan QR) with the SAME Tailscale account used on your phone:\n')
+          qrcode.generate(remote.authUrl, { small: true })
+          console.log('\nWaiting for Tailscale login confirmation (Ctrl+C to exit)...')
+          for (let i = 0; i < 90; i++) {
+            await new Promise(r => setTimeout(r, 2_000))
+            const cur = await callLocalHubAdmin<TsnetStatusSnapshot>({
+              port: cfg.port,
+              expectedFp: tls.fingerprint,
+              token: cfg.token,
+              method: 'GET',
+              pathname: '/v1/tsnet/status',
+            })
+            if (cur?.backendState === 'Running') {
+              console.log('\nTailscale same-account mesh is ONLINE!\n')
+              printStatus(cur)
+              return
+            }
+          }
+        }
+        return
+      }
+
+      const mgr = new TsnetManager({
+        hubName: cfg.name,
+        hubPort: cfg.port,
+        controlUrl: controlUrl ?? cfg.tsnetControlUrl,
+        authKey,
+        autoStart: true,
+      })
+      const st = await mgr.startLogin({ controlUrl, authKey })
+      printStatus(st)
+      if (st.authUrl && st.backendState !== 'Running') {
+        console.log('\nOpen the URL above (or scan QR) with the SAME Tailscale account used on your phone:\n')
+        qrcode.generate(st.authUrl, { small: true })
+        console.log('\nWaiting for Tailscale login confirmation (Ctrl+C to exit)...')
+        for (let i = 0; i < 90; i++) {
+          await new Promise(r => setTimeout(r, 2_000))
+          const cur = await mgr.getStatus()
+          if (cur.backendState === 'Running') {
+            console.log('\nTailscale same-account mesh is ONLINE!\n')
+            printStatus(cur)
+            await mgr.stop()
+            return
+          }
+        }
+      }
+      await mgr.stop()
+      return
+    }
+
+    if (action === 'logout') {
+      updateStoredConfig({ tsnetEnabled: false })
+      const remote = await callLocalHubAdmin<TsnetStatusSnapshot>({
+        port: cfg.port,
+        expectedFp: tls.fingerprint,
+        token: cfg.token,
+        method: 'POST',
+        pathname: '/v1/tsnet/logout',
+      })
+      if (remote) {
+        printStatus(remote)
+        return
+      }
+      const mgr = new TsnetManager({ hubName: cfg.name, hubPort: cfg.port, autoStart: false })
+      const st = await mgr.logout()
+      await mgr.stop()
+      printStatus(st)
+      return
+    }
+
+    console.log('Usage: hub tsnet <status|login|logout> [--control-url <url>] [--auth-key <key>]')
+    process.exit(1)
+  }
+
+  if (sub === 'token') {
+    // hub token rotate — invalidates the static access token (all paired phones must re-pair)
+    if (args[1] !== 'rotate') {
+      console.log('Usage: hub token rotate')
+      process.exit(1)
+    }
+    const cfgPath = path.join(defaultDataDir(), 'config.json')
+    const stored = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>
+    stored.token = crypto.randomBytes(24).toString('base64url')
+    fs.writeFileSync(cfgPath, JSON.stringify(stored, null, 2) + '\n', { mode: 0o600 })
+    fs.chmodSync(cfgPath, 0o600)
+    console.log('Access token rotated. Restart hubd, then run `hub pair` to re-pair your phone.')
+    return
+  }
+
+  if (sub === 'tokens') {
+    // hub tokens [list] | revoke <kid> | revoke-all   — OAuth-issued device tokens
+    const store = new IssuedTokenStore()
+    const action = args[1] ?? 'list'
+    if (action === 'list') {
+      const rows = store.list()
+      if (rows.length === 0) console.log('No issued device tokens.')
+      for (const r of rows) {
+        console.log(
+          `  ${r.kid}  ${r.name} (${r.sub})  issued ${new Date(r.issuedAt).toISOString()}  expires ${new Date(r.expiresAt).toISOString()}`,
+        )
+      }
+      return
+    }
+    if (action === 'revoke' && args[2]) {
+      console.log(store.revoke(args[2]) ? `Revoked ${args[2]}` : `No token with kid ${args[2]}`)
+      return
+    }
+    if (action === 'revoke-all') {
+      console.log(`Revoked ${store.revokeAll()} token(s).`)
+      return
+    }
+    console.log('Usage: hub tokens [list | revoke <kid> | revoke-all]')
+    process.exit(1)
+  }
+
+  if (sub === 'slave-token') {
+    const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
+    console.log('On the slave machine run:')
+    console.log(
+      `  LEWORK_JOIN_TOKEN=${cfg.slaveJoinToken} hub join wss://<this-host>:${cfg.port}/v1/slave-ws --fingerprint ${tls.fingerprint}`,
+    )
     return
   }
 
@@ -133,17 +464,33 @@ async function main(): Promise<void> {
 
   if (sub === 'join') {
     const masterUrl = args[1]
-    if (!masterUrl) {
-      console.error('Usage: hub join <ws://master-host:64448/v1/slave-ws> [--token <master-token>]')
+    const fpIdx = args.indexOf('--fingerprint')
+    const expectedFp = fpIdx >= 0 ? (args[fpIdx + 1] ?? '').toLowerCase().replace(/[^0-9a-f]/g, '') : ''
+    const token = process.env.LEWORK_JOIN_TOKEN ?? ''
+    if (!masterUrl || !masterUrl.startsWith('wss://') || expectedFp.length !== 64 || !token) {
+      console.error(
+        'Usage: LEWORK_JOIN_TOKEN=<join-token> hub join <wss://master-host:64450/v1/slave-ws> --fingerprint <sha256>\n' +
+          '       (run `hub slave-token` on the master to get both values)',
+      )
       process.exit(1)
     }
-    const tokenIdx = args.indexOf('--token')
-    const token = tokenIdx >= 0 && args[tokenIdx + 1] ? args[tokenIdx + 1]! : cfg.token
     const server = new HubServer({ config: cfg })
     const status = await server.buildStatus()
-    const selfSlave = status.slaves[0]!
-    const ws = new WebSocket(masterUrl)
+    const s0 = status.slaves[0]!
+    const selfSlave = { id: s0.id, name: s0.name, platform: s0.platform, engines: s0.engines }
+    // Self-signed master certificate: CA validation is replaced by fingerprint pinning, and the
+    // join token is only sent after the pinned fingerprint has been verified.
+    const ws = new WebSocket(masterUrl, { rejectUnauthorized: false })
     await new Promise<void>((resolve, reject) => {
+      ws.once('upgrade', res => {
+        const sock = res.socket as import('node:tls').TLSSocket
+        const raw = sock.getPeerCertificate?.()?.raw
+        const fp = raw ? crypto.createHash('sha256').update(raw).digest('hex') : ''
+        if (fp !== expectedFp) {
+          ws.terminate()
+          reject(new Error(`Master certificate fingerprint mismatch (got ${fp || 'none'})`))
+        }
+      })
       ws.once('open', () => {
         ws.send(JSON.stringify({ token, slave: selfSlave }))
       })
@@ -157,7 +504,9 @@ async function main(): Promise<void> {
     return
   }
 
-  console.log('Usage: hub <serve|status|engines|slaves|pair|join|service-config> [--role master|slave] [--port N]')
+  console.log(
+    'Usage: lework <serve|status|engines|slaves|pair|tsnet|install-cli|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
+  )
 }
 
 void main()

@@ -1,9 +1,10 @@
 {
-  "name": "@qprc/hub",
+  "name": "@lework/hub",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
+    "lework": "./bin/hub.js",
     "hub": "./bin/hub.js",
     "hubd": "./bin/hubd.js"
   },
@@ -15,7 +16,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.108.0",
-    "@qprc/protocol": "workspace:*",
+    "@lework/protocol": "workspace:*",
     "qrcode-terminal": "^0.12.0",
     "ws": "^8.18.0",
     "zod": "^4.1.0"

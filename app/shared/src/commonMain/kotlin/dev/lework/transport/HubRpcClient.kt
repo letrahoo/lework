@@ -1,9 +1,15 @@
 package dev.lework.transport
 
 import dev.lework.protocol.*
+import dev.lework.security.HubAttestation
+import dev.lework.security.HubTrust
+import dev.lework.security.constantTimeEquals
+import dev.lework.security.hubWsUrlOf
+import dev.lework.security.normalizeHubBaseUrl
+import dev.lework.security.sha256
+import dev.lework.security.toHex
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
-import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocketSession
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -34,10 +40,36 @@ class RpcCallException(
     override val message: String,
 ) : Exception(message)
 
+/** The endpoint could not prove it is the Hub that knows our token — the token was NOT sent. */
+class HubTrustException(message: String) : Exception(message)
+
+@kotlinx.serialization.Serializable
+private data class AttestRequest(val nonce: String, val kid: String)
+
+@kotlinx.serialization.Serializable
+private data class AttestResponse(val fingerprint: String, val proof: String)
+
+@kotlinx.serialization.Serializable
+private data class OAuthStartRequest(val codeChallenge: String)
+
+@kotlinx.serialization.Serializable
+private data class OAuthPollWithVerifier(val sid: String, val codeVerifier: String)
+
+@kotlinx.serialization.Serializable
+private data class TailscaleHandshakeRequest(val nonce: String, val deviceName: String)
+
+@kotlinx.serialization.Serializable
+private data class PairRedeemRequest(
+    val nonce: String,
+    val pairCode: String? = null,
+    val token: String? = null,
+    val deviceName: String,
+)
+
 data class DiscoveredEndpoint(
     val baseUrl: String,
     val wsUrl: String,
-    val discover: FeishuDiscoverResult,
+    val discover: HubDiscoverResult,
 )
 
 interface HubTransport {
@@ -49,10 +81,36 @@ interface HubTransport {
         candidates: List<String>,
         dynamicCandidates: StateFlow<List<String>>? = null,
         waitWindowMs: Long = 6_500L,
+        preferredHubId: String? = null,
     ): DiscoveredEndpoint?
 
-    suspend fun startFeishuDeviceFlow(baseUrl: String): FeishuStartResult
-    suspend fun pollFeishuDeviceFlow(baseUrl: String, sid: String): FeishuPollResponse
+    suspend fun probeDirectEndpoint(
+        baseUrl: String,
+        timeoutMs: Long = 10_000L,
+    ): DiscoveredEndpoint? = discoverIntranetHub(listOf(baseUrl), waitWindowMs = timeoutMs)
+
+    /**
+     * Verifies (and pins) the Hub's TLS certificate *before* any token is sent to it, using
+     * token-bound attestation. Throws [HubTrustException] if the endpoint cannot prove itself.
+     */
+    suspend fun ensureHubTrusted(baseUrl: String, token: String) {}
+
+    suspend fun authenticateViaTailscale(baseUrl: String, deviceName: String): DirectTokenAuthResult {
+        throw UnsupportedOperationException("Tailscale handshake not implemented in this transport")
+    }
+
+    suspend fun redeemPairingCode(
+        baseUrl: String,
+        pairCode: String?,
+        staticToken: String?,
+        expectedFingerprint: String?,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        throw UnsupportedOperationException("Pairing redeem not implemented in this transport")
+    }
+
+    suspend fun startOAuthDeviceFlow(baseUrl: String): OAuthStartResult
+    suspend fun pollOAuthDeviceFlow(baseUrl: String, sid: String): OAuthPollResponse
 
     suspend fun connectAndHello(
         wsUrl: String,
@@ -101,13 +159,28 @@ interface HubTransport {
     suspend fun listCheckpoints(sessionId: String): List<CheckpointInfo>
     suspend fun createCheckpoint(sessionId: String, label: String? = null): CheckpointInfo
     suspend fun restoreCheckpoint(sessionId: String, checkpointId: String)
+    suspend fun fetchUsageSummary(days: Int = 14, engineId: String? = null): UsageSummaryResult
+    suspend fun fetchUsageQuota(): UsageQuotaResult
+    suspend fun fetchSessionUsage(sessionId: String): SessionUsageResult
+    suspend fun fetchProxyUsage(): ProxyUsageResult
+    suspend fun fetchGitStatus(path: String): GitStatusResult
+    suspend fun fetchGitDiff(
+        path: String,
+        filePath: String? = null,
+        baseCommitSha: String? = null,
+    ): GitDiffResult
     suspend fun disconnect()
 }
 
 class HubRpcClient(
     private val scope: CoroutineScope,
-    private val httpClient: HttpClient = HttpClient { install(WebSockets) },
+    /** Accepts any certificate (records fingerprints). Never carries the access token. */
+    private val probeClient: HttpClient = createHubHttpClient(pinnedOnly = false),
+    /** Handshake only succeeds with a pinned Hub certificate. Carries the token & all RPC. */
+    private val secureClient: HttpClient = createHubHttpClient(pinnedOnly = true),
 ) : HubTransport {
+    private val oauthVerifiers = mutableMapOf<String, String>()
+
     private var wsSession: DefaultClientWebSocketSession? = null
     private var readerJob: Job? = null
     private var nextId: Int = 1
@@ -139,14 +212,19 @@ class HubRpcClient(
         candidates: List<String>,
         dynamicCandidates: StateFlow<List<String>>?,
         waitWindowMs: Long,
+        preferredHubId: String?,
     ): DiscoveredEndpoint? {
         val winner = CompletableDeferred<DiscoveredEndpoint?>()
+        // Prefer endpoints presenting an already-pinned certificate (or a verified same-account
+        // Tailscale node); an unpinned responder is only used as fallback and must pass attestation.
+        var firstUnpinned: DiscoveredEndpoint? = null
+        val requirePinned = HubTrust.pinned().isNotEmpty()
         val probedMutex = Mutex()
         val probed = mutableSetOf<String>()
         val jobs = mutableListOf<Job>()
 
         suspend fun launchProbeIfNew(base: String) {
-            val normalized = base.trim().trimEnd('/')
+            val normalized = normalizeHubBaseUrl(base)
             if (normalized.isEmpty()) return
             val shouldStart = probedMutex.withLock { probed.add(normalized) }
             if (!shouldStart) return
@@ -154,20 +232,30 @@ class HubRpcClient(
             val job = scope.launch {
                 try {
                     val res = withTimeout(4_500L) {
-                        httpClient.get("$normalized/v1/auth/discover")
+                        probeClient.get("$normalized/v1/auth/discover")
                     }
                     if (res.status.isSuccess()) {
                         val text = res.bodyAsText()
-                        val info = ProtocolJson.decodeFromString(FeishuDiscoverResult.serializer(), text)
-                        val wsScheme = if (normalized.startsWith("https://")) "wss://" else "ws://"
-                        val hostPort = normalized.removePrefix("https://").removePrefix("http://")
-                        winner.complete(
-                            DiscoveredEndpoint(
-                                baseUrl = normalized,
-                                wsUrl = "$wsScheme$hostPort${info.wsPath}",
-                                discover = info,
-                            ),
+                        val info = ProtocolJson.decodeFromString(HubDiscoverResult.serializer(), text)
+                        val endpoint = DiscoveredEndpoint(
+                            baseUrl = normalized,
+                            // Never trust a server-supplied path (could smuggle userinfo/host)
+                            wsUrl = hubWsUrlOf(normalized),
+                            discover = info.copy(relayUrls = emptyList()),
                         )
+                        val fp = HubTrust.observedFor(normalized)
+                        val matchesPreferred = preferredHubId == null || info.hub.id == preferredHubId
+                        val trustedOrSameAccount =
+                            !requirePinned || (fp != null && HubTrust.isPinned(fp)) || info.tailscaleSameUser
+                        if (matchesPreferred && trustedOrSameAccount) {
+                            winner.complete(endpoint)
+                        } else {
+                            probedMutex.withLock {
+                                if (firstUnpinned == null || (preferredHubId != null && info.hub.id == preferredHubId)) {
+                                    firstUnpinned = endpoint
+                                }
+                            }
+                        }
                     }
                 } catch (_: Throwable) {
                     // ignore individual candidate failure
@@ -192,38 +280,209 @@ class HubRpcClient(
             scope.launch {
                 val snapshot = probedMutex.withLock { jobs.toList() }
                 snapshot.forEach { it.join() }
-                if (!winner.isCompleted) winner.complete(null)
+                if (!winner.isCompleted) winner.complete(probedMutex.withLock { firstUnpinned })
             }
         }
 
         val result = withTimeoutOrNull(waitWindowMs) {
             winner.await()
-        }
+        } ?: probedMutex.withLock { firstUnpinned }
         dynamicCollector?.cancel()
         val allJobs = probedMutex.withLock { jobs.toList() }
         allJobs.forEach { it.cancel() }
         return result
     }
 
-    override suspend fun startFeishuDeviceFlow(baseUrl: String): FeishuStartResult {
+    override suspend fun probeDirectEndpoint(
+        baseUrl: String,
+        timeoutMs: Long,
+    ): DiscoveredEndpoint? {
+        val normalized = normalizeHubBaseUrl(baseUrl)
+        if (normalized.isEmpty()) return null
+        return try {
+            val res = withTimeout(timeoutMs) {
+                probeClient.get("$normalized/v1/auth/discover")
+            }
+            if (!res.status.isSuccess()) return null
+            val info = ProtocolJson.decodeFromString(HubDiscoverResult.serializer(), res.bodyAsText())
+            DiscoveredEndpoint(
+                baseUrl = normalized,
+                wsUrl = hubWsUrlOf(normalized),
+                discover = info.copy(relayUrls = emptyList()),
+            )
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** Once a Hub is pinned, OAuth also runs only against pinned Hubs (no impostor login pages). */
+    private fun oauthClient(): HttpClient = if (HubTrust.pinned().isNotEmpty()) secureClient else probeClient
+
+    override suspend fun startOAuthDeviceFlow(baseUrl: String): OAuthStartResult {
+        val base = normalizeHubBaseUrl(baseUrl)
+        // PKCE-style binding: only this client (holding the verifier) can redeem the login.
+        val verifier = HubAttestation.newNonce() + HubAttestation.newNonce()
+        val challenge = sha256(verifier.encodeToByteArray()).toHex()
         val res = withTimeout(8_000L) {
-            httpClient.post("$baseUrl/v1/auth/feishu/start")
+            oauthClient().post("$base/v1/auth/oauth/start") {
+                setBody(ProtocolJson.encodeToString(OAuthStartRequest.serializer(), OAuthStartRequest(challenge)))
+            }
         }
         val body = res.bodyAsText()
         if (!res.status.isSuccess()) {
-            throw IllegalStateException("飞书认证初始化失败: $body")
+            throw IllegalStateException("身份授权初始化失败: $body")
         }
-        return ProtocolJson.decodeFromString(FeishuStartResult.serializer(), body)
+        val result = ProtocolJson.decodeFromString(OAuthStartResult.serializer(), body)
+        pendingMutex.withLock {
+            if (oauthVerifiers.size > 8) oauthVerifiers.clear()
+            oauthVerifiers[result.sid] = verifier
+        }
+        return result
     }
 
-    override suspend fun pollFeishuDeviceFlow(baseUrl: String, sid: String): FeishuPollResponse {
-        val reqJson = ProtocolJson.encodeToString(FeishuPollRequest.serializer(), FeishuPollRequest(sid))
+    override suspend fun pollOAuthDeviceFlow(baseUrl: String, sid: String): OAuthPollResponse {
+        val base = normalizeHubBaseUrl(baseUrl)
+        val verifier = pendingMutex.withLock { oauthVerifiers[sid] }
+            ?: return OAuthPollResponse(status = "expired")
+        val reqJson = ProtocolJson.encodeToString(
+            OAuthPollWithVerifier.serializer(),
+            OAuthPollWithVerifier(sid, verifier),
+        )
         val res = withTimeout(8_000L) {
-            httpClient.post("$baseUrl/v1/auth/feishu/poll") {
+            oauthClient().post("$base/v1/auth/oauth/poll") {
                 setBody(reqJson)
             }
         }
-        return ProtocolJson.decodeFromString(FeishuPollResponse.serializer(), res.bodyAsText())
+        val parsed = ProtocolJson.decodeFromString(OAuthPollResponse.serializer(), res.bodyAsText())
+        if (parsed.status != "pending") pendingMutex.withLock { oauthVerifiers.remove(sid) }
+        return parsed
+    }
+
+    override suspend fun ensureHubTrusted(baseUrl: String, token: String) {
+        val base = normalizeHubBaseUrl(baseUrl)
+        HubTrust.observedFor(base)?.let { if (HubTrust.isPinned(it)) return }
+
+        val nonce = HubAttestation.newNonce()
+        val res = try {
+            withTimeout(8_000L) {
+                probeClient.post("$base/v1/auth/attest") {
+                    setBody(
+                        ProtocolJson.encodeToString(
+                            AttestRequest.serializer(),
+                            AttestRequest(nonce = nonce, kid = HubAttestation.kid(token)),
+                        ),
+                    )
+                }
+            }
+        } catch (t: Throwable) {
+            throw HubTrustException("无法连接主机进行身份校验: ${t.message ?: "网络错误"}")
+        }
+        if (!res.status.isSuccess()) {
+            throw HubTrustException("主机身份校验未通过（令牌不被该主机认可），已阻止发送令牌")
+        }
+        val att = runCatching {
+            ProtocolJson.decodeFromString(AttestResponse.serializer(), res.bodyAsText())
+        }.getOrNull() ?: throw HubTrustException("主机身份校验响应无效，已阻止发送令牌")
+        val seen = HubTrust.observedFor(base)
+            ?: throw HubTrustException("未获取到主机证书，已阻止发送令牌")
+        val expectedProof = HubAttestation.proof(token, seen, nonce)
+        if (!constantTimeEquals(seen, att.fingerprint.lowercase()) ||
+            !constantTimeEquals(expectedProof, att.proof.lowercase())
+        ) {
+            throw HubTrustException("主机证书与令牌不匹配（可能存在中间人或冒充主机），已阻止发送令牌")
+        }
+        HubTrust.pin(seen)
+    }
+
+    override suspend fun authenticateViaTailscale(
+        baseUrl: String,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        val base = normalizeHubBaseUrl(baseUrl)
+        val nonce = HubAttestation.newNonce()
+        val res = withTimeout(12_000L) {
+            probeClient.post("$base/v1/auth/tailscale") {
+                setBody(
+                    ProtocolJson.encodeToString(
+                        TailscaleHandshakeRequest.serializer(),
+                        TailscaleHandshakeRequest(nonce = nonce, deviceName = deviceName),
+                    ),
+                )
+            }
+        }
+        val body = res.bodyAsText()
+        if (!res.status.isSuccess()) {
+            throw HubTrustException("Tailscale 同账号握手未通过: $body")
+        }
+        val auth = ProtocolJson.decodeFromString(DirectTokenAuthResult.serializer(), body)
+        val seen = HubTrust.observedFor(base)
+            ?: throw HubTrustException("未获取到主机 TLS 证书，已阻止建联")
+        val expectedProof = HubAttestation.proof(auth.accessToken, seen, nonce)
+        if (!constantTimeEquals(seen, auth.fingerprint.lowercase()) ||
+            !constantTimeEquals(expectedProof, auth.proof.lowercase())
+        ) {
+            throw HubTrustException("主机 TLS 证书校验未通过，已阻止建联")
+        }
+        HubTrust.pin(seen)
+        return auth
+    }
+
+    override suspend fun redeemPairingCode(
+        baseUrl: String,
+        pairCode: String?,
+        staticToken: String?,
+        expectedFingerprint: String?,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        val base = normalizeHubBaseUrl(baseUrl)
+        val expectedFp = expectedFingerprint?.trim()?.lowercase()?.takeIf { it.length == 64 }
+        if (expectedFp != null) {
+            if (HubTrust.observedFor(base) == null) {
+                withTimeout(5_000L) {
+                    probeClient.get("$base/v1/auth/discover")
+                }
+            }
+            val preSeen = HubTrust.observedFor(base)
+                ?: throw HubTrustException("未获取到主机 TLS 证书，已阻止配对")
+            if (!constantTimeEquals(preSeen, expectedFp)) {
+                throw HubTrustException("主机证书指纹与配对二维码不一致，已阻止发送凭证")
+            }
+        }
+
+        val nonce = HubAttestation.newNonce()
+        val res = withTimeout(8_000L) {
+            probeClient.post("$base/v1/auth/pair") {
+                setBody(
+                    ProtocolJson.encodeToString(
+                        PairRedeemRequest.serializer(),
+                        PairRedeemRequest(
+                            nonce = nonce,
+                            pairCode = pairCode,
+                            token = staticToken,
+                            deviceName = deviceName,
+                        ),
+                    ),
+                )
+            }
+        }
+        val body = res.bodyAsText()
+        if (!res.status.isSuccess()) {
+            throw HubTrustException("配对码已过期或无效，请在主机重新执行 hub pair")
+        }
+        val auth = ProtocolJson.decodeFromString(DirectTokenAuthResult.serializer(), body)
+        val seen = HubTrust.observedFor(base)
+            ?: throw HubTrustException("未获取到主机 TLS 证书，已阻止保存凭证")
+        if (expectedFp != null && !constantTimeEquals(seen, expectedFp)) {
+            throw HubTrustException("主机证书指纹与配对二维码不匹配")
+        }
+        val expectedProof = HubAttestation.proof(auth.accessToken, seen, nonce)
+        if (!constantTimeEquals(seen, auth.fingerprint.lowercase()) ||
+            !constantTimeEquals(expectedProof, auth.proof.lowercase())
+        ) {
+            throw HubTrustException("主机证书证明校验未通过")
+        }
+        HubTrust.pin(seen)
+        return auth
     }
 
     override suspend fun connectAndHello(
@@ -232,7 +491,7 @@ class HubRpcClient(
         platformName: String,
     ): HubHelloResult {
         disconnect()
-        val session = httpClient.webSocketSession(urlString = wsUrl)
+        val session = secureClient.webSocketSession(urlString = hubWsUrlOf(wsUrl))
         wsSession = session
         readerJob = scope.launch {
             readLoop(session)
@@ -245,7 +504,7 @@ class HubRpcClient(
                     token = token,
                     client = ClientInfo(
                         name = "lework-mobile",
-                        version = "0.3.9",
+                        version = "0.5.0",
                         platform = platformName,
                     ),
                 ),
@@ -383,11 +642,45 @@ class HubRpcClient(
         )
     }
 
+    override suspend fun fetchUsageSummary(days: Int, engineId: String?): UsageSummaryResult =
+        call(
+            "usage.summary",
+            encodeParams(UsageSummaryParams(days = days, engineId = engineId)),
+        )
+
+    override suspend fun fetchUsageQuota(): UsageQuotaResult =
+        call("usage.quota")
+
+    override suspend fun fetchSessionUsage(sessionId: String): SessionUsageResult =
+        call(
+            "usage.session",
+            encodeParams(UsageSessionParams(sessionId = sessionId)),
+        )
+
+    override suspend fun fetchProxyUsage(): ProxyUsageResult =
+        call("usage.proxy")
+
+    override suspend fun fetchGitStatus(path: String): GitStatusResult =
+        call(
+            "git.status",
+            encodeParams(GitStatusParams(path = path)),
+        )
+
+    override suspend fun fetchGitDiff(
+        path: String,
+        filePath: String?,
+        baseCommitSha: String?,
+    ): GitDiffResult =
+        call(
+            "git.diff",
+            encodeParams(GitDiffParams(path = path, filePath = filePath, baseCommitSha = baseCommitSha)),
+        )
+
     override suspend fun disconnect() {
-        readerJob?.cancel()
-        readerJob = null
         val s = wsSession
         wsSession = null
+        readerJob?.cancel()
+        readerJob = null
         runCatching { s?.close() }
         failAllPending("Disconnected")
     }
@@ -444,10 +737,19 @@ class HubRpcClient(
                 }
             }
             failAllPending("Connection closed by Hub")
-            _disconnected.tryEmit("Connection closed")
+            if (wsSession === session) {
+                wsSession = null
+                _disconnected.tryEmit("Connection closed")
+            }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            failAllPending("Cancelled")
+            throw ce
         } catch (t: Throwable) {
             failAllPending(t.message ?: "WebSocket error")
-            _disconnected.tryEmit(t.message ?: "Disconnected")
+            if (wsSession === session) {
+                wsSession = null
+                _disconnected.tryEmit(t.message ?: "Disconnected")
+            }
         }
     }
 

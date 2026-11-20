@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
-import { ErrorCode, PROTOCOL_VERSION, type AgentEvent } from '@qprc/protocol'
+import { ErrorCode, PROTOCOL_VERSION, type AgentEvent } from '@lework/protocol'
 import { AgyEngineAdapter } from '../src/engines/agy-adapter.ts'
 import { ClaudeCodeAdapter } from '../src/engines/claude-adapter.ts'
 import { DshEngineAdapter } from '../src/engines/dsh-adapter.ts'
@@ -17,6 +17,9 @@ import { HostTaskInspector } from '../src/storage/host-history.ts'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '../..')
 
+// Isolated Hub data dir (TLS identity, issued tokens) for the whole suite
+process.env.LEWORK_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-hub-test-'))
+
 class TestRpcClient {
   private ws!: WebSocket
   private nextId = 1
@@ -25,7 +28,8 @@ class TestRpcClient {
   private readonly eventWaiters: Array<(ev: AgentEvent) => boolean> = []
 
   async connect(url: string): Promise<void> {
-    this.ws = new WebSocket(url)
+    // Self-signed Hub certificate: tests verify the pinned fingerprint separately
+    this.ws = new WebSocket(url, { rejectUnauthorized: false })
     await new Promise<void>((resolve, reject) => {
       this.ws.once('open', () => resolve())
       this.ws.once('error', reject)
@@ -124,7 +128,7 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
     })
 
     const { port } = await server.start()
-    const wsUrl = `ws://127.0.0.1:${port}/v1/ws`
+    const wsUrl = `wss://127.0.0.1:${port}/v1/ws`
     const client = new TestRpcClient()
     await client.connect(wsUrl)
 
@@ -231,7 +235,12 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
     const { checkpoints } = await client.call('checkpoint.list', {
       sessionId: session.id,
     })
-    expect(checkpoints.length).toBe(1)
+    expect(checkpoints.length).toBe(2)
+    expect(checkpoints[0].label).toBe('Before refactor')
+    expect(checkpoints[1].label).toContain('对话前自动快照')
+
+    const gitStatus = await client.call('git.status', { path: repoRoot })
+    expect(gitStatus.isGitRepo).toBe(true)
 
     // 10. Pi Engine embedded turn + approval flow
     const { session: piSession } = await client.call('session.create', {
@@ -331,7 +340,7 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
 
       const { port } = await server.start()
       const client = new TestRpcClient()
-      await client.connect(`ws://127.0.0.1:${port}/v1/ws`)
+      await client.connect(`wss://127.0.0.1:${port}/v1/ws`)
       await client.call('hub.hello', {
         protocolVersion: PROTOCOL_VERSION,
         token: 'secret-lazy-token',

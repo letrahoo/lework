@@ -688,6 +688,19 @@ internal fun ClaudeCliToolCallRow(
                                             lineHeight = 17.sp,
                                             fontFamily = FontFamily.Monospace,
                                         )
+                                    } else if (
+                                        parsed.category == CliToolCategory.EDIT &&
+                                        (headerText.startsWith("--- ") || headerText.startsWith("*** ") || headerText.contains("\n@@ "))
+                                    ) {
+                                        val diffStyled = remember(headerText) {
+                                            highlightEverforestCode(headerText, "diff")
+                                        }
+                                        Text(
+                                            text = diffStyled,
+                                            fontSize = 11.sp,
+                                            lineHeight = 16.5.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
                                     } else {
                                         Text(
                                             text = headerText,
@@ -838,21 +851,25 @@ internal fun parseCliTool(item: ChatTimelineItem.Tool): ParsedCliTool {
         )
     }
 
-    // 4. Edit / Write file
+    // 4. Edit / Write file — synthesize a readable unified diff from (old_string/new_string, Target/Replacement, Content, or patch)
     if (
         item.kind == ToolKind.EDIT ||
         lowerTitle in setOf("update", "edit", "multiedit", "write", "edit_file", "write_file", "apply_patch", "codex file patch")
     ) {
         val badge = if (lowerTitle.contains("write")) "Write" else "Update"
-        val p = pathField ?: rawTitle
+        val p = pathField ?: extractPatchPath(item.input) ?: rawTitle
+        val synthesized = synthesizeEditToolDiff(p, jsonObj, item.input)
+        val statDesc = synthesized?.second
+        val detailBody = synthesized?.first ?: p.ifBlank { item.input }
+        val concise = if (statDesc != null) "${compactPath(p)} ($statDesc)" else compactPath(p)
         return ParsedCliTool(
             category = CliToolCategory.EDIT,
             badge = badge,
             badgeColor = Everforest.BoldGold,
-            conciseLabel = compactPath(p),
+            conciseLabel = concise,
             microTag = fileNameOnly(p),
-            description = null,
-            fullCommandOrDetail = p.ifBlank { item.input },
+            description = statDesc,
+            fullCommandOrDetail = detailBody,
             outputLineCount = outLines,
         )
     }
@@ -991,4 +1008,81 @@ private fun compactPath(raw: String): String {
 private fun oneLine(text: String, maxChars: Int): String {
     val single = text.replace('\n', ' ').replace(Regex("\\s+"), " ").trim()
     return if (single.length <= maxChars) single else single.take(maxChars - 1) + "…"
+}
+
+private fun extractPatchPath(rawInput: String?): String? {
+    if (rawInput.isNullOrBlank()) return null
+    val m = Regex("""\*\*\* (?:Update|Add|Delete) File:\s*([^\r\n]+)""").find(rawInput)
+        ?: Regex("""^\+\+\+ b/([^\r\n]+)""", RegexOption.MULTILINE).find(rawInput)
+    return m?.groupValues?.getOrNull(1)?.trim()
+}
+
+private fun synthesizeEditToolDiff(
+    filePath: String,
+    jsonObj: kotlinx.serialization.json.JsonObject?,
+    rawInput: String?,
+): Pair<String, String>? {
+    val shortPath = compactPath(filePath).ifEmpty { "file" }
+
+    // Case 1: Claude `Edit` (`old_string` / `new_string`) or AGY `edit_file` (`Target` / `Replacement`)
+    val oldText = jsonObj?.str("old_string") ?: jsonObj?.str("Target")
+    val newText = jsonObj?.str("new_string") ?: jsonObj?.str("Replacement")
+    if (oldText != null || newText != null) {
+        val oldLines = (oldText ?: "").lines()
+        val newLines = (newText ?: "").lines()
+        var prefix = 0
+        while (prefix < oldLines.size && prefix < newLines.size && oldLines[prefix] == newLines[prefix]) {
+            prefix++
+        }
+        var suffix = 0
+        while (
+            suffix < (oldLines.size - prefix) &&
+            suffix < (newLines.size - prefix) &&
+            oldLines[oldLines.size - 1 - suffix] == newLines[newLines.size - 1 - suffix]
+        ) {
+            suffix++
+        }
+        val removed = oldLines.subList(prefix, oldLines.size - suffix)
+        val added = newLines.subList(prefix, newLines.size - suffix)
+        val ctxBefore = oldLines.subList((prefix - 2).coerceAtLeast(0), prefix)
+        val ctxAfter = oldLines.subList(oldLines.size - suffix, (oldLines.size - suffix + 2).coerceAtMost(oldLines.size))
+
+        val diffText = buildString {
+            appendLine("--- a/$shortPath")
+            appendLine("+++ b/$shortPath")
+            appendLine("@@ -${prefix + 1},${removed.size} +${prefix + 1},${added.size} @@")
+            ctxBefore.forEach { appendLine(" $it") }
+            removed.take(60).forEach { appendLine("-$it") }
+            if (removed.size > 60) appendLine("-… (省略 ${removed.size - 60} 行)")
+            added.take(60).forEach { appendLine("+$it") }
+            if (added.size > 60) appendLine("+… (省略 ${added.size - 60} 行)")
+            ctxAfter.forEach { appendLine(" $it") }
+        }.trimEnd()
+        return diffText to "+${added.size} / -${removed.size}"
+    }
+
+    // Case 2: `Write` / `write_file` (`content` / `Content`)
+    val createdContent = jsonObj?.str("content") ?: jsonObj?.str("Content")
+    if (!createdContent.isNullOrEmpty()) {
+        val lines = createdContent.lines()
+        val preview = buildString {
+            appendLine("--- /dev/null")
+            appendLine("+++ b/$shortPath")
+            appendLine("@@ -0,0 +1,${lines.size} @@")
+            lines.take(50).forEach { appendLine("+$it") }
+            if (lines.size > 50) appendLine("+… (共 ${lines.size} 行)")
+        }.trimEnd()
+        return preview to "+${lines.size}"
+    }
+
+    // Case 3: Codex `apply_patch` raw unified/patch text
+    val patch = jsonObj?.str("patch") ?: jsonObj?.str("input") ?: rawInput
+    if (!patch.isNullOrBlank() && (patch.contains("*** ") || patch.contains("\n@@ ") || patch.startsWith("--- "))) {
+        val lines = patch.lines()
+        val addCount = lines.count { it.startsWith("+") && !it.startsWith("+++") }
+        val delCount = lines.count { it.startsWith("-") && !it.startsWith("---") }
+        return patch.trim() to "+$addCount / -$delCount"
+    }
+
+    return null
 }

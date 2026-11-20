@@ -12,6 +12,11 @@ import {
   ProfileInfo,
   Workspace,
   SessionMeta,
+  UsageTotals,
+  UsageSummaryResult,
+  UsageQuotaResult,
+  SessionUsageResult,
+  ProxyUsageResult,
   RpcRequest,
   RpcResponse,
   RpcNotification,
@@ -40,6 +45,11 @@ const bundle = {
     ProfileInfo: z.toJSONSchema(ProfileInfo),
     Workspace: z.toJSONSchema(Workspace),
     SessionMeta: z.toJSONSchema(SessionMeta),
+    UsageTotals: z.toJSONSchema(UsageTotals),
+    UsageSummaryResult: z.toJSONSchema(UsageSummaryResult),
+    UsageQuotaResult: z.toJSONSchema(UsageQuotaResult),
+    SessionUsageResult: z.toJSONSchema(SessionUsageResult),
+    ProxyUsageResult: z.toJSONSchema(ProxyUsageResult),
     AgentEvent: z.toJSONSchema(AgentEvent),
     RpcRequest: z.toJSONSchema(RpcRequest),
     RpcResponse: z.toJSONSchema(RpcResponse),
@@ -548,6 +558,8 @@ data class HubHelloResult(
     val protocolVersion: Int,
     val hub: HubInfo,
     val capabilities: List<String>,
+    val relayUrls: List<String> = emptyList(),
+    val endpoints: List<String> = emptyList(),
 )
 
 @Serializable
@@ -708,6 +720,179 @@ data class CheckpointRestoreParams(
 @Serializable
 data class OkResult(
     val ok: Boolean,
+)
+
+@Serializable
+data class UsageTotals(
+    val inputTokens: Long = 0,
+    val outputTokens: Long = 0,
+    val cacheReadTokens: Long = 0,
+    val cacheWriteTokens: Long = 0,
+    val totalTokens: Long = 0,
+    val requests: Int = 0,
+    val estimatedCostUsd: Double? = null,
+)
+
+@Serializable
+data class DailyUsageEntry(
+    val date: String,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val cacheReadTokens: Long,
+    val cacheWriteTokens: Long,
+    val totalTokens: Long,
+    val requests: Int,
+    val estimatedCostUsd: Double? = null,
+)
+
+@Serializable
+data class EngineUsageEntry(
+    val engineId: String,
+    val supported: Boolean,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val cacheReadTokens: Long,
+    val cacheWriteTokens: Long,
+    val totalTokens: Long,
+    val requests: Int,
+    val estimatedCostUsd: Double? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class ModelUsageEntry(
+    val model: String,
+    val engineId: String,
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val cacheReadTokens: Long,
+    val cacheWriteTokens: Long,
+    val totalTokens: Long,
+    val requests: Int,
+    val estimatedCostUsd: Double? = null,
+)
+
+@Serializable
+data class UsageSummaryParams(
+    val days: Int? = null,
+    val engineId: String? = null,
+)
+
+@Serializable
+data class UsageSummaryResult(
+    val days: Int,
+    val generatedAt: Long,
+    val totals: UsageTotals,
+    val daily: List<DailyUsageEntry> = emptyList(),
+    val byEngine: List<EngineUsageEntry> = emptyList(),
+    val byModel: List<ModelUsageEntry> = emptyList(),
+)
+
+@Serializable
+data class QuotaWindowInfo(
+    val id: String,
+    val engineId: String,
+    val windowKind: String,
+    val label: String,
+    val source: String,
+    val active: Boolean,
+    val usedPercent: Double? = null,
+    val usedTokens: Long,
+    val estimatedCostUsd: Double? = null,
+    val burnRateTokensPerMin: Double? = null,
+    val projectedTokens: Long? = null,
+    val windowMinutes: Int,
+    val startedAt: Long? = null,
+    val resetsAt: Long? = null,
+)
+
+@Serializable
+data class UsageQuotaResult(
+    val generatedAt: Long,
+    val windows: List<QuotaWindowInfo> = emptyList(),
+)
+
+@Serializable
+data class UsageSessionParams(
+    val sessionId: String,
+)
+
+typealias SessionUsageParams = UsageSessionParams
+
+@Serializable
+data class SessionUsageResult(
+    val sessionId: String,
+    val engineId: String,
+    val model: String? = null,
+    val supported: Boolean,
+    val contextTokens: Long,
+    val contextWindow: Long,
+    val contextPercent: Double,
+    val cacheHitPercent: Double? = null,
+    val lastInputTokens: Long,
+    val lastOutputTokens: Long,
+    val totals: UsageTotals,
+    val note: String? = null,
+)
+
+@Serializable
+data class ProxyModelUsageEntry(
+    val model: String,
+    val requests: Long,
+    val totalTokens: Long,
+)
+
+@Serializable
+data class ProxyUsageResult(
+    val endpoint: String,
+    val reachable: Boolean,
+    val exposedModels: Int,
+    val managementEnabled: Boolean,
+    val totalRequests: Long? = null,
+    val successCount: Long? = null,
+    val failureCount: Long? = null,
+    val totalTokens: Long? = null,
+    val byModel: List<ProxyModelUsageEntry> = emptyList(),
+    val note: String? = null,
+)
+
+@Serializable
+data class GitStatusParams(
+    val path: String,
+)
+
+@Serializable
+data class GitChangedFileEntry(
+    val path: String,
+    val status: String,
+    val additions: Int,
+    val deletions: Int,
+)
+
+@Serializable
+data class GitStatusResult(
+    val path: String,
+    val isGitRepo: Boolean,
+    val branch: String? = null,
+    val headSha: String? = null,
+    val totalAdditions: Int = 0,
+    val totalDeletions: Int = 0,
+    val files: List<GitChangedFileEntry> = emptyList(),
+)
+
+@Serializable
+data class GitDiffParams(
+    val path: String,
+    val filePath: String? = null,
+    val baseCommitSha: String? = null,
+)
+
+@Serializable
+data class GitDiffResult(
+    val path: String,
+    val filePath: String? = null,
+    val diff: String,
+    val truncated: Boolean = false,
 )
 
 @Serializable

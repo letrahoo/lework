@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import type { EngineCapabilities, EngineStatus, PermissionOption } from '@qprc/protocol'
+import type { EngineCapabilities, EngineStatus, PermissionOption } from '@lework/protocol'
 import { findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'

@@ -10,6 +10,7 @@ import dev.lework.platform.JvmPlatformTestHooks
 import dev.lework.protocol.*
 import dev.lework.store.ConsoleStore
 import dev.lework.ui.ConsoleApp
+import dev.lework.ui.EverforestMarkdownContent
 import kotlinx.coroutines.CoroutineScope
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -252,6 +253,35 @@ class UiAutomationStressTest {
 
             assertEquals(50, transport.respondedApprovals.size)
             assertTrue(transport.respondedApprovals.all { it.third == "tty_key:1" })
+
+            // Verify superseded `tty_perm_*` replacement: if `tty_perm_stale_1_of_1` is followed by
+            // `tty_perm_fresh_1_of_3` without an intervening PermissionResolved, clicking `1. Yes`
+            // MUST submit `tty_perm_fresh_1_of_3` (never get stuck on the stale first requestId!)
+            transport.emitEvent(
+                AgentEvent.PermissionRequested(
+                    seq = 51,
+                    sessionId = sid,
+                    ts = 4_001L,
+                    requestId = "tty_perm_stale_1_of_1",
+                    title = "Bash command · 1 of 1\necho old",
+                    options = listOf(PermissionOption("tty_key:1", "1. Yes", PermissionOptionKind.ALLOW_ONCE)),
+                ),
+            )
+            transport.emitEvent(
+                AgentEvent.PermissionRequested(
+                    seq = 51,
+                    sessionId = sid,
+                    ts = 4_002L,
+                    requestId = "tty_perm_fresh_1_of_3",
+                    title = "Bash command · 1 of 3\necho latest",
+                    options = listOf(PermissionOption("tty_key:1", "1. Yes", PermissionOptionKind.ALLOW_ONCE)),
+                ),
+            )
+            waitForIdle()
+            onNodeWithText("1. Yes").performClick()
+            waitForIdle()
+            assertEquals("tty_perm_fresh_1_of_3", transport.respondedApprovals.last().second)
+            onNodeWithTag("inline_approval_banner").assertDoesNotExist()
         }
 
     @Test
@@ -305,5 +335,41 @@ class UiAutomationStressTest {
             }
 
             onNodeWithText("保持上下文在线", substring = true).assertExists()
+        }
+
+    @Test
+    fun `T8_3 aligns Markdown table columns strictly across header and uneven multi-line body rows`() =
+        runComposeUiTest {
+            val sampleTable = """
+                | # | 模块说明 | 命令 / 状态 |
+                | - | :--- | ---: |
+                | 1 | 这是一段非常长的描述文案，用来模拟移动端窄屏下自动折行的多行单元格内容，确保不会把其他行的列位置挤歪 | `hub tokens [list | revoke-all]` |
+                | 2 | 短文案 | 已完成 |
+            """.trimIndent()
+
+            setContent {
+                Box(modifier = Modifier.size(width = 390.dp, height = 600.dp)) {
+                    EverforestMarkdownContent(markdown = sampleTable)
+                }
+            }
+            waitForIdle()
+
+            for (c in 0 until 3) {
+                val hBounds = onNodeWithTag("md_table_cell_0_$c", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+                val r1Bounds = onNodeWithTag("md_table_cell_1_$c", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+                val r2Bounds = onNodeWithTag("md_table_cell_2_$c", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+
+                assertEquals(hBounds.left, r1Bounds.left, 0.5f, "Col $c left edge misaligned between header and row 1")
+                assertEquals(hBounds.left, r2Bounds.left, 0.5f, "Col $c left edge misaligned between header and row 2")
+                assertEquals(hBounds.right, r1Bounds.right, 0.5f, "Col $c right edge misaligned between header and row 1")
+                assertEquals(hBounds.right, r2Bounds.right, 0.5f, "Col $c right edge misaligned between header and row 2")
+            }
+
+            // Columns must never overlap horizontally
+            val col0 = onNodeWithTag("md_table_cell_1_0", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val col1 = onNodeWithTag("md_table_cell_1_1", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val col2 = onNodeWithTag("md_table_cell_1_2", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertTrue(col0.right < col1.left, "Col 0 overlapped Col 1: $col0 vs $col1")
+            assertTrue(col1.right < col2.left, "Col 1 overlapped Col 2: $col1 vs $col2")
         }
 }

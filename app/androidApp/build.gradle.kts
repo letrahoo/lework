@@ -18,7 +18,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.lework"
+        applicationId = "dev.lework.app"
         minSdk = 24
         targetSdk = 35
         versionCode = 1

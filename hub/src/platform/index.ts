@@ -11,8 +11,29 @@ export function detectPlatform(): SupportedPlatform {
   return 'other'
 }
 
+let legacyMigrated = false
+
+/**
+ * Hub data directory (`$LEWORK_HOME`, default `~/.lework`). Older builds used `~/.qprc`; it is
+ * moved over once on first use and a compatibility symlink is left behind.
+ */
 export function defaultDataDir(): string {
-  return process.env.QPRC_HOME ?? path.join(os.homedir(), '.qprc')
+  if (process.env.LEWORK_HOME) return process.env.LEWORK_HOME
+  const dir = path.join(os.homedir(), '.lework')
+  if (!legacyMigrated) {
+    legacyMigrated = true
+    const legacy = path.join(os.homedir(), '.qprc')
+    try {
+      if (!fs.existsSync(dir) && fs.existsSync(legacy) && !fs.lstatSync(legacy).isSymbolicLink()) {
+        fs.renameSync(legacy, dir)
+        fs.symlinkSync(dir, legacy)
+        console.log(`[lework] Migrated data dir ${legacy} -> ${dir}`)
+      }
+    } catch {
+      // best effort
+    }
+  }
+  return dir
 }
 
 export function extraSearchPaths(): string[] {
@@ -148,6 +169,49 @@ export class SleepInhibitor {
   }
 }
 
+export function ensureUserCliLinks(
+  repoRoot: string,
+  targetBinDir: string = path.join(os.homedir(), '.local', 'bin'),
+): string[] {
+  const launcher = path.join(repoRoot, 'hub', 'bin', 'hub.js')
+  if (!fs.existsSync(launcher)) return []
+  try {
+    fs.chmodSync(launcher, 0o755)
+    fs.mkdirSync(targetBinDir, { recursive: true, mode: 0o755 })
+  } catch {
+    return []
+  }
+
+  const linked: string[] = []
+  for (const name of ['lework', 'hub']) {
+    const linkPath = path.join(targetBinDir, name)
+    try {
+      const lst = fs.lstatSync(linkPath)
+      if (lst.isSymbolicLink()) {
+        const curTarget = fs.readlinkSync(linkPath)
+        const resolvedCur = path.resolve(path.dirname(linkPath), curTarget)
+        if (resolvedCur === launcher) {
+          linked.push(linkPath)
+          continue
+        }
+        if (!fs.existsSync(resolvedCur) || curTarget.includes('hub/bin/hub.js')) {
+          fs.unlinkSync(linkPath)
+          fs.symlinkSync(launcher, linkPath)
+          linked.push(linkPath)
+        }
+      }
+    } catch {
+      try {
+        fs.symlinkSync(launcher, linkPath)
+        linked.push(linkPath)
+      } catch {
+        // ignore permission errors
+      }
+    }
+  }
+  return linked
+}
+
 export function generateServiceDescriptor(opts: {
   role: 'master' | 'slave'
   repoRoot: string
@@ -155,7 +219,9 @@ export function generateServiceDescriptor(opts: {
 }): { platform: SupportedPlatform; pathHint: string; content: string } {
   const platform = detectPlatform()
   const nodeBin = opts.nodeBin ?? process.execPath
-  const tsxBin = path.join(opts.repoRoot, 'node_modules', '.bin', 'tsx')
+  const hubTsx = path.join(opts.repoRoot, 'hub', 'node_modules', '.bin', 'tsx')
+  const rootTsx = path.join(opts.repoRoot, 'node_modules', '.bin', 'tsx')
+  const tsxBin = fs.existsSync(hubTsx) ? hubTsx : rootTsx
   const cliEntry = path.join(opts.repoRoot, 'hub', 'src', 'cli.ts')
   const home = os.homedir()
 
@@ -199,7 +265,7 @@ export function generateServiceDescriptor(opts: {
   }
 
   // Linux / systemd --user (Devbox Master or Linux Slave)
-  const unitName = `qprc-hub-${opts.role}.service`
+  const unitName = `lework-hub-${opts.role}.service`
   const pathHint = path.join(home, '.config', 'systemd', 'user', unitName)
   const content = `[Unit]
 Description=lework Hub (${opts.role})

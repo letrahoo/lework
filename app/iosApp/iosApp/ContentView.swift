@@ -1,5 +1,5 @@
-import SwiftUI
 import Shared
+import SwiftUI
 
 struct ComposeView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
@@ -10,8 +10,24 @@ struct ComposeView: UIViewControllerRepresentable {
 }
 
 struct ContentView: View {
+    @StateObject private var bridge = NativeBridgeCoordinator()
+
     var body: some View {
         ComposeView()
             .ignoresSafeArea(.all)
+            .sheet(
+                isPresented: $bridge.isShowingScanner,
+                onDismiss: {
+                    bridge.finishQrScan(nil)
+                },
+                content: {
+                    QrScannerSheet { scanned in
+                        bridge.finishQrScan(scanned)
+                    }
+                }
+            )
+            .onOpenURL { url in
+                IosNativeBridge.shared.handleIncomingUrl(url: url.absoluteString)
+            }
     }
 }

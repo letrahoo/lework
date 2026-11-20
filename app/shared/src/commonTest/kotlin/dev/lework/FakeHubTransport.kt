@@ -46,6 +46,11 @@ class FakeHubTransport : HubTransport {
 
     var listSessionsException: Throwable? = null
     var connectHelloException: Throwable? = null
+    var simulateTailscaleSameUser: Boolean = false
+    var tailscaleHandshakeCount: Int = 0
+    var pairRedeemCount: Int = 0
+    var emitDisconnectOnClientClose: Boolean = false
+    private var wsConnected: Boolean = false
 
     val unsubscribedIds = mutableListOf<String>()
     val respondedApprovals = mutableListOf<Triple<String, String, String?>>()
@@ -69,27 +74,71 @@ class FakeHubTransport : HubTransport {
         candidates: List<String>,
         dynamicCandidates: StateFlow<List<String>>?,
         waitWindowMs: Long,
+        preferredHubId: String?,
     ): DiscoveredEndpoint? {
-        val chosen = candidates.firstOrNull() ?: "http://127.0.0.1:64450"
+        val chosen = candidates.firstOrNull() ?: "https://127.0.0.1:64450"
         return DiscoveredEndpoint(
             baseUrl = chosen,
-            wsUrl = "ws://127.0.0.1:64450/v1/ws",
-            discover = FeishuDiscoverResult(ok = true, hub = hubInfo, feishuEnabled = true),
+            wsUrl = dev.lework.security.hubWsUrlOf(chosen),
+            discover = HubDiscoverResult(
+                ok = true,
+                hub = hubInfo,
+                oauthEnabled = !simulateTailscaleSameUser,
+                oauthProvider = if (simulateTailscaleSameUser) null else "feishu",
+                oauthDisplayName = if (simulateTailscaleSameUser) null else "飞书",
+                tailscaleSameUser = simulateTailscaleSameUser,
+                tailscaleUser = if (simulateTailscaleSameUser) "Owner" else null,
+            ),
         )
     }
 
-    override suspend fun startFeishuDeviceFlow(baseUrl: String): FeishuStartResult =
-        FeishuStartResult(
-            sid = "feishu_sid_1",
+    override suspend fun authenticateViaTailscale(
+        baseUrl: String,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        tailscaleHandshakeCount++
+        return DirectTokenAuthResult(
+            ok = true,
+            accessToken = "lework_dt.tailscale_mesh_token",
+            user = OAuthUser(subject = "tailscale:owner@example.com", name = "Owner", email = "owner@example.com"),
+            fingerprint = "a".repeat(64),
+            proof = "b".repeat(64),
+            hub = hubInfo,
+            endpoints = listOf("https://100.88.12.34:64450"),
+        )
+    }
+
+    override suspend fun redeemPairingCode(
+        baseUrl: String,
+        pairCode: String?,
+        staticToken: String?,
+        expectedFingerprint: String?,
+        deviceName: String,
+    ): DirectTokenAuthResult {
+        pairRedeemCount++
+        return DirectTokenAuthResult(
+            ok = true,
+            accessToken = "lework_dt.paired_qr_token",
+            user = OAuthUser(subject = "pair:qr", name = deviceName),
+            fingerprint = expectedFingerprint ?: "a".repeat(64),
+            proof = "b".repeat(64),
+            hub = hubInfo,
+            endpoints = listOf(baseUrl),
+        )
+    }
+
+    override suspend fun startOAuthDeviceFlow(baseUrl: String): OAuthStartResult =
+        OAuthStartResult(
+            sid = "oauth_sid_1",
             userCode = "ABCD-1234",
             verifyUrl = "https://open.feishu.cn/verify",
-            applinkUrl = "lark://applink/verify",
+            appLaunchUrl = "https://applink.feishu.cn/client/web_url/open?mode=window",
             expiresIn = 300,
             interval = 60,
         )
 
-    override suspend fun pollFeishuDeviceFlow(baseUrl: String, sid: String): FeishuPollResponse =
-        FeishuPollResponse(status = "pending")
+    override suspend fun pollOAuthDeviceFlow(baseUrl: String, sid: String): OAuthPollResponse =
+        OAuthPollResponse(status = "pending")
 
     override suspend fun connectAndHello(
         wsUrl: String,
@@ -97,6 +146,7 @@ class FakeHubTransport : HubTransport {
         platformName: String,
     ): HubHelloResult {
         connectHelloException?.let { throw it }
+        wsConnected = true
         return HubHelloResult(
             protocolVersion = PROTOCOL_VERSION,
             hub = hubInfo,
@@ -288,12 +338,176 @@ class FakeHubTransport : HubTransport {
         respondedApprovals.add(Triple(sessionId, requestId, optionId))
     }
 
-    override suspend fun listCheckpoints(sessionId: String): List<CheckpointInfo> = emptyList()
+    private val checkpointsBySession = mutableMapOf<String, MutableList<CheckpointInfo>>()
+    val restoredCheckpoints = mutableListOf<Pair<String, String>>()
 
-    override suspend fun createCheckpoint(sessionId: String, label: String?): CheckpointInfo =
-        CheckpointInfo("cp_1", sessionId, label ?: "cp", "abc1234", 1_000L)
+    override suspend fun listCheckpoints(sessionId: String): List<CheckpointInfo> =
+        checkpointsBySession[sessionId]?.toList().orEmpty()
 
-    override suspend fun restoreCheckpoint(sessionId: String, checkpointId: String) = Unit
+    override suspend fun createCheckpoint(sessionId: String, label: String?): CheckpointInfo {
+        val list = checkpointsBySession.getOrPut(sessionId) { mutableListOf() }
+        val info = CheckpointInfo(
+            id = "cp_${list.size + 1}",
+            sessionId = sessionId,
+            label = label ?: "手动快照 #${list.size + 1}",
+            commitSha = "a1b2c3d4e5f6",
+            createdAt = 1_700_000_000_000L,
+        )
+        list.add(0, info)
+        return info
+    }
 
-    override suspend fun disconnect() = Unit
+    override suspend fun restoreCheckpoint(sessionId: String, checkpointId: String) {
+        restoredCheckpoints.add(sessionId to checkpointId)
+    }
+
+    override suspend fun fetchUsageSummary(days: Int, engineId: String?): UsageSummaryResult =
+        UsageSummaryResult(
+            days = days,
+            generatedAt = 1_700_000_000_000L,
+            totals = UsageTotals(
+                inputTokens = 120_000L,
+                outputTokens = 30_000L,
+                cacheReadTokens = 850_000L,
+                cacheWriteTokens = 40_000L,
+                totalTokens = 1_040_000L,
+                requests = 42,
+                estimatedCostUsd = 1.86,
+            ),
+            daily = listOf(
+                DailyUsageEntry(
+                    date = "2026-11-19",
+                    inputTokens = 120_000L,
+                    outputTokens = 30_000L,
+                    cacheReadTokens = 850_000L,
+                    cacheWriteTokens = 40_000L,
+                    totalTokens = 1_040_000L,
+                    requests = 42,
+                    estimatedCostUsd = 1.86,
+                ),
+            ),
+            byEngine = listOf(
+                EngineUsageEntry(
+                    engineId = "claude",
+                    supported = true,
+                    inputTokens = 120_000L,
+                    outputTokens = 30_000L,
+                    cacheReadTokens = 850_000L,
+                    cacheWriteTokens = 40_000L,
+                    totalTokens = 1_040_000L,
+                    requests = 42,
+                    estimatedCostUsd = 1.86,
+                ),
+            ),
+            byModel = listOf(
+                ModelUsageEntry(
+                    model = "claude-opus-4-6",
+                    engineId = "claude",
+                    inputTokens = 120_000L,
+                    outputTokens = 30_000L,
+                    cacheReadTokens = 850_000L,
+                    cacheWriteTokens = 40_000L,
+                    totalTokens = 1_040_000L,
+                    requests = 42,
+                    estimatedCostUsd = 1.86,
+                ),
+            ),
+        )
+
+    override suspend fun fetchUsageQuota(): UsageQuotaResult =
+        UsageQuotaResult(
+            generatedAt = 1_700_000_000_000L,
+            windows = listOf(
+                QuotaWindowInfo(
+                    id = "claude:5h",
+                    engineId = "claude",
+                    windowKind = "five_hour",
+                    label = "Claude · 5 小时窗口",
+                    source = "estimated",
+                    active = true,
+                    usedTokens = 420_000L,
+                    estimatedCostUsd = 0.75,
+                    burnRateTokensPerMin = 3_500.0,
+                    windowMinutes = 300,
+                    resetsAt = 1_700_007_200_000L,
+                ),
+                QuotaWindowInfo(
+                    id = "codex:7d",
+                    engineId = "codex",
+                    windowKind = "weekly",
+                    label = "Codex · 周额度",
+                    source = "reported",
+                    active = true,
+                    usedPercent = 38.0,
+                    usedTokens = 685_000L,
+                    windowMinutes = 10_080,
+                    resetsAt = 1_700_300_000_000L,
+                ),
+            ),
+        )
+
+    override suspend fun fetchSessionUsage(sessionId: String): SessionUsageResult =
+        SessionUsageResult(
+            sessionId = sessionId,
+            engineId = "claude",
+            model = "claude-opus-4-6",
+            supported = true,
+            contextTokens = 68_400L,
+            contextWindow = 200_000L,
+            contextPercent = 34.2,
+            cacheHitPercent = 88.0,
+            lastInputTokens = 1_200L,
+            lastOutputTokens = 650L,
+            totals = UsageTotals(
+                inputTokens = 24_000L,
+                outputTokens = 8_500L,
+                cacheReadTokens = 180_000L,
+                cacheWriteTokens = 12_000L,
+                totalTokens = 224_500L,
+                requests = 9,
+                estimatedCostUsd = 0.42,
+            ),
+        )
+
+    override suspend fun fetchProxyUsage(): ProxyUsageResult =
+        ProxyUsageResult(
+            endpoint = "http://127.0.0.1:8317",
+            reachable = true,
+            exposedModels = 6,
+            managementEnabled = false,
+            note = "本机代理在线（如需请求统计可在 ~/.lework/config.json 配置 cpaManagementKey）",
+        )
+
+    override suspend fun fetchGitStatus(path: String): GitStatusResult =
+        GitStatusResult(
+            path = path,
+            isGitRepo = true,
+            branch = "main",
+            headSha = "83ae0f6",
+            totalAdditions = 12,
+            totalDeletions = 3,
+            files = listOf(
+                GitChangedFileEntry(path = "hub/src/server.ts", status = "modified", additions = 12, deletions = 3),
+            ),
+        )
+
+    override suspend fun fetchGitDiff(
+        path: String,
+        filePath: String?,
+        baseCommitSha: String?,
+    ): GitDiffResult =
+        GitDiffResult(
+            path = path,
+            filePath = filePath,
+            diff = "--- a/hub/src/server.ts\n+++ b/hub/src/server.ts\n@@ -1,2 +1,2 @@\n-old line\n+new line",
+            truncated = false,
+        )
+
+    override suspend fun disconnect() {
+        val wasConnected = wsConnected
+        wsConnected = false
+        if (wasConnected && emitDisconnectOnClientClose) {
+            _disconnected.tryEmit("Connection closed")
+        }
+    }
 }

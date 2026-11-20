@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { ProfileInfo, ProviderInfo } from '@qprc/protocol'
+import type { ProfileInfo, ProviderInfo } from '@lework/protocol'
 import { defaultDataDir } from '../platform/index.ts'
 
 const LOCAL_CPA_CONFIG_PATH =
@@ -25,7 +25,7 @@ export class ModelRegistry {
   }
 
   getCpaApiKey(): string | undefined {
-    if (process.env.QPRC_CPA_KEY) return process.env.QPRC_CPA_KEY
+    if (process.env.LEWORK_CPA_KEY) return process.env.LEWORK_CPA_KEY
     if (this.cachedCpaKey) return this.cachedCpaKey
     try {
       if (fs.existsSync(LOCAL_CPA_CONFIG_PATH)) {
@@ -98,6 +98,9 @@ export class ModelRegistry {
     if (idx >= 0) {
       this.profiles[idx] = profile
     } else {
+      if (this.profiles.length >= 64) {
+        throw new Error('Too many profiles (max 64)')
+      }
       this.profiles.push(profile)
     }
     try {
@@ -105,6 +108,7 @@ export class ModelRegistry {
         encoding: 'utf8',
         mode: 0o600,
       })
+      fs.chmodSync(this.profilesPath, 0o600)
     } catch {
       // ignore
     }
@@ -165,7 +169,7 @@ export class ModelRegistry {
         const models = (body.data ?? [])
           .map(item => (typeof item?.id === 'string' ? item.id : ''))
           .filter(Boolean)
-          .slice(0, 40)
+          .slice(0, 80)
         if (models.length > 0) {
           this.cachedCpaModels = models
         }

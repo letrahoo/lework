@@ -1,9 +1,11 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
+import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
 import { WebSocketServer, WebSocket } from 'ws'
+import { z } from 'zod'
 import {
   ErrorCode,
   Methods,
@@ -18,10 +20,12 @@ import {
   type SessionMode,
   type SlaveInfo,
   type Workspace,
-} from '@qprc/protocol'
+} from '@lework/protocol'
 import type { HubConfig } from './config.ts'
-import { BonjourAdvertiser } from './bonjour.ts'
-import { FeishuGateAuth } from './auth/feishu-auth.ts'
+import { BonjourAdvertiser, collectLanIpv4Addresses, collectTailscaleIpv4Addresses } from './bonjour.ts'
+import { DeviceFlowAuth } from './auth/device-flow-auth.ts'
+import { PairingTicketManager } from './auth/pair-manager.ts'
+import { TsnetManager } from './auth/tsnet-manager.ts'
 import { AgyEngineAdapter } from './engines/agy-adapter.ts'
 import { ClaudeCodeAdapter } from './engines/claude-adapter.ts'
 import { CodexEngineAdapter } from './engines/codex-adapter.ts'
@@ -32,23 +36,58 @@ import type { EngineAdapter } from './engines/types.ts'
 import { detectPlatform } from './platform/index.ts'
 import { ModelRegistry } from './registry/model-registry.ts'
 import { HubRpcError } from './security/path-guard.ts'
+import {
+  attestProof,
+  loadOrCreateHubTls,
+  shortFingerprint,
+  tokenAttestKey,
+  tokenKid,
+  type HubTlsMaterial,
+} from './security/tls.ts'
 import { SessionManager } from './session-manager.ts'
 import type { HostTaskInspector } from './storage/host-history.ts'
-import { listWorkspaceDirectory, readWorkspaceFile } from './storage/workspace-fs.ts'
+import {
+  inspectWorkspaceGitStatus,
+  listWorkspaceDirectory,
+  readWorkspaceFile,
+  readWorkspaceGitDiff,
+} from './storage/workspace-fs.ts'
+import { UsageService } from './usage/index.ts'
 
-const HUB_VERSION = '0.3.0'
+const HUB_VERSION = '0.5.0'
 
 interface ClientConn {
   ws: WebSocket
   authenticated: boolean
   subscribedSessions: Set<string>
+  helloTimer: NodeJS.Timeout | null
 }
 
 export interface HubServerOptions {
   config: HubConfig
   adapters?: EngineAdapter[]
   hostInspector?: HostTaskInspector
+  usageService?: UsageService
+  tsnetManager?: TsnetManager
+  /** TLS identity; defaults to the persistent self-signed identity under `~/.lework/tls`. */
+  tls?: HubTlsMaterial
 }
+
+const HELLO_DEADLINE_MS = 10_000
+const MAX_PREAUTH_CONNECTIONS = 32
+const MAX_REMOTE_SLAVES = 32
+const WS_MAX_PAYLOAD = 1024 * 1024
+const AUTH_FAILURE_DELAY_MS = 400
+
+const SlaveRegistration = z.object({
+  token: z.string().min(8).max(256),
+  slave: z.object({
+    id: z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/),
+    name: z.string().max(80),
+    platform: z.enum(['darwin', 'linux', 'win32', 'other']),
+    engines: z.array(z.string().max(32)).max(32),
+  }),
+})
 
 export class HubServer {
   private readonly httpServer: http.Server
@@ -57,13 +96,27 @@ export class HubServer {
   private readonly remoteSlaves = new Map<string, SlaveInfo>()
   private readonly sessionManager: SessionManager
   private readonly registry: ModelRegistry
-  private readonly feishuAuth: FeishuGateAuth
+  private readonly usageService: UsageService
+  private readonly deviceAuth: DeviceFlowAuth
+  private readonly pairManager = new PairingTicketManager()
+  private readonly tsnetManager: TsnetManager
   private readonly config: HubConfig
   private bonjour: BonjourAdvertiser | null = null
+  private boundPort = 0
+  private readonly tls: HubTlsMaterial
 
   constructor(opts: HubServerOptions) {
     this.config = opts.config
-    this.feishuAuth = new FeishuGateAuth()
+    this.tls = opts.tls ?? loadOrCreateHubTls({ commonName: `lework-${opts.config.hubId}` })
+    this.deviceAuth = new DeviceFlowAuth({ hubId: this.config.hubId })
+    this.tsnetManager =
+      opts.tsnetManager ??
+      new TsnetManager({
+        hubName: this.config.name,
+        hubPort: this.config.port,
+        controlUrl: this.config.tsnetControlUrl,
+        autoStart: this.config.tsnetEnabled,
+      })
     const defaultCwd = this.discoverWorkspaces()[0]?.path
     this.registry = new ModelRegistry(this.config.hubId, this.config.cpaEndpoint, defaultCwd)
 
@@ -87,14 +140,49 @@ export class HubServer {
       opts.hostInspector,
     )
 
-    this.httpServer = http.createServer((req, res) => {
-      void this.handleHttp(req, res)
-    })
+    const sessionSnapshotProvider = (sessionId: string) => {
+      try {
+        const snap = this.sessionManager.subscribeSnapshot(sessionId, -1)
+        return { session: snap.session, events: snap.events }
+      } catch {
+        return null
+      }
+    }
 
-    this.wss = new WebSocketServer({ noServer: true })
+    if (opts.usageService) {
+      opts.usageService.setSessionSnapshotProvider(sessionSnapshotProvider)
+      this.usageService = opts.usageService
+    } else {
+      this.usageService = new UsageService({
+        cpaEndpoint: this.config.cpaEndpoint,
+        cpaManagementKey: this.config.cpaManagementKey,
+        getSessionSnapshot: sessionSnapshotProvider,
+      })
+    }
+
+    // TLS terminates here (end-to-end): relays / SSH tunnels only forward ciphertext.
+    this.httpServer = https.createServer(
+      { key: this.tls.key, cert: this.tls.cert, minVersion: 'TLSv1.2' },
+      (req, res) => {
+        void this.handleHttp(req, res)
+      },
+    )
+
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD })
     this.httpServer.on('upgrade', (req, socket, head) => {
-      const url = new URL(req.url ?? '/', 'http://localhost')
+      const url = new URL(req.url ?? '/', 'https://localhost')
+      // Browsers always send Origin on WebSocket upgrades; native clients don't. Rejecting it
+      // blocks cross-site WebSocket hijacking / DNS-rebinding from malicious web pages.
+      if (req.headers.origin) {
+        socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+        return
+      }
       if (url.pathname === '/v1/ws') {
+        const preauth = [...this.clients].filter(c => !c.authenticated).length
+        if (preauth >= MAX_PREAUTH_CONNECTIONS) {
+          socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n')
+          return
+        }
         this.wss.handleUpgrade(req, socket, head, ws => {
           this.handleConnection(ws)
         })
@@ -108,6 +196,11 @@ export class HubServer {
       }
       socket.destroy()
     })
+  }
+
+  /** SHA-256 (hex) of this Hub's TLS leaf certificate — what clients pin. */
+  get tlsFingerprint(): string {
+    return this.tls.fingerprint
   }
 
   getHubInfo(): HubInfo {
@@ -130,19 +223,23 @@ export class HubServer {
     })
     const addr = this.httpServer.address()
     const port = typeof addr === 'object' && addr ? addr.port : this.config.port
+    this.boundPort = port
     this.bonjour = new BonjourAdvertiser({
       name: this.config.name,
       hubId: this.config.hubId,
       host: this.config.host,
       port,
+      shortFingerprint: shortFingerprint(this.tls.fingerprint),
     })
     this.bonjour.start()
+    await this.tsnetManager.startIfConfigured(port)
     return { port, host: this.config.host }
   }
 
   async stop(): Promise<void> {
     this.bonjour?.stop()
     this.bonjour = null
+    await this.tsnetManager.stop()
     for (const c of this.clients) {
       try {
         c.ws.close()
@@ -231,52 +328,293 @@ export class HubServer {
   }
 
   private isValidToken(token: string): boolean {
-    if (this.feishuAuth.verifySessionToken(token)) return true
+    if (this.deviceAuth.verifySessionToken(token)) return true
+    if (token.startsWith('lework_dt.') && this.deviceAuth.issued.isActive(token)) return true
     return timingSafeEqualStr(token, this.config.token)
   }
 
+  private isAdminToken(token: string): boolean {
+    return Boolean(token) && timingSafeEqualStr(token, this.config.token)
+  }
+
+  private issueDeviceToken(sub: string, name: string): string {
+    const token = `lework_dt.${crypto.randomBytes(32).toString('base64url')}`
+    const expiresAt = Date.now() + 30 * 24 * 3600 * 1000
+    this.deviceAuth.issued.record(token, sub, name, expiresAt)
+    return token
+  }
+
+  async collectConnectableUrls(): Promise<string[]> {
+    const port = this.boundPort || this.config.port
+    const urls: string[] = []
+    const pushUrl = (u: string) => {
+      const normalized = u.replace(/^http:\/\//i, 'https://').replace(/\/+$/, '')
+      if (normalized && !urls.includes(normalized)) urls.push(normalized)
+    }
+    if (this.config.host === '0.0.0.0' || this.config.host === '::') {
+      for (const ip of collectLanIpv4Addresses()) {
+        pushUrl(`https://${ip}:${port}`)
+      }
+      const cleanHost = (this.config.name || os.hostname())
+        .replace(/\.local\.?$/i, '')
+        .replace(/[^A-Za-z0-9_-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+      if (cleanHost) {
+        pushUrl(`https://${cleanHost}.local:${port}`)
+      }
+    } else if (this.config.host) {
+      pushUrl(`https://${this.config.host}:${port}`)
+    }
+    for (const tsIp of collectTailscaleIpv4Addresses()) {
+      pushUrl(`https://${tsIp}:${port}`)
+    }
+    try {
+      const ts = await this.tsnetManager.getStatus()
+      for (const tsIp of ts.tailscaleIps) {
+        if (!tsIp.includes(':')) {
+          pushUrl(`https://${tsIp}:${port}`)
+        }
+      }
+    } catch {
+      // ignore
+    }
+    for (const r of this.config.relayUrls ?? []) {
+      pushUrl(r)
+    }
+    return urls
+  }
+
+  /** Attestation key (SHA-256 of the bearer token) for a public key-id, if the token is valid. */
+  private attestKeyForKid(kid: string): Buffer | null {
+    if (kid === tokenKid(this.config.token)) return tokenAttestKey(this.config.token)
+    return this.deviceAuth.issued.attestKeyForKid(kid)
+  }
+
   private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? '/', 'http://localhost')
-    if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/v1/auth/discover')) {
-      const feishuEnabled = this.feishuAuth.isConfigured()
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(
-        JSON.stringify({
-          ok: true,
-          hub: this.getHubInfo(),
-          feishuEnabled,
-          relayUrls: this.config.relayUrls ?? [],
-          wsPath: '/v1/ws',
-        }),
-      )
+    const url = new URL(req.url ?? '/', 'https://localhost')
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      })
+      res.end(JSON.stringify(body))
+    }
+    // No CORS: requests from web pages (which always carry Origin on POST) are refused.
+    if (req.method !== 'GET' && req.headers.origin) {
+      json(403, { error: 'Forbidden' })
       return
     }
-    if (req.method === 'POST' && url.pathname === '/v1/auth/feishu/start') {
+    if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/v1/auth/discover')) {
+      // Unauthenticated: reveal only what the login screen needs. Relay URLs are returned
+      // after authentication (hub.hello) so an impostor cannot be "learned" from here.
+      const oauth = this.deviceAuth.describe()
+      const tsPeer =
+        url.pathname === '/v1/auth/discover' ? await this.tsnetManager.verifyInboundSocket(req.socket) : null
+      json(200, {
+        ok: true,
+        hub: this.getHubInfo(),
+        oauthEnabled: oauth.enabled,
+        oauthProvider: oauth.provider,
+        oauthDisplayName: oauth.displayName,
+        tailscaleSameUser: Boolean(tsPeer?.sameUser),
+        tailscaleUser: tsPeer?.displayName,
+        tsnetAvailable: this.tsnetManager.hasEmbeddedBinary(),
+        wsPath: '/v1/ws',
+        tls: true,
+      })
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/auth/tailscale') {
+      // Zero-touch Tailscale same-account handshake: verifies via `tsnet` / `tailscaled` LocalClient
+      // WhoIs that the TCP peer is an untagged node belonging to the exact same Tailscale user.
       try {
-        const challenge = await this.feishuAuth.startDeviceFlow()
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify(challenge))
-      } catch (err) {
-        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+        const parsed = JSON.parse((await readRequestBody(req)) || '{}') as {
+          nonce?: unknown
+          deviceName?: unknown
+        }
+        const nonce = typeof parsed.nonce === 'string' ? parsed.nonce : ''
+        if (!/^[0-9a-f]{32,128}$/.test(nonce)) {
+          json(400, { error: 'Bad request' })
+          return
+        }
+        const tsPeer = await this.tsnetManager.verifyInboundSocket(req.socket)
+        if (!tsPeer?.sameUser) {
+          await delay(AUTH_FAILURE_DELAY_MS)
+          json(403, { error: 'Tailscale same-account peer verification failed' })
+          return
+        }
+        const peerLabel =
+          typeof parsed.deviceName === 'string' && parsed.deviceName.trim()
+            ? parsed.deviceName.trim().slice(0, 64)
+            : tsPeer.nodeName
+        const accessToken = this.issueDeviceToken(
+          `tailscale:${tsPeer.loginName}`,
+          `${tsPeer.displayName} (${peerLabel})`,
+        )
+        const endpoints = await this.collectConnectableUrls()
+        console.log(
+          `[lework-auth] ACCEPTED Tailscale same-account peer: user=${tsPeer.loginName} node=${peerLabel}`,
+        )
+        json(200, {
+          ok: true,
+          accessToken,
+          user: {
+            subject: `tailscale:${tsPeer.loginName}`,
+            name: tsPeer.displayName,
+            email: tsPeer.loginName,
+          },
+          fingerprint: this.tls.fingerprint,
+          proof: attestProof(tokenAttestKey(accessToken), this.tls.fingerprint, nonce),
+          hub: this.getHubInfo(),
+          endpoints,
+        })
+      } catch {
+        json(400, { error: 'Bad request' })
       }
       return
     }
-    if (req.method === 'POST' && url.pathname === '/v1/auth/feishu/poll') {
+    if (req.method === 'POST' && url.pathname === '/v1/auth/pair/create') {
+      const auth = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
+      if (!this.isAdminToken(auth)) {
+        await delay(AUTH_FAILURE_DELAY_MS)
+        json(401, { error: 'Unauthorized' })
+        return
+      }
+      const { pairCode, expiresInSec } = this.pairManager.issueTicket()
+      const endpoints = await this.collectConnectableUrls()
+      json(200, {
+        pairCode,
+        expiresInSec,
+        endpoints,
+        fingerprint: this.tls.fingerprint,
+        hub: this.getHubInfo(),
+      })
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/auth/pair') {
       try {
-        const bodyStr = await readRequestBody(req)
-        const parsed = JSON.parse(bodyStr || '{}') as { sid?: string }
-        if (!parsed.sid) {
-          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ status: 'expired', detail: 'Missing sid' }))
+        const parsed = JSON.parse((await readRequestBody(req)) || '{}') as {
+          pairCode?: unknown
+          token?: unknown
+          nonce?: unknown
+          deviceName?: unknown
+        }
+        const nonce = typeof parsed.nonce === 'string' ? parsed.nonce : ''
+        if (!/^[0-9a-f]{32,128}$/.test(nonce)) {
+          json(400, { error: 'Bad request' })
           return
         }
-        const pollRes = await this.feishuAuth.pollDeviceFlow(parsed.sid)
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify(pollRes))
+        const acceptedTicket =
+          typeof parsed.pairCode === 'string' && this.pairManager.consumeTicket(parsed.pairCode)
+        const acceptedStatic =
+          !acceptedTicket && typeof parsed.token === 'string' && this.isAdminToken(parsed.token)
+        if (!acceptedTicket && !acceptedStatic) {
+          await delay(AUTH_FAILURE_DELAY_MS)
+          json(401, { error: 'Invalid or expired pairing code' })
+          return
+        }
+        const devLabel =
+          typeof parsed.deviceName === 'string' && parsed.deviceName.trim()
+            ? parsed.deviceName.trim().slice(0, 64)
+            : 'Mobile App'
+        const accessToken = this.issueDeviceToken('pair:qr', devLabel)
+        const endpoints = await this.collectConnectableUrls()
+        console.log(`[lework-auth] ACCEPTED QR pairing: device=${devLabel}`)
+        json(200, {
+          ok: true,
+          accessToken,
+          user: { subject: 'pair:qr', name: devLabel, email: '' },
+          fingerprint: this.tls.fingerprint,
+          proof: attestProof(tokenAttestKey(accessToken), this.tls.fingerprint, nonce),
+          hub: this.getHubInfo(),
+          endpoints,
+        })
+      } catch {
+        json(400, { error: 'Bad request' })
+      }
+      return
+    }
+    if (url.pathname.startsWith('/v1/tsnet/')) {
+      const auth = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
+      if (!this.isAdminToken(auth)) {
+        await delay(AUTH_FAILURE_DELAY_MS)
+        json(401, { error: 'Unauthorized' })
+        return
+      }
+      if (req.method === 'GET' && url.pathname === '/v1/tsnet/status') {
+        json(200, await this.tsnetManager.getStatus())
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/tsnet/login') {
+        const parsed = JSON.parse((await readRequestBody(req)) || '{}') as {
+          controlUrl?: unknown
+          authKey?: unknown
+        }
+        const status = await this.tsnetManager.startLogin({
+          controlUrl: typeof parsed.controlUrl === 'string' ? parsed.controlUrl : undefined,
+          authKey: typeof parsed.authKey === 'string' ? parsed.authKey : undefined,
+        })
+        json(200, status)
+        return
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/tsnet/logout') {
+        json(200, await this.tsnetManager.logout())
+        return
+      }
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/auth/attest') {
+      // Token-bound TLS attestation: proves to a client holding the token that this TLS endpoint
+      // (certificate fingerprint) belongs to the Hub that issued / knows the token.
+      try {
+        const parsed = JSON.parse((await readRequestBody(req)) || '{}') as { nonce?: unknown; kid?: unknown }
+        const nonce = typeof parsed.nonce === 'string' ? parsed.nonce : ''
+        const kid = typeof parsed.kid === 'string' ? parsed.kid : ''
+        if (!/^[0-9a-f]{32,128}$/.test(nonce) || !/^[0-9a-f]{16}$/.test(kid)) {
+          json(400, { error: 'Bad request' })
+          return
+        }
+        const key = this.attestKeyForKid(kid)
+        if (!key) {
+          await delay(AUTH_FAILURE_DELAY_MS)
+          json(404, { error: 'Unknown key' })
+          return
+        }
+        json(200, {
+          fingerprint: this.tls.fingerprint,
+          proof: attestProof(key, this.tls.fingerprint, nonce),
+        })
+      } catch {
+        json(400, { error: 'Bad request' })
+      }
+      return
+    }
+    if (req.method === 'POST' && (url.pathname === '/v1/auth/oauth/start' || url.pathname === '/v1/auth/feishu/start')) {
+      try {
+        const parsed = JSON.parse((await readRequestBody(req)) || '{}') as { codeChallenge?: unknown }
+        const challenge = await this.deviceAuth.startDeviceFlow(
+          typeof parsed.codeChallenge === 'string' ? parsed.codeChallenge : '',
+        )
+        json(200, challenge)
       } catch (err) {
-        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ status: 'expired', detail: err instanceof Error ? err.message : String(err) }))
+        const msg = err instanceof Error ? err.message : ''
+        const safe = /Too many|Invalid code challenge|not configured/.test(msg) ? msg : 'Login unavailable'
+        json(/Too many/.test(msg) ? 429 : 400, { error: safe })
+      }
+      return
+    }
+    if (req.method === 'POST' && (url.pathname === '/v1/auth/oauth/poll' || url.pathname === '/v1/auth/feishu/poll')) {
+      try {
+        const parsed = JSON.parse((await readRequestBody(req)) || '{}') as { sid?: unknown; codeVerifier?: unknown }
+        if (typeof parsed.sid !== 'string' || typeof parsed.codeVerifier !== 'string') {
+          json(400, { status: 'expired', detail: 'Missing sid' })
+          return
+        }
+        const pollRes = await this.deviceAuth.pollDeviceFlow(parsed.sid, parsed.codeVerifier)
+        json(200, pollRes)
+      } catch {
+        json(500, { status: 'expired', detail: 'Login failed' })
       }
       return
     }
@@ -298,30 +636,54 @@ export class HubServer {
 
   private handleSlaveConnection(ws: WebSocket): void {
     let registeredId: string | null = null
+    const deadline = setTimeout(() => {
+      if (!registeredId) ws.close(1008, 'Registration timeout')
+    }, HELLO_DEADLINE_MS)
     ws.on('message', raw => {
+      if (registeredId) {
+        // One registration per socket; subsequent frames are only heartbeats.
+        const prev = this.remoteSlaves.get(registeredId)
+        if (prev) this.remoteSlaves.set(registeredId, { ...prev, online: true, lastSeenAt: Date.now() })
+        return
+      }
+      let parsed: z.infer<typeof SlaveRegistration>
       try {
-        const msg = JSON.parse(String(raw)) as {
-          token?: string
-          slave?: SlaveInfo
-        }
-        if (!msg.token || !timingSafeEqualStr(msg.token, this.config.token)) {
-          ws.close(1008, 'Unauthorized slave token')
+        const res = SlaveRegistration.safeParse(JSON.parse(String(raw)))
+        if (!res.success) {
+          ws.close(1008, 'Invalid registration')
           return
         }
-        if (msg.slave?.id) {
-          registeredId = msg.slave.id
-          this.remoteSlaves.set(registeredId, {
-            ...msg.slave,
-            online: true,
-            lastSeenAt: Date.now(),
-          })
-          ws.send(JSON.stringify({ ok: true, masterId: this.config.hubId }))
-        }
+        parsed = res.data
       } catch {
-        // ignore
+        ws.close(1008, 'Invalid registration')
+        return
       }
+      // Slaves use a dedicated join credential — never the admin/app token.
+      const joinToken = this.config.slaveJoinToken
+      if (!joinToken || !timingSafeEqualStr(parsed.token, joinToken)) {
+        setTimeout(() => ws.close(1008, 'Unauthorized slave token'), AUTH_FAILURE_DELAY_MS)
+        return
+      }
+      const id = parsed.slave.id
+      if (id === this.config.hubId) {
+        ws.close(1008, 'Slave id collides with master')
+        return
+      }
+      if (!this.remoteSlaves.has(id) && this.remoteSlaves.size >= MAX_REMOTE_SLAVES) {
+        ws.close(1008, 'Too many slaves')
+        return
+      }
+      clearTimeout(deadline)
+      registeredId = id
+      this.remoteSlaves.set(id, {
+        ...parsed.slave,
+        online: true,
+        lastSeenAt: Date.now(),
+      })
+      ws.send(JSON.stringify({ ok: true, masterId: this.config.hubId }))
     })
     ws.on('close', () => {
+      clearTimeout(deadline)
       if (registeredId) {
         const prev = this.remoteSlaves.get(registeredId)
         if (prev) {
@@ -336,7 +698,11 @@ export class HubServer {
       ws,
       authenticated: false,
       subscribedSessions: new Set(),
+      helloTimer: null,
     }
+    conn.helloTimer = setTimeout(() => {
+      if (!conn.authenticated) ws.close(1008, 'Authentication timeout')
+    }, HELLO_DEADLINE_MS)
     this.clients.add(conn)
 
     ws.on('message', raw => {
@@ -344,6 +710,7 @@ export class HubServer {
     })
 
     ws.on('close', () => {
+      if (conn.helloTimer) clearTimeout(conn.helloTimer)
       for (const sid of conn.subscribedSessions) {
         this.sessionManager.releaseHostWatch(sid)
       }
@@ -375,7 +742,7 @@ export class HubServer {
     }
 
     const { id, method, params } = parsedReq.data
-    if (!(method in Methods)) {
+    if (!Object.hasOwn(Methods, method)) {
       this.sendRpcError(conn.ws, id, ErrorCode.MethodNotFound, `Method not allowed: ${method}`)
       return
     }
@@ -399,6 +766,10 @@ export class HubServer {
     } catch (err) {
       if (err instanceof HubRpcError) {
         this.sendRpcError(conn.ws, id, err.code, err.message)
+        if (methodName === 'hub.hello' && !conn.authenticated) {
+          // Failed authentication: slow down guessing and drop the socket.
+          setTimeout(() => conn.ws.close(1008, 'Unauthorized'), AUTH_FAILURE_DELAY_MS)
+        }
       } else {
         this.sendRpcError(
           conn.ws,
@@ -424,10 +795,16 @@ export class HubServer {
           throw new HubRpcError(ErrorCode.Unauthorized, 'Invalid or expired access token')
         }
         conn.authenticated = true
+        if (conn.helloTimer) {
+          clearTimeout(conn.helloTimer)
+          conn.helloTimer = null
+        }
         this.sessionManager.startGlobalHostMonitor()
         return {
           protocolVersion: PROTOCOL_VERSION,
           hub: this.getHubInfo(),
+          relayUrls: (this.config.relayUrls ?? []).map(u => u.replace(/^http:\/\//, 'https://')),
+          endpoints: await this.collectConnectableUrls(),
           capabilities: [
             'engine.claude.v1',
             'engine.pi.v1',
@@ -439,6 +816,7 @@ export class HubServer {
             'approval.interactive.v1',
             'workspace.fs-readonly.v1',
             'workspace.checkpoint.v1',
+            'usage.stats.v1',
           ],
         }
       }
@@ -523,14 +901,17 @@ export class HubServer {
       }
       case 'stream.subscribe': {
         const p = params as { sessionId: string; afterSeq: number; beforeSeq?: number; limit?: number }
-        const snap = this.sessionManager.subscribeSnapshot(p.sessionId, p.afterSeq, {
-          beforeSeq: p.beforeSeq,
-          limit: p.limit,
-        })
         if (!conn.subscribedSessions.has(p.sessionId)) {
           conn.subscribedSessions.add(p.sessionId)
           this.sessionManager.retainHostWatch(p.sessionId)
         }
+        if (p.beforeSeq === undefined) {
+          await this.sessionManager.syncHostTerminalNow(p.sessionId)
+        }
+        const snap = this.sessionManager.subscribeSnapshot(p.sessionId, p.afterSeq, {
+          beforeSeq: p.beforeSeq,
+          limit: p.limit,
+        })
         return snap
       }
       case 'stream.unsubscribe': {
@@ -541,9 +922,20 @@ export class HubServer {
         return { ok: true as const }
       }
       case 'approval.respond': {
-        const p = params as { sessionId: string; requestId: string; optionId: string | null }
-        await this.sessionManager.respondPermission(p.sessionId, p.requestId, p.optionId)
-        return { ok: true as const }
+        const p = params as { sessionId: string; requestId: string; optionId?: string | null }
+        const normalizedOptionId = p.optionId ?? null
+        try {
+          await this.sessionManager.respondPermission(p.sessionId, p.requestId, normalizedOptionId)
+          console.log(
+            `[lework-approval] OK session=${p.sessionId} requestId=${p.requestId} option=${normalizedOptionId ?? 'cancel'}`,
+          )
+          return { ok: true as const }
+        } catch (err) {
+          console.warn(
+            `[lework-approval] FAIL session=${p.sessionId} requestId=${p.requestId} option=${normalizedOptionId ?? 'cancel'}: ${err instanceof Error ? err.message : String(err)}`,
+          )
+          throw err
+        }
       }
       case 'checkpoint.list': {
         const p = params as { sessionId: string }
@@ -557,6 +949,31 @@ export class HubServer {
         const p = params as { sessionId: string; checkpointId: string }
         this.sessionManager.restoreCheckpoint(p.sessionId, p.checkpointId)
         return { ok: true as const }
+      }
+      case 'usage.summary': {
+        const p = (params ?? {}) as { days?: number; engineId?: string }
+        return this.usageService.getSummary(p)
+      }
+      case 'usage.quota': {
+        return this.usageService.getQuota()
+      }
+      case 'usage.session': {
+        const p = params as { sessionId: string }
+        return this.usageService.getSessionUsage(p.sessionId)
+      }
+      case 'usage.proxy': {
+        return await this.usageService.getProxyUsage()
+      }
+      case 'git.status': {
+        const p = params as { path: string }
+        return inspectWorkspaceGitStatus(p.path, this.config.workspaceRoots)
+      }
+      case 'git.diff': {
+        const p = params as { path: string; filePath?: string; baseCommitSha?: string }
+        return readWorkspaceGitDiff(p.path, this.config.workspaceRoots, {
+          filePath: p.filePath,
+          baseCommitSha: p.baseCommitSha,
+        })
       }
     }
   }
@@ -607,6 +1024,10 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   const bufB = Buffer.from(b, 'utf8')
   if (bufA.length !== bufB.length) return false
   return crypto.timingSafeEqual(bufA, bufB)
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms))
 }
 
 function readRequestBody(req: http.IncomingMessage): Promise<string> {
