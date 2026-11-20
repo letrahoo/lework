@@ -132,14 +132,9 @@ export class SessionManager {
     if (!adapter) {
       throw new HubRpcError(ErrorCode.EngineUnavailable, `Unknown engine "${params.engineId}"`)
     }
-    const status = await adapter.probe()
-    if (!status.ready) {
-      throw new HubRpcError(
-        ErrorCode.EngineUnavailable,
-        status.detail ?? `Engine "${adapter.displayName}" is not ready`,
-      )
-    }
 
+    // Enforce compliance & provider/model guardrails BEFORE probing local CLI binaries so invalid
+    // provider combinations deterministically reject with InvalidParams on any host.
     let extraEnv: NodeJS.ProcessEnv = {}
     if (this.registry) {
       try {
@@ -150,6 +145,14 @@ export class SessionManager {
           err instanceof Error ? err.message : String(err),
         )
       }
+    }
+
+    const status = await adapter.probe()
+    if (!status.ready) {
+      throw new HubRpcError(
+        ErrorCode.EngineUnavailable,
+        status.detail ?? `Engine "${adapter.displayName}" is not ready`,
+      )
     }
 
     const realCwd = resolveAllowedWorkspacePath(params.cwd, this.workspaceRoots)

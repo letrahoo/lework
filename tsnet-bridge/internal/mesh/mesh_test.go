@@ -124,7 +124,6 @@ func TestHostInboundProxyVerifiesSameUserAndRecordsSourcePort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var mgr *Manager
 	seenVerified := make(chan VerifiedInboundPeer, 1)
 
 	// Upstream mock hubd inspecting the local client port in `LookupInboundByLocalPort`
@@ -133,16 +132,6 @@ func TestHostInboundProxyVerifiesSameUserAndRecordsSourcePort(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer hubLn.Close()
-	go func() {
-		c, aErr := hubLn.Accept()
-		if aErr != nil {
-			return
-		}
-		defer c.Close()
-		remotePort := c.RemoteAddr().(*net.TCPAddr).Port
-		seenVerified <- mgr.LookupInboundByLocalPort(remotePort)
-		_, _ = c.Write([]byte("OK"))
-	}()
 
 	fb := &fakeBackend{
 		listener: tsLn,
@@ -163,7 +152,7 @@ func TestHostInboundProxyVerifiesSameUserAndRecordsSourcePort(t *testing.T) {
 		},
 	}
 
-	mgr, err = NewManager(Config{
+	mgr, err := NewManager(Config{
 		StateDir:        t.TempDir(),
 		Hostname:        "lework-hub",
 		HubUpstreamAddr: hubLn.Addr().String(),
@@ -173,6 +162,17 @@ func TestHostInboundProxyVerifiesSameUserAndRecordsSourcePort(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mgr.Close()
+
+	go func(m *Manager) {
+		c, aErr := hubLn.Accept()
+		if aErr != nil {
+			return
+		}
+		defer c.Close()
+		remotePort := c.RemoteAddr().(*net.TCPAddr).Port
+		seenVerified <- m.LookupInboundByLocalPort(remotePort)
+		_, _ = c.Write([]byte("OK"))
+	}(mgr)
 
 	client, err := net.DialTimeout("tcp", tsLn.Addr().String(), 2*time.Second)
 	if err != nil {

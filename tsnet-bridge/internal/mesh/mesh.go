@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tailscale.com/ipn"
@@ -376,6 +377,7 @@ type Manager struct {
 
 	inboundMu    sync.RWMutex
 	inboundBySrc map[int]VerifiedInboundPeer
+	pendingDials atomic.Int32
 
 	forwardMu  sync.Mutex
 	forwarders map[string]*localForwarder
@@ -588,10 +590,17 @@ func (m *Manager) Logout(ctx context.Context) StatusSnapshot {
 }
 
 func (m *Manager) LookupInboundByLocalPort(localPort int) VerifiedInboundPeer {
-	m.inboundMu.RLock()
-	defer m.inboundMu.RUnlock()
-	if p, ok := m.inboundBySrc[localPort]; ok {
-		return p
+	for attempt := 0; attempt < 100; attempt++ {
+		m.inboundMu.RLock()
+		p, ok := m.inboundBySrc[localPort]
+		m.inboundMu.RUnlock()
+		if ok {
+			return p
+		}
+		if m.pendingDials.Load() <= 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
 	}
 	return VerifiedInboundPeer{Found: false}
 }
@@ -696,14 +705,17 @@ func (m *Manager) handleInboundTsConn(ctx context.Context, b EngineBackend, tsCo
 		return
 	}
 
+	m.pendingDials.Add(1)
 	localConn, err := net.DialTimeout("tcp", m.cfg.HubUpstreamAddr, 5*time.Second)
 	if err != nil {
+		m.pendingDials.Add(-1)
 		return
 	}
 	defer localConn.Close()
 
 	localTCP, ok := localConn.LocalAddr().(*net.TCPAddr)
 	if !ok {
+		m.pendingDials.Add(-1)
 		return
 	}
 	srcPort := localTCP.Port
@@ -711,6 +723,7 @@ func (m *Manager) handleInboundTsConn(ctx context.Context, b EngineBackend, tsCo
 	m.inboundMu.Lock()
 	m.inboundBySrc[srcPort] = *verified
 	m.inboundMu.Unlock()
+	m.pendingDials.Add(-1)
 
 	defer func() {
 		m.inboundMu.Lock()
