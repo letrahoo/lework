@@ -79,7 +79,7 @@ class ConsoleStore(
                     if (sessionLink != null) {
                         handleSessionDeepLink(sessionLink.first, sessionLink.second)
                     } else {
-                        redeemPairingInput(uri)
+                        promptDeepLinkPairingConfirmation(uri)
                     }
                 }
             }
@@ -217,10 +217,36 @@ class ConsoleStore(
     }
 
     fun bootstrapOrConnect() {
-        if (pairingInFlight || !observeIncomingPairingUri().value.isNullOrBlank()) {
+        if (pairingInFlight || _state.value.pendingDeepLinkPairing != null || !observeIncomingPairingUri().value.isNullOrBlank()) {
             return
         }
         bootstrapOrConnectToHost(loadActiveHostId())
+    }
+
+    private fun launchTsnetDiscoveryFeeder(): Job? {
+        if (!isMobileTsnetAvailable() || !loadSavedTsnetEnabled()) return null
+        return scope.launch {
+            var cur = withTimeoutOrNull(10_000L) {
+                runCatching { startMobileTsnet(loadSavedTsnetControlUrl()) }.getOrNull()
+            }
+            if (cur != null) {
+                _state.update { it.copy(tsnetStatus = cur) }
+            }
+            var attempt = 0
+            while (isActive && attempt < 7) {
+                val hasReadyPeer = cur?.peers?.any { it.online && !it.localProxyUrl.isNullOrBlank() } == true
+                if (hasReadyPeer) break
+                delay(1_200L)
+                val next = withTimeoutOrNull(5_000L) {
+                    runCatching { queryMobileTsnetStatus() }.getOrNull()
+                }
+                if (next != null) {
+                    cur = next
+                    _state.update { it.copy(tsnetStatus = next) }
+                }
+                attempt++
+            }
+        }
     }
 
     private fun bootstrapOrConnectToHost(preferredHubId: String?) {
@@ -230,6 +256,7 @@ class ConsoleStore(
         tsnetPollJob?.cancel()
         resumeJob?.cancel()
         startBonjourDiscovery()
+        val tsnetActive = isMobileTsnetAvailable() && loadSavedTsnetEnabled()
         _state.update {
             it.copy(
                 connectionStatus = ConnectionStatus.DISCOVERING,
@@ -241,20 +268,17 @@ class ConsoleStore(
             )
         }
         discoverJob = scope.launch {
-            if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
-                withTimeoutOrNull(2_000L) {
-                    runCatching {
-                        val st = startMobileTsnet(loadSavedTsnetControlUrl())
-                        _state.update { it.copy(tsnetStatus = st) }
-                    }
-                }
+            val feederJob = launchTsnetDiscoveryFeeder()
+            val found = try {
+                rpc.discoverIntranetHub(
+                    candidates = candidateHubHttpUrls(),
+                    dynamicCandidates = observeBonjourHubUrls(),
+                    waitWindowMs = if (tsnetActive) 12_000L else 7_000L,
+                    preferredHubId = preferredHubId,
+                )
+            } finally {
+                feederJob?.cancel()
             }
-            val found = rpc.discoverIntranetHub(
-                candidates = candidateHubHttpUrls(),
-                dynamicCandidates = observeBonjourHubUrls(),
-                waitWindowMs = 7_000L,
-                preferredHubId = preferredHubId,
-            )
             if (found == null) {
                 _state.update {
                     it.copy(
@@ -281,7 +305,7 @@ class ConsoleStore(
             val hostToken = loadHostAccessToken(found.discover.hub.id)
             val cachedToken = hostToken ?: loadSavedAccessToken()
             if (!cachedToken.isNullOrBlank()) {
-                val ok = connectWithToken(found.wsUrl, cachedToken)
+                val ok = connectWithToken(found.wsUrl, cachedToken, expectedHubId = found.discover.hub.id)
                 if (ok) return@launch
                 val stillHasToken =
                     !(loadHostAccessToken(found.discover.hub.id) ?: loadSavedAccessToken()).isNullOrBlank()
@@ -309,7 +333,12 @@ class ConsoleStore(
                     saveHostAccessToken(hs.hub.id, hs.accessToken)
                     upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
                     _state.update { it.copy(authUserName = userName) }
-                    val ok = connectWithToken(found.wsUrl, hs.accessToken)
+                    val ok = connectWithToken(
+                        found.wsUrl,
+                        hs.accessToken,
+                        expectedHubId = hs.hub.id,
+                        expectedFingerprint = hs.fingerprint,
+                    )
                     if (ok) return@launch
                 }
             }
@@ -513,7 +542,13 @@ class ConsoleStore(
                     saveHostAccessToken(hs.hub.id, hs.accessToken)
                     upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
                     _state.update { it.copy(authUserName = userName) }
-                    if (connectWithToken(chosen.wsUrl, hs.accessToken)) {
+                    if (connectWithToken(
+                            chosen.wsUrl,
+                            hs.accessToken,
+                            expectedHubId = hs.hub.id,
+                            expectedFingerprint = hs.fingerprint,
+                        )
+                    ) {
                         return@launch
                     }
                 }.onFailure { err ->
@@ -523,7 +558,7 @@ class ConsoleStore(
 
             val existingToken = loadHostAccessToken(chosen.discover.hub.id) ?: loadSavedAccessToken()
             if (!existingToken.isNullOrBlank()) {
-                if (connectWithToken(chosen.wsUrl, existingToken)) {
+                if (connectWithToken(chosen.wsUrl, existingToken, expectedHubId = chosen.discover.hub.id)) {
                     return@launch
                 }
             }
@@ -553,6 +588,60 @@ class ConsoleStore(
             if (!scanned.isNullOrBlank()) {
                 redeemPairingInput(scanned)
             }
+        }
+    }
+
+    private fun promptDeepLinkPairingConfirmation(rawInput: String) {
+        val payload = parsePairingPayload(rawInput)
+        if (payload == null) {
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = "无法识别配对链接，请在电脑主机运行 lework pair 后重新扫码",
+                )
+            }
+            return
+        }
+        val primaryUrl = (payload.urls + listOf(payload.url))
+            .map { normalizeHubBaseUrl(it) }
+            .firstOrNull { it.isNotEmpty() }
+            .orEmpty()
+        if (primaryUrl.isEmpty()) {
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = "配对链接缺少有效主机地址",
+                )
+            }
+            return
+        }
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        resumeJob?.cancel()
+        val shortFp = payload.fp?.trim()?.takeIf { it.length >= 16 }?.let { HubAttestation.shortFingerprint(it) }
+        _state.update {
+            it.copy(
+                pendingDeepLinkPairing = PendingDeepLinkPairing(
+                    rawUri = rawInput,
+                    hostName = payload.name.ifBlank { "Lework Hub" },
+                    primaryUrl = primaryUrl,
+                    shortFingerprint = shortFp,
+                ),
+            )
+        }
+    }
+
+    fun confirmPendingDeepLinkPairing() {
+        val pending = _state.value.pendingDeepLinkPairing ?: return
+        _state.update { it.copy(pendingDeepLinkPairing = null) }
+        redeemPairingInput(pending.rawUri)
+    }
+
+    fun dismissPendingDeepLinkPairing() {
+        val wasPending = _state.value.pendingDeepLinkPairing != null
+        _state.update { it.copy(pendingDeepLinkPairing = null) }
+        if (wasPending && !_state.value.hasEnteredWorkspace) {
+            bootstrapOrConnect()
         }
     }
 
@@ -625,7 +714,13 @@ class ConsoleStore(
                                 hub = auth.hub,
                             )
                         }
-                        if (connectWithToken(wsUrl, auth.accessToken)) {
+                        if (connectWithToken(
+                                wsUrl,
+                                auth.accessToken,
+                                expectedHubId = auth.hub.id,
+                                expectedFingerprint = auth.fingerprint,
+                            )
+                        ) {
                             return@launch
                         }
                     } catch (ce: CancellationException) {
@@ -715,6 +810,7 @@ class ConsoleStore(
         saveHostAccessToken(hubId, null)
         val next = loadPairedHosts().filterNot { it.hubId == hubId }
         savePairedHosts(next)
+        HubTrust.replacePins(next.mapNotNull { it.fingerprint.takeIf { fp -> fp.length == 64 } }.toSet())
         if (loadActiveHostId() == hubId) {
             saveActiveHostId(next.firstOrNull()?.hubId)
         }
@@ -829,17 +925,25 @@ class ConsoleStore(
                 )
             }
             startBonjourDiscovery()
-            val found = rpc.discoverIntranetHub(
-                candidates = candidateHubHttpUrls(),
-                dynamicCandidates = observeBonjourHubUrls(),
-                waitWindowMs = 5_500L,
-            )
+            val preferredId = _state.value.hub?.id ?: loadActiveHostId()
+            val tsnetActive = isMobileTsnetAvailable() && loadSavedTsnetEnabled()
+            val feederJob = launchTsnetDiscoveryFeeder()
+            val found = try {
+                rpc.discoverIntranetHub(
+                    candidates = candidateHubHttpUrls(),
+                    dynamicCandidates = observeBonjourHubUrls(),
+                    waitWindowMs = if (tsnetActive) 12_000L else 6_000L,
+                    preferredHubId = preferredId,
+                )
+            } finally {
+                feederJob?.cancel()
+            }
             if (found == null) {
                 _state.update {
                     it.copy(
                         hasEnteredWorkspace = false,
                         connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = "唤醒校验未通过：未发现同一 Wi‑Fi 主机或中继连接，请检查网络后点击重连",
+                        connectionError = "唤醒校验未通过：未发现同一 Wi‑Fi 主机或 Tailscale 连接，请检查网络后点击重连",
                     )
                 }
                 return@launch
@@ -856,10 +960,12 @@ class ConsoleStore(
                 )
             }
 
+            val resumeToken = loadHostAccessToken(found.discover.hub.id) ?: cachedToken
             connectWithToken(
                 wsUrl = found.wsUrl,
-                token = cachedToken,
+                token = resumeToken,
                 isForegroundResume = true,
+                expectedHubId = found.discover.hub.id,
             )
         }
     }
@@ -971,8 +1077,19 @@ class ConsoleStore(
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         resumeJob?.cancel()
+        for (h in loadPairedHosts()) {
+            saveHostAccessToken(h.hubId, null)
+        }
+        savePairedHosts(emptyList())
+        saveActiveHostId(null)
         saveAuthSession(null, null)
         HubTrust.clearPins()
+        _state.update {
+            it.copy(
+                pairedHosts = emptyList(),
+                activeHostId = null,
+            )
+        }
         bootstrapOrConnect()
     }
 
@@ -980,6 +1097,8 @@ class ConsoleStore(
         wsUrl: String,
         token: String,
         isForegroundResume: Boolean = false,
+        expectedHubId: String? = null,
+        expectedFingerprint: String? = null,
     ): Boolean {
         _state.update {
             it.copy(
@@ -987,10 +1106,15 @@ class ConsoleStore(
                 connectionError = null,
             )
         }
+        val targetHubId = expectedHubId ?: _state.value.hub?.id ?: loadActiveHostId()
         return try {
-            // Verify & pin the Hub certificate BEFORE the token leaves the device.
+            // Verify & pin the Hub certificate (bound to targetHubId when known) BEFORE the token leaves the device.
             val baseUrl = hubBaseUrlOfWs(wsUrl)
-            rpc.ensureHubTrusted(baseUrl, token)
+            val pinnedFp = expectedFingerprint?.takeIf { it.length == 64 }
+                ?: targetHubId?.let { id ->
+                    loadPairedHosts().firstOrNull { it.hubId == id }?.fingerprint?.takeIf { fp -> fp.length == 64 }
+                }
+            rpc.ensureHubTrusted(baseUrl, token, pinnedFp)
             val hello = rpc.connectAndHello(
                 wsUrl = wsUrl,
                 token = token,
@@ -1076,8 +1200,10 @@ class ConsoleStore(
             throw ce
         } catch (t: Throwable) {
             if (t is RpcCallException && t.code == ErrorCode.UNAUTHORIZED) {
-                _state.value.hub?.id?.let { saveHostAccessToken(it, null) }
-                saveAuthSession(null, null)
+                targetHubId?.let { saveHostAccessToken(it, null) }
+                if (targetHubId == null || targetHubId == loadActiveHostId()) {
+                    saveAuthSession(null, null)
+                }
                 _state.update {
                     it.copy(
                         hasEnteredWorkspace = false,
@@ -1483,7 +1609,12 @@ class ConsoleStore(
                     mode = s.selectedMode,
                 )
             } catch (t: Throwable) {
-                _state.update { it.copy(connectionError = t.message) }
+                _state.update { st ->
+                    st.copy(
+                        composerAttachedImages = st.composerAttachedImages.ifEmpty { attached },
+                        connectionError = t.message,
+                    )
+                }
             }
         }
     }

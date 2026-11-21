@@ -78,6 +78,7 @@ class AgyStreamSession implements EngineSession {
   private modelFlag: string | undefined
   private effortFlag: string | undefined
   private currentMsgId = `msg_${crypto.randomUUID()}`
+  private emittedDeltaInTurn = false
   private pendingTurn: {
     turnId: string
     resolve: () => void
@@ -125,6 +126,15 @@ class AgyStreamSession implements EngineSession {
     }
     if (this.effortFlag) {
       args.push('--effort', this.effortFlag)
+    }
+    if (this.init.mode === 'bypassPermissions') {
+      args.push('--dangerously-skip-permissions')
+    } else if (this.init.mode === 'plan') {
+      args.push('--mode', 'plan')
+    } else if (this.init.mode === 'acceptEdits') {
+      args.push('--mode', 'accept-edits')
+    } else if (this.init.mode === 'auto') {
+      args.push('--mode', 'auto')
     }
     const child = spawn(this.bin, args, {
       cwd: this.cwd,
@@ -192,6 +202,7 @@ class AgyStreamSession implements EngineSession {
     if (!this.proc) throw new Error('AGY stream session is not running')
 
     this.currentMsgId = `msg_${turnId}`
+    this.emittedDeltaInTurn = false
     this.init.emit({ type: 'session.state', state: 'running' })
 
     const imgHeader =
@@ -274,6 +285,7 @@ class AgyStreamSession implements EngineSession {
       const step = event.step_update as Record<string, unknown>
       const stepType = step.step_type
       if (stepType === 'agent_response' && typeof step.text_delta === 'string') {
+        if (step.text_delta.length > 0) this.emittedDeltaInTurn = true
         this.init.emit({
           type: 'message.assistant.delta',
           messageId: this.currentMsgId,
@@ -328,7 +340,7 @@ class AgyStreamSession implements EngineSession {
 
     if (eventName === 'result' && event.result && typeof event.result === 'object') {
       const res = event.result as Record<string, unknown>
-      if (typeof res.response === 'string' && res.response.length > 0) {
+      if (!this.emittedDeltaInTurn && typeof res.response === 'string' && res.response.length > 0) {
         this.init.emit({
           type: 'message.assistant.delta',
           messageId: this.currentMsgId,

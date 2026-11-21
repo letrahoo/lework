@@ -16,7 +16,7 @@ export interface DshAdapterOptions {
 }
 
 /**
- * DeepSeek Harness (DSH) adapter via local `dsh-channel` / local DSH tunnel carrier.
+ * DeepSeek Harness (DSH) adapter via local loopback service channel.
  */
 export class DshEngineAdapter implements EngineAdapter {
   readonly id = 'dsh'
@@ -44,7 +44,7 @@ export class DshEngineAdapter implements EngineAdapter {
       ? `${this.host}:${this.tunnelPort} (tunnel active)`
       : hostUp
         ? `${this.host}:${this.hostPort} (DSH host active)`
-        : 'dsh-channel local channel ready'
+        : 'local DSH channel ready'
 
     return {
       installed,
@@ -165,7 +165,7 @@ class DshChannelSession implements EngineSession {
     this.init.emit({
       type: 'message.assistant.delta',
       messageId: msgId,
-      text: `[DSH · ${this.selectedModel}] 已通过本机 dsh-channel 通道 (${carrierLabel}) 处理指令：「${text}」。\n工作区路径：\`${this.cwd}\`。`,
+      text: `[DSH · ${this.selectedModel}] 已通过本机 DSH 通道 (${carrierLabel}) 处理指令：「${text}」。\n工作区路径：\`${this.cwd}\`。`,
     })
     this.init.emit({ type: 'usage', inputTokens: text.length, outputTokens: 42 })
     this.init.emit({ type: 'turn.done', turnId, stopReason: 'end_turn' })

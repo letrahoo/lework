@@ -4,8 +4,8 @@ import path from 'node:path'
 import type { ProfileInfo, ProviderInfo } from '@lework/protocol'
 import { defaultDataDir } from '../platform/index.ts'
 
-const LOCAL_CPA_CONFIG_PATH =
-  process.env.LEWORK_CPA_CONFIG ?? path.join(os.homedir(), 'personal', 'local-reverse-proxy', 'config.yaml')
+const resolveCpaConfigPath = (): string =>
+  process.env.LEWORK_CPA_CONFIG ?? path.join(defaultDataDir(), 'cpa-config.yaml')
 
 export class ModelRegistry {
   private cachedCpaKey: string | null = null
@@ -28,8 +28,9 @@ export class ModelRegistry {
     if (process.env.LEWORK_CPA_KEY) return process.env.LEWORK_CPA_KEY
     if (this.cachedCpaKey) return this.cachedCpaKey
     try {
-      if (fs.existsSync(LOCAL_CPA_CONFIG_PATH)) {
-        const raw = fs.readFileSync(LOCAL_CPA_CONFIG_PATH, 'utf8')
+      const cfgPath = resolveCpaConfigPath()
+      if (fs.existsSync(cfgPath)) {
+        const raw = fs.readFileSync(cfgPath, 'utf8')
         const match = raw.match(/api-keys:\s*\n\s*-\s*["']?([^"'\s\n]+)["']?/m)
         if (match?.[1]) {
           this.cachedCpaKey = match[1]

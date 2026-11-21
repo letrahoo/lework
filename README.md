@@ -83,7 +83,7 @@ lework serve
 | --- | --- |
 | 传输加密 | Hub 只提供 **HTTPS / WSS**（自签名证书，`~/.lework/tls/`）。TLS 在 Hub 进程内终止，中继 / SSH 隧道 / Overlay 网络只转发密文（端到端）。 |
 | 主机身份 | App **钉扎**证书 SHA-256 指纹，不依赖 CA。首次连接用「令牌绑定证明」：Hub 必须用 `HMAC(SHA-256(token), 指纹‖nonce)` 证明自己知道令牌，**证明通过前令牌绝不发出**；冒充的 Bonjour 主机 / 被劫持的中继拿不到令牌。App 侧边栏显示的「主机指纹」应与 `hub pair` 输出一致。 |
-| 凭证存储 | iOS 访问令牌与证书指纹存 **Keychain**（仅本机、首次解锁后可用、不进 iCloud）；旧版明文 `NSUserDefaults` 自动迁移并清除。 |
+| 凭证存储 | iOS 存 **Keychain**（仅本机、首次解锁后可用、不进 iCloud）；Android 存 **AndroidKeyStore AES-256-GCM** 硬件密钥加密存储（拒绝明文回退）。 |
 | OAuth | 设备流带 PKCE 式校验（只有发起方能领取令牌）、限流；签发的令牌绑定 `aud=hubId`，仅存哈希，可吊销：`hub tokens [list | revoke <kid> | revoke-all]`。 |
 | 访问面 | 拒绝带 `Origin` 的浏览器请求（防 DNS rebinding / 跨站 WS）；未认证连接 10 秒超时、数量上限、1 MiB 帧上限；认证失败延迟并断开；未认证接口不返回中继地址。 |
 | 文件与终端 | `fs.read/list` 硬性屏蔽 `~/.ssh`、`~/.lework`、`.env`、私钥等凭证；手机代点审批只允许当前屏幕上同一条审批（哈希校验）中的数字选项，杜绝注入任意按键。 |
@@ -103,6 +103,11 @@ lework serve
 # 真机签名并无线/有线安装到已配对的 iPhone（可传 UDID，留空自动选择首台已配对真机）
 APPLE_TEAM_ID=<YOUR_TEAM_ID> ./scripts/ios-install.sh --install [DEVICE_UDID]
 
-# 构建 Android Debug APK
+# 构建 Android Debug / Release APK（Release 默认读取 ~/.lework/android-release.properties 签名）
 ./app/gradlew -p app :androidApp:assembleDebug
+./app/gradlew -p app :androidApp:assembleRelease
 ```
+
+## 许可证 (License)
+
+本项目基于 [Apache License 2.0](./LICENSE) 许可协议分发。二进制发行包涉及的第三方开源组件声明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。

@@ -385,6 +385,67 @@ fun ConsoleApp(
                     }
                 }
             }
+
+            val pendingPair = state.pendingDeepLinkPairing
+            if (pendingPair != null) {
+                AlertDialog(
+                    onDismissRequest = store::dismissPendingDeepLinkPairing,
+                    containerColor = Everforest.Bg1,
+                    titleContentColor = Everforest.Fg,
+                    textContentColor = Everforest.Grey2,
+                    title = {
+                        Text(
+                            text = "确认配对新主机？",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                text = "外部链接请求将当前客户端配对至以下主机，请核对名称与证书指纹：",
+                                fontSize = 13.sp,
+                                color = Everforest.Grey2,
+                            )
+                            Text(
+                                text = "主机名称：${pendingPair.hostName}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.Fg,
+                            )
+                            Text(
+                                text = "连接地址：${pendingPair.primaryUrl}",
+                                fontSize = 12.sp,
+                                color = Everforest.Grey1,
+                            )
+                            if (!pendingPair.shortFingerprint.isNullOrBlank()) {
+                                Text(
+                                    text = "证书指纹：${pendingPair.shortFingerprint}",
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Everforest.Green,
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = store::confirmPendingDeepLinkPairing,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Everforest.Green,
+                                contentColor = Everforest.BgDim,
+                            ),
+                        ) {
+                            Text("确认配对", fontWeight = FontWeight.SemiBold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = store::dismissPendingDeepLinkPairing) {
+                            Text("取消", color = Everforest.Grey1)
+                        }
+                    },
+                )
+            }
         }
     }
 }

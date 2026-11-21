@@ -42,9 +42,14 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
   }
 
   const platform = detectPlatform()
+  const home = os.homedir()
   const defaultRoots = [
-    path.join(os.homedir(), 'personal'),
-    path.join(os.homedir(), 'work'),
+    path.join(home, 'Projects'),
+    path.join(home, 'Developer'),
+    path.join(home, 'code'),
+    path.join(home, 'my-projects'),
+    path.join(home, 'personal'),
+    path.join(home, 'work'),
   ].filter(p => {
     try {
       return fs.statSync(p).isDirectory()
@@ -58,6 +63,7 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
     .map(s => s.trim())
     .filter(Boolean)
 
+  const fallbackRoot = process.cwd() !== home ? process.cwd() : path.join(home, 'Projects')
   const cfg: HubConfig = {
     hubId: overrides.hubId ?? stored.hubId ?? `hub_${crypto.randomBytes(6).toString('hex')}`,
     name: overrides.name ?? stored.name ?? os.hostname(),
@@ -65,8 +71,11 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
     host: overrides.host ?? stored.host ?? '0.0.0.0',
     port: overrides.port ?? stored.port ?? Number(process.env.LEWORK_PORT ?? 64450),
     token: overrides.token ?? stored.token ?? process.env.LEWORK_TOKEN ?? crypto.randomBytes(24).toString('base64url'),
-    // $HOME is intentionally not a default root; credential paths are additionally hard-denied in path-guard.
-    workspaceRoots: overrides.workspaceRoots ?? stored.workspaceRoots ?? (defaultRoots.length > 0 ? defaultRoots : [os.homedir()]),
+    // $HOME is never used as a default root; credential paths are additionally hard-denied in path-guard.
+    workspaceRoots:
+      overrides.workspaceRoots ??
+      stored.workspaceRoots ??
+      (defaultRoots.length > 0 ? defaultRoots : [fallbackRoot]),
     relayUrls: overrides.relayUrls ?? stored.relayUrls ?? envRelays,
     masterUrl: overrides.masterUrl ?? stored.masterUrl,
     slaveJoinToken: overrides.slaveJoinToken ?? stored.slaveJoinToken ?? crypto.randomBytes(24).toString('base64url'),

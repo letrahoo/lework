@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"dev.lework/tsnetbridge/internal/mesh"
+	"tailscale.com/net/netmon"
 )
 
 func installCustomDNSResolverIfNeeded(rawServers string) {
@@ -29,8 +30,8 @@ func installCustomDNSResolverIfNeeded(rawServers string) {
 		}
 		servers = append(servers, clean)
 	}
-	// On Android (`GOOS=linux` without `/etc/resolv.conf`), Go's pure-Go resolver defaults to
-	// `127.0.0.1:53` unless custom DNS servers are supplied. Fall back to reliable public resolvers.
+	// On Android (without `/etc/resolv.conf`), Go's pure-Go resolver defaults to `127.0.0.1:53`
+	// unless custom DNS servers are supplied. Fall back to reliable public resolvers.
 	if len(servers) == 0 {
 		if _, err := os.Stat("/etc/resolv.conf"); err != nil {
 			servers = []string{"223.5.5.5:53", "1.1.1.1:53", "8.8.8.8:53"}
@@ -60,6 +61,149 @@ func installCustomDNSResolverIfNeeded(rawServers string) {
 	}
 }
 
+func probeOutboundLocalIP() net.IP {
+	for _, target := range []string{"223.5.5.5:53", "1.1.1.1:53", "8.8.8.8:53"} {
+		conn, err := net.DialTimeout("udp4", target, 500*time.Millisecond)
+		if err != nil {
+			continue
+		}
+		addr, ok := conn.LocalAddr().(*net.UDPAddr)
+		_ = conn.Close()
+		if ok && addr != nil && len(addr.IP) > 0 && !addr.IP.IsLoopback() && !addr.IP.IsUnspecified() {
+			return addr.IP
+		}
+	}
+	return nil
+}
+
+// installSafeInterfaceGetterIfNeeded avoids Android 11+ SELinux `NETLINK_ROUTE` denials when
+// `net.Interfaces()` is blocked inside an untrusted_app sandbox.
+func installSafeInterfaceGetterIfNeeded(rawSpec string) {
+	_, stdErr := net.Interfaces()
+	trimmed := strings.TrimSpace(rawSpec)
+	if stdErr == nil && trimmed == "" {
+		return
+	}
+
+	type parsedIf struct {
+		name  string
+		addrs []net.Addr
+	}
+	var staticList []parsedIf
+	var primaryName string
+	for _, entry := range strings.Split(trimmed, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		ifName := "wlan0"
+		cidr := entry
+		if colon := strings.IndexByte(entry, '='); colon > 0 {
+			ifName = strings.TrimSpace(entry[:colon])
+			cidr = strings.TrimSpace(entry[colon+1:])
+		}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			ip := net.ParseIP(cidr)
+			if ip == nil {
+				continue
+			}
+			bits := 128
+			mask := 64
+			if v4 := ip.To4(); v4 != nil {
+				ip = v4
+				bits = 32
+				mask = 24
+			}
+			ipNet = &net.IPNet{IP: ip, Mask: net.CIDRMask(mask, bits)}
+		} else if ip := net.ParseIP(strings.Split(cidr, "/")[0]); ip != nil {
+			if v4 := ip.To4(); v4 != nil {
+				ipNet.IP = v4
+			} else {
+				ipNet.IP = ip
+			}
+		}
+		if primaryName == "" {
+			primaryName = ifName
+		}
+		merged := false
+		for i := range staticList {
+			if staticList[i].name == ifName {
+				staticList[i].addrs = append(staticList[i].addrs, ipNet)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			staticList = append(staticList, parsedIf{name: ifName, addrs: []net.Addr{ipNet}})
+		}
+	}
+	if primaryName == "" {
+		primaryName = "wlan0"
+	}
+	notifyAndroidDefaultRouteInterface(primaryName)
+
+	netmon.RegisterInterfaceGetter(func() ([]netmon.Interface, error) {
+		out := []netmon.Interface{
+			{
+				Interface: &net.Interface{
+					Index: 1,
+					MTU:   65536,
+					Name:  "lo",
+					Flags: net.FlagUp | net.FlagLoopback,
+				},
+				AltAddrs: []net.Addr{
+					&net.IPNet{IP: net.IPv4(127, 0, 0, 1), Mask: net.CIDRMask(8, 32)},
+				},
+			},
+		}
+
+		// Always probe live outbound UDP route IP first so Wi-Fi <-> 5G transitions update dynamically
+		if liveIP := probeOutboundLocalIP(); liveIP != nil {
+			v4 := liveIP.To4()
+			if v4 != nil {
+				out = append(out, netmon.Interface{
+					Interface: &net.Interface{
+						Index: 2,
+						MTU:   1500,
+						Name:  primaryName,
+						Flags: net.FlagUp | net.FlagBroadcast | net.FlagMulticast,
+					},
+					AltAddrs: []net.Addr{
+						&net.IPNet{IP: v4, Mask: net.CIDRMask(24, 32)},
+					},
+				})
+				return out, nil
+			}
+		}
+
+		for idx, item := range staticList {
+			out = append(out, netmon.Interface{
+				Interface: &net.Interface{
+					Index: idx + 2,
+					MTU:   1500,
+					Name:  item.name,
+					Flags: net.FlagUp | net.FlagBroadcast | net.FlagMulticast,
+				},
+				AltAddrs: item.addrs,
+			})
+		}
+		if len(out) == 1 {
+			// Offline fallback placeholder so netmon.New() never aborts daemon startup
+			out = append(out, netmon.Interface{
+				Interface: &net.Interface{
+					Index: 2,
+					MTU:   1500,
+					Name:  primaryName,
+					Flags: net.FlagUp,
+				},
+				AltAddrs: []net.Addr{},
+			})
+		}
+		return out, nil
+	})
+}
+
 func main() {
 	home, _ := os.UserHomeDir()
 	defaultDir := filepath.Join(home, ".lework", "tsnet")
@@ -72,12 +216,14 @@ func main() {
 	upstream := flag.String("upstream", "127.0.0.1:64450", "Local hubd TLS upstream address (empty for mobile client mode)")
 	clientOnly := flag.Bool("client-only", false, "Run in mobile client forwarder mode without inbound Hub proxy")
 	dnsServers := flag.String("dns", "", "Comma-separated DNS servers (used on Android where /etc/resolv.conf is absent)")
+	interfacesSpec := flag.String("interfaces", "", "Comma-separated ifname=cidr entries (used on Android 11+ where netlink is restricted)")
 	hubPort := flag.Int("hub-port", 64450, "Virtual tsnet port to listen/connect on")
 	verbose := flag.Bool("verbose", false, "Enable verbose tsnet logging")
 	oneShotLogin := flag.Bool("login", false, "Run interactive login in foreground and exit once Running")
 	flag.Parse()
 
 	installCustomDNSResolverIfNeeded(*dnsServers)
+	installSafeInterfaceGetterIfNeeded(*interfacesSpec)
 
 	resolvedUpstream := *upstream
 	if *clientOnly {
@@ -91,6 +237,7 @@ func main() {
 		AuthKey:         *authKey,
 		HubUpstreamAddr: resolvedUpstream,
 		HubPort:         *hubPort,
+		ForwarderSecret: strings.TrimSpace(os.Getenv("LEWORK_FORWARDER_SECRET")),
 		VerboseLog:      *verbose,
 	}, nil)
 	if err != nil {

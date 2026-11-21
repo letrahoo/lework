@@ -194,7 +194,7 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
     fs.writeFileSync(
       path.join(claudeProjDir, `${busyId}.jsonl`),
       [
-        JSON.stringify({ type: 'user', cwd: '/tmp/demo', message: { role: 'user', content: '1. 增加一个仅限 BOE 安全域名的开关吧' } }),
+        JSON.stringify({ type: 'user', cwd: '/tmp/demo', message: { role: 'user', content: '1. 增加一个仅限测试环境安全域名的开关' } }),
         JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: '2. 冷启还是自动拉包，但不用触发自动渲染' }),
         JSON.stringify({
           type: 'queue-operation',
@@ -275,7 +275,7 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
     expect(busyLoaded?.session.queuedPrompts).toEqual(['跟进排队问题 B'])
     const userMsgs = busyLoaded?.events.filter(e => e.type === 'message.user').map(e => (e as any).text)
     expect(userMsgs).toEqual([
-      '1. 增加一个仅限 BOE 安全域名的开关吧',
+      '1. 增加一个仅限测试环境安全域名的开关',
       '2. 冷启还是自动拉包，但不用触发自动渲染',
     ])
 
@@ -373,10 +373,10 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
       docker0: [{ address: '172.17.0.1', netmask: '255.255.0.0', family: 'IPv4', mac: '', internal: false, cidr: '172.17.0.1/16' }],
       en0: [
         { address: '169.254.10.20', netmask: '255.255.0.0', family: 'IPv4', mac: '', internal: false, cidr: '169.254.10.20/16' },
-        { address: '192.168.31.88', netmask: '255.255.255.0', family: 'IPv4', mac: '', internal: false, cidr: '192.168.31.88/24' },
+        { address: '192.168.1.88', netmask: '255.255.255.0', family: 'IPv4', mac: '', internal: false, cidr: '192.168.1.88/24' },
       ],
     })
-    expect(ips).toEqual(['192.168.31.88'])
+    expect(ips).toEqual(['192.168.1.88'])
   })
 
   it('[T6.3] resolves Claude ANTHROPIC_DEFAULT_*_MODEL alias (e.g. opus -> gpt-6.2-astra) and AGY Gemini 4 Carbon model echo', () => {

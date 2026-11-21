@@ -161,21 +161,50 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
 
     private fun decodeAndDownscaleImage(uri: Uri): PickedImagePayload? = runCatching {
         val fileName = resolveDisplayName(uri) ?: "photo.jpg"
-        val rawBytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
-        val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return null
-        val maxDim = 1280
-        val longest = maxOf(decoded.width, decoded.height)
-        val scaled = if (longest > maxDim && longest > 0) {
-            val ratio = maxDim.toFloat() / longest.toFloat()
-            val w = (decoded.width * ratio).toInt().coerceAtLeast(1)
-            val h = (decoded.height * ratio).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(decoded, w, h, true)
-        } else {
-            decoded
+        val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boundsOpts) }
+        if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return null
+
+        val targetMaxDim = 1280
+        var sampleSize = 1
+        while (boundsOpts.outWidth / (sampleSize * 2) >= targetMaxDim ||
+            boundsOpts.outHeight / (sampleSize * 2) >= targetMaxDim
+        ) {
+            sampleSize *= 2
         }
-        val out = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.JPEG, 78, out)
-        val b64 = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        val decodeOpts = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val decoded = contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, decodeOpts)
+        } ?: return null
+
+        fun encodeWithinLimit(src: Bitmap, maxDim: Int, quality: Int): String {
+            val longest = maxOf(src.width, src.height)
+            val working = if (longest > maxDim && longest > 0) {
+                val ratio = maxDim.toFloat() / longest.toFloat()
+                val w = (src.width * ratio).toInt().coerceAtLeast(1)
+                val h = (src.height * ratio).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(src, w, h, true)
+            } else {
+                src
+            }
+            val out = ByteArrayOutputStream()
+            working.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            if (working !== src) working.recycle()
+            return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        }
+
+        // Guarantee Base64 payload fits comfortably inside protocol PromptImageAttachment 1_000_000 cap
+        var b64 = ""
+        for ((dim, q) in listOf(1280 to 78, 1280 to 60, 1024 to 52, 800 to 45)) {
+            b64 = encodeWithinLimit(decoded, dim, q)
+            if (b64.length <= 920_000) break
+        }
+        decoded.recycle()
+        if (b64.isEmpty() || b64.length > 990_000) return null
+
         PickedImagePayload(
             fileName = if (fileName.contains('.')) fileName else "$fileName.jpg",
             mimeType = "image/jpeg",

@@ -15,7 +15,7 @@ import {
   type SessionMode,
 } from '@lework/protocol'
 import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/types.ts'
-import { SleepInhibitor } from './platform/index.ts'
+import { defaultDataDir, SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
 import { HostTaskInspector } from './storage/host-history.ts'
@@ -330,14 +330,25 @@ export class SessionManager {
     return undefined
   }
 
+  private attachmentStageDir(sessionId: string): string {
+    const safeSid = sessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+    return path.join(defaultDataDir(), 'attachments', safeSid)
+  }
+
   private stagePromptImages(
     sessionId: string,
     turnId: string,
     images: PromptImageAttachment[],
   ): StagedPromptImage[] {
     if (images.length === 0) return []
-    const safeSid = sessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
-    const stageDir = path.join(os.tmpdir(), 'lework-attachments', safeSid)
+    const rootAttachments = path.join(defaultDataDir(), 'attachments')
+    fs.mkdirSync(rootAttachments, { recursive: true, mode: 0o700 })
+    try {
+      fs.chmodSync(rootAttachments, 0o700)
+    } catch {
+      // best effort
+    }
+    const stageDir = this.attachmentStageDir(sessionId)
     fs.mkdirSync(stageDir, { recursive: true, mode: 0o700 })
     const out: StagedPromptImage[] = []
     for (let i = 0; i < images.length; i++) {
@@ -412,6 +423,11 @@ export class SessionManager {
     managed.meta.updatedAt = Date.now()
     this.callbacks.onSessionUpdated(managed.meta)
     this.sessions.delete(sessionId)
+    try {
+      fs.rmSync(this.attachmentStageDir(sessionId), { recursive: true, force: true })
+    } catch {
+      // ignore cleanup error
+    }
   }
 
   private resolveSessionWorkspaceCwd(sessionId: string): string {

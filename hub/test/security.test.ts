@@ -182,9 +182,56 @@ describe('Hub transport & auth security', () => {
     expect(await c2).toBe(1008)
 
     const good = await openWs(port, '/v1/slave-ws')
-    good.send(JSON.stringify({ token: JOIN, slave: { id: 'devbox_1', name: 'devbox', platform: 'linux', engines: ['claude'] } }))
+    good.send(JSON.stringify({ token: JOIN, slave: { id: 'worker_1', name: 'linux-worker', platform: 'linux', engines: ['claude'] } }))
     expect((await nextMessage(good)).ok).toBe(true)
     good.close()
+  })
+
+  it('blocks git.diff symlink escapes outside workspaceRoots and serves /v1/notify/test to admin only', async () => {
+    const outsideSecret = path.join(os.tmpdir(), `lework-outside-secret-${Date.now()}.txt`)
+    const symlinkInside = path.join(root, 'escape-link.txt')
+    fs.writeFileSync(outsideSecret, 'TOP_SECRET_HOST_DATA')
+    fs.symlinkSync(outsideSecret, symlinkInside)
+
+    try {
+      const ws = await openWs(port, '/v1/ws')
+      ws.send(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'hub.hello',
+          params: { protocolVersion: PROTOCOL_VERSION, token: TOKEN, client: { name: 't', version: '1', platform: 'x' } },
+        }),
+      )
+      await nextMessage(ws)
+
+      ws.send(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'git.diff',
+          params: { path: root, filePath: 'escape-link.txt' },
+        }),
+      )
+      const diffRes = await nextMessage(ws)
+      expect(diffRes.error.code).toBe(ErrorCode.PathNotAllowed)
+      ws.close()
+
+      const unauthNotify = await request(port, 'POST', '/v1/notify/test', {})
+      expect(unauthNotify.status).toBe(401)
+      const authNotify = await request(
+        port,
+        'POST',
+        '/v1/notify/test',
+        {},
+        { Authorization: `Bearer ${TOKEN}` },
+      )
+      expect(authNotify.status).toBe(200)
+      expect(typeof authNotify.body.ok).toBe('boolean')
+    } finally {
+      fs.rmSync(symlinkInside, { force: true })
+      fs.rmSync(outsideSecret, { force: true })
+    }
   })
 })
 
@@ -239,8 +286,18 @@ describe('OAuth-issued tokens', () => {
 })
 
 describe('path guard', () => {
-  it('flags credential files', () => {
-    for (const p of ['/x/.env', '/x/.env.production', '/x/id_rsa', '/x/server.pem', `${os.homedir()}/.ssh/config`]) {
+  it('flags credential files including AI CLI auth stores', () => {
+    for (const p of [
+      '/x/.env',
+      '/x/.env.production',
+      '/x/id_rsa',
+      '/x/server.pem',
+      `${os.homedir()}/.ssh/config`,
+      `${os.homedir()}/.claude/.credentials.json`,
+      `${os.homedir()}/.codex/auth.json`,
+      `${os.homedir()}/.gemini/oauth_creds.json`,
+      `${os.homedir()}/.hermes/secrets/token`,
+    ]) {
       expect(isSensitivePath(p)).toBe(true)
     }
     for (const p of ['/x/.env.example', '/x/id_rsa.pub', '/x/main.ts', '/x/README.md']) {

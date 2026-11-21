@@ -235,8 +235,8 @@ describe('Tailscale same-account tsnet handshake & single-use QR pairing', () =>
 describe('Cross-platform UDP mDNS & Tailscale IP helpers', () => {
   it('encodes RFC 6762 mDNS response and matches _lework._tcp queries', () => {
     const resp = buildMdnsAnnouncementPacket({
-      instanceName: 'Lework Hub (devbox)',
-      hostFqdn: 'devbox.local',
+      instanceName: 'Lework Hub (linux-worker)',
+      hostFqdn: 'linux-worker.local',
       port: 64450,
       ips: ['192.168.1.50'],
       txt: ['v=1', 'hubId=hub_1'],

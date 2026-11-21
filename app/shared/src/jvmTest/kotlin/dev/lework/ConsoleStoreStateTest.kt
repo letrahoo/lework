@@ -356,6 +356,21 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.emitIncomingPairingUri(deepLink)
             runCurrent()
 
+            // External deep link MUST stage pending confirmation first instead of silently pairing!
+            assertEquals(0, transport.pairRedeemCount)
+            assertEquals("TestMacBook", store.state.value.pendingDeepLinkPairing?.hostName)
+
+            store.dismissPendingDeepLinkPairing()
+            assertNull(store.state.value.pendingDeepLinkPairing)
+            assertEquals(0, transport.pairRedeemCount)
+
+            // Re-emit and explicitly confirm
+            JvmPlatformTestHooks.emitIncomingPairingUri(deepLink)
+            runCurrent()
+            store.confirmPendingDeepLinkPairing()
+            runCurrent()
+
+            assertNull(store.state.value.pendingDeepLinkPairing)
             assertEquals(1, transport.pairRedeemCount)
             assertTrue(store.state.value.hasEnteredWorkspace)
             assertEquals("lework_dt.paired_qr_token", JvmPlatformTestHooks.hostTokens["hub_fake_1"])
@@ -371,7 +386,7 @@ class ConsoleStoreStateTest {
         JvmPlatformTestHooks.reset()
         JvmPlatformTestHooks.tsnetAvailable = true
         JvmPlatformTestHooks.tsnetEnabled = true
-        JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.31.44:64450"))
+        JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.1.44:64450"))
         JvmPlatformTestHooks.tsnetStatus = dev.lework.platform.MobileTsnetStatus(
             available = true,
             backendState = "Running",
@@ -443,7 +458,7 @@ class ConsoleStoreStateTest {
             assertEquals(ConnectionStatus.ERROR, store.state.value.connectionStatus)
             assertFalse(store.state.value.hasEnteredWorkspace)
 
-            JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.31.44:64450"))
+            JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.1.44:64450"))
             runCurrent()
             assertFalse(store.state.value.hasEnteredWorkspace)
             assertEquals(ConnectionStatus.ERROR, store.state.value.connectionStatus)
@@ -582,6 +597,13 @@ class ConsoleStoreStateTest {
             store.bootstrapOrConnect()
             runCurrent()
 
+            // Must preserve pendingDeepLinkPairing across cold-start bootstrapOrConnect()
+            assertEquals("TestMacBook", store.state.value.pendingDeepLinkPairing?.hostName)
+            assertEquals(0, transport.pairRedeemCount)
+
+            store.confirmPendingDeepLinkPairing()
+            runCurrent()
+
             assertEquals(1, transport.pairRedeemCount)
             assertTrue(store.state.value.hasEnteredWorkspace)
             assertEquals("lework_dt.paired_qr_token", JvmPlatformTestHooks.hostTokens["hub_fake_1"])
@@ -589,5 +611,25 @@ class ConsoleStoreStateTest {
             storeScope.cancel()
             JvmPlatformTestHooks.reset()
         }
+    }
+
+    @Test
+    fun `T12_1 canonicalizes IPv6 hostPortKey variants and prunes removed host pins`() = runTest {
+        dev.lework.security.HubTrust.resetForTests()
+        assertEquals(
+            "fe80:0:0:0:1:0:0:2:64450",
+            dev.lework.security.HubTrust.hostPortKeyOf("https://[FE80::0001:0:0:2%en0]:64450/v1/ws"),
+        )
+        assertEquals(
+            dev.lework.security.HubTrust.hostPortKeyOf("https://[fe80:0:0:0:1:0:0:2]:64450"),
+            dev.lework.security.HubTrust.hostPortKeyOf("wss://[fe80::1:0:0:2]:64450/v1/ws"),
+        )
+        val fpA = "a".repeat(64)
+        val fpB = "b".repeat(64)
+        dev.lework.security.HubTrust.pin(fpA)
+        dev.lework.security.HubTrust.pin(fpB)
+        dev.lework.security.HubTrust.replacePins(setOf(fpA))
+        assertEquals(setOf(fpA), dev.lework.security.HubTrust.pinned())
+        dev.lework.security.HubTrust.resetForTests()
     }
 }

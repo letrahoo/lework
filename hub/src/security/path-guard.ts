@@ -23,7 +23,11 @@ function sensitiveDirs(): string[] {
   const dirs = [
     process.env.LEWORK_HOME ?? path.join(home, '.lework'),
     path.join(home, '.lework'),
-    path.join(home, '.qprc'),
+    path.join(home, '.claude'),
+    path.join(home, '.codex'),
+    path.join(home, '.gemini'),
+    path.join(home, '.hermes'),
+    path.join(home, '.cursor'),
     path.join(home, '.ssh'),
     path.join(home, '.gnupg'),
     path.join(home, '.aws'),
@@ -32,6 +36,9 @@ function sensitiveDirs(): string[] {
     path.join(home, '.docker'),
     path.join(home, '.config', 'gcloud'),
     path.join(home, '.config', 'gh'),
+    path.join(home, '.config', 'Cursor'),
+    path.join(home, '.config', 'opencode'),
+    path.join(home, '.config', 'claude'),
     path.join(home, '.password-store'),
     path.join(home, 'Library', 'Keychains'),
     path.join(home, 'Library', 'Cookies'),
@@ -49,7 +56,7 @@ function sensitiveDirs(): string[] {
 }
 
 const SENSITIVE_FILE_RE =
-  /^(id_(rsa|dsa|ecdsa|ed25519)(_sk)?|\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials|\.env(\.(?!example$|sample$|template$)[\w.-]+)?)$|\.(pem|key|p12|pfx|keystore|jks|kdbx)$/i
+  /^(id_(rsa|dsa|ecdsa|ed25519)(_sk)?|\.netrc|\.npmrc|\.pypirc|\.git-credentials|\.credentials\.json|credentials|auth\.json|oauth_creds\.json|\.env(\.(?!example$|sample$|template$)[\w.-]+)?)$|\.(pem|key|p12|pfx|keystore|jks|kdbx)$/i
 
 export function isSensitivePath(realPath: string): boolean {
   for (const dir of sensitiveDirs()) {
@@ -57,6 +64,8 @@ export function isSensitivePath(realPath: string): boolean {
   }
   const secretFile = process.env.LEWORK_OAUTH_SECRET_FILE
   if (secretFile && path.resolve(secretFile) === realPath) return true
+  const cpaConfigFile = process.env.LEWORK_CPA_CONFIG
+  if (cpaConfigFile && path.resolve(cpaConfigFile) === realPath) return true
   return SENSITIVE_FILE_RE.test(path.basename(realPath))
 }
 

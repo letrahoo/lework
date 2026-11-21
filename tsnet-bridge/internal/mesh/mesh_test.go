@@ -244,3 +244,74 @@ func TestPipeBidirectionalPreservesDelayedResponseAfterHalfClose(t *testing.T) {
 		t.Fatalf("expected ATTEST_OK after half-close, got %q (err=%v)", string(resp[:n]), err)
 	}
 }
+
+func TestForwarderSecretBlocksUnauthenticatedLocalCallers(t *testing.T) {
+	echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoLn.Close()
+	go func() {
+		for {
+			c, aErr := echoLn.Accept()
+			if aErr != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}(c)
+		}
+	}()
+
+	fb := &fakeBackend{
+		dialAddr: echoLn.Addr().String(),
+		status: &RawTailnetStatus{
+			BackendState: "Running",
+			SelfUserID:   42,
+			Peers: []RawPeerInfo{
+				{UserID: 42, HostName: "lework-hub-mac", Online: true, TailscaleIPs: []string{"100.64.0.1"}},
+			},
+		},
+	}
+
+	const secret = "f8e1c2a3b4d567890123456789abcdef"
+	mgr, err := NewManager(Config{
+		StateDir:        t.TempDir(),
+		Hostname:        "lework-android",
+		HubPort:         64450,
+		ForwarderSecret: secret,
+	}, func(Config) (EngineBackend, error) { return fb, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	snap := mgr.Status(context.Background())
+	proxyAddr := strings.TrimPrefix(snap.Peers[0].LocalProxyURL, "https://")
+
+	// 1. Rogue co-installed app sending raw TLS ClientHello without preamble MUST be dropped
+	rogue, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = rogue.Write([]byte("\x16\x03\x01\x00\xf0ROGUE_CLIENT_HELLO_PADDING_BYTES_0123456789ABCDEF"))
+	_ = rogue.SetReadDeadline(time.Now().Add(1 * time.Second))
+	rogueBuf := make([]byte, 16)
+	if n, rErr := rogue.Read(rogueBuf); rErr == nil && n > 0 {
+		t.Fatalf("expected rogue caller without preamble to be closed, got %q", string(rogueBuf[:n]))
+	}
+	_ = rogue.Close()
+
+	// 2. Legitimate caller sending exact preamble followed immediately by TLS bytes MUST pass intact
+	legit, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legit.Close()
+	_, _ = legit.Write([]byte("LEWORK-FWD " + secret + "\nTLS_CLIENT_HELLO"))
+	out := make([]byte, 16)
+	if _, err := io.ReadFull(legit, out); err != nil || string(out) != "TLS_CLIENT_HELLO" {
+		t.Fatalf("expected exact TLS_CLIENT_HELLO stream after preamble, got %q (err=%v)", string(out), err)
+	}
+}

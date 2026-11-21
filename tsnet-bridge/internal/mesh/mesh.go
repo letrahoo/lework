@@ -31,6 +31,7 @@ type Config struct {
 	AuthKey         string `json:"authKey,omitempty"`
 	HubUpstreamAddr string `json:"hubUpstreamAddr,omitempty"`
 	HubPort         int    `json:"hubPort,omitempty"`
+	ForwarderSecret string `json:"-"`
 	VerboseLog      bool   `json:"verboseLog,omitempty"`
 }
 
@@ -633,9 +634,23 @@ func (m *Manager) serveForwarder(f *localForwarder) {
 			m.mu.Lock()
 			b := m.backend
 			hubPort := m.cfg.HubPort
+			fwdSecret := m.cfg.ForwarderSecret
 			m.mu.Unlock()
 			if b == nil {
 				return
+			}
+			// SECURITY: When ForwarderSecret is set (e.g., on Android where 127.0.0.1 is shared across
+			// all apps with INTERNET permission), require an exact-length pre-TLS secret preamble before
+			// opening a Tailscale tunnel so co-installed apps cannot piggyback on `/v1/auth/tailscale`.
+			if fwdSecret != "" {
+				expected := []byte("LEWORK-FWD " + fwdSecret + "\n")
+				buf := make([]byte, len(expected))
+				_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+				_, rErr := io.ReadFull(c, buf)
+				_ = c.SetReadDeadline(time.Time{})
+				if rErr != nil || subtle.ConstantTimeCompare(buf, expected) != 1 {
+					return
+				}
 			}
 			dialCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			target := net.JoinHostPort(f.peerIP, strconv.Itoa(hubPort))

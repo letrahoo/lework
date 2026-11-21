@@ -91,13 +91,49 @@ fi
 if [[ "$MODE" == "--all" || "$MODE" == "--android" ]]; then
   ANDROID_JNI_DIR="$REPO_ROOT/app/androidApp/src/main/jniLibs"
   mkdir -p "$ANDROID_JNI_DIR/arm64-v8a" "$ANDROID_JNI_DIR/x86_64"
-  echo "==> Building Android embedded tsnet binaries (arm64-v8a & x86_64, zero-NDK static Linux ELF)..."
-  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-    "$GO_BIN" build -trimpath -ldflags="-s -w" \
-    -o "$ANDROID_JNI_DIR/arm64-v8a/libtsnetbridge.so" ./cmd/lework-tsnet
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    "$GO_BIN" build -trimpath -ldflags="-s -w" \
-    -o "$ANDROID_JNI_DIR/x86_64/libtsnetbridge.so" ./cmd/lework-tsnet
+
+  NDK_DIR="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+  if [[ -z "$NDK_DIR" || ! -d "$NDK_DIR" ]]; then
+    for sdk_root in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Library/Android/sdk" "$HOME/Android/Sdk" "/usr/local/lib/android/sdk"; do
+      if [[ -n "$sdk_root" && -d "$sdk_root/ndk" ]]; then
+        latest_ndk="$(ls -1 "$sdk_root/ndk" 2>/dev/null | sort -V | tail -n 1 || true)"
+        if [[ -n "$latest_ndk" && -d "$sdk_root/ndk/$latest_ndk" ]]; then
+          NDK_DIR="$sdk_root/ndk/$latest_ndk"
+          break
+        fi
+      fi
+    done
+  fi
+
+  NDK_BIN=""
+  if [[ -n "$NDK_DIR" && -d "$NDK_DIR/toolchains/llvm/prebuilt" ]]; then
+    for host_tag in darwin-x86_64 darwin-arm64 linux-x86_64 linux-aarch64; do
+      if [[ -x "$NDK_DIR/toolchains/llvm/prebuilt/$host_tag/bin/aarch64-linux-android24-clang" ]]; then
+        NDK_BIN="$NDK_DIR/toolchains/llvm/prebuilt/$host_tag/bin"
+        break
+      fi
+    done
+  fi
+
+  if [[ -n "$NDK_BIN" ]]; then
+    echo "==> Building Android embedded tsnet binaries (GOOS=android PIE, 16KB page-aligned via NDK)..."
+    CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
+      CC="$NDK_BIN/aarch64-linux-android24-clang" \
+      "$GO_BIN" build -trimpath -ldflags="-s -w -extldflags=-Wl,-z,max-page-size=16384" \
+      -o "$ANDROID_JNI_DIR/arm64-v8a/libtsnetbridge.so" ./cmd/lework-tsnet
+    CGO_ENABLED=1 GOOS=android GOARCH=amd64 \
+      CC="$NDK_BIN/x86_64-linux-android24-clang" \
+      "$GO_BIN" build -trimpath -ldflags="-s -w -extldflags=-Wl,-z,max-page-size=16384" \
+      -o "$ANDROID_JNI_DIR/x86_64/libtsnetbridge.so" ./cmd/lework-tsnet
+  else
+    echo "==> Building Android embedded tsnet binaries (arm64-v8a & x86_64, static Linux ELF fallback)..."
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+      "$GO_BIN" build -trimpath -ldflags="-s -w" \
+      -o "$ANDROID_JNI_DIR/arm64-v8a/libtsnetbridge.so" ./cmd/lework-tsnet
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+      "$GO_BIN" build -trimpath -ldflags="-s -w" \
+      -o "$ANDROID_JNI_DIR/x86_64/libtsnetbridge.so" ./cmd/lework-tsnet
+  fi
 fi
 
 echo "==> tsnet-bridge build complete."

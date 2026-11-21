@@ -91,9 +91,10 @@ interface HubTransport {
 
     /**
      * Verifies (and pins) the Hub's TLS certificate *before* any token is sent to it, using
-     * token-bound attestation. Throws [HubTrustException] if the endpoint cannot prove itself.
+     * host-scoped fingerprint matching or token-bound attestation. Throws [HubTrustException] if
+     * the endpoint cannot prove itself.
      */
-    suspend fun ensureHubTrusted(baseUrl: String, token: String) {}
+    suspend fun ensureHubTrusted(baseUrl: String, token: String, expectedFingerprint: String? = null) {}
 
     suspend fun authenticateViaTailscale(baseUrl: String, deviceName: String): DirectTokenAuthResult {
         throw UnsupportedOperationException("Tailscale handshake not implemented in this transport")
@@ -234,10 +235,12 @@ class HubRpcClient(
             if (normalized.isEmpty()) return
             val shouldStart = probedMutex.withLock { probed.add(normalized) }
             if (!shouldStart) return
+            val perProbeTimeoutMs =
+                if (normalized.startsWith("https://127.0.0.1:") || normalized.startsWith("https://100.")) 9_000L else 5_000L
 
             val job = scope.launch {
                 try {
-                    val res = withTimeout(4_500L) {
+                    val res = withTimeout(perProbeTimeoutMs) {
                         probeClient.get("$normalized/v1/auth/discover")
                     }
                     if (res.status.isSuccess()) {
@@ -364,9 +367,16 @@ class HubRpcClient(
         return parsed
     }
 
-    override suspend fun ensureHubTrusted(baseUrl: String, token: String) {
+    override suspend fun ensureHubTrusted(baseUrl: String, token: String, expectedFingerprint: String?) {
         val base = normalizeHubBaseUrl(baseUrl)
-        HubTrust.observedFor(base)?.let { if (HubTrust.isPinned(it)) return }
+        val cleanExpected = expectedFingerprint?.trim()?.lowercase()?.takeIf { it.length == 64 }
+        val observed = HubTrust.observedFor(base)
+        if (cleanExpected != null && observed != null) {
+            if (!constantTimeEquals(observed, cleanExpected)) {
+                throw HubTrustException("主机证书指纹与已配对记录不匹配，已阻止发送令牌")
+            }
+            if (HubTrust.isPinned(observed)) return
+        }
 
         val nonce = HubAttestation.newNonce()
         val res = try {
@@ -391,6 +401,9 @@ class HubRpcClient(
         }.getOrNull() ?: throw HubTrustException("主机身份校验响应无效，已阻止发送令牌")
         val seen = HubTrust.observedFor(base)
             ?: throw HubTrustException("未获取到主机证书，已阻止发送令牌")
+        if (cleanExpected != null && !constantTimeEquals(seen, cleanExpected)) {
+            throw HubTrustException("主机证书指纹与已配对记录不匹配，已阻止发送令牌")
+        }
         val expectedProof = HubAttestation.proof(token, seen, nonce)
         if (!constantTimeEquals(seen, att.fingerprint.lowercase()) ||
             !constantTimeEquals(expectedProof, att.proof.lowercase())
@@ -510,7 +523,7 @@ class HubRpcClient(
                     token = token,
                     client = ClientInfo(
                         name = "lework-mobile",
-                        version = "0.5.0",
+                        version = "0.6.0",
                         platform = platformName,
                     ),
                 ),

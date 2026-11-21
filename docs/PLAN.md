@@ -15,18 +15,18 @@
 | D5 | 支持引擎：**Claude Code、AGY、Codex、自建 Pi** 及可选本地 CLI 引擎 | ✅ 已定 |
 | D6 | 本机 API Proxy = **CLIProxyAPI v8**（`127.0.0.1:8317`）；Hub 只感知端口/协议/模型列表，不管上游通道，见 §4.4 | ✅ 已定 |
 | D7 | iOS 用**本机 Apple 个人开发团队签名**（Xcode 自动管理）；Bundle ID `dev.lework.app`，见 §6.3 | ✅ 已定 |
-| D8 | 项目名 **lework**，代码位于 `~/personal/lework` | ✅ 已完成 |
-| D9 | 架构分 **Master / Slave** 两种角色；支持局域网 Bonjour 直连，异地可经任意 Linux Relay / Tailscale / WireGuard 接入，见 §3.7 | ✅ 已定 |
+| D8 | 项目名 **lework**，采用单仓多模块结构（`protocol-schema/`、`hub/`、`tsnet-bridge/`、`app/`） | ✅ 已完成 |
+| D9 | 架构分 **Master / Slave** 两种角色；支持局域网 Bonjour 直连、内嵌 Tailscale `tsnet` 零配置组网，异地也可经任意 Linux Relay / WireGuard 接入，见 §3.7 | ✅ 已定 |
 
 **三个角色（避免混淆）**
 
-| 角色 | 跑在哪 | 是什么 | 类比 dsh-channel |
-| --- | --- | --- | --- |
-| **Client**（App） | 手机 | 只做展示与操作，不跑引擎，不存凭证 | Android / Web Client |
-| **Relay**（中继网关，可选） | 任意 Linux 节点 / 云主机 | 解决异地或跨网段无法直连工作站：仅做无状态 TCP 密文转发，**不懂业务、看不到内容** | Remote Server（`relay.example.com`） |
-| **Hub**（底座） | Linux（Master）/ Mac（Slave） | 常驻守护进程，分两种角色：**Master** 负责入口、认证、Slave 注册与路由（合并原 Gate）；**Slave** 负责拉起/管理引擎、事件流、审批、模型与凭证编排，见 §3.7 | Host Plugin，但独立于 DSH 运行 |
+| 角色 | 跑在哪 | 是什么 |
+| --- | --- | --- |
+| **Client**（App） | 手机（iOS / Android） | 只做展示与操作，不跑引擎，不存上游模型凭证 |
+| **Relay**（中继网关，可选） | 任意 Linux 节点 / 云主机 | 解决异地或跨网段无法直连工作站：仅做无状态 TCP TLS 密文转发，**不懂业务、看不到内容** |
+| **Hub**（底座） | Linux（Master）/ Mac（Slave） | 常驻守护进程，分两种角色：**Master** 负责入口、认证、Slave 注册与路由；**Slave** 负责拉起/管理引擎、事件流、审批、模型与凭证编排，见 §3.7 |
 
-> Hub 既不是客户端内逻辑，也不是 Remote Connect Server；它是**被控端的引擎管理器**。手机与 Mac 同一 Wi‑Fi 时可不经 Relay 直连 Hub；Relay 只是可替换的"路"。
+> Hub 既不是客户端内逻辑，也不是公网 SaaS 服务端；它是**被控端的引擎管理器**。手机与 Mac 同一 Wi‑Fi 时可经 Bonjour 直连 Hub，异地可通过内嵌 Tailscale `tsnet` 或无状态 Relay 直连。
 
 ---
 
@@ -34,9 +34,9 @@
 
 | 现状 | 痛点 | 新方案的对策 |
 | --- | --- | --- |
-| 手机浏览器 → 临时反代门卫 → SSH 反向隧道 → 单一桌面 Web GUI | 只能绑定单一工具；Web GUI 非移动端设计；自签证书需装 CA；后台即断，无通知 | 原生 App + 端到端 TLS 指纹钉扎（免装 CA）+ 断线 `seq` 续传事件流 + 可选 Webhook/机器人通知 |
-| DSH 通过 API 反代接模型 | AGY 等引擎禁止反代，无法纳入；模型与引擎强耦合 | **引擎是一等公民**：AGY 以其官方 CLI + 自带登录运行，不再试图反代 |
-| `dsh-channel` 已支持 ACP 多后端 | Host 必须是 DSH 插件；默认依赖公网中转 `relay.example.com`（与"只走内网基建"冲突）；iOS 仅 TestFlight | 借鉴其 adapter / 审批 / 路径校验设计（MIT），但 Hub 独立于 DSH 运行，传输只走内网 |
+| 手机浏览器 → 临时反代门卫 → SSH 反向隧道 → 单一桌面 Web GUI | 只能绑定单一工具；Web GUI 非移动端设计；自签证书需装 CA；后台即断，无通知 | 原生 App + 端到端 TLS 证书 SHA-256 指纹钉扎（免装 CA）+ 断线 `seq` 续传事件流 + 可选 Webhook/机器人通知 |
+| 单一 API 反代网关接模型 | AGY 等引擎禁止反代，无法纳入；模型与引擎强耦合 | **引擎是一等公民**：AGY 以其官方 CLI + 自带登录运行，不再试图反代 |
+| 传统远程 IDE 插件方案 | 强依赖特定宿主 IDE 与公网中转服务；移动端体验受限 | 独立常驻 `hubd` 守护进程，支持多引擎插件化适配，传输只走自有局域网 / Tailnet / 自建 Relay |
 | 模型配置分散在各 CLI 的私有配置里 | 换模型要 SSH 回去改配置 | Hub 统一的 **Model Registry + Credential Vault**，App 里一键切换 |
 
 **设计原则**
@@ -54,31 +54,31 @@
 ```mermaid
 flowchart LR
     subgraph Phone["手机 (KMP App)"]
-        UI["Compose MP UI<br/>+ iOS 原生扩展"]
-        Core["Shared Core<br/>协议/状态/缓存/E2EE"]
+        UI["Compose MP UI<br/>+ 原生平台扩展"]
+        Core["Shared Core<br/>协议/状态/缓存/TLS 钉扎/tsnet"]
     end
 
-    subgraph RelayNode["Relay 节点 (可选中继)"]
-        Gate["tcp-relay<br/>无状态 TCP 密文转发"]
+    subgraph RelayNode["Relay 节点 / Tailnet (可选)"]
+        Gate["tsnet 内嵌组网 / tcp-relay<br/>端到端 TLS 密文直达"]
     end
 
-    subgraph Mac["本机 Mac"]
+    subgraph Mac["本机工作站"]
         Hub["Host Hub (hubd)<br/>会话/事件日志/审批/路由"]
         Reg["Model Registry<br/>+ Credential Vault"]
         subgraph Engines["Engine Adapters"]
             A1["Claude Code<br/>(claude-agent-acp)"]
             A2["Codex<br/>(codex app-server)"]
             A3["AGY<br/>(agy stream-json)"]
-            A4["DSH<br/>(本机 Service API)"]
-            A5["Pi Engine<br/>(自建, pi SDK)"]
+            A4["DSH<br/>(本机 Loopback 通道)"]
+            A5["Pi Engine<br/>(内嵌引擎)"]
             A6["通用 ACP<br/>(OpenCode/Cursor/Gemini…)"]
         end
-        Proxy["本机 API Proxy<br/>(LiteLLM/new-api/自建)"]
+        Proxy["本机 API Proxy<br/>(CLIProxyAPI / LiteLLM)"]
     end
 
     UI --> Core
-    Core -- "WSS + Noise E2EE" --> Gate
-    Gate -- "SSH 反向隧道" --> Hub
+    Core -- "WSS + TLS 指纹钉扎" --> Gate
+    Gate -- "Tailnet / 隧道" --> Hub
     Core -. "同局域网直连 (Bonjour)" .-> Hub
     Hub --> Engines
     Hub --> Reg
@@ -102,7 +102,7 @@ flowchart LR
 
 ### 3.1 技术选型
 
-**TypeScript + Node 22（或 Bun）**，理由：ACP SDK、`claude-agent-acp`、pi SDK、Codex app-server 客户端都是 TS 生态；可直接复用 `dsh-channel` 的 `packages/crypto/noise.ts` 与 adapter 思路。协议用 **JSON Schema 单一来源**，代码生成 TS 类型与 Kotlin `@Serializable` 类，保证两端一致。
+**TypeScript + Node 22+**，理由：ACP SDK、`claude-agent-acp`、pi SDK、Codex app-server 客户端均原生支持 TS 生态。协议用 **JSON Schema / 单一来源定义**，代码生成 TS 类型与 Kotlin `@Serializable` 类，保证两端一致。
 
 以平台服务常驻：macOS 用 `launchd` LaunchAgent，Linux 节点用 `systemd --user`；附带 `hub` CLI（`hub status / hub engines / hub pair / hub join / hub slaves`）。平台差异收敛在 `platform/` 层：凭证存储（macOS Keychain ↔ Linux libsecret，无桌面会话时退化为 `age` 加密文件 + 0600）、防休眠（`caffeinate` ↔ 无需）、服务安装（plist ↔ unit）。
 
@@ -137,8 +137,8 @@ interface SessionHandle {
 | --- | --- | --- | --- |
 | Claude Code | CLI | `claude-agent-acp`（ACP stdio）或 Claude Agent SDK | 每会话独立进程；审批走 ACP `request_permission` |
 | Codex | CLI/Server | `codex app-server`（JSON-RPC stdio） | Thread/Turn 由 Codex 自己持久化，Hub 只投影 |
-| AGY | CLI | `agy --input-format stream-json --output-format stream-json` | **使用 agy 自身登录态，不做任何反代**；dsh-channel 已验证可行 |
-| DSH | Service | **dsh-channel 通道**（见 §3.6） | DSH 的工作区/会话/模型由 DSH 自己管理，Hub 只做投影 |
+| AGY | CLI | `agy --output-format stream-json` | **使用 agy 自身登录态，不做任何反代** |
+| DSH | Service | 本机 Loopback 通道（见 §3.6） | DSH 的工作区/会话/模型由 DSH 自己管理，Hub 只做投影 |
 | Pi Engine | Embedded | 自建，见 §5 | 可作为"兜底通用引擎" |
 | OpenCode / Cursor / Gemini CLI / Hermes… | CLI | 通用 ACP adapter | 配置 `command/args` 即可，能力取自 `initialize` |
 
@@ -163,27 +163,23 @@ turn.done {reason: end_turn|cancelled|max_tokens|error}
 - App 重连发 `subscribe(sessionId, afterSeq)`，Hub 补发差量 → 解决 iOS 后台挂起断线问题。
 - 对自带历史的引擎（Codex、Claude、AGY）日志仅作缓存；对无历史的引擎日志即真相源。
 
-### 3.5 安全边界（继承 dsh-channel 的成熟做法）
+### 3.5 安全边界
 
 - 方法 **编译期 allowlist**，未知方法 fail-closed。
-- 所有 `cwd` 做词法 + `realpath` 校验，限定在用户配置的 Workspace Roots 内。
-- 审批句柄绑定 `(device, session, engine, processInstance)`，一次性消费，断线不放行。
-- 每设备可配置权限档位：只读观察 / 可对话 / 可审批 / 管理员（可改引擎与凭证）。
-- 全量审计日志：谁、何时、在哪个会话、批准了什么命令。
+- 所有 `cwd` 与文件操作均经过词法 + `realpath` 边界校验，限定在用户配置的 Workspace Roots 内，并拦截敏感凭证目录。
+- 审批句柄绑定会话与请求上下文，一次性消费，断线不自动放行。
+- 令牌绑定 TLS 证书指纹证明（Challenge-Response Attestation），支持 `hub tokens revoke` 随时吊销。
 
-### 3.6 DSH Adapter：基于 dsh-channel 通道
+### 3.6 DSH Adapter：本机 Loopback 通道
 
 ```mermaid
 flowchart LR
-    Hub["hubd · DSH Adapter"] -- "复用 client-core / crypto / protocol (TS)" --> RS["自建最小 Remote Server<br/>(apps/server, 跑在本机 loopback)"]
-    RS --> Plugin["DSH Desktop<br/>+ dsh-channel 插件 (Host)"]
+    Hub["hubd · DSH Adapter"] -- "本机 Loopback TCP" --> RS["本机 DSH 服务 / 本地通道"]
+    RS --> Plugin["DSH Desktop (Host)"]
 ```
 
-- Hub 内的 DSH Adapter 以 **Remote Client** 身份接入 DSH 上的 dsh-channel 插件，复用其 `packages/client-core`、`crypto`、`protocol`（MIT，TS，可直接引用——这也是 Hub 推荐 TS 的理由之一）。
-- 信令/Relay 用仓库自带的**最小 Server**（`apps/server`）部署在本机 loopback，**不连公网 `relay.example.com`**，符合"只走内网基建"。
-- Adapter 把 Typert Remote 的会话/事件映射为统一 AgentEvent；DSH 的模型切换走 DSH 自身配置，Hub 不干预其 provider。
-- 好处：跟随上游插件升级即可获得 DSH 新能力，不必逆向 DSH 私有 HTTP API；无需逆向私有 HTTP API。
-- 风险：上游协议仍在 Draft，需锁定插件版本并做契约测试；若最小 Server 能力不足，退路是 Adapter 直连本机 DSH 服务（现有 `dsh-remote-tunnel` 的做法）。
+- Hub 内的 DSH Adapter 仅通过本机 `127.0.0.1` Loopback 端口探测并对接本地 DSH 服务，**不连接任何第三方公网中转节点**。
+- Adapter 将本地通道的会话/事件映射为统一 `AgentEvent`；模型切换沿用 DSH 自身配置。
 
 ### 3.7 Master / Slave 架构与部署方案
 
@@ -227,7 +223,7 @@ flowchart LR
 | 本地 Mac | **Slave** | launchd 常驻，沿用现有 SSH 反向隧道外连 Master；DSH、CLIProxyAPI 都在这台 |
 
 要点：
-- **端到端加密**：App 与每个 Slave 独立做 Noise 握手，Master 只路由密文。
+- **传输加密**：App 与每个 Hub 独立做 TLS 指纹钉扎，Relay 仅转发密文。
 - **App 视角**：主机列表 = Master 注册表里的在线 Slave，每台显示可用引擎、登录状态；会话归属某个 Slave，Profile 可指定默认 Slave。
 - **Slave 接入**：在目标机执行 `hub join <master-url> --token <一次性码>`，自动安装常驻服务并建立隧道；Master 可随时吊销。
 - **模型来源随 Slave 走**：Mac 的 CLIProxyAPI 只服务 Mac Slave 上的引擎；远端 Linux Slave 如需使用，另行部署或经隧道映射到远端 loopback。
@@ -292,10 +288,7 @@ Hub 不重复造网关，把 CLIProxyAPI（下称 CPA）注册为一个 `endpoin
 | 不做 | Hub 不读取 `auths/` 目录、不调用 CPA 的 OAuth 登录、不改 CPA 配置；CPA 背后接的是哪些上游通道由你在 CPA 侧自行管理，Hub 只感知"端口 + 协议 + 模型列表" |
 
 > [!NOTE]
-> 上游通道的合规风险（订阅包装成 API、多账号轮换等）在上一轮已提示过一次，此处不再展开；Hub 层不区分上游类型。
-
-> [!CAUTION]
-> `config.yaml` 注释中写有管理后台的明文初始密码，建议修改管理密码并删除该注释；`management.allow-remote` 保持 `false`。
+> Hub 层仅把 CPA 视为本地 `127.0.0.1` 兼容端点，不读取或修改上游配置；管理接口需保持 `allow-remote: false`。
 
 ---
 
@@ -329,14 +322,14 @@ sequenceDiagram
     App->>Gate: TLS (钉扎自签 CA) + 设备令牌
     Note over App,Hub: 首次连接: 令牌绑定 TLS 证书证明 (或可选 OAuth RFC 8628 设备流)<br/>钉扎 Hub 证书 SHA-256 指纹
     Gate->>Hub: 经 SSH 反向隧道转发 WebSocket
-    App->>Hub: Noise XX 握手 (设备公钥已在配对时登记)
+    App->>Hub: WSS 握手与设备令牌认证 (TLS 指纹钉扎)
     Note over App,Hub: 之后全部为端到端密文, Gate 不可读
     App->>Hub: subscribe(session, afterSeq)
     Hub-->>App: 差量事件 + 实时流
 ```
 
 - **无状态中继 (`tcp-relay.mjs`)**：仅做字节流转发；TLS 在工作站 `hubd` 进程内端到端终止，可选 OAuth 设备流采用插件化 Provider（内置通用 `rfc8628` 与 `feishu`），签发令牌支持 `hub tokens revoke` 随时吊销。
-- **端到端加密**：App 与 Hub 之间 Noise XX（X25519 + ChaChaPoly + BLAKE2s，与 dsh-channel 相同方案，可直接复用其测试向量）。即使中继节点被攻破也读不到代码、令牌与对话。
+- **传输层安全**：App 与 Hub 之间采用端到端 TLS SHA-256 指纹钉扎与令牌挑战绑定。
 - **配对**：Mac 上 `hub pair` 显示二维码（含 Hub 公钥指纹 + Gate 地址 + 一次性码），App 扫码完成登记——同时解决自签证书信任问题（CA 指纹随二维码下发，App 内钉扎）。
 - **本地直连**：同一 Wi‑Fi 时通过 Bonjour 发现 Hub，直接连，延迟更低；协议与加密不变。
 - App 内 Face ID 解锁；审批类高危操作可要求二次生物识别。
@@ -364,7 +357,7 @@ sequenceDiagram
 
 | 约束 | 影响 | 应对 |
 | --- | --- | --- |
-| 描述文件 7 天有效（体验台包已于 11-08 过期，证书本身未过期） | 每周需重签重装 | `scripts/ios-install.sh` 一键 "重新生成描述文件 → 构建 → 安装 → 回查"；App 内在到期前 1 天提示 |
+| 描述文件 7 天有效（个人免费团队限制） | 每周需重签重装 | `scripts/ios-install.sh` 一键重签安装；App 内提前提示 |
 | 仅已登记设备可装 | 只能装自己的 iPhone | 本项目本就是个人工具，满足 |
 | 个人（免费）团队不支持 Push Notifications 等部分能力 | 无 APNs | v1 通知走 Webhook / IM 机器人（§6.2），不受影响；如未来需要 APNs，再评估付费开发者账号 |
 | Keychain、Face ID、Bonjour 本地网络、相机扫码 | 均可用 | 需在 Info.plist 声明 `NSFaceIDUsageDescription`、`NSLocalNetworkUsageDescription`、`NSBonjourServices`、`NSCameraUsageDescription` |
@@ -387,7 +380,7 @@ sequenceDiagram
 ```text
 lework/
 ├─ docs/                       # 现有架构文档、runbook 迁入
-├─ vendor/dsh-channel/   # 现有 repo/，作为 DSH 通道依赖（git submodule）
+├─ tsnet-bridge/               # Go: 内嵌 Tailscale tsnet 组网桥接
 ├─ protocol-schema/            # JSON Schema 单一来源 → 生成 Kotlin & TS
 ├─ hub/                        # TS: hubd (master/slave) + adapters + pi-engine + platform/{darwin,linux}
 └─ app/
@@ -431,7 +424,7 @@ flowchart TD
 
 ## 8. 统一协议（App ⇄ Hub）
 
-JSON-RPC 2.0 over WebSocket（Noise 加密帧内），主要方法：
+JSON-RPC 2.0 over WSS（TLS 指纹钉扎），主要方法：
 
 | 域 | 方法 |
 | --- | --- |
@@ -454,7 +447,7 @@ JSON-RPC 2.0 over WebSocket（Noise 加密帧内），主要方法：
 | --- | --- | --- | --- |
 | **M0 骨架** | 2 周 | 协议 Schema + 代码生成；hubd 骨架（macOS + Linux 双平台从第一天起 CI）；**Claude Code** adapter；iOS CMP 聊天 MVP（局域网直连、无加密）；个人团队签名 + `ios-install.sh` 一键真机安装 | 手机上对 Claude Code 发 prompt、看流式回复、处理一次审批 |
 | **M1 底座** | 3 周 | Model Registry + Keychain；**CPA 接入**；**Pi Engine** v1；**Codex** adapter；事件日志 + seq 续传；Profile 切换 | App 切后台 5 分钟回来会话无缝续上；Claude / Pi / Codex 均可在订阅与 CPA 间切换 |
-| **M2 引擎补齐** | 2 周 | **AGY** adapter（stream-json，仅订阅）；**DSH** adapter（dsh-channel 通道 + 本机最小 Server） | 5 个首批引擎均能完成"建会话→对话→工具→审批→历史恢复" |
+| **M2 引擎补齐** | 2 周 | **AGY** adapter（stream-json，仅订阅）；**DSH** adapter（本机 Loopback 通道） | 5 个首批引擎均能完成"建会话→对话→工具→审批→历史恢复" |
 | **M3 连通与分发** | 2 周 | **Relay / Master 节点** + Slave 注册/路由 + `hub join`；访问令牌 + 配对二维码 + 可选 OAuth 设备流认证 | 局域网免配直连；异地经自定义 Relay / Overlay 网络无缝连接 |
 | **M4 体验与双端** | 3 周 | 文件浏览、Diff、检查点回滚；通用 ACP adapter（OpenCode 等）；Android 版本；Widget / App Intents；用量统计；多 Host | Android 功能对齐 iOS |
 | M5 进阶（可选） | — | APNs + Live Activity（需付费开发者账号）；多引擎同题对比；任务队列 / 定时任务；语音对话模式 | — |

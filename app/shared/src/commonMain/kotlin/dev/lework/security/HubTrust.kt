@@ -51,6 +51,12 @@ object HubTrust {
         runCatching { savePinnedHubFingerprints(emptySet()) }
     }
 
+    fun replacePins(fingerprints: Set<String>) {
+        val clean = fingerprints.map { it.trim().lowercase() }.filter { it.length == 64 }.toSet()
+        pinnedRef.store(clean)
+        runCatching { savePinnedHubFingerprints(clean) }
+    }
+
     fun recordObserved(host: String, port: Int, fingerprint: String) {
         val key = hostPortKey(host, port)
         while (true) {
@@ -68,8 +74,29 @@ object HubTrust {
         observedRef.store(emptyMap())
     }
 
+    private fun canonicalizeIpv6OrHost(raw: String): String {
+        val cleaned = raw.lowercase().trim('[', ']').trimEnd('.').substringBefore('%')
+        if (!cleaned.contains(':')) return cleaned
+        val doubleIdx = cleaned.indexOf("::")
+        val groups: List<String> = if (doubleIdx >= 0) {
+            val left = cleaned.substring(0, doubleIdx).split(':').filter { it.isNotEmpty() }
+            val right = cleaned.substring(doubleIdx + 2).split(':').filter { it.isNotEmpty() }
+            val missing = 8 - (left.size + right.size)
+            if (missing < 0) return cleaned
+            left + List(missing) { "0" } + right
+        } else {
+            val parts = cleaned.split(':')
+            if (parts.size != 8) return cleaned
+            parts
+        }
+        if (groups.size != 8 || groups.any { g -> g.isEmpty() || g.length > 4 || g.any { ch -> ch !in "0123456789abcdef" } }) {
+            return cleaned
+        }
+        return groups.joinToString(":") { it.trimStart('0').ifEmpty { "0" } }
+    }
+
     fun hostPortKey(host: String, port: Int): String =
-        "${host.lowercase().trim('[', ']').trimEnd('.')}:$port"
+        "${canonicalizeIpv6OrHost(host)}:$port"
 
     fun hostPortKeyOf(url: String): String {
         val noScheme = url.substringAfter("://")

@@ -1,21 +1,67 @@
 package dev.lework.transport
 
+import dev.lework.platform.AndroidPlatformRuntime
 import dev.lework.security.HubTrust
 import dev.lework.security.toHex
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.websocket.WebSockets
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketAddress
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import javax.net.SocketFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509ExtendedTrustManager
 
-/** Fingerprint-pinning trust manager shared by JVM tests & Android (OkHttp engine). */
+/**
+ * Authenticates raw TCP sockets bound for the embedded `lework-tsnet` localhost forwarder BEFORE
+ * layering end-to-end TLS on top, preventing co-installed Android apps from piggybacking on
+ * `127.0.0.1:<ephemeralPort>`.
+ */
+private class PreTlsForwarderSocketFactory : SocketFactory() {
+    private class PreambleSocket : Socket() {
+        override fun connect(endpoint: SocketAddress?, timeout: Int) {
+            super.connect(endpoint, timeout)
+            val inet = endpoint as? InetSocketAddress ?: return
+            val host = inet.address?.hostAddress ?: inet.hostString
+            if (host == "127.0.0.1" && inet.port in AndroidPlatformRuntime.tsnetProxyPorts) {
+                val secret = AndroidPlatformRuntime.tsnetForwarderSecret
+                if (secret.isNotEmpty()) {
+                    val out = getOutputStream()
+                    out.write("LEWORK-FWD $secret\n".encodeToByteArray())
+                    out.flush()
+                }
+            }
+        }
+    }
+
+    override fun createSocket(): Socket = PreambleSocket()
+    override fun createSocket(host: String?, port: Int): Socket = PreambleSocket().apply {
+        connect(InetSocketAddress(host, port))
+    }
+    override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket =
+        PreambleSocket().apply {
+            bind(InetSocketAddress(localHost, localPort))
+            connect(InetSocketAddress(host, port))
+        }
+    override fun createSocket(host: InetAddress?, port: Int): Socket = PreambleSocket().apply {
+        connect(InetSocketAddress(host, port))
+    }
+    override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket =
+        PreambleSocket().apply {
+            bind(InetSocketAddress(localAddress, localPort))
+            connect(InetSocketAddress(address, port))
+        }
+}
+
+/** Fingerprint-pinning trust manager for Android (OkHttp engine). */
 class HubPinningTrustManager(private val pinnedOnly: Boolean) : X509ExtendedTrustManager() {
     private fun verify(chain: Array<out X509Certificate>?, host: String?, port: Int) {
         val leaf = chain?.firstOrNull() ?: throw CertificateException("Empty certificate chain")
@@ -62,6 +108,7 @@ actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient {
         followRedirects = false
         engine {
             config {
+                socketFactory(PreTlsForwarderSocketFactory())
                 sslSocketFactory(ctx.socketFactory, tm)
                 hostnameVerifier { _, _ -> true }
                 followRedirects(false)

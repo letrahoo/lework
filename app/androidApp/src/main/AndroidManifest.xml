@@ -9,6 +9,8 @@
     <application
         android:allowBackup="false"
         android:extractNativeLibs="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Lework"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"
@@ -22,11 +24,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Notification session deep links (safe to invoke from Bark/Feishu/Telegram webviews) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="lework" />
+                <data android:scheme="lework" android:host="session" />
+            </intent-filter>
+            <!-- Pairing deep links are NOT BROWSABLE from arbitrary web pages; also gated by in-app confirmation -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="lework" android:host="pair" />
             </intent-filter>
         </activity>
     </application>

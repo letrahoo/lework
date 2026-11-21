@@ -14,7 +14,12 @@ dist/
 
 # Legacy / vendor untracked artifacts
 legacy/
-vendor/dsh-channel/
+vendor/
+
+# Keystores & signing secrets
+*.jks
+*.keystore
+*release.properties
 
 # Kotlin / Gradle / Xcode / Go build outputs
 .gradle/

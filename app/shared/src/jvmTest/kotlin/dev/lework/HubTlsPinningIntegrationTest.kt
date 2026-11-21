@@ -91,6 +91,12 @@ class HubTlsPinningIntegrationTest {
         // 6. With a pin present, discovery prefers the pinned Hub over a faster impostor.
         val preferred = client.discoverIntranetHub(listOf(impostor, genuine))
         assertEquals(genuine, preferred?.baseUrl)
+
+        // 7. Cross-host isolation: even though `genuine` is globally pinned, connecting with a
+        //    different PairedHost's expectedFingerprint MUST fail before sending Host B's token!
+        assertFailsWith<HubTrustException> {
+            client.ensureHubTrusted(genuine, token, expectedFingerprint = "b".repeat(64))
+        }
         client.disconnect()
     }
 }

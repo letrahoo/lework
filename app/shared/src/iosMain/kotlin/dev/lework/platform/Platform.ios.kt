@@ -64,6 +64,7 @@ import platform.Foundation.NSOperationQueue
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.Foundation.NSString
 import platform.Foundation.NSURL
+import platform.Foundation.NSURLIsExcludedFromBackupKey
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.NSUserDefaults
 import platform.Foundation.NSUserDomainMask
@@ -80,8 +81,6 @@ import platform.darwin.dispatch_get_main_queue
 import platform.posix.AF_INET
 import platform.posix.sockaddr
 
-private const val KEY_LEGACY_TOKEN = "qprc.feishu.token"
-private const val KEY_LEGACY_USER = "qprc.feishu.user"
 private const val KEY_LAST_GOOD_URL = "lework.last.good.url"
 private const val KEY_RELAY_URLS = "lework.relay.urls"
 private const val KEY_PREF_ENGINE = "lework.pref.engine"
@@ -260,22 +259,6 @@ private object IosKeychain {
         SecItemAdd(query, null)
         CFRelease(data)
         CFRelease(query)
-    }
-}
-
-/** One-time cleanup of legacy pre-TLS plaintext NSUserDefaults credentials (v0.3.x). */
-private object CredentialMigration {
-    private var done = false
-
-    fun ensure() {
-        if (done) return
-        done = true
-        val d = NSUserDefaults.standardUserDefaults
-        if (d.objectForKey(KEY_LEGACY_TOKEN) != null || d.objectForKey(KEY_LEGACY_USER) != null) {
-            d.removeObjectForKey(KEY_LEGACY_TOKEN)
-            d.removeObjectForKey(KEY_LEGACY_USER)
-            d.synchronize()
-        }
     }
 }
 
@@ -479,18 +462,13 @@ actual fun candidateHubHttpUrls(): List<String> {
     return out.distinct()
 }
 
-actual fun loadSavedAccessToken(): String? {
-    CredentialMigration.ensure()
-    return IosKeychain.get(KC_ACCOUNT_TOKEN)?.takeIf { it.isNotBlank() }
-}
+actual fun loadSavedAccessToken(): String? =
+    IosKeychain.get(KC_ACCOUNT_TOKEN)?.takeIf { it.isNotBlank() }
 
-actual fun loadSavedAuthUserName(): String? {
-    CredentialMigration.ensure()
-    return IosKeychain.get(KC_ACCOUNT_USER)
-}
+actual fun loadSavedAuthUserName(): String? =
+    IosKeychain.get(KC_ACCOUNT_USER)
 
 actual fun saveAuthSession(token: String?, userName: String?) {
-    CredentialMigration.ensure()
     if (token.isNullOrBlank()) {
         IosKeychain.set(KC_ACCOUNT_TOKEN, null)
         IosKeychain.set(KC_ACCOUNT_USER, null)
@@ -560,6 +538,8 @@ private fun iosTsnetStateDir(): String {
             attributes = null,
             error = null,
         )
+        // Exclude tsnet WireGuard/node keys from iCloud / iTunes backups
+        NSURL.fileURLWithPath(target).setResourceValue(true, forKey = NSURLIsExcludedFromBackupKey, error = null)
     }
     return target
 }

@@ -17,6 +17,13 @@ enum class ConnectionStatus {
     ERROR,
 }
 
+data class PendingDeepLinkPairing(
+    val rawUri: String,
+    val hostName: String,
+    val primaryUrl: String,
+    val shortFingerprint: String?,
+)
+
 sealed interface ChatTimelineItem {
     val id: String
 
@@ -160,6 +167,7 @@ data class ConsoleUiState(
     val mentionQuery: String? = null,
     val workspaceFileSuggestions: List<String> = emptyList(),
     val signingExpiryDismissed: Boolean = false,
+    val pendingDeepLinkPairing: PendingDeepLinkPairing? = null,
 ) {
     val activeSession: SessionMeta?
         get() = sessions.firstOrNull { it.id == activeSessionId }

@@ -52,6 +52,12 @@ export function searchWorkspaceFiles(
       if (!rel) continue
       const full = path.join(realDir, rel)
       if (isSensitivePath(full)) continue
+      try {
+        const realTarget = fs.realpathSync(full)
+        if (!realTarget.startsWith(realDir + path.sep) || isSensitivePath(realTarget)) continue
+      } catch {
+        continue
+      }
       candidates.push(rel)
       if (candidates.length >= MAX_INDEXED_FILES) break
     }
@@ -68,7 +74,7 @@ export function searchWorkspaceFiles(
         continue
       }
       for (const d of entries) {
-        if (d.name === '.DS_Store' || SKIP_WALK_DIRS.has(d.name)) continue
+        if (d.name === '.DS_Store' || SKIP_WALK_DIRS.has(d.name) || d.isSymbolicLink()) continue
         const relPath = relDir ? `${relDir}/${d.name}` : d.name
         const absPath = path.join(realDir, relPath)
         if (isSensitivePath(absPath)) continue
@@ -117,8 +123,13 @@ export function listWorkspaceDirectory(dirPath: string, workspaceRoots: string[]
   for (const d of rawEntries) {
     if (d.name === '.git' || d.name === 'node_modules' || d.name === '.DS_Store') continue
     const fullPath = path.join(realDir, d.name)
+    if (isSensitivePath(fullPath)) continue
     try {
-      const st = fs.statSync(fullPath)
+      const realEntry = fs.realpathSync(fullPath)
+      if (isSensitivePath(realEntry)) continue
+      const st = fs.statSync(realEntry)
+      const parentCheck = st.isDirectory() ? realEntry : path.dirname(realEntry)
+      resolveAllowedWorkspacePath(parentCheck, workspaceRoots)
       entries.push({
         name: d.name,
         path: fullPath,
@@ -126,7 +137,7 @@ export function listWorkspaceDirectory(dirPath: string, workspaceRoots: string[]
         size: st.isDirectory() ? 0 : st.size,
       })
     } catch {
-      // skip broken symlinks
+      // skip broken or out-of-workspace symlinks
     }
     if (entries.length >= MAX_DIR_ENTRIES) break
   }
@@ -346,8 +357,11 @@ export function readWorkspaceGitDiff(
     }
     assertNotSensitive(resolvedTarget)
     try {
-      if (fs.existsSync(resolvedTarget)) {
-        assertNotSensitive(fs.realpathSync(resolvedTarget))
+      const lst = fs.lstatSync(resolvedTarget)
+      if (lst.isSymbolicLink()) {
+        const realTarget = fs.realpathSync(resolvedTarget)
+        resolveAllowedWorkspacePath(path.dirname(realTarget), workspaceRoots)
+        assertNotSensitive(realTarget)
       }
     } catch (err) {
       if (err instanceof HubRpcError) throw err
@@ -380,11 +394,18 @@ export function readWorkspaceGitDiff(
   // If a specific untracked file was requested, `git diff HEAD -- <file>` is empty; synthesize its `+` preview.
   if (!rawDiff.trim() && relFile) {
     const absFile = path.resolve(realDir, relFile)
-    if (fs.existsSync(absFile)) {
-      const st = fs.statSync(absFile)
-      if (st.isFile()) {
-        const readLen = Math.min(st.size, MAX_READ_BYTES)
-        const fd = fs.openSync(absFile, 'r')
+    try {
+      const lst = fs.lstatSync(absFile)
+      if (lst.isSymbolicLink()) {
+        throw new HubRpcError(ErrorCode.PathNotAllowed, 'Symlink diff preview outside git index is blocked.')
+      }
+      if (lst.isFile()) {
+        assertNotSensitive(absFile)
+        const realFile = fs.realpathSync(absFile)
+        resolveAllowedWorkspacePath(path.dirname(realFile), workspaceRoots)
+        assertNotSensitive(realFile)
+        const readLen = Math.min(lst.size, MAX_READ_BYTES)
+        const fd = fs.openSync(realFile, 'r')
         try {
           const buf = Buffer.alloc(readLen)
           fs.readSync(fd, buf, 0, readLen, 0)
@@ -399,6 +420,8 @@ export function readWorkspaceGitDiff(
           fs.closeSync(fd)
         }
       }
+    } catch (err) {
+      if (err instanceof HubRpcError) throw err
     }
   }
 

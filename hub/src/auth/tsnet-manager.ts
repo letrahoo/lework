@@ -96,6 +96,16 @@ function resolveSystemTailscaleCli(): string | null {
   ])
 }
 
+function hasAuthenticatedTsnetState(stateDir: string): boolean {
+  try {
+    const raw = fs.readFileSync(path.join(stateDir, 'tailscaled.state'), 'utf8')
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    return typeof parsed['_current-profile'] === 'string' && parsed['_current-profile'].length > 0
+  } catch {
+    return false
+  }
+}
+
 export class TsnetManager {
   private readonly dataDir: string
   private readonly stateDir: string
@@ -120,10 +130,9 @@ export class TsnetManager {
     this.controlUrl = opts.controlUrl
     this.authKey = opts.authKey
     this.binaryPath = resolveTsnetBinaryPath(opts.binaryPath)
-    // Auto-start embedded tsnet when explicitly enabled or once state exists on disk
+    // Auto-start embedded tsnet only when explicitly enabled, authKey set, or an authenticated profile exists
     this.autoStart =
-      opts.autoStart ??
-      (fs.existsSync(path.join(this.stateDir, 'tailscaled.state')) || Boolean(this.authKey))
+      opts.autoStart ?? (hasAuthenticatedTsnetState(this.stateDir) || Boolean(this.authKey))
   }
 
   hasEmbeddedBinary(): boolean {
@@ -153,11 +162,19 @@ export class TsnetManager {
     if (!this.binaryPath) return false
     fs.mkdirSync(this.stateDir, { recursive: true, mode: 0o700 })
     const secret = crypto.randomBytes(24).toString('hex')
+    const safeHostLabel =
+      this.hubName
+        .replace(/\.local\.?$/i, '')
+        .replace(/[^A-Za-z0-9-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase()
+        .slice(0, 48) || 'host'
     const args = [
       '--state-dir',
       this.stateDir,
       '--hostname',
-      `lework-hub-${this.hubName}`,
+      `lework-hub-${safeHostLabel}`,
       '--upstream',
       `127.0.0.1:${this.hubPort}`,
       '--hub-port',
@@ -258,8 +275,8 @@ export class TsnetManager {
 
   async getStatus(): Promise<TsnetStatusSnapshot> {
     if (this.binaryPath) {
-      const hasState = fs.existsSync(path.join(this.stateDir, 'tailscaled.state'))
-      if (this.controlPort > 0 || hasState) {
+      const hasAuthState = hasAuthenticatedTsnetState(this.stateDir)
+      if (this.controlPort > 0 || hasAuthState) {
         await this.ensureDaemonRunning()
         const snap = await this.callBridge<{
           backendState: string
@@ -273,7 +290,7 @@ export class TsnetManager {
           peers?: TsnetPeerCandidate[]
           error?: string
         }>('/v1/status')
-        if (snap) {
+        if (snap && (snap.backendState === 'Running' || Boolean(snap.authUrl))) {
           return {
             available: true,
             mode: 'tsnet',
@@ -289,19 +306,22 @@ export class TsnetManager {
             error: snap.error,
           }
         }
-      } else {
-        return {
-          available: true,
-          mode: 'tsnet',
-          backendState: 'NeedsLogin',
-          tailscaleIps: [],
-          peers: [],
-        }
       }
     }
 
-    // Fallback: inspect system `tailscale` daemon if installed
+    // Fallback: inspect system `tailscale` daemon if installed & Running
     const sys = await this.querySystemTailscaleStatus()
+    if (sys && sys.backendState === 'Running') return sys
+
+    if (this.binaryPath) {
+      return {
+        available: true,
+        mode: 'tsnet',
+        backendState: 'NeedsLogin',
+        tailscaleIps: [],
+        peers: [],
+      }
+    }
     if (sys) return sys
 
     return {

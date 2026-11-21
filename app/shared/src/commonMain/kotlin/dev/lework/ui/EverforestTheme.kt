@@ -4,9 +4,8 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.graphics.Color
 
 /**
- * Everforest Dark (Custom Highlight Edition) — strictly aligned 1:1 with
- * `~/personal/dotfiles/iterm2/DynamicProfiles/everforest-hc.json`,
- * `everforest-dark.json`, `tmux/.tmux.conf`, and `zsh/.zshrc`.
+ * Everforest Dark (Custom Low-Glare Terminal Edition) — tuned for warm
+ * terminal readability across Compose Multiplatform mobile screens.
  */
 internal object Everforest {
     // Surfaces & Borders

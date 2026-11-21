@@ -37,7 +37,7 @@ import { PiEngineAdapter } from './engines/pi-adapter.ts'
 import type { EngineAdapter } from './engines/types.ts'
 import { detectPlatform } from './platform/index.ts'
 import { ModelRegistry } from './registry/model-registry.ts'
-import { HubRpcError } from './security/path-guard.ts'
+import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
 import {
   attestProof,
   loadOrCreateHubTls,
@@ -308,7 +308,7 @@ export class HubServer {
     const seen = new Set<string>()
     const addDir = (p: string) => {
       try {
-        const real = fs.realpathSync(p)
+        const real = resolveAllowedWorkspacePath(p, this.config.workspaceRoots)
         if (seen.has(real)) return
         const st = fs.statSync(real)
         if (!st.isDirectory()) return
@@ -316,18 +316,14 @@ export class HubServer {
         const id = `ws_${crypto.createHash('sha1').update(real).digest('hex').slice(0, 10)}`
         out.push({ id, name: path.basename(real) || real, path: real })
       } catch {
-        // ignore
+        // ignore out-of-root or inaccessible directories
       }
     }
 
     addDir(process.cwd())
 
     const home = os.homedir()
-    const projectParentDirs = [
-      path.join(home, 'work'),
-      path.join(home, 'personal'),
-      ...this.config.workspaceRoots.filter(r => r !== home),
-    ]
+    const projectParentDirs = this.config.workspaceRoots.filter(r => r !== home)
 
     for (const parent of projectParentDirs) {
       try {
@@ -558,7 +554,7 @@ export class HubServer {
       }
       return
     }
-    if (url.pathname.startsWith('/v1/tsnet/')) {
+    if (url.pathname.startsWith('/v1/tsnet/') || url.pathname === '/v1/notify/test') {
       const auth = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
       if (!this.isAdminToken(auth)) {
         await delay(AUTH_FAILURE_DELAY_MS)

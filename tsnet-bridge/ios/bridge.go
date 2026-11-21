@@ -28,33 +28,46 @@ func toCStringJson(v any) *C.char {
 	return C.CString(string(b))
 }
 
+func statusWithStartupGrace(mgr *mesh.Manager) mesh.StatusSnapshot {
+	for i := 0; i < 8; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		st := mgr.Status(ctx)
+		cancel()
+		if st.BackendState != "Starting" && !(st.BackendState == "Running" && len(st.Peers) == 0 && i < 3) {
+			return st
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return mgr.Status(ctx)
+}
+
 //export LeworkTsnetStart
 func LeworkTsnetStart(stateDir *C.char, hostname *C.char, controlURL *C.char) *C.char {
 	bridgeMu.Lock()
-	defer bridgeMu.Unlock()
-	if bridgeMgr != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		return toCStringJson(bridgeMgr.Status(ctx))
+	mgr := bridgeMgr
+	if mgr == nil {
+		created, err := mesh.NewManager(mesh.Config{
+			StateDir:   C.GoString(stateDir),
+			Hostname:   C.GoString(hostname),
+			ControlURL: C.GoString(controlURL),
+			HubPort:    64450,
+		}, nil)
+		if err != nil {
+			bridgeMu.Unlock()
+			return toCStringJson(mesh.StatusSnapshot{
+				BackendState: "Error",
+				TailscaleIPs: []string{},
+				Peers:        []mesh.PeerCandidate{},
+				Error:        err.Error(),
+			})
+		}
+		bridgeMgr = created
+		mgr = created
 	}
-	mgr, err := mesh.NewManager(mesh.Config{
-		StateDir:   C.GoString(stateDir),
-		Hostname:   C.GoString(hostname),
-		ControlURL: C.GoString(controlURL),
-		HubPort:    64450,
-	}, nil)
-	if err != nil {
-		return toCStringJson(mesh.StatusSnapshot{
-			BackendState: "Error",
-			TailscaleIPs: []string{},
-			Peers:        []mesh.PeerCandidate{},
-			Error:        err.Error(),
-		})
-	}
-	bridgeMgr = mgr
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	return toCStringJson(mgr.Status(ctx))
+	bridgeMu.Unlock()
+	return toCStringJson(statusWithStartupGrace(mgr))
 }
 
 //export LeworkTsnetStatus

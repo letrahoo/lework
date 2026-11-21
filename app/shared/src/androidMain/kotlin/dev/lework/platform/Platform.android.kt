@@ -10,6 +10,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import dev.lework.protocol.ProtocolJson
@@ -52,7 +53,12 @@ object AndroidPlatformRuntime {
     private val _combinedUrls = MutableStateFlow<List<String>>(emptyList())
     internal val combinedUrls: StateFlow<List<String>> = _combinedUrls.asStateFlow()
     private var nsdUrls: List<String> = emptyList()
+    @Volatile
     internal var tsnetProxyUrls: List<String> = emptyList()
+    @Volatile
+    internal var tsnetProxyPorts: Set<Int> = emptySet()
+    @Volatile
+    internal var tsnetForwarderSecret: String = ""
 
     internal val foregroundFlow = MutableStateFlow(true)
     internal val incomingUriFlow = MutableStateFlow<String?>(null)
@@ -73,6 +79,9 @@ object AndroidPlatformRuntime {
 
     internal fun updateTsnetProxies(urls: List<String>) {
         tsnetProxyUrls = urls
+        tsnetProxyPorts = urls.mapNotNull { u ->
+            u.substringAfter("127.0.0.1:", "").substringBefore('/').toIntOrNull()
+        }.toSet()
         _combinedUrls.value = (nsdUrls + tsnetProxyUrls).distinct()
     }
 
@@ -149,7 +158,15 @@ object AndroidPlatformRuntime {
 private object AndroidKeyStoreVault {
     private const val KEYSTORE_PROVIDER = "AndroidKeyStore"
     private const val KEY_ALIAS = "dev.lework.vault.aes256"
-    private const val PREFIX = "enc:v1:"
+    private const val PREFIX_V1 = "enc:v1:"
+    private const val PREFIX_V2 = "enc:v2:"
+
+    private fun deleteSecretKey() {
+        runCatching {
+            val ks = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
+            if (ks.containsAlias(KEY_ALIAS)) ks.deleteEntry(KEY_ALIAS)
+        }
+    }
 
     private fun getOrCreateSecretKey(): SecretKey? = runCatching {
         val ks = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
@@ -170,19 +187,24 @@ private object AndroidKeyStoreVault {
     fun get(prefKey: String): String? {
         val p = prefs() ?: return null
         val raw = p.getString(prefKey, null)?.takeIf { it.isNotBlank() } ?: return null
-        if (!raw.startsWith(PREFIX)) {
-            // Transparently upgrade legacy plaintext credential into Keystore-encrypted form
+        if (!raw.startsWith(PREFIX_V2) && !raw.startsWith(PREFIX_V1)) {
+            // Migrate legacy plaintext credential; fail closed (delete plaintext) if Keystore is unavailable
             set(prefKey, raw)
-            return raw
+            return if (p.getString(prefKey, null)?.startsWith(PREFIX_V2) == true) raw else null
         }
+        val isV2 = raw.startsWith(PREFIX_V2)
+        val payload = if (isV2) raw.removePrefix(PREFIX_V2) else raw.removePrefix(PREFIX_V1)
         val secretKey = getOrCreateSecretKey() ?: return null
         return runCatching {
-            val parts = raw.removePrefix(PREFIX).split(':', limit = 2)
+            val parts = payload.split(':', limit = 2)
             if (parts.size != 2) return null
             val iv = Base64.decode(parts[0], Base64.NO_WRAP)
             val cipherBytes = Base64.decode(parts[1], Base64.NO_WRAP)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+            if (isV2) {
+                cipher.updateAAD(prefKey.encodeToByteArray())
+            }
             cipher.doFinal(cipherBytes).decodeToString()
         }.getOrNull()
     }
@@ -193,18 +215,27 @@ private object AndroidKeyStoreVault {
             p.edit().remove(prefKey).apply()
             return
         }
-        val secretKey = getOrCreateSecretKey()
-        if (secretKey == null) {
-            p.edit().putString(prefKey, plaintext).apply()
-            return
-        }
-        runCatching {
+        fun tryEncryptAndSave(key: SecretKey): Boolean = runCatching {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            cipher.updateAAD(prefKey.encodeToByteArray())
             val iv = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
             val encrypted = Base64.encodeToString(cipher.doFinal(plaintext.encodeToByteArray()), Base64.NO_WRAP)
-            p.edit().putString(prefKey, "$PREFIX$iv:$encrypted").apply()
+            p.edit().putString(prefKey, "$PREFIX_V2$iv:$encrypted").apply()
+            true
+        }.getOrElse { err ->
+            if (err is KeyPermanentlyInvalidatedException) {
+                deleteSecretKey()
+            }
+            false
         }
+
+        val key = getOrCreateSecretKey()
+        if (key != null && tryEncryptAndSave(key)) return
+        val rotatedKey = getOrCreateSecretKey()
+        if (rotatedKey != null && tryEncryptAndSave(rotatedKey)) return
+        // Fail closed: never persist raw bearer tokens or pins in plaintext SharedPreferences
+        p.edit().remove(prefKey).apply()
     }
 }
 
@@ -216,6 +247,8 @@ private object AndroidTsnetDaemon {
     private var proc: Process? = null
     private var controlPort: Int = 0
     private var secret: String = ""
+    @Volatile
+    private var lastStderr: String = ""
 
     @Serializable
     private data class ConfigurePayload(
@@ -241,6 +274,22 @@ private object AndroidTsnetDaemon {
         return (servers + listOf("223.5.5.5", "1.1.1.1", "8.8.8.8")).distinct().take(5).joinToString(",")
     }
 
+    private fun detectActiveInterfaces(ctx: Context): String {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        return runCatching {
+            val net = cm?.activeNetwork ?: return@runCatching ""
+            val props = cm.getLinkProperties(net) ?: return@runCatching ""
+            val ifName = props.interfaceName?.trim()?.takeIf { it.isNotEmpty() } ?: "wlan0"
+            props.linkAddresses
+                .mapNotNull { la ->
+                    val host = la.address?.hostAddress?.substringBefore('%')?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    "$ifName=$host/${la.prefixLength}"
+                }
+                .take(6)
+                .joinToString(",")
+        }.getOrDefault("")
+    }
+
     private fun sanitizedHostname(): String {
         val raw = Build.MODEL?.lowercase()?.replace(Regex("[^a-z0-9-]+"), "-")?.trim('-') ?: "android"
         return "lework-android-${raw.ifEmpty { "phone" }}".take(48)
@@ -260,6 +309,9 @@ private object AndroidTsnetDaemon {
             val stateDir = File(ctx.filesDir, "tsnet").apply { mkdirs() }
             val secBytes = ByteArray(24).also { SecureRandom().nextBytes(it) }
             val newSecret = secBytes.joinToString("") { "%02x".format(it) }
+            val fwdBytes = ByteArray(24).also { SecureRandom().nextBytes(it) }
+            val newForwarderSecret = fwdBytes.joinToString("") { "%02x".format(it) }
+            val ifSpec = detectActiveInterfaces(ctx)
             val cmd = mutableListOf(
                 bin.absolutePath,
                 "--client-only",
@@ -272,21 +324,32 @@ private object AndroidTsnetDaemon {
                 "--dns",
                 detectActiveDnsServers(ctx),
             )
+            if (ifSpec.isNotEmpty()) {
+                cmd.add("--interfaces")
+                cmd.add(ifSpec)
+            }
             if (!controlUrl.isNullOrBlank()) {
                 cmd.add("--control-url")
                 cmd.add(controlUrl.trim())
             }
 
+            lastStderr = ""
             val pb = ProcessBuilder(cmd).apply {
                 environment()["LEWORK_TSNET_SECRET"] = newSecret
+                environment()["LEWORK_FORWARDER_SECRET"] = newForwarderSecret
                 environment()["HOME"] = ctx.filesDir.absolutePath
                 environment()["SSL_CERT_DIR"] = "/system/etc/security/cacerts"
             }
 
             val started = runCatching { pb.start() }.getOrNull() ?: return@withContext false
-            // Drain stderr asynchronously
+            // Capture stderr lines asynchronously for diagnostics
             Thread {
-                runCatching { started.errorStream.bufferedReader().forEachLine { /* drain */ } }
+                runCatching {
+                    started.errorStream.bufferedReader().forEachLine { line ->
+                        val t = line.trim()
+                        if (t.isNotEmpty()) lastStderr = t.take(240)
+                    }
+                }
             }.apply { isDaemon = true }.start()
 
             val reader = BufferedReader(InputStreamReader(started.inputStream))
@@ -319,7 +382,24 @@ private object AndroidTsnetDaemon {
             proc = started
             controlPort = foundPort
             secret = newSecret
+            AndroidPlatformRuntime.tsnetForwarderSecret = newForwarderSecret
             true
+        }
+    }
+
+    fun lastErrorDetail(): String? = lastStderr.takeIf { it.isNotBlank() }
+
+    suspend fun stopAndPurgeState() = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            runCatching { proc?.destroy() }
+            proc = null
+            controlPort = 0
+            secret = ""
+            AndroidPlatformRuntime.tsnetForwarderSecret = ""
+            AndroidPlatformRuntime.updateTsnetProxies(emptyList())
+            AndroidPlatformRuntime.appContext?.let { ctx ->
+                runCatching { File(ctx.filesDir, "tsnet").deleteRecursively() }
+            }
         }
     }
 
@@ -364,7 +444,7 @@ private object AndroidTsnetDaemon {
             return MobileTsnetStatus(
                 available = isAvailable(),
                 backendState = if (isAvailable()) "Error" else "Unavailable",
-                error = if (isAvailable()) "Failed to start embedded tsnet daemon" else null,
+                error = if (isAvailable()) (lastErrorDetail() ?: "Failed to start embedded tsnet daemon") else null,
             )
         }
         if (!controlUrl.isNullOrBlank() || !authKey.isNullOrBlank()) {
@@ -524,8 +604,9 @@ actual suspend fun loginMobileTsnet(controlUrl: String?, authKey: String?): Mobi
     AndroidTsnetDaemon.configureAndCall(controlUrl ?: loadSavedTsnetControlUrl(), authKey, "/v1/login")
 
 actual suspend fun logoutMobileTsnet(): MobileTsnetStatus {
-    AndroidPlatformRuntime.updateTsnetProxies(emptyList())
-    return AndroidTsnetDaemon.callControl("/v1/logout", "POST", "{}")
+    runCatching { AndroidTsnetDaemon.callControl("/v1/logout", "POST", "{}") }
+    AndroidTsnetDaemon.stopAndPurgeState()
+    return MobileTsnetStatus(available = AndroidTsnetDaemon.isAvailable(), backendState = "NeedsLogin")
 }
 
 actual fun loadSavedTsnetEnabled(): Boolean = prefs()?.getBoolean("tsnet_enabled", memTsnetEnabled) ?: memTsnetEnabled
