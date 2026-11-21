@@ -9,7 +9,7 @@ import type {
 } from '@lework/protocol'
 import { findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
-import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
+import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const hubRoot = path.resolve(__dirname, '../..')
@@ -62,7 +62,7 @@ export class ClaudeCodeAdapter implements EngineAdapter {
   capabilities(): EngineCapabilities {
     return {
       permissions: true,
-      images: false,
+      images: true,
       modelSwitch: true,
       modes: true,
       history: true,
@@ -186,19 +186,32 @@ class ClaudeAcpSession implements EngineSession {
     }
   }
 
-  async prompt(turnId: string, text: string): Promise<void> {
+  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
     if (!this.rpc || !this.acpSessionId) {
       throw new Error('Claude ACP session is not initialized')
     }
     this.currentMsgId = `msg_${turnId}`
     this.init.emit({ type: 'session.state', state: 'running' })
 
+    const promptBlocks: Array<Record<string, unknown>> = []
+    for (const img of images ?? []) {
+      promptBlocks.push({
+        type: 'image',
+        data: img.dataBase64,
+        mimeType: img.mimeType,
+      })
+    }
+    const effectiveText = text.trim() || (images?.length ? '请结合所附图片进行分析。' : '')
+    if (effectiveText) {
+      promptBlocks.push({ type: 'text', text: effectiveText })
+    }
+
     try {
       const res = (await this.rpc.request(
         'session/prompt',
         {
           sessionId: this.acpSessionId,
-          prompt: [{ type: 'text', text }],
+          prompt: promptBlocks,
         },
         10 * 60_000,
       )) as Record<string, unknown> | null

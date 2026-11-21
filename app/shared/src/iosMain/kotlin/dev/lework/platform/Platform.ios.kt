@@ -104,19 +104,22 @@ interface IosNativeDelegate {
     fun tsnetLogin(controlUrl: String, authKey: String, reqId: Long)
     fun tsnetLogout(reqId: Long)
     fun presentQrScanner(reqId: Long)
+    fun presentImagePicker(reqId: Long)
 }
 
 /**
  * Bridge registered by Swift (`NativeBridges.swift`) at app launch to connect:
  * 1. Embedded Go `libtsnetbridge.a` (`LeworkTsnet*` C functions)
  * 2. `AVCaptureSession` QR code scanner sheet
- * 3. `.onOpenURL` (`lework://pair?d=...`) deep-link forwarding
+ * 3. `PHPickerViewController` image attachment sheet
+ * 4. `.onOpenURL` (`lework://pair` & `lework://session`) deep-link forwarding
  */
 object IosNativeBridge {
     internal var delegate: IosNativeDelegate? = null
     private var nextReqId: Long = 1L
     private val pendingTsnet = mutableMapOf<Long, (String) -> Unit>()
     private val pendingQr = mutableMapOf<Long, (String?) -> Unit>()
+    private val pendingImage = mutableMapOf<Long, (PickedImagePayload?) -> Unit>()
 
     internal val incomingUriFlow = MutableStateFlow<String?>(null)
     internal var tsnetProxyUrls: List<String> = emptyList()
@@ -137,12 +140,33 @@ object IosNativeBridge {
         return id
     }
 
+    internal fun allocImageCallback(cb: (PickedImagePayload?) -> Unit): Long {
+        val id = nextReqId++
+        pendingImage[id] = cb
+        return id
+    }
+
     fun completeTsnetRequest(reqId: Long, json: String) {
         pendingTsnet.remove(reqId)?.invoke(json)
     }
 
     fun completeQrScan(reqId: Long, scannedText: String?) {
         pendingQr.remove(reqId)?.invoke(scannedText)
+    }
+
+    fun completeImagePick(reqId: Long, fileName: String?, mimeType: String?, dataBase64: String?) {
+        val cb = pendingImage.remove(reqId) ?: return
+        if (dataBase64.isNullOrBlank()) {
+            cb.invoke(null)
+        } else {
+            cb.invoke(
+                PickedImagePayload(
+                    fileName = fileName?.ifBlank { null } ?: "image.jpg",
+                    mimeType = mimeType?.ifBlank { null } ?: "image/jpeg",
+                    dataBase64 = dataBase64,
+                ),
+            )
+        }
     }
 
     fun handleIncomingUrl(url: String) {
@@ -709,4 +733,60 @@ actual fun loadHostAccessToken(hubId: String): String? {
 actual fun saveHostAccessToken(hubId: String, token: String?) {
     CredentialMigration.ensure()
     IosKeychain.set("hub.token.$hubId", token?.takeIf { it.isNotBlank() })
+}
+
+actual fun canPickImages(): Boolean = IosNativeBridge.delegate != null
+
+actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
+    val d = IosNativeBridge.delegate
+    if (d == null) {
+        onResult(null)
+    } else {
+        dispatch_async(dispatch_get_main_queue()) {
+            val id = IosNativeBridge.allocImageCallback(onResult)
+            d.presentImagePicker(id)
+        }
+    }
+}
+
+actual fun signingExpiryRemainingHours(): Int? {
+    val path = NSBundle.mainBundle.pathForResource("embedded", ofType = "mobileprovision") ?: return null
+    val data = NSData.create(contentsOfFile = path) ?: return null
+    val len = data.length.toInt()
+    if (len <= 0 || len > 512 * 1024) return null
+    val ptr = data.bytes?.reinterpret<ByteVar>() ?: return null
+    val rawBytes = ptr.readBytes(len)
+    val latin1 = buildString(rawBytes.size) {
+        for (b in rawBytes) append((b.toInt() and 0xFF).toChar())
+    }
+    val match = Regex("<key>ExpirationDate</key>\\s*<date>([^<]+)</date>").find(latin1) ?: return null
+    val iso = match.groupValues[1].trim()
+    val expEpochSec = parseIso8601UtcEpochSeconds(iso) ?: return null
+    val nowEpochSec = NSDate().timeIntervalSince1970.toLong()
+    val remainingHours = ((expEpochSec - nowEpochSec) / 3600L).toInt()
+    // Only surface reminder for short-lived personal provisioning profiles (<= 8 days horizon)
+    return if (remainingHours <= 192) remainingHours else null
+}
+
+private fun parseIso8601UtcEpochSeconds(iso: String): Long? {
+    val m = Regex("^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})Z$").find(iso) ?: return null
+    val year = m.groupValues[1].toIntOrNull() ?: return null
+    val month = m.groupValues[2].toIntOrNull() ?: return null
+    val day = m.groupValues[3].toIntOrNull() ?: return null
+    val hour = m.groupValues[4].toIntOrNull() ?: return null
+    val min = m.groupValues[5].toIntOrNull() ?: return null
+    val sec = m.groupValues[6].toIntOrNull() ?: return null
+    if (month !in 1..12 || day !in 1..31) return null
+
+    fun isLeap(y: Int): Boolean = (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+    var days = 0L
+    for (y in 1970 until year) {
+        days += if (isLeap(y)) 366L else 365L
+    }
+    val monthLengths = intArrayOf(31, if (isLeap(year)) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+    for (idx in 0 until (month - 1)) {
+        days += monthLengths[idx]
+    }
+    days += (day - 1)
+    return days * 86_400L + hour * 3_600L + min * 60L + sec
 }

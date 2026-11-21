@@ -55,6 +55,9 @@ class ConsoleStore(
     private var subscribeSeqToken: Long = 0L
     private var userManuallyPickedMode: Boolean = false
     private var manualPairingMode: Boolean = false
+    private var pairingInFlight: Boolean = false
+    private var pendingDeepLinkSessionId: String? = null
+    private var mentionJob: Job? = null
 
     private fun switchSubscriptionTo(nextSessionId: String?) {
         val prev = subscribedSessionId
@@ -72,7 +75,12 @@ class ConsoleStore(
             observeIncomingPairingUri().collect { uri ->
                 if (!uri.isNullOrBlank()) {
                     consumeIncomingPairingUri()
-                    redeemPairingInput(uri)
+                    val sessionLink = parseSessionDeepLink(uri)
+                    if (sessionLink != null) {
+                        handleSessionDeepLink(sessionLink.first, sessionLink.second)
+                    } else {
+                        redeemPairingInput(uri)
+                    }
                 }
             }
         }
@@ -209,6 +217,9 @@ class ConsoleStore(
     }
 
     fun bootstrapOrConnect() {
+        if (pairingInFlight || !observeIncomingPairingUri().value.isNullOrBlank()) {
+            return
+        }
         bootstrapOrConnectToHost(loadActiveHostId())
     }
 
@@ -571,6 +582,7 @@ class ConsoleStore(
         }
 
         manualPairingMode = false
+        pairingInFlight = true
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
@@ -584,48 +596,52 @@ class ConsoleStore(
             )
         }
         discoverJob = scope.launch {
-            var lastError: Throwable? = null
-            for (baseUrl in candidates) {
-                try {
-                    val auth = rpc.redeemPairingCode(
-                        baseUrl = baseUrl,
-                        pairCode = payload.pairCode,
-                        staticToken = payload.token,
-                        expectedFingerprint = payload.fp,
-                        deviceName = platformName(),
-                    )
-                    val userName = auth.user?.name ?: "Owner"
-                    saveAuthSession(auth.accessToken, userName)
-                    saveHostAccessToken(auth.hub.id, auth.accessToken)
-                    upsertPairedHost(
-                        hub = auth.hub,
-                        fingerprint = auth.fingerprint,
-                        endpoints = auth.endpoints + candidates,
-                        userName = userName,
-                    )
-                    val wsUrl = hubWsUrlOf(baseUrl)
-                    _state.update {
-                        it.copy(
-                            discoveredBaseUrl = baseUrl,
-                            discoveredWsUrl = wsUrl,
-                            authUserName = userName,
-                            hub = auth.hub,
+            try {
+                var lastError: Throwable? = null
+                for (baseUrl in candidates) {
+                    try {
+                        val auth = rpc.redeemPairingCode(
+                            baseUrl = baseUrl,
+                            pairCode = payload.pairCode,
+                            staticToken = payload.token,
+                            expectedFingerprint = payload.fp,
+                            deviceName = platformName(),
                         )
+                        val userName = auth.user?.name ?: "Owner"
+                        saveAuthSession(auth.accessToken, userName)
+                        saveHostAccessToken(auth.hub.id, auth.accessToken)
+                        upsertPairedHost(
+                            hub = auth.hub,
+                            fingerprint = auth.fingerprint,
+                            endpoints = auth.endpoints + candidates,
+                            userName = userName,
+                        )
+                        val wsUrl = hubWsUrlOf(baseUrl)
+                        _state.update {
+                            it.copy(
+                                discoveredBaseUrl = baseUrl,
+                                discoveredWsUrl = wsUrl,
+                                authUserName = userName,
+                                hub = auth.hub,
+                            )
+                        }
+                        if (connectWithToken(wsUrl, auth.accessToken)) {
+                            return@launch
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (t: Throwable) {
+                        lastError = t
                     }
-                    if (connectWithToken(wsUrl, auth.accessToken)) {
-                        return@launch
-                    }
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (t: Throwable) {
-                    lastError = t
                 }
-            }
-            _state.update {
-                it.copy(
-                    connectionStatus = ConnectionStatus.ERROR,
-                    connectionError = lastError?.message ?: "配对连接失败，请确认手机可访问主机网络",
-                )
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.ERROR,
+                        connectionError = lastError?.message ?: "配对连接失败，请确认手机可访问主机网络",
+                    )
+                }
+            } finally {
+                pairingInFlight = false
             }
         }
     }
@@ -1050,6 +1066,11 @@ class ConsoleStore(
                 subscribedSessionId = current.activeSessionId
                 runCatching { subscribeAndCatchUp(current.activeSessionId) }
             }
+            val deepLinkSid = pendingDeepLinkSessionId
+            if (!deepLinkSid.isNullOrBlank()) {
+                pendingDeepLinkSessionId = null
+                selectSession(deepLinkSid)
+            }
             true
         } catch (ce: CancellationException) {
             throw ce
@@ -1319,10 +1340,115 @@ class ConsoleStore(
         }
     }
 
+    fun handleSessionDeepLink(sessionId: String?, hubId: String? = null) {
+        val cleanSid = sessionId?.trim()?.takeIf { it.isNotEmpty() }
+        val cleanHubId = hubId?.trim()?.takeIf { it.isNotEmpty() }
+        val cur = _state.value
+
+        if (cur.hasEnteredWorkspace && (cleanHubId == null || cleanHubId == cur.hub?.id)) {
+            if (cleanSid != null) {
+                scope.launch {
+                    if (cur.sessions.none { it.id == cleanSid }) {
+                        runCatching {
+                            val fresh = rpc.listSessions()
+                            _state.update { it.copy(sessions = fresh) }
+                        }
+                    }
+                    selectSession(cleanSid)
+                }
+            }
+            return
+        }
+
+        pendingDeepLinkSessionId = cleanSid
+        if (cleanHubId != null && loadPairedHosts().any { it.hubId == cleanHubId }) {
+            switchPairedHost(cleanHubId)
+        } else if (!cur.hasEnteredWorkspace) {
+            bootstrapOrConnect()
+        }
+    }
+
+    fun dismissSigningExpiryReminder() {
+        _state.update { it.copy(signingExpiryDismissed = true) }
+    }
+
+    fun updateComposerTextForMentions(nextText: String) {
+        val query = extractTrailingMentionQuery(nextText)
+        if (query == null) {
+            mentionJob?.cancel()
+            if (_state.value.mentionQuery != null || _state.value.workspaceFileSuggestions.isNotEmpty()) {
+                _state.update { it.copy(mentionQuery = null, workspaceFileSuggestions = emptyList()) }
+            }
+            return
+        }
+        val wsPath = _state.value.activeWorkspaces.firstOrNull()
+            ?: _state.value.selectedWorkspacePath.takeIf { it.isNotBlank() }
+            ?: _state.value.workspaces.firstOrNull()?.path
+        if (wsPath.isNullOrBlank()) {
+            _state.update { it.copy(mentionQuery = null, workspaceFileSuggestions = emptyList()) }
+            return
+        }
+        _state.update { it.copy(mentionQuery = query) }
+        mentionJob?.cancel()
+        mentionJob = scope.launch {
+            delay(100L)
+            val files = runCatching {
+                rpc.searchWorkspaceFiles(path = wsPath, query = query, limit = 10).files
+            }.getOrDefault(emptyList())
+            if (_state.value.mentionQuery == query) {
+                _state.update { it.copy(workspaceFileSuggestions = files) }
+            }
+        }
+    }
+
+    fun dismissMentionSuggestions() {
+        mentionJob?.cancel()
+        _state.update { it.copy(mentionQuery = null, workspaceFileSuggestions = emptyList()) }
+    }
+
+    fun pickAndAttachImage() {
+        if (!canPickImages()) return
+        if (_state.value.composerAttachedImages.size >= 4) return
+        requestImagePick { picked ->
+            if (picked != null && picked.dataBase64.isNotBlank()) {
+                attachImage(
+                    PromptImageAttachment(
+                        mimeType = picked.mimeType,
+                        dataBase64 = picked.dataBase64,
+                        fileName = picked.fileName.take(120),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun attachImage(attachment: PromptImageAttachment) {
+        _state.update { s ->
+            if (s.composerAttachedImages.size >= 4) s
+            else s.copy(composerAttachedImages = s.composerAttachedImages + attachment)
+        }
+    }
+
+    fun removeAttachedImage(index: Int) {
+        _state.update { s ->
+            if (index !in s.composerAttachedImages.indices) s
+            else s.copy(composerAttachedImages = s.composerAttachedImages.filterIndexed { i, _ -> i != index })
+        }
+    }
+
     fun sendPrompt(text: String) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
         val s = _state.value
+        val attached = s.composerAttachedImages
+        if (trimmed.isEmpty() && attached.isEmpty()) return
+        mentionJob?.cancel()
+        _state.update {
+            it.copy(
+                composerAttachedImages = emptyList(),
+                mentionQuery = null,
+                workspaceFileSuggestions = emptyList(),
+            )
+        }
         scope.launch {
             try {
                 val sessionId = s.activeSessionId ?: run {
@@ -1351,6 +1477,7 @@ class ConsoleStore(
                 rpc.sendPrompt(
                     sessionId = sessionId,
                     text = trimmed,
+                    images = attached.takeIf { it.isNotEmpty() },
                     modelId = s.selectedModelId,
                     reasoningEffort = s.selectedEffort,
                     mode = s.selectedMode,
@@ -1778,4 +1905,65 @@ internal fun parsePairingPayload(raw: String): QrPairingPayloadDto? {
             null
         }
     }.getOrNull()
+}
+
+internal fun extractTrailingMentionQuery(text: String): String? {
+    val atIdx = text.lastIndexOf('@')
+    if (atIdx < 0) return null
+    if (atIdx > 0 && !text[atIdx - 1].isWhitespace()) return null
+    val tail = text.substring(atIdx + 1)
+    if (tail.any { it.isWhitespace() }) return null
+    return tail
+}
+
+internal fun replaceTrailingMention(text: String, relativeFilePath: String): String {
+    val atIdx = text.lastIndexOf('@')
+    if (atIdx < 0) return "$text @$relativeFilePath "
+    return text.substring(0, atIdx) + "@$relativeFilePath "
+}
+
+private fun decodeUrlComponent(encoded: String): String {
+    val bytes = mutableListOf<Byte>()
+    var i = 0
+    while (i < encoded.length) {
+        val ch = encoded[i]
+        if (ch == '%' && i + 2 < encoded.length) {
+            val hex = encoded.substring(i + 1, i + 3).toIntOrNull(16)
+            if (hex != null) {
+                bytes.add(hex.toByte())
+                i += 3
+                continue
+            }
+        } else if (ch == '+') {
+            bytes.add(' '.code.toByte())
+            i++
+            continue
+        }
+        bytes.addAll(ch.toString().encodeToByteArray().toList())
+        i++
+    }
+    return bytes.toByteArray().decodeToString()
+}
+
+internal fun parseSessionDeepLink(raw: String): Pair<String?, String?>? {
+    val trimmed = raw.trim()
+    if (!trimmed.startsWith("lework://session", ignoreCase = true)) return null
+    val afterPrefix = trimmed.substring("lework://session".length)
+    if (afterPrefix.isNotEmpty() && afterPrefix[0] != '/' && afterPrefix[0] != '?') return null
+
+    val pathPart = afterPrefix.substringBefore('?').trim('/')
+    val queryPart = afterPrefix.substringAfter('?', "")
+    val params = queryPart
+        .split('&')
+        .filter { it.contains('=') }
+        .associate {
+            val k = it.substringBefore('=').trim()
+            val v = decodeUrlComponent(it.substringAfter('=').trim())
+            k to v
+        }
+
+    val sessionId = params["id"]?.takeIf { it.isNotEmpty() }
+        ?: pathPart.takeIf { it.isNotEmpty() }?.let { decodeUrlComponent(it) }
+    val hubId = params["hubId"]?.takeIf { it.isNotEmpty() }
+    return sessionId to hubId
 }

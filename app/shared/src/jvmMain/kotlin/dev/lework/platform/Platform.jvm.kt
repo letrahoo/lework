@@ -37,6 +37,9 @@ object JvmPlatformTestHooks {
     var pairedHosts: List<PairedHost> = emptyList()
     var activeHostId: String? = null
     val hostTokens = mutableMapOf<String, String>()
+    var imagePickSupported: Boolean = true
+    var nextPickedImage: PickedImagePayload? = null
+    var signingExpiryHours: Int? = null
 
     fun setForeground(isForeground: Boolean) {
         _foreground.value = isForeground
@@ -73,6 +76,9 @@ object JvmPlatformTestHooks {
         pairedHosts = emptyList()
         activeHostId = null
         hostTokens.clear()
+        imagePickSupported = true
+        nextPickedImage = null
+        signingExpiryHours = null
     }
 }
 
@@ -199,3 +205,11 @@ actual fun saveHostAccessToken(hubId: String, token: String?) {
         JvmPlatformTestHooks.hostTokens[hubId] = token
     }
 }
+
+actual fun canPickImages(): Boolean = JvmPlatformTestHooks.imagePickSupported
+
+actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
+    onResult(JvmPlatformTestHooks.nextPickedImage)
+}
+
+actual fun signingExpiryRemainingHours(): Int? = JvmPlatformTestHooks.signingExpiryHours

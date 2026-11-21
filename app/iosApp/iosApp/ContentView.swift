@@ -26,6 +26,17 @@ struct ContentView: View {
                     }
                 }
             )
+            .sheet(
+                isPresented: $bridge.isShowingPhotoPicker,
+                onDismiss: {
+                    bridge.finishImagePick(fileName: nil, mimeType: nil, dataBase64: nil)
+                },
+                content: {
+                    PhotoPickerSheet { fileName, mimeType, b64 in
+                        bridge.finishImagePick(fileName: fileName, mimeType: mimeType, dataBase64: b64)
+                    }
+                }
+            )
             .onOpenURL { url in
                 IosNativeBridge.shared.handleIncomingUrl(url: url.absoluteString)
             }

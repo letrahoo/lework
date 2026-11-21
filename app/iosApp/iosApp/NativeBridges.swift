@@ -1,12 +1,15 @@
 import AVFoundation
 import Darwin
+import PhotosUI
 import Shared
 import SwiftUI
 import UIKit
 
 final class NativeBridgeCoordinator: NSObject, ObservableObject, IosNativeDelegate {
     @Published var isShowingScanner: Bool = false
+    @Published var isShowingPhotoPicker: Bool = false
     private var activeQrReqId: Int64?
+    private var activeImageReqId: Int64?
     private let tsnetQueue = DispatchQueue(label: "dev.lework.tsnet", qos: .userInitiated)
 
     override init() {
@@ -103,11 +106,103 @@ final class NativeBridgeCoordinator: NSObject, ObservableObject, IosNativeDelega
             }
         }
     }
+
+    func presentImagePicker(reqId: Int64) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let prev = self.activeImageReqId {
+                IosNativeBridge.shared.completeImagePick(reqId: prev, fileName: nil, mimeType: nil, dataBase64: nil)
+            }
+            self.activeImageReqId = reqId
+            self.isShowingPhotoPicker = true
+        }
+    }
+
+    func finishImagePick(fileName: String?, mimeType: String?, dataBase64: String?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isShowingPhotoPicker = false
+            if let reqId = self.activeImageReqId {
+                self.activeImageReqId = nil
+                IosNativeBridge.shared.completeImagePick(
+                    reqId: reqId,
+                    fileName: fileName,
+                    mimeType: mimeType,
+                    dataBase64: dataBase64
+                )
+            }
+        }
+    }
+}
+
+struct PhotoPickerSheet: UIViewControllerRepresentable {
+    let onComplete: (String?, String?, String?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete)
+    }
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration()
+        config.filter = .images
+        config.selectionLimit = 1
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let onComplete: (String?, String?, String?) -> Void
+
+        init(onComplete: @escaping (String?, String?, String?) -> Void) {
+            self.onComplete = onComplete
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard let first = results.first,
+                  first.itemProvider.canLoadObject(ofClass: UIImage.self)
+            else {
+                onComplete(nil, nil, nil)
+                return
+            }
+            let suggested = first.itemProvider.suggestedName ?? "photo"
+            first.itemProvider.loadObject(ofClass: UIImage.self) { [onComplete] obj, _ in
+                guard let uiImage = obj as? UIImage else {
+                    DispatchQueue.main.async { onComplete(nil, nil, nil) }
+                    return
+                }
+                let scaled = Self.downscale(image: uiImage, maxDimension: 1280)
+                guard let jpegData = scaled.jpegData(compressionQuality: 0.78) else {
+                    DispatchQueue.main.async { onComplete(nil, nil, nil) }
+                    return
+                }
+                let b64 = jpegData.base64EncodedString()
+                DispatchQueue.main.async {
+                    onComplete("\(suggested).jpg", "image/jpeg", b64)
+                }
+            }
+        }
+
+        private static func downscale(image: UIImage, maxDimension: CGFloat) -> UIImage {
+            let size = image.size
+            let longest = max(size.width, size.height)
+            guard longest > maxDimension, longest > 0 else { return image }
+            let ratio = maxDimension / longest
+            let newSize = CGSize(width: floor(size.width * ratio), height: floor(size.height * ratio))
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1.0
+            return UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
+                image.draw(in: CGRect(origin: .zero, size: newSize))
+            }
+        }
+    }
 }
 
 struct QrScannerSheet: View {
     let onComplete: (String?) -> Void
-    @State private var statusMessage: String = "对准电脑终端 hub pair 生成的二维码"
+    @State private var statusMessage: String = "对准电脑终端 lework pair 生成的二维码"
 
     var body: some View {
         ZStack {

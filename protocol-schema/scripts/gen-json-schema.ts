@@ -426,6 +426,7 @@ sealed interface AgentEvent {
         override val ts: Long,
         val messageId: String,
         val text: String,
+        val imageCount: Int? = null,
     ) : AgentEvent
 
     @Serializable
@@ -582,6 +583,26 @@ data class WorkspaceListResult(
 )
 
 @Serializable
+data class WorkspaceFilesParams(
+    val path: String,
+    val query: String? = null,
+    val limit: Int? = null,
+)
+
+@Serializable
+data class WorkspaceFilesResult(
+    val path: String,
+    val files: List<String> = emptyList(),
+)
+
+@Serializable
+data class PromptImageAttachment(
+    val mimeType: String,
+    val dataBase64: String,
+    val fileName: String? = null,
+)
+
+@Serializable
 data class FsListParams(
     val path: String,
 )
@@ -645,6 +666,7 @@ data class SessionCreateResult(
 data class SessionPromptParams(
     val sessionId: String,
     val text: String,
+    val images: List<PromptImageAttachment>? = null,
     val modelId: String? = null,
     val reasoningEffort: ReasoningEffort? = null,
     val mode: SessionMode? = null,

@@ -449,14 +449,34 @@ private fun MessageTimelineRow(item: ChatTimelineItem) {
                     border = BorderStroke(1.dp, Everforest.Bg3),
                     modifier = Modifier.widthIn(max = 316.dp),
                 ) {
-                    SelectionContainer {
-                        Text(
-                            text = item.text,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                            fontSize = 15.sp,
-                            lineHeight = 22.sp,
-                            color = Everforest.Fg,
-                        )
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        if (item.imageCount > 0) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(bottom = 4.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Image,
+                                    contentDescription = null,
+                                    tint = Everforest.Green,
+                                    modifier = Modifier.size(13.dp),
+                                )
+                                Text(
+                                    text = "已附带 ${item.imageCount} 张图片",
+                                    fontSize = 11.5.sp,
+                                    color = Everforest.Green,
+                                )
+                            }
+                        }
+                        SelectionContainer {
+                            Text(
+                                text = item.text,
+                                fontSize = 15.sp,
+                                lineHeight = 22.sp,
+                                color = Everforest.Fg,
+                            )
+                        }
                     }
                 }
             }

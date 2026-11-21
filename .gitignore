@@ -22,6 +22,7 @@ vendor/dsh-channel/
 build/
 tsnet-bridge/bin/
 tsnet-bridge/build/
+app/androidApp/src/main/jniLibs/
 local.properties
 *.xcuserstate
 xcuserdata/

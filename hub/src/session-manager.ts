@@ -1,4 +1,6 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import {
   ErrorCode,
@@ -7,11 +9,12 @@ import {
   type CheckpointInfo,
   type EngineInfo,
   type ModelOption,
+  type PromptImageAttachment,
   type ReasoningEffort,
   type SessionMeta,
   type SessionMode,
 } from '@lework/protocol'
-import type { EngineAdapter, EngineSession } from './engines/types.ts'
+import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/types.ts'
 import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
@@ -225,8 +228,17 @@ export class SessionManager {
   async prompt(
     sessionId: string,
     text: string,
-    overrides?: { modelId?: string; reasoningEffort?: ReasoningEffort; mode?: SessionMode },
+    overrides?: {
+      images?: PromptImageAttachment[]
+      modelId?: string
+      reasoningEffort?: ReasoningEffort
+      mode?: SessionMode
+    },
   ): Promise<{ turnId: string }> {
+    const rawImages = overrides?.images ?? []
+    if (!text.trim() && rawImages.length === 0) {
+      throw new HubRpcError(ErrorCode.InvalidParams, 'Prompt text or image attachment is required.')
+    }
     let managed = this.sessions.get(sessionId)
     if (!managed && sessionId.startsWith('host:')) {
       const hostLoaded = this.hostInspector.readHostSessionEvents(sessionId)
@@ -266,19 +278,24 @@ export class SessionManager {
     }
 
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`
+    const stagedImages = this.stagePromptImages(sessionId, turnId, rawImages)
+    const displayUserText = text.trim() || `（已发送 ${stagedImages.length} 张图片）`
+
     this.appendEvent(managed, {
       type: 'message.user',
       messageId: `u_${turnId}`,
-      text,
+      text: displayUserText,
+      ...(stagedImages.length > 0 ? { imageCount: stagedImages.length } : {}),
     })
     if (managed.meta.lastSeq <= 2 && managed.meta.title.includes(' · ')) {
-      managed.meta.title = text.slice(0, 48).replace(/\s+/g, ' ').trim() || managed.meta.title
+      managed.meta.title =
+        displayUserText.slice(0, 48).replace(/\s+/g, ' ').trim() || managed.meta.title
       this.callbacks.onSessionUpdated(managed.meta)
     }
 
     // Auto-snapshot working tree right before launching a new turn so the user can always roll back
     try {
-      const summary = text.replace(/\s+/g, ' ').trim().slice(0, 18)
+      const summary = displayUserText.replace(/\s+/g, ' ').trim().slice(0, 18)
       this.checkpoints.create(
         sessionId,
         managed.meta.cwd,
@@ -291,7 +308,7 @@ export class SessionManager {
 
     this.sleepInhibitor.acquire()
     void managed.handle
-      .prompt(turnId, text)
+      .prompt(turnId, text, stagedImages.length > 0 ? stagedImages : undefined)
       .catch(err => {
         const msg = err instanceof Error ? err.message : String(err)
         this.appendEvent(managed, { type: 'error', message: msg })
@@ -302,6 +319,43 @@ export class SessionManager {
       })
 
     return { turnId }
+  }
+
+  getSessionMeta(sessionId: string): SessionMeta | undefined {
+    const managed = this.sessions.get(sessionId)
+    if (managed) return managed.meta
+    if (sessionId.startsWith('host:')) {
+      return this.hostInspector.getHostSession(sessionId)?.meta
+    }
+    return undefined
+  }
+
+  private stagePromptImages(
+    sessionId: string,
+    turnId: string,
+    images: PromptImageAttachment[],
+  ): StagedPromptImage[] {
+    if (images.length === 0) return []
+    const safeSid = sessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+    const stageDir = path.join(os.tmpdir(), 'lework-attachments', safeSid)
+    fs.mkdirSync(stageDir, { recursive: true, mode: 0o700 })
+    const out: StagedPromptImage[] = []
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i]!
+      const ext =
+        img.mimeType === 'image/png'
+          ? 'png'
+          : img.mimeType === 'image/webp'
+            ? 'webp'
+            : img.mimeType === 'image/gif'
+              ? 'gif'
+              : 'jpg'
+      const filePath = path.join(stageDir, `${turnId}_${i + 1}.${ext}`)
+      const bytes = Buffer.from(img.dataBase64, 'base64')
+      fs.writeFileSync(filePath, bytes, { mode: 0o600 })
+      out.push({ ...img, stagedPath: filePath })
+    }
+    return out
   }
 
   async cancel(sessionId: string): Promise<void> {

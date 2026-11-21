@@ -47,6 +47,12 @@ data class PairedHost(
     val lastConnectedAt: Long = 0L,
 )
 
+data class PickedImagePayload(
+    val fileName: String,
+    val mimeType: String,
+    val dataBase64: String,
+)
+
 expect fun platformName(): String
 expect fun appVersionLabel(): String
 expect fun epochMillis(): Long
@@ -93,3 +99,8 @@ expect fun loadActiveHostId(): String?
 expect fun saveActiveHostId(hubId: String?)
 expect fun loadHostAccessToken(hubId: String): String?
 expect fun saveHostAccessToken(hubId: String, token: String?)
+
+// Native image picker & iOS provisioning profile expiration inspector
+expect fun canPickImages(): Boolean
+expect fun requestImagePick(onResult: (PickedImagePayload?) -> Unit)
+expect fun signingExpiryRemainingHours(): Int?

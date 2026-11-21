@@ -23,6 +23,7 @@ sealed interface ChatTimelineItem {
     data class User(
         override val id: String,
         val text: String,
+        val imageCount: Int = 0,
     ) : ChatTimelineItem
 
     data class Reasoning(
@@ -154,6 +155,11 @@ data class ConsoleUiState(
     val tsnetLoggingIn: Boolean = false,
     val pairedHosts: List<PairedHost> = loadPairedHosts(),
     val activeHostId: String? = loadActiveHostId(),
+    // Composer `@file` autocomplete, image attachments & signing expiry reminder
+    val composerAttachedImages: List<PromptImageAttachment> = emptyList(),
+    val mentionQuery: String? = null,
+    val workspaceFileSuggestions: List<String> = emptyList(),
+    val signingExpiryDismissed: Boolean = false,
 ) {
     val activeSession: SessionMeta?
         get() = sessions.firstOrNull { it.id == activeSessionId }
@@ -269,7 +275,13 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
 
     when (event) {
         is AgentEvent.UserMessage -> {
-            items.add(ChatTimelineItem.User(id = event.messageId, text = event.text))
+            items.add(
+                ChatTimelineItem.User(
+                    id = event.messageId,
+                    text = event.text,
+                    imageCount = event.imageCount ?: 0,
+                ),
+            )
         }
         is AgentEvent.ReasoningDelta -> {
             val idx = items.indexOfLast { it is ChatTimelineItem.Reasoning && it.id == event.messageId }

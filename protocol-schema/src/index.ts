@@ -377,7 +377,13 @@ const base = { seq: z.number().int().nonnegative(), sessionId: z.string(), ts: z
 
 export const AgentEvent = z.discriminatedUnion('type', [
   z.object({ ...base, type: z.literal('session.state'), state: SessionState, detail: z.string().optional() }),
-  z.object({ ...base, type: z.literal('message.user'), messageId: z.string(), text: z.string() }),
+  z.object({
+    ...base,
+    type: z.literal('message.user'),
+    messageId: z.string(),
+    text: z.string(),
+    imageCount: z.number().int().nonnegative().optional(),
+  }),
   z.object({ ...base, type: z.literal('message.assistant.delta'), messageId: z.string(), text: z.string() }),
   z.object({ ...base, type: z.literal('reasoning.delta'), messageId: z.string(), text: z.string() }),
   z.object({
@@ -425,6 +431,19 @@ export const ClientInfo = z.object({
   version: z.string().max(32),
   platform: z.string().max(32),
 })
+
+export const PromptImageAttachment = z.object({
+  mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+  dataBase64: z.string().min(4).max(1_000_000),
+  fileName: z.string().max(120).optional(),
+})
+export type PromptImageAttachment = z.infer<typeof PromptImageAttachment>
+
+export const WorkspaceFilesResult = z.object({
+  path: z.string(),
+  files: z.array(z.string()),
+})
+export type WorkspaceFilesResult = z.infer<typeof WorkspaceFilesResult>
 
 export const GitChangedFileEntry = z.object({
   path: z.string(),
@@ -496,6 +515,14 @@ export const Methods = {
     params: z.object({}).optional(),
     result: z.object({ workspaces: z.array(Workspace) }),
   },
+  'workspace.files': {
+    params: z.object({
+      path: z.string().min(1).max(4096),
+      query: z.string().max(200).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    }),
+    result: WorkspaceFilesResult,
+  },
   'fs.list': {
     params: z.object({ path: z.string().min(1).max(4096) }),
     result: z.object({ path: z.string(), entries: z.array(FsEntry) }),
@@ -524,7 +551,8 @@ export const Methods = {
   'session.prompt': {
     params: z.object({
       sessionId: z.string(),
-      text: z.string().min(1).max(200_000),
+      text: z.string().max(200_000),
+      images: z.array(PromptImageAttachment).max(4).optional(),
       modelId: z.string().optional(),
       reasoningEffort: ReasoningEffort.optional(),
       mode: SessionMode.optional(),

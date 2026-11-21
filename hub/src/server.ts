@@ -15,17 +15,19 @@ import {
   type HubInfo,
   type MethodName,
   type ProfileInfo,
+  type PromptImageAttachment,
   type ReasoningEffort,
   type SessionMeta,
   type SessionMode,
   type SlaveInfo,
   type Workspace,
 } from '@lework/protocol'
-import type { HubConfig } from './config.ts'
+import { loadOrCreateConfig, type HubConfig } from './config.ts'
 import { BonjourAdvertiser, collectLanIpv4Addresses, collectTailscaleIpv4Addresses } from './bonjour.ts'
 import { DeviceFlowAuth } from './auth/device-flow-auth.ts'
 import { PairingTicketManager } from './auth/pair-manager.ts'
 import { TsnetManager } from './auth/tsnet-manager.ts'
+import { NotificationDispatcher } from './notifications/notifier.ts'
 import { AgyEngineAdapter } from './engines/agy-adapter.ts'
 import { ClaudeCodeAdapter } from './engines/claude-adapter.ts'
 import { CodexEngineAdapter } from './engines/codex-adapter.ts'
@@ -51,10 +53,11 @@ import {
   listWorkspaceDirectory,
   readWorkspaceFile,
   readWorkspaceGitDiff,
+  searchWorkspaceFiles,
 } from './storage/workspace-fs.ts'
 import { UsageService } from './usage/index.ts'
 
-const HUB_VERSION = '0.5.0'
+const HUB_VERSION = '0.6.0'
 
 interface ClientConn {
   ws: WebSocket
@@ -69,6 +72,7 @@ export interface HubServerOptions {
   hostInspector?: HostTaskInspector
   usageService?: UsageService
   tsnetManager?: TsnetManager
+  notificationDispatcher?: NotificationDispatcher
   /** TLS identity; defaults to the persistent self-signed identity under `~/.lework/tls`. */
   tls?: HubTlsMaterial
 }
@@ -76,7 +80,7 @@ export interface HubServerOptions {
 const HELLO_DEADLINE_MS = 10_000
 const MAX_PREAUTH_CONNECTIONS = 32
 const MAX_REMOTE_SLAVES = 32
-const WS_MAX_PAYLOAD = 1024 * 1024
+const WS_MAX_PAYLOAD = 4 * 1024 * 1024
 const AUTH_FAILURE_DELAY_MS = 400
 
 const SlaveRegistration = z.object({
@@ -100,6 +104,7 @@ export class HubServer {
   private readonly deviceAuth: DeviceFlowAuth
   private readonly pairManager = new PairingTicketManager()
   private readonly tsnetManager: TsnetManager
+  private readonly notifier: NotificationDispatcher
   private readonly config: HubConfig
   private bonjour: BonjourAdvertiser | null = null
   private boundPort = 0
@@ -159,6 +164,22 @@ export class HubServer {
         getSessionSnapshot: sessionSnapshotProvider,
       })
     }
+
+    this.notifier =
+      opts.notificationDispatcher ??
+      new NotificationDispatcher({
+        getConfig: () => {
+          if (this.config.notifications) return this.config.notifications
+          try {
+            return loadOrCreateConfig().notifications
+          } catch {
+            return undefined
+          }
+        },
+        getHubInfo: () => this.getHubInfo(),
+        getSessionMeta: sid => this.sessionManager.getSessionMeta(sid),
+        getActiveSubscriberCount: sid => this.countSubscribers(sid),
+      })
 
     // TLS terminates here (end-to-end): relays / SSH tunnels only forward ciphertext.
     this.httpServer = https.createServer(
@@ -237,6 +258,7 @@ export class HubServer {
   }
 
   async stop(): Promise<void> {
+    this.notifier.dispose()
     this.bonjour?.stop()
     this.bonjour = null
     await this.tsnetManager.stop()
@@ -563,6 +585,10 @@ export class HubServer {
         json(200, await this.tsnetManager.logout())
         return
       }
+      if (req.method === 'POST' && url.pathname === '/v1/notify/test') {
+        json(200, await this.notifier.sendTestNotification())
+        return
+      }
     }
     if (req.method === 'POST' && url.pathname === '/v1/auth/attest') {
       // Token-bound TLS attestation: proves to a client holding the token that this TLS endpoint
@@ -841,6 +867,13 @@ export class HubServer {
       case 'workspace.list': {
         return { workspaces: this.discoverWorkspaces() }
       }
+      case 'workspace.files': {
+        const p = params as { path: string; query?: string; limit?: number }
+        return searchWorkspaceFiles(p.path, this.config.workspaceRoots, {
+          query: p.query,
+          limit: p.limit,
+        })
+      }
       case 'fs.list': {
         const p = params as { path: string }
         return listWorkspaceDirectory(p.path, this.config.workspaceRoots)
@@ -872,12 +905,14 @@ export class HubServer {
         const p = params as {
           sessionId: string
           text: string
+          images?: PromptImageAttachment[]
           modelId?: string
           reasoningEffort?: ReasoningEffort
           mode?: SessionMode
         }
         conn.subscribedSessions.add(p.sessionId)
         return await this.sessionManager.prompt(p.sessionId, p.text, {
+          images: p.images,
           modelId: p.modelId,
           reasoningEffort: p.reasoningEffort,
           mode: p.mode,
@@ -978,7 +1013,18 @@ export class HubServer {
     }
   }
 
+  private countSubscribers(sessionId: string): number {
+    let count = 0
+    for (const c of this.clients) {
+      if (c.authenticated && c.subscribedSessions.has(sessionId) && c.ws.readyState === WebSocket.OPEN) {
+        count++
+      }
+    }
+    return count
+  }
+
   private broadcastSessionEvent(event: AgentEvent): void {
+    this.notifier.onEvent(event)
     const msg = {
       jsonrpc: '2.0',
       method: 'stream.event',

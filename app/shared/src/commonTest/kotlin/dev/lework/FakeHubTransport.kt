@@ -55,6 +55,13 @@ class FakeHubTransport : HubTransport {
     val unsubscribedIds = mutableListOf<String>()
     val respondedApprovals = mutableListOf<Triple<String, String, String?>>()
     val sentPrompts = mutableListOf<Pair<String, String>>()
+    val sentPromptImages = mutableListOf<Pair<String, List<PromptImageAttachment>>>()
+    var workspaceFilesList: List<String> = listOf(
+        "README.md",
+        "hub/src/server.ts",
+        "hub/src/session-manager.ts",
+        "app/shared/src/commonMain/kotlin/dev/lework/store/ConsoleStore.kt",
+    )
 
     fun emitEvent(event: AgentEvent) {
         _events.tryEmit(event)
@@ -204,6 +211,20 @@ class FakeHubTransport : HubTransport {
             ),
         )
 
+    override suspend fun searchWorkspaceFiles(
+        path: String,
+        query: String?,
+        limit: Int,
+    ): WorkspaceFilesResult {
+        val q = query?.trim()?.lowercase().orEmpty()
+        val matched = if (q.isEmpty()) {
+            workspaceFilesList
+        } else {
+            workspaceFilesList.filter { it.lowercase().contains(q) }
+        }
+        return WorkspaceFilesResult(path = path, files = matched.take(limit))
+    }
+
     override suspend fun listDirectory(path: String): FsListResult =
         FsListResult(path = path, entries = emptyList())
 
@@ -248,11 +269,15 @@ class FakeHubTransport : HubTransport {
     override suspend fun sendPrompt(
         sessionId: String,
         text: String,
+        images: List<PromptImageAttachment>?,
         modelId: String?,
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
     ): String {
         sentPrompts.add(sessionId to text)
+        if (!images.isNullOrEmpty()) {
+            sentPromptImages.add(sessionId to images)
+        }
         return "turn_${sentPrompts.size}"
     }
 
