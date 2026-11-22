@@ -105,11 +105,12 @@ if [[ "$MODE" == "--install" ]]; then
     ')"
   fi
 
-  echo "==> Building & signing Lework for physical iPhone ($DEVICE_ID, Team $TEAM_ID, $BUNDLE_ID)..."
+  IOS_BUILD_CONFIG="${LEWORK_IOS_CONFIGURATION:-Release}"
+  echo "==> Building & signing Lework ($IOS_BUILD_CONFIG) for physical iPhone ($DEVICE_ID, Team $TEAM_ID, $BUNDLE_ID)..."
   XCODE_ARGS=(
     -project "$IOS_DIR/iosApp.xcodeproj"
     -scheme iosApp
-    -configuration Debug
+    -configuration "$IOS_BUILD_CONFIG"
     -sdk iphoneos
     -destination "generic/platform=iOS"
     -derivedDataPath "$DERIVED_DATA"
@@ -122,7 +123,7 @@ if [[ "$MODE" == "--install" ]]; then
     xcodebuild "${XCODE_ARGS[@]}" -allowProvisioningUpdates build
   fi
 
-  APP_BUNDLE="$DERIVED_DATA/Build/Products/Debug-iphoneos/iosApp.app"
+  APP_BUNDLE="$DERIVED_DATA/Build/Products/${IOS_BUILD_CONFIG}-iphoneos/iosApp.app"
   echo "==> Verifying signature..."
   codesign --verify --deep --strict "$APP_BUNDLE"
 

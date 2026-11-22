@@ -57,7 +57,7 @@ import {
 } from './storage/workspace-fs.ts'
 import { UsageService } from './usage/index.ts'
 
-const HUB_VERSION = '0.6.5'
+const HUB_VERSION = '0.6.6'
 
 interface ClientConn {
   ws: WebSocket
@@ -968,13 +968,15 @@ export class HubServer {
           conn.subscribedSessions.add(p.sessionId)
           this.sessionManager.retainHostWatch(p.sessionId)
         }
-        if (p.beforeSeq === undefined) {
-          await this.sessionManager.syncHostTerminalNow(p.sessionId)
-        }
         const snap = this.sessionManager.subscribeSnapshot(p.sessionId, p.afterSeq, {
           beforeSeq: p.beforeSeq,
           limit: p.limit,
         })
+        if (p.beforeSeq === undefined) {
+          // Non-blocking terminal inspection: return transcript immediately (~1-15ms) and push any
+          // live terminal status / permission dialog asynchronously via WebSocket notifications.
+          void this.sessionManager.syncHostTerminalNow(p.sessionId).catch(() => {})
+        }
         return snap
       }
       case 'stream.unsubscribe': {

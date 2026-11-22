@@ -134,6 +134,7 @@ data class ConsoleUiState(
     val drawerEngineFilter: String? = null,
     val sessions: List<SessionMeta> = emptyList(),
     val activeSessionId: String? = null,
+    val loadingSessionId: String? = null,
     val transcripts: Map<String, SessionTranscript> = emptyMap(),
     val checkpoints: List<CheckpointInfo> = emptyList(),
     val currentBrowsePath: String = "",
@@ -364,6 +365,149 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
 
     return current.copy(
         lastSeq = event.seq,
+        items = items,
+        pendingPermissions = perms,
+        planEntries = plans,
+        inputTokens = inTok,
+        outputTokens = outTok,
+    )
+}
+
+/**
+ * Single-pass O(N) batch reducer for initial session snapshots and reverse-pagination pages.
+ * Avoids O(N^2) list copies (`items.toMutableList()`) and linear `indexOfLast` scans on mobile UI threads.
+ */
+fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>): SessionTranscript {
+    if (events.isEmpty()) return initial
+
+    val items = ArrayList<ChatTimelineItem>(initial.items.size + minOf(events.size, 256))
+    items.addAll(initial.items)
+
+    val reasoningIdxById = HashMap<String, Int>(64)
+    val assistantIdxById = HashMap<String, Int>(64)
+    val toolIdxById = HashMap<String, Int>(128)
+    for (i in items.indices) {
+        when (val it = items[i]) {
+            is ChatTimelineItem.Reasoning -> reasoningIdxById[it.id] = i
+            is ChatTimelineItem.Assistant -> assistantIdxById[it.id] = i
+            is ChatTimelineItem.Tool -> toolIdxById[it.id] = i
+            else -> Unit
+        }
+    }
+
+    val perms = initial.pendingPermissions.toMutableList()
+    var lastSeq = initial.lastSeq
+    var plans = initial.planEntries
+    var inTok = initial.inputTokens
+    var outTok = initial.outputTokens
+
+    for (event in events) {
+        if (event is AgentEvent.PermissionRequested) {
+            if (event.requestId.startsWith("tty_perm_")) {
+                perms.removeAll { it.requestId == event.requestId || it.requestId.startsWith("tty_perm_") }
+            } else {
+                perms.removeAll { it.requestId == event.requestId }
+            }
+            perms.add(event)
+            if (!event.requestId.startsWith("tty_perm_")) {
+                lastSeq = maxOf(lastSeq, event.seq)
+            }
+            continue
+        }
+        if (event is AgentEvent.PermissionResolved) {
+            perms.removeAll { it.requestId == event.requestId }
+            if (!event.requestId.startsWith("tty_perm_")) {
+                lastSeq = maxOf(lastSeq, event.seq)
+            }
+            continue
+        }
+
+        if (event.seq <= lastSeq) continue
+        lastSeq = event.seq
+
+        when (event) {
+            is AgentEvent.UserMessage -> {
+                items.add(
+                    ChatTimelineItem.User(
+                        id = event.messageId,
+                        text = event.text,
+                        imageCount = event.imageCount ?: 0,
+                    ),
+                )
+            }
+            is AgentEvent.ReasoningDelta -> {
+                val idx = reasoningIdxById[event.messageId]
+                if (idx != null) {
+                    val prev = items[idx] as ChatTimelineItem.Reasoning
+                    items[idx] = prev.copy(text = prev.text + event.text)
+                } else {
+                    reasoningIdxById[event.messageId] = items.size
+                    items.add(ChatTimelineItem.Reasoning(id = event.messageId, text = event.text))
+                }
+            }
+            is AgentEvent.AssistantDelta -> {
+                val idx = assistantIdxById[event.messageId]
+                if (idx != null) {
+                    val prev = items[idx] as ChatTimelineItem.Assistant
+                    items[idx] = prev.copy(text = prev.text + event.text)
+                } else {
+                    assistantIdxById[event.messageId] = items.size
+                    items.add(ChatTimelineItem.Assistant(id = event.messageId, text = event.text))
+                }
+            }
+            is AgentEvent.ToolCall -> {
+                val toolItem = ChatTimelineItem.Tool(
+                    id = event.toolCallId,
+                    title = event.title,
+                    kind = event.kind,
+                    status = event.status,
+                    input = event.input,
+                    output = event.output,
+                )
+                val idx = toolIdxById[event.toolCallId]
+                if (idx != null) {
+                    items[idx] = toolItem
+                } else {
+                    toolIdxById[event.toolCallId] = items.size
+                    items.add(toolItem)
+                }
+            }
+            is AgentEvent.ToolUpdate -> {
+                val idx = toolIdxById[event.toolCallId]
+                if (idx != null) {
+                    val prev = items[idx] as ChatTimelineItem.Tool
+                    items[idx] = prev.copy(
+                        title = event.title ?: prev.title,
+                        status = event.status ?: prev.status,
+                        output = event.output ?: prev.output,
+                    )
+                }
+            }
+            is AgentEvent.PlanUpdated -> {
+                plans = event.entries
+            }
+            is AgentEvent.Usage -> {
+                inTok += event.inputTokens ?: 0
+                outTok += event.outputTokens ?: 0
+            }
+            is AgentEvent.ErrorEvent -> {
+                items.add(
+                    ChatTimelineItem.Notice(
+                        id = "err_${event.seq}",
+                        text = event.message,
+                        isError = true,
+                    ),
+                )
+            }
+            is AgentEvent.PermissionRequested,
+            is AgentEvent.PermissionResolved,
+            is AgentEvent.SessionStateChanged,
+            is AgentEvent.TurnDone -> Unit
+        }
+    }
+
+    return initial.copy(
+        lastSeq = lastSeq,
         items = items,
         pendingPermissions = perms,
         planEntries = plans,

@@ -197,4 +197,39 @@ class ThemeAndTraceTest {
         assertEquals(listOf("阶段", "状态"), t2.headers)
         assertEquals(listOf("M1", "已完成"), t2.rows[0])
     }
+
+    @Test
+    fun `T7_5 reduceTranscriptBatch matches sequential reduceTranscript and memoizes parseCliTool`() {
+        val sid = "host:agy:batch_perf"
+        val events = listOf(
+            dev.lework.protocol.AgentEvent.UserMessage(0, sid, 1L, "u1", "优化手机渲染性能"),
+            dev.lework.protocol.AgentEvent.ReasoningDelta(1, sid, 2L, "r1", "分析首屏瓶颈 "),
+            dev.lework.protocol.AgentEvent.ReasoningDelta(2, sid, 3L, "r1", "定位 Markdown 虚拟化"),
+            dev.lework.protocol.AgentEvent.ToolCall(
+                3,
+                sid,
+                4L,
+                "tc1",
+                "Bash",
+                ToolKind.EXECUTE,
+                ToolStatus.IN_PROGRESS,
+                """{"command":"./gradlew test","description":"Run KMP tests"}""",
+            ),
+            dev.lework.protocol.AgentEvent.ToolUpdate(4, sid, 5L, "tc1", status = ToolStatus.COMPLETED, output = "BUILD SUCCESSFUL"),
+            dev.lework.protocol.AgentEvent.AssistantDelta(5, sid, 6L, "a1", "已完成 **分块虚拟化** "),
+            dev.lework.protocol.AgentEvent.AssistantDelta(6, sid, 7L, "a1", "与 `Release` 编译优化。"),
+            dev.lework.protocol.AgentEvent.Usage(7, sid, 8L, inputTokens = 1200, outputTokens = 340),
+        )
+
+        val seqResult = events.fold(dev.lework.store.SessionTranscript()) { acc, ev ->
+            dev.lework.store.reduceTranscript(acc, ev)
+        }
+        val batchResult = dev.lework.store.reduceTranscriptBatch(dev.lework.store.SessionTranscript(), events)
+        assertEquals(seqResult, batchResult)
+
+        val toolItem = batchResult.items.filterIsInstance<ChatTimelineItem.Tool>().single()
+        val firstParsed = parseCliTool(toolItem)
+        val secondParsed = parseCliTool(toolItem)
+        assertTrue(firstParsed === secondParsed, "Expected parseCliTool to return memoized instance on identical tool state")
+    }
 }

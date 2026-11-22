@@ -110,34 +110,39 @@ fun ConsoleApp(
                             windowInsets = WindowInsets(0, 0, 0, 0),
                             modifier = Modifier.width(316.dp),
                         ) {
-                            TasksSidebarContent(
-                                state = state,
-                                onNewSession = {
-                                    store.startNewDraftSession()
-                                    scope.launch { drawerState.close() }
-                                },
-                                onOpenUsage = {
-                                    store.refreshUsageDashboard()
-                                    showUsageSheet = true
-                                    scope.launch { drawerState.close() }
-                                },
-                                onSelectFilter = store::setDrawerEngineFilter,
-                                onSelectSession = { sid ->
-                                    store.selectSession(sid)
-                                    scope.launch { drawerState.close() }
-                                },
-                                onRefresh = store::refreshHostSessions,
-                                onLogout = store::logout,
-                                onSwitchHost = { hubId ->
-                                    scope.launch { drawerState.close() }
-                                    store.switchPairedHost(hubId)
-                                },
-                                onPairAnotherHost = {
-                                    scope.launch { drawerState.close() }
-                                    store.preparePairAnotherHost()
-                                },
-                                onDismissSigningReminder = store::dismissSigningExpiryReminder,
-                            )
+                            // Avoid recomposing 60+ off-screen drawer rows on every streaming event while closed
+                            if (drawerState.isOpen || drawerState.currentValue == DrawerValue.Open || drawerState.targetValue == DrawerValue.Open) {
+                                TasksSidebarContent(
+                                    state = state,
+                                    onNewSession = {
+                                        store.startNewDraftSession()
+                                        scope.launch { drawerState.close() }
+                                    },
+                                    onOpenUsage = {
+                                        store.refreshUsageDashboard()
+                                        showUsageSheet = true
+                                        scope.launch { drawerState.close() }
+                                    },
+                                    onSelectFilter = store::setDrawerEngineFilter,
+                                    onSelectSession = { sid ->
+                                        store.selectSession(sid)
+                                        scope.launch { drawerState.close() }
+                                    },
+                                    onRefresh = store::refreshHostSessions,
+                                    onLogout = store::logout,
+                                    onSwitchHost = { hubId ->
+                                        scope.launch { drawerState.close() }
+                                        store.switchPairedHost(hubId)
+                                    },
+                                    onPairAnotherHost = {
+                                        scope.launch { drawerState.close() }
+                                        store.preparePairAnotherHost()
+                                    },
+                                    onDismissSigningReminder = store::dismissSigningExpiryReminder,
+                                )
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize().background(Everforest.BgDim))
+                            }
                         }
                     },
                 ) {
@@ -205,6 +210,12 @@ fun ConsoleApp(
                                     state = state,
                                     onOpenRunningSession = { sid -> store.selectSession(sid) },
                                 )
+                            } else if (
+                                state.activeSessionId != null &&
+                                transcript.items.isEmpty() &&
+                                state.loadingSessionId == state.activeSessionId
+                            ) {
+                                ConversationLoadingSkeleton(title = activeSess?.title)
                             } else {
                                 val sessRunning = activeSess != null &&
                                     (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
@@ -705,6 +716,73 @@ private fun CalmHomeEmptyState(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ConversationLoadingSkeleton(title: String?) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.Bottom),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(210.dp)
+                    .height(38.dp)
+                    .clip(RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp))
+                    .background(Everforest.Bg2.copy(alpha = 0.55f)),
+            )
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.42f)
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Everforest.Bg1.copy(alpha = 0.7f)),
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .height(16.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Everforest.Bg1.copy(alpha = 0.55f)),
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.76f)
+                    .height(16.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Everforest.Bg1.copy(alpha = 0.45f)),
+            )
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(top = 2.dp),
+        ) {
+            CircularProgressIndicator(
+                color = Everforest.CommentGrey,
+                strokeWidth = 1.6.dp,
+                modifier = Modifier.size(12.dp),
+            )
+            Text(
+                text = if (!title.isNullOrBlank()) "正在同步「${title.take(24)}」…" else "正在同步会话上下文…",
+                fontSize = 12.sp,
+                color = Everforest.CommentGrey,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

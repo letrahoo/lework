@@ -82,27 +82,30 @@ internal fun EverforestMarkdownContent(
 ) {
     val blocks = remember(markdown) { parseMarkdownBlocks(markdown) }
 
-    SelectionContainer {
-        Column(
-            modifier = modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(9.dp),
-        ) {
-            for (block in blocks) {
-                when (block) {
-                    is MdBlock.Heading -> HeadingBlockView(block)
-                    is MdBlock.Paragraph -> ParagraphBlockView(block.text)
-                    is MdBlock.CodeFence -> CodeFenceBlockView(block.lang, block.code)
-                    is MdBlock.Quote -> QuoteBlockView(block)
-                    is MdBlock.ListGroup -> ListGroupBlockView(block.items)
-                    is MdBlock.Table -> TableBlockView(block)
-                    MdBlock.ThematicBreak -> HorizontalDivider(
-                        color = Everforest.Bg2,
-                        thickness = 1.dp,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                }
-            }
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        for (block in blocks) {
+            MarkdownBlockItemView(block)
         }
+    }
+}
+
+@Composable
+internal fun MarkdownBlockItemView(block: MdBlock) {
+    when (block) {
+        is MdBlock.Heading -> HeadingBlockView(block)
+        is MdBlock.Paragraph -> ParagraphBlockView(block.text)
+        is MdBlock.CodeFence -> CodeFenceBlockView(block.lang, block.code)
+        is MdBlock.Quote -> QuoteBlockView(block)
+        is MdBlock.ListGroup -> ListGroupBlockView(block.items)
+        is MdBlock.Table -> TableBlockView(block)
+        MdBlock.ThematicBreak -> HorizontalDivider(
+            color = Everforest.Bg2,
+            thickness = 1.dp,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
     }
 }
 
@@ -478,6 +481,9 @@ private fun MdTableAlign.toTextAlign(): TextAlign = when (this) {
     MdTableAlign.END -> TextAlign.End
 }
 
+private const val CODE_FOLD_THRESHOLD_LINES = 26
+private const val CODE_PREVIEW_LINES = 20
+
 @Composable
 internal fun CodeFenceBlockView(
     lang: String,
@@ -485,7 +491,28 @@ internal fun CodeFenceBlockView(
 ) {
     val scope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
-    val highlighted = remember(code, lang) { highlightEverforestCode(code, lang) }
+    var codeExpanded by remember(code) { mutableStateOf(false) }
+    val (totalLines, previewCode) = remember(code) {
+        var nlCount = 1
+        var cutIdx = -1
+        for (idx in code.indices) {
+            if (code[idx] == '\n') {
+                if (nlCount == CODE_PREVIEW_LINES && cutIdx < 0) {
+                    cutIdx = idx
+                }
+                nlCount++
+            }
+        }
+        val slice = if (nlCount > CODE_FOLD_THRESHOLD_LINES && cutIdx >= 0) {
+            code.substring(0, cutIdx)
+        } else {
+            code
+        }
+        nlCount to slice
+    }
+    val canFold = totalLines > CODE_FOLD_THRESHOLD_LINES
+    val visibleCode = if (canFold && !codeExpanded) previewCode else code
+    val highlighted = remember(visibleCode, lang) { highlightEverforestCode(visibleCode, lang) }
 
     Surface(
         shape = RoundedCornerShape(10.dp),
@@ -503,7 +530,7 @@ internal fun CodeFenceBlockView(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    text = lang.ifBlank { "code" },
+                    text = if (canFold) "${lang.ifBlank { "code" }} · $totalLines 行" else lang.ifBlank { "code" },
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     color = Everforest.CommentGrey,
@@ -553,6 +580,24 @@ internal fun CodeFenceBlockView(
                     fontFamily = FontFamily.Monospace,
                     color = Everforest.Fg,
                 )
+            }
+
+            if (canFold) {
+                HorizontalDivider(color = Everforest.Bg2, thickness = 0.5.dp)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Everforest.Bg1.copy(alpha = 0.35f))
+                        .clickable { codeExpanded = !codeExpanded }
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (codeExpanded) "▴ 收起代码" else "▾ 展开全部 $totalLines 行代码",
+                        fontSize = 11.5.sp,
+                        color = Everforest.CommentGrey,
+                    )
+                }
             }
         }
     }
@@ -1061,6 +1106,9 @@ private val CODE_LITERALS = setOf(
 )
 
 internal fun highlightEverforestCode(code: String, rawLang: String): AnnotatedString {
+    if (code.length > 12_000) {
+        return AnnotatedString(code)
+    }
     val lang = rawLang.trim().lowercase()
     if (lang == "diff" || lang == "patch") {
         return highlightDiff(code)

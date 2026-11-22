@@ -611,7 +611,7 @@ export class HostTaskInspector {
 
   async syncTerminalNow(sessionId: string): Promise<void> {
     if (!this.watched.has(sessionId)) return
-    await this.pollTerminalForWatched(sessionId, false)
+    await this.pollTerminalForWatched(sessionId, true)
   }
 
   retainWatch(sessionId: string): void {
@@ -801,6 +801,14 @@ export class HostTaskInspector {
         if (claudeRt.status === 'idle' && !claudeRt.waitingFor && !w.activePermRequestId && !forcePush) {
           return
         }
+      } else if (
+        engineId === 'agy' &&
+        entry.meta.state === 'idle' &&
+        !w.activePermRequestId &&
+        w.pendingPromptUntil === 0 &&
+        !forcePush
+      ) {
+        return
       }
 
       const inspected = await this.terminalBridge.inspectSessionTerminal({

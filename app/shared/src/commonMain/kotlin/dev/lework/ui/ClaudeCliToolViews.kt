@@ -111,10 +111,12 @@ internal fun ClaudeProcessTraceView(
     if (steps.isEmpty()) return
 
     var traceExpanded by remember { mutableStateOf(false) }
+    var showAllExpandedSteps by remember { mutableStateOf(false) }
 
-    val condensed = remember(steps) { condenseTraceSteps(steps) }
     val toolsWithParsed = remember(steps) {
-        steps.filterIsInstance<ChatTimelineItem.Tool>().map { it to parseCliTool(it) }
+        steps.mapNotNull { item ->
+            (item as? ChatTimelineItem.Tool)?.let { it to parseCliTool(it) }
+        }
     }
     val activeTool = if (isSessionRunning) {
         toolsWithParsed.lastOrNull {
@@ -124,7 +126,7 @@ internal fun ClaudeProcessTraceView(
         null
     }
     val hasFailure = toolsWithParsed.any { it.first.status == ToolStatus.FAILED }
-    val headline = remember(steps, traceExpanded, isSessionRunning) {
+    val headline = remember(steps, isSessionRunning) {
         buildProcessHeadline(steps, toolsWithParsed, activeTool, hasFailure)
     }
 
@@ -182,8 +184,12 @@ internal fun ClaudeProcessTraceView(
             }
         }
 
-        // Level 1: Compact 1-Line-per-Step Expanded Trace
+        // Level 1: Compact 1-Line-per-Step Expanded Trace (lazily computed ONLY when expanded!)
         AnimatedVisibility(visible = traceExpanded) {
+            val condensed = remember(steps) { condenseTraceSteps(steps) }
+            val hiddenCount = if (!showAllExpandedSteps && condensed.size > 36) condensed.size - 30 else 0
+            val visibleSteps = if (hiddenCount > 0) condensed.takeLast(30) else condensed
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -202,7 +208,18 @@ internal fun ClaudeProcessTraceView(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    for (step in condensed) {
+                    if (hiddenCount > 0) {
+                        Text(
+                            text = "▴ 展开较早的 $hiddenCount 步执行记录",
+                            fontSize = 11.5.sp,
+                            color = Everforest.CommentGrey,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { showAllExpandedSteps = true }
+                                .padding(vertical = 2.dp),
+                        )
+                    }
+                    for (step in visibleSteps) {
                         key(step.key) {
                             when (step) {
                                 is CondensedStep.Thought -> CompactThoughtStepRow(step.combinedText)
@@ -758,10 +775,49 @@ internal fun ClaudeCliToolCallRow(
 }
 
 // ---------------------------------------------------------------------------
-// Semantic Tool Call Parser (Prioritizes Human Intent over Raw CLI Noise)
+// Semantic Tool Call Parser (Memoized O(1) Lookup + Human Intent over Raw CLI Noise)
 // ---------------------------------------------------------------------------
 
+private const val TOOL_CACHE_MASK = 1023
+private val toolParseCache = arrayOfNulls<CachedToolParse>(TOOL_CACHE_MASK + 1)
+
+private data class CachedToolParse(
+    val id: String,
+    val status: ToolStatus,
+    val title: String,
+    val inputHash: Int,
+    val outputLen: Int,
+    val parsed: ParsedCliTool,
+)
+
 internal fun parseCliTool(item: ChatTimelineItem.Tool): ParsedCliTool {
+    val inHash = item.input?.hashCode() ?: 0
+    val outLen = item.output?.length ?: 0
+    val slot = ((item.id.hashCode() * 31 + item.status.ordinal) xor inHash xor outLen) and TOOL_CACHE_MASK
+    val hit = toolParseCache[slot]
+    if (
+        hit != null &&
+        hit.id == item.id &&
+        hit.status == item.status &&
+        hit.title == item.title &&
+        hit.inputHash == inHash &&
+        hit.outputLen == outLen
+    ) {
+        return hit.parsed
+    }
+    val computed = parseCliToolUncached(item)
+    toolParseCache[slot] = CachedToolParse(
+        id = item.id,
+        status = item.status,
+        title = item.title,
+        inputHash = inHash,
+        outputLen = outLen,
+        parsed = computed,
+    )
+    return computed
+}
+
+private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
     val rawTitle = item.title.trim().removePrefix("default_api:")
     val lowerTitle = rawTitle.lowercase()
     val jsonObj = parseInputJsonObject(item.input)

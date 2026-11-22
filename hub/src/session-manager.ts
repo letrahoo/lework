@@ -718,8 +718,9 @@ function sliceSessionWindow(
 
 function snapToTurnBoundary(events: AgentEvent[], initialIdx: number): number {
   if (initialIdx <= 0) return 0
-  // Walk backward up to 600 events so a user question + assistant answer are never split mid-turn
-  const floor = Math.max(0, initialIdx - 600)
+  // Walk backward up to 160 events so normal turns keep user question + assistant answer together
+  // without ballooning a giant multi-hundred-tool turn into an oversized first-frame payload.
+  const floor = Math.max(0, initialIdx - 160)
   for (let i = initialIdx; i >= floor; i--) {
     if (events[i]?.type === 'message.user') {
       return i

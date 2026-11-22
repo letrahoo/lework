@@ -1456,6 +1456,7 @@ class ConsoleStore(
                 ?: eng?.models?.firstOrNull()
             s.copy(
                 activeSessionId = null,
+                loadingSessionId = null,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
                 openedDiffContent = null,
@@ -1557,6 +1558,7 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 activeSessionId = null,
+                loadingSessionId = null,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
                 openedDiffContent = null,
@@ -1583,8 +1585,10 @@ class ConsoleStore(
             val resolvedMode = meta?.mode ?: eng?.defaultMode ?: s.selectedMode
             val resolvedEffort = meta?.reasoningEffort ?: eng?.defaultEffort ?: s.selectedEffort
             val resolvedModel = meta?.model ?: eng?.defaultModel ?: s.selectedModelId
+            val alreadyCached = s.transcripts[sessionId]?.let { t -> t.lastSeq >= 0 || t.items.isNotEmpty() } == true
             s.copy(
                 activeSessionId = sessionId,
+                loadingSessionId = if (alreadyCached) null else sessionId,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
                 openedDiffContent = null,
@@ -1603,7 +1607,15 @@ class ConsoleStore(
             )
         }
         scope.launch {
-            runCatching { subscribeAndCatchUp(sessionId) }
+            try {
+                subscribeAndCatchUp(sessionId)
+            } catch (_: Throwable) {
+                // Keep UI responsive even if initial subscribe fails transiently
+            } finally {
+                _state.update { s ->
+                    if (s.loadingSessionId == sessionId) s.copy(loadingSessionId = null) else s
+                }
+            }
             runCatching {
                 val ckpts = rpc.listCheckpoints(sessionId)
                 if (_state.value.activeSessionId == sessionId) {
@@ -1638,9 +1650,7 @@ class ConsoleStore(
                     beforeSeq = beforeSeq,
                     limit = 220,
                 )
-                val olderReduced = snap.events.fold(SessionTranscript()) { acc, ev ->
-                    reduceTranscript(acc, ev)
-                }
+                val olderReduced = reduceTranscriptBatch(SessionTranscript(), snap.events)
                 _state.update { s ->
                     val latest = s.transcripts[sessionId] ?: SessionTranscript()
                     val existingKeys = latest.items.map { "${it.id}_${it::class.simpleName}" }.toHashSet()
@@ -2057,9 +2067,7 @@ class ConsoleStore(
                 if (item.id == snap.session.id) snap.session else item
             }
             val nextTranscript = if (isInitialLoad) {
-                val built = snap.events.fold(SessionTranscript()) { acc, ev ->
-                    reduceTranscript(acc, ev)
-                }
+                val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
                 val concurrentPerms = s.transcripts[sessionId]?.pendingPermissions.orEmpty()
                 val mergedPerms = if (built.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }) {
                     built.pendingPermissions
@@ -2075,10 +2083,7 @@ class ConsoleStore(
                     pendingPermissions = mergedPerms,
                 )
             } else {
-                var cur = s.transcripts[sessionId] ?: SessionTranscript()
-                for (ev in snap.events) {
-                    cur = reduceTranscript(cur, ev)
-                }
+                var cur = reduceTranscriptBatch(s.transcripts[sessionId] ?: SessionTranscript(), snap.events)
                 if (snap.session.state != SessionState.WAITING_PERMISSION &&
                     snap.events.none { it is AgentEvent.PermissionRequested }
                 ) {
@@ -2091,6 +2096,7 @@ class ConsoleStore(
             val eng = s.engines.firstOrNull { it.id == snap.session.engineId }
             s.copy(
                 sessions = updatedSessions,
+                loadingSessionId = if (s.loadingSessionId == sessionId) null else s.loadingSessionId,
                 selectedEngineId = snap.session.engineId,
                 selectedModelId = snap.session.model ?: eng?.defaultModel ?: s.selectedModelId,
                 selectedMode = snap.session.mode ?: eng?.defaultMode ?: s.selectedMode,

@@ -592,7 +592,7 @@ private fun prefs() =
 
 actual fun platformName(): String = "Android ${Build.VERSION.RELEASE}"
 
-actual fun appVersionLabel(): String = "v0.6.5 (20261122.2325)"
+actual fun appVersionLabel(): String = "v0.6.6 (20261122.2355)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 

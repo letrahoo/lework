@@ -11,11 +11,16 @@ struct ComposeView: UIViewControllerRepresentable {
 
 struct ContentView: View {
     @StateObject private var bridge = NativeBridgeCoordinator()
+    private let everforestBg0 = Color(red: 45.0 / 255.0, green: 53.0 / 255.0, blue: 59.0 / 255.0)
 
     var body: some View {
-        ComposeView()
-            .ignoresSafeArea(.all)
-            .sheet(
+        ZStack {
+            everforestBg0.ignoresSafeArea(.all)
+            ComposeView()
+                .ignoresSafeArea(.all)
+        }
+        .preferredColorScheme(.dark)
+        .sheet(
                 isPresented: $bridge.isShowingScanner,
                 onDismiss: {
                     bridge.finishQrScan(nil)

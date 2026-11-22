@@ -49,11 +49,26 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 private sealed interface TimelineSegment {
     val key: String
+    val contentType: String
+    val tightBottomSpacing: Boolean get() = false
+
     data class Single(val item: ChatTimelineItem) : TimelineSegment {
         override val key: String = "${item.id}_${item::class.simpleName}"
+        override val contentType: String = "single_${item::class.simpleName}"
     }
+
+    data class AssistantBlock(
+        override val key: String,
+        val block: MdBlock,
+        val isLastBlockOfMessage: Boolean,
+    ) : TimelineSegment {
+        override val contentType: String = "md_${block::class.simpleName}"
+        override val tightBottomSpacing: Boolean = !isLastBlockOfMessage
+    }
+
     data class ProcessTrace(val steps: List<ChatTimelineItem>) : TimelineSegment {
         override val key: String = "trace_${steps.first().id}"
+        override val contentType: String = "process_trace"
     }
 }
 
@@ -72,6 +87,24 @@ private fun groupTimelineSegments(items: List<ChatTimelineItem>): List<TimelineS
     for (item in items) {
         if (item is ChatTimelineItem.Tool || item is ChatTimelineItem.Reasoning) {
             pendingProcess.add(item)
+        } else if (item is ChatTimelineItem.Assistant && item.text.length > 480) {
+            flushProcess()
+            // Virtualize multi-block Assistant responses directly inside LazyColumn so Skia/Compose
+            // only measures & shapes the blocks currently visible in the mobile viewport!
+            val blocks = parseMarkdownBlocks(item.text)
+            if (blocks.size >= 3) {
+                blocks.forEachIndexed { idx, block ->
+                    out.add(
+                        TimelineSegment.AssistantBlock(
+                            key = "${item.id}_b$idx",
+                            block = block,
+                            isLastBlockOfMessage = idx == blocks.lastIndex,
+                        ),
+                    )
+                }
+            } else {
+                out.add(TimelineSegment.Single(item))
+            }
         } else {
             flushProcess()
             out.add(TimelineSegment.Single(item))
@@ -153,48 +186,61 @@ internal fun ConversationStreamView(
             .padding(horizontal = 16.dp)
             .testTag("conversation_lazy_list"),
         contentPadding = PaddingValues(vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.Bottom),
+        verticalArrangement = Arrangement.Bottom,
     ) {
         if (queuedPrompts.isNotEmpty()) {
-            item(key = "queued_prompts_card") {
+            item(key = "queued_prompts_card", contentType = "queued_prompts") {
                 QueuedPromptsCard(prompts = queuedPrompts)
             }
         }
 
         if (showLiveSpinner) {
-            item(key = "live_spinner_status") {
-                ClaudeLiveSpinnerRow(
-                    session = activeSession,
-                    outputTokens = transcript.outputTokens,
-                )
+            item(key = "live_spinner_status", contentType = "live_spinner") {
+                Box(modifier = Modifier.padding(bottom = if (queuedPrompts.isNotEmpty()) 10.dp else 0.dp)) {
+                    ClaudeLiveSpinnerRow(
+                        session = activeSession,
+                        outputTokens = transcript.outputTokens,
+                    )
+                }
             }
         }
 
         items(
             items = reversedSegments,
             key = { it.key },
+            contentType = { it.contentType },
         ) { segment ->
-            when (segment) {
-                is TimelineSegment.ProcessTrace -> ClaudeProcessTraceView(
-                    steps = segment.steps,
-                    isSessionRunning = isSessionRunning,
-                )
-                is TimelineSegment.Single -> MessageTimelineRow(segment.item)
+            val bottomPad = when {
+                segment === reversedSegments.firstOrNull() && !showLiveSpinner && queuedPrompts.isEmpty() -> 0.dp
+                segment.tightBottomSpacing -> 9.dp
+                else -> 12.dp
+            }
+            Box(modifier = Modifier.fillMaxWidth().padding(bottom = bottomPad)) {
+                when (segment) {
+                    is TimelineSegment.ProcessTrace -> ClaudeProcessTraceView(
+                        steps = segment.steps,
+                        isSessionRunning = isSessionRunning,
+                    )
+                    is TimelineSegment.AssistantBlock -> MarkdownBlockItemView(segment.block)
+                    is TimelineSegment.Single -> MessageTimelineRow(segment.item)
+                }
             }
         }
 
         if (transcript.planEntries.isNotEmpty()) {
-            item(key = "plan_card") {
-                PlanCard(entries = transcript.planEntries)
+            item(key = "plan_card", contentType = "plan_card") {
+                Box(modifier = Modifier.padding(bottom = 12.dp)) {
+                    PlanCard(entries = transcript.planEntries)
+                }
             }
         }
 
         if (transcript.hasMoreBefore || transcript.loadingOlder) {
-            item(key = "history_older_loader") {
+            item(key = "history_older_loader", contentType = "older_loader") {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 4.dp),
+                        .padding(top = 4.dp, bottom = 12.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Surface(
