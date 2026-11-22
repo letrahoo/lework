@@ -175,6 +175,7 @@ class ClaudeAcpSession implements EngineSession {
       throw new Error('Claude ACP session/new did not return a valid sessionId')
     }
     this.acpSessionId = upstreamId
+    this.init.onNativeSessionLinked?.(upstreamId)
     this.extractModels(created ?? {})
     if (this.init.mode) {
       await this.rpc

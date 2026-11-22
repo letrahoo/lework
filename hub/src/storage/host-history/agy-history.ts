@@ -1,5 +1,7 @@
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { AgentEvent, EngineModelSpec, ReasoningEffort } from '@lework/protocol'
 import {
   classifyRawToolCall,
@@ -35,6 +37,7 @@ export function scanAgySessions(
   const brainDir = path.join(agyRoot, 'brain')
   if (!fs.existsSync(brainDir)) return
   const agyHistoryMap = readAgyHistoryIndex(path.join(agyRoot, 'history.jsonl'))
+  const agySummaryMap = readAgyConversationSummaries(path.join(agyRoot, 'conversation_summaries.db'))
   const agyDefaults = readAgyLocalSettings(homeDir, agyCatalog)
 
   let entries: fs.Dirent[] = []
@@ -46,6 +49,7 @@ export function scanAgySessions(
   const candidates: Array<{ convId: string; path: string; mtimeMs: number; birthtimeMs: number }> = []
   for (const d of entries) {
     if (!d.isDirectory()) continue
+    if (agySummaryMap.get(d.name)?.isSubagent) continue
     const tp = path.join(brainDir, d.name, '.system_generated', 'logs', 'transcript.jsonl')
     try {
       const st = fs.statSync(tp)
@@ -82,7 +86,7 @@ export function scanAgySessions(
           if (Array.isArray(o.tool_calls)) {
             for (const tc of o.tool_calls) {
               const argsObj = normalizeAgyArgs(tc.args ?? tc.arguments)
-              extractProjectRootFromToolInput(argsObj, inferredPaths)
+              extractProjectRootFromToolInput(argsObj, inferredPaths, homeDir)
             }
           }
         } catch {
@@ -91,12 +95,21 @@ export function scanAgySessions(
       }
 
       const hist = agyHistoryMap.get(c.convId)
-      const title = hist?.customTitle || firstPromptTitle || `AGY Session ${c.convId.slice(0, 8)}`
-      const workspaces = mergeUniqueWorkspaces([
-        ...(hist?.workspaces ?? []),
-        ...inferredPaths,
-      ])
-      const primaryCwd = workspaces[0] ?? path.join(homeDir, 'work')
+      const summary = agySummaryMap.get(c.convId)
+      const title =
+        hist?.customTitle ||
+        firstPromptTitle ||
+        summary?.title ||
+        `AGY Session ${c.convId.slice(0, 8)}`
+      const workspaces = mergeUniqueWorkspaces(
+        [
+          ...(summary?.workspaces ?? []),
+          ...(hist?.workspaces ?? []),
+          ...inferredPaths,
+        ],
+        homeDir,
+      )
+      const primaryCwd = workspaces[0] ?? homeDir
 
       const isRunning = Date.now() - c.mtimeMs < 75_000 && isAgyTailActivelyRunning(last)
       const sessionId = `host:agy:${c.convId}`
@@ -377,6 +390,101 @@ export function findLatestAgyUserInputFromTail(filePath: string): { ts: number; 
     return { ts: latestTs, texts: collectedTexts }
   } finally {
     fs.closeSync(fd)
+  }
+}
+
+interface AgySummaryInfo {
+  title?: string
+  workspaces: string[]
+  isSubagent: boolean
+}
+
+let cachedSummaryDbPath = ''
+let cachedSummaryStamp = ''
+let cachedSummaryMap = new Map<string, AgySummaryInfo>()
+const nodeRequire = createRequire(import.meta.url)
+
+function parseAgyWorkspaceUris(raw: unknown): string[] {
+  if (typeof raw !== 'string' || !raw.trim()) return []
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    const out: string[] = []
+    for (const item of parsed) {
+      if (typeof item !== 'string' || !item.trim()) continue
+      if (item.startsWith('file://')) {
+        try {
+          out.push(fileURLToPath(item))
+        } catch {
+          // ignore invalid file URI
+        }
+      } else if (item.startsWith('/')) {
+        out.push(item)
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+export function readAgyConversationSummaries(summaryDbPath: string): Map<string, AgySummaryInfo> {
+  if (!fs.existsSync(summaryDbPath)) return new Map()
+  try {
+    const dbStat = fs.statSync(summaryDbPath)
+    let walStamp = '0:0'
+    try {
+      const walStat = fs.statSync(`${summaryDbPath}-wal`)
+      walStamp = `${walStat.mtimeMs}:${walStat.size}`
+    } catch {
+      // no wal file
+    }
+    const stamp = `${dbStat.mtimeMs}:${dbStat.size}:${walStamp}`
+    if (summaryDbPath === cachedSummaryDbPath && stamp === cachedSummaryStamp) {
+      return cachedSummaryMap
+    }
+
+    const sqliteMod = nodeRequire('node:sqlite') as {
+      DatabaseSync: new (
+        location: string,
+        options?: { open?: boolean; readOnly?: boolean },
+      ) => {
+        prepare: (sql: string) => { all: () => Array<Record<string, unknown>> }
+        close: () => void
+      }
+    }
+    const db = new sqliteMod.DatabaseSync(summaryDbPath, { open: true, readOnly: true })
+    const out = new Map<string, AgySummaryInfo>()
+    try {
+      const rows = db
+        .prepare(
+          'SELECT conversation_id, title, workspace_uris, parent_conversation_id, nesting_depth FROM conversation_summaries',
+        )
+        .all()
+      for (const row of rows) {
+        const convId = typeof row.conversation_id === 'string' ? row.conversation_id.trim() : ''
+        if (!convId) continue
+        const parentId =
+          typeof row.parent_conversation_id === 'string' ? row.parent_conversation_id.trim() : ''
+        const depth = typeof row.nesting_depth === 'number' ? row.nesting_depth : 0
+        const title =
+          typeof row.title === 'string' && row.title.trim() ? row.title.trim() : undefined
+        out.set(convId, {
+          title,
+          workspaces: parseAgyWorkspaceUris(row.workspace_uris),
+          isSubagent: Boolean(parentId) || depth > 0,
+        })
+      }
+    } finally {
+      db.close()
+    }
+
+    cachedSummaryDbPath = summaryDbPath
+    cachedSummaryStamp = stamp
+    cachedSummaryMap = out
+    return out
+  } catch {
+    return cachedSummaryMap
   }
 }
 

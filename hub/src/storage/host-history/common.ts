@@ -114,29 +114,28 @@ export function readFullSessionLines(filePath: string): string[] {
 export function extractProjectRootFromToolInput(
   args: Record<string, unknown> | undefined,
   sink: string[],
+  homeDir = os.homedir(),
 ): void {
   if (!args) return
   const rawPath = (args.Path ?? args.path ?? args.file_path ?? args.Cwd ?? args.cwd) as unknown
   if (typeof rawPath !== 'string' || !rawPath.startsWith('/')) return
-  const home = os.homedir()
-  for (const bucket of ['work', 'personal']) {
-    const prefix = path.join(home, bucket) + path.sep
+  for (const bucket of ['my-projects', 'projects', 'repos', 'code', 'work', 'personal']) {
+    const prefix = path.join(homeDir, bucket) + path.sep
     if (rawPath.startsWith(prefix)) {
       const rest = rawPath.slice(prefix.length)
       const repoName = rest.split(path.sep)[0]
       if (repoName && !repoName.startsWith('.')) {
-        sink.push(path.join(home, bucket, repoName))
+        sink.push(path.join(homeDir, bucket, repoName))
       }
       return
     }
   }
 }
 
-export function mergeUniqueWorkspaces(candidates: string[]): string[] {
+export function mergeUniqueWorkspaces(candidates: string[], homeDir = os.homedir()): string[] {
   const out: string[] = []
   const seenReal = new Set<string>()
-  const home = os.homedir()
-  const genericDirs = new Set([home, path.join(home, 'work'), path.join(home, 'personal')])
+  const genericDirs = new Set([homeDir, path.join(homeDir, 'work'), path.join(homeDir, 'personal')])
 
   const specific: string[] = []
   const generic: string[] = []

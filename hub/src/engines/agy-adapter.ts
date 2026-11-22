@@ -97,6 +97,9 @@ class AgyStreamSession implements EngineSession {
     this.modelFlag = init.modelId
     this.effortFlag = init.reasoningEffort
     this.conversationId = init.resumeNativeId
+    if (this.conversationId) {
+      this.init.onNativeSessionLinked?.(this.conversationId)
+    }
   }
 
   async start(): Promise<void> {
@@ -309,11 +312,16 @@ class AgyStreamSession implements EngineSession {
     if (eventName === 'init') {
       if (typeof event.conversation_id === 'string' && event.conversation_id) {
         this.conversationId = event.conversation_id
+        this.init.onNativeSessionLinked?.(event.conversation_id)
       }
       return
     }
     if (eventName === 'step_update' && event.step_update && typeof event.step_update === 'object') {
       const step = event.step_update as Record<string, unknown>
+      if (typeof step.conversation_id === 'string' && step.conversation_id && !this.conversationId) {
+        this.conversationId = step.conversation_id
+        this.init.onNativeSessionLinked?.(step.conversation_id)
+      }
       const stepType = step.step_type
       if (stepType === 'agent_response' && typeof step.text_delta === 'string') {
         if (step.text_delta.length > 0) this.emittedDeltaInTurn = true
@@ -373,6 +381,7 @@ class AgyStreamSession implements EngineSession {
       const res = event.result as Record<string, unknown>
       if (typeof res.conversation_id === 'string' && res.conversation_id) {
         this.conversationId = res.conversation_id
+        this.init.onNativeSessionLinked?.(res.conversation_id)
       }
       if (!this.emittedDeltaInTurn && typeof res.response === 'string' && res.response.length > 0) {
         this.init.emit({

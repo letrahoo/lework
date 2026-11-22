@@ -26,6 +26,7 @@ export interface EngineSessionInit {
   env?: NodeJS.ProcessEnv
   emit: EmitAgentEvent
   onModelsChanged?: (currentModel: string | undefined, models: ModelOption[]) => void
+  onNativeSessionLinked?: (nativeId: string) => void
 }
 
 export interface EngineSession {

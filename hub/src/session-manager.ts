@@ -28,6 +28,7 @@ interface ManagedSession {
   handle: EngineSession
   events: AgentEvent[]
   baseSeq: number
+  nativeId?: string
 }
 
 export interface SessionManagerCallbacks {
@@ -53,13 +54,13 @@ export class SessionManager {
       onEvents: (events: AgentEvent[]) => {
         for (const ev of events) {
           // Only broadcast host-tailed events if not superseded by a Hub-managed session
-          if (!this.sessions.has(ev.sessionId)) {
+          if (!this.isSupersededByHubSession(ev.sessionId)) {
             this.callbacks.onEvent(ev)
           }
         }
       },
       onSessionUpdated: (meta: SessionMeta) => {
-        if (!this.sessions.has(meta.id)) {
+        if (!this.isSupersededByHubSession(meta.id)) {
           this.callbacks.onSessionUpdated(meta)
         }
       },
@@ -100,12 +101,22 @@ export class SessionManager {
     return out
   }
 
+  private isSupersededByHubSession(hostOrHubSessionId: string): boolean {
+    if (this.sessions.has(hostOrHubSessionId)) return true
+    if (!hostOrHubSessionId.startsWith('host:')) return false
+    for (const m of this.sessions.values()) {
+      if (m.nativeId && `host:${m.meta.engineId}:${m.nativeId}` === hostOrHubSessionId) {
+        return true
+      }
+    }
+    return false
+  }
+
   listSessions(engineId?: string): SessionMeta[] {
     const hubSessions = [...this.sessions.values()].map(s => s.meta)
-    const hubIds = new Set(hubSessions.map(s => s.id))
     const hostSessions = this.hostInspector
       .discoverHostSessions()
-      .filter(s => !hubIds.has(s.id))
+      .filter(s => !this.isSupersededByHubSession(s.id))
 
     const merged = [...hubSessions, ...hostSessions]
     const filtered = engineId ? merged.filter(s => s.engineId === engineId) : merged
@@ -194,6 +205,7 @@ export class SessionManager {
       handle: null as unknown as EngineSession,
       events: [...seed],
       baseSeq: seed[0]?.seq ?? 0,
+      ...(params.resumeNativeId ? { nativeId: params.resumeNativeId } : {}),
     }
     this.sessions.set(sessionId, managed)
 
@@ -210,6 +222,11 @@ export class SessionManager {
         emit: body => this.appendEvent(managed, body),
         onModelsChanged: (currentModel, models) => {
           this.updateModels(managed, currentModel, models)
+        },
+        onNativeSessionLinked: nativeId => {
+          if (nativeId.trim()) {
+            managed.nativeId = nativeId.trim()
+          }
         },
       })
       managed.handle = handle

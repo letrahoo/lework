@@ -169,6 +169,7 @@ class CodexAppServerSession implements EngineSession {
       throw new Error('Codex thread/start did not return a thread id')
     }
     this.threadId = tid
+    this.init.onNativeSessionLinked?.(tid)
 
     this.init.onModelsChanged?.(this.selectedModel ?? 'gpt-5-codex', [
       { id: 'gpt-5-codex', name: 'GPT-5 Codex' },

@@ -1,6 +1,8 @@
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import zlib from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentEvent, SessionMeta } from '@lework/protocol'
@@ -596,5 +598,104 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
     expect(emitted.some(e => e.type === 'error' && e.message?.includes('FAILED_PRECONDITION'))).toBe(true)
     expect(emitted.some(e => e.type === 'turn.done' && e.stopReason === 'error')).toBe(true)
     expect(emitted.filter(e => e.type === 'session.state').at(-1)?.state).toBe('idle')
+  })
+
+  it('[T7.4] deduplicates Hub-created AGY sessions against native host:agy:* brains, resolves workspace_uris from conversation_summaries.db, and hides subagents', async () => {
+    const home = makeFakeHome()
+    const agyRoot = path.join(home, '.gemini', 'antigravity-cli')
+    const leviWs = path.join(home, 'my-projects', 'levi')
+    fs.mkdirSync(leviWs, { recursive: true })
+    fs.mkdirSync(agyRoot, { recursive: true })
+
+    // Create conversation_summaries.db with:
+    // 1) `conv-hub-1` (headless session created via Hub in `home`)
+    // 2) `conv-levi-1` (headless session in `~/my-projects/levi` with no history.jsonl entry)
+    // 3) `conv-sub-1` (delegated subagent with `parent_conversation_id` & `nesting_depth = 1`)
+    const req = createRequire(import.meta.url)
+    const { DatabaseSync } = req('node:sqlite') as any
+    const db = new DatabaseSync(path.join(agyRoot, 'conversation_summaries.db'))
+    db.exec(`
+      CREATE TABLE conversation_summaries (
+        conversation_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        workspace_uris TEXT NOT NULL DEFAULT '',
+        parent_conversation_id TEXT NOT NULL DEFAULT '',
+        nesting_depth INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    const ins = db.prepare(
+      'INSERT INTO conversation_summaries (conversation_id, title, workspace_uris, parent_conversation_id, nesting_depth) VALUES (?, ?, ?, ?, ?)',
+    )
+    ins.run('conv-hub-1', '关于我了解哪些', JSON.stringify([pathToFileURL(home).href]), '', 0)
+    ins.run('conv-levi-1', '仓库进度检查', JSON.stringify([pathToFileURL(leviWs).href]), '', 0)
+    ins.run('conv-sub-1', 'Subagent Auditor', JSON.stringify([pathToFileURL(leviWs).href]), 'conv-levi-1', 1)
+    db.close()
+
+    for (const [cid, prompt] of [
+      ['conv-hub-1', '关于我，你了解哪些'],
+      ['conv-levi-1', '当前仓库是什么进度'],
+      ['conv-sub-1', 'Audit security'],
+    ] as const) {
+      const dir = path.join(agyRoot, 'brain', cid, '.system_generated', 'logs')
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(
+        path.join(dir, 'transcript.jsonl'),
+        [
+          JSON.stringify({
+            step_index: 0,
+            type: 'USER_INPUT',
+            created_at: '2026-11-22T13:11:03Z',
+            content: `<USER_REQUEST>\n${prompt}\n</USER_REQUEST>`,
+          }),
+          JSON.stringify({
+            step_index: 1,
+            type: 'PLANNER_RESPONSE',
+            status: 'DONE',
+            created_at: '2026-11-22T13:11:08Z',
+            content: '已完成。',
+          }),
+        ].join('\n') + '\n',
+      )
+    }
+
+    const fakeAgy = path.join(home, 'fake-agy-ok.mjs')
+    fs.writeFileSync(
+      fakeAgy,
+      [
+        '#!/usr/bin/env node',
+        'process.stdin.on("data", () => {',
+        '  process.stdout.write(JSON.stringify({ event: "init", conversation_id: "conv-hub-1" }) + "\\n");',
+        '  process.stdout.write(JSON.stringify({ event: "result", result: { conversation_id: "conv-hub-1", status: "SUCCESS", response: "OK" } }) + "\\n");',
+        '});',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+
+    const inspector = new HostTaskInspector({ homeDir: home })
+    const sm = new SessionManager(
+      [home],
+      [new AgyEngineAdapter({ binary: process.execPath, args: [fakeAgy] })],
+      { onEvent: () => {}, onSessionUpdated: () => {} },
+      undefined,
+      inspector,
+    )
+
+    const created = await sm.createSession({ engineId: 'agy', cwd: home })
+    await sm.prompt(created.id, '关于我，你了解哪些')
+    await new Promise(r => setTimeout(r, 120))
+
+    const listed = sm.listSessions('agy')
+    await sm.closeAll()
+
+    // 1. `conv-hub-1` ONLY appears once (as `created.id`), NEVER duplicated as `host:agy:conv-hub-1` under `/work`!
+    expect(listed.some(s => s.id === created.id && s.cwd === fs.realpathSync(home))).toBe(true)
+    expect(listed.some(s => s.id === 'host:agy:conv-hub-1')).toBe(false)
+
+    // 2. `conv-levi-1` resolves its exact `~/my-projects/levi` workspace from `conversation_summaries.db` (never `/work`)!
+    const leviSess = listed.find(s => s.id === 'host:agy:conv-levi-1')
+    expect(leviSess?.cwd).toBe(fs.realpathSync(leviWs))
+
+    // 3. Subagent `conv-sub-1` is excluded from session list!
+    expect(listed.some(s => s.id === 'host:agy:conv-sub-1')).toBe(false)
   })
 })
