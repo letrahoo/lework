@@ -86,6 +86,9 @@ if [[ "$MODE" == "--install" ]]; then
     TEAM_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*Apple Development:.*(\([A-Z0-9]\{10\}\)).*/\1/p' | head -n 1 || true)"
   fi
   if [[ -z "$TEAM_ID" ]]; then
+    TEAM_ID="$(security find-certificate -a -c "Apple Development" -p 2>/dev/null | openssl x509 -noout -subject -nameopt RFC2253 2>/dev/null | sed -n 's/.*OU=\([A-Z0-9]\{10\}\).*/\1/p' | head -n 1 || true)"
+  fi
+  if [[ -z "$TEAM_ID" ]]; then
     echo "Error: APPLE_TEAM_ID is not set and could not be auto-detected from Keychain." >&2
     exit 1
   fi

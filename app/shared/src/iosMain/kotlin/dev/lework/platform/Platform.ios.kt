@@ -720,13 +720,10 @@ actual fun saveActiveHostId(hubId: String?) {
     d.synchronize()
 }
 
-actual fun loadHostAccessToken(hubId: String): String? {
-    CredentialMigration.ensure()
-    return IosKeychain.get("hub.token.$hubId")?.takeIf { it.isNotBlank() }
-}
+actual fun loadHostAccessToken(hubId: String): String? =
+    IosKeychain.get("hub.token.$hubId")?.takeIf { it.isNotBlank() }
 
 actual fun saveHostAccessToken(hubId: String, token: String?) {
-    CredentialMigration.ensure()
     IosKeychain.set("hub.token.$hubId", token?.takeIf { it.isNotBlank() })
 }
 
