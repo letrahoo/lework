@@ -906,7 +906,10 @@ export class HubServer {
           reasoningEffort?: ReasoningEffort
           mode?: SessionMode
         }
-        conn.subscribedSessions.add(p.sessionId)
+        if (!conn.subscribedSessions.has(p.sessionId)) {
+          conn.subscribedSessions.add(p.sessionId)
+          this.sessionManager.retainHostWatch(p.sessionId)
+        }
         return await this.sessionManager.prompt(p.sessionId, p.text, {
           images: p.images,
           modelId: p.modelId,

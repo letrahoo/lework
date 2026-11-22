@@ -74,6 +74,7 @@ class AgyStreamSession implements EngineSession {
   readonly cwd: string
   private proc: ChildProcessWithoutNullStreams | null = null
   private buf: Buffer = Buffer.alloc(0)
+  private stderrTail = ''
   private conversationId: string | undefined
   private modelFlag: string | undefined
   private effortFlag: string | undefined
@@ -118,10 +119,12 @@ class AgyStreamSession implements EngineSession {
       args.push('--conversation', this.conversationId)
     }
     if (this.modelFlag) {
+      const noEffortSuffix =
+        this.modelFlag.includes('orchestrator') ||
+        this.modelFlag.startsWith('gpt-oss') ||
+        Boolean(this.effortFlag && this.modelFlag.endsWith(`-${this.effortFlag}`))
       const wireModel =
-        this.effortFlag && !this.modelFlag.endsWith(`-${this.effortFlag}`) && !this.modelFlag.includes('orchestrator')
-          ? `${this.modelFlag}-${this.effortFlag}`
-          : this.modelFlag
+        this.effortFlag && !noEffortSuffix ? `${this.modelFlag}-${this.effortFlag}` : this.modelFlag
       args.push('--model', wireModel)
     }
     if (this.effortFlag) {
@@ -138,58 +141,80 @@ class AgyStreamSession implements EngineSession {
     }
     const child = spawn(this.bin, args, {
       cwd: this.cwd,
-      env: augmentedPathEnv(process.env),
+      env: {
+        ...augmentedPathEnv(process.env),
+        ...this.init.env,
+        TERM: 'dumb',
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.proc = child
     this.buf = Buffer.alloc(0)
+    this.stderrTail = ''
 
     await new Promise<void>((resolve, reject) => {
-      let initialized = false
+      let settled = false
+      // `agy --input-format stream-json` emits `init` only after reading the first NDJSON turn
+      // on stdin; wait briefly solely to catch immediate binary/flag startup errors.
       const timer = setTimeout(() => {
-        if (!initialized) {
-          initialized = true
-          // Some agy builds wait for first user input before emitting init; allow proceeding
+        if (!settled) {
+          settled = true
           resolve()
         }
-      }, 4_000)
+      }, 150)
       timer.unref?.()
 
       child.stdout.on('data', (chunk: Buffer) => {
         this.consumeStdout(Buffer.from(chunk), ev => {
-          if (ev.event === 'init' && !initialized) {
-            initialized = true
+          if (ev.event === 'init' && !settled) {
+            settled = true
             clearTimeout(timer)
-            if (typeof ev.conversation_id === 'string') {
-              this.conversationId = ev.conversation_id
-            }
             resolve()
           }
         })
       })
 
-      child.stderr.on('data', () => {
-        // drain stderr
+      child.stderr.on('data', (chunk: Buffer) => {
+        const str = chunk.toString('utf8')
+        this.stderrTail = (this.stderrTail + str).slice(-4_096)
       })
 
       child.on('error', err => {
-        if (!initialized) {
-          initialized = true
+        if (!settled) {
+          settled = true
           clearTimeout(timer)
           reject(err)
+        } else if (this.pendingTurn) {
+          const pending = this.pendingTurn
+          this.pendingTurn = null
+          pending.reject(err)
         }
       })
 
-      child.on('exit', code => {
-        if (!initialized) {
-          initialized = true
+      child.on('exit', (code, signal) => {
+        const fatalDetail = summarizeAgyStderr(this.stderrTail)
+        if (!settled) {
+          settled = true
           clearTimeout(timer)
-          reject(new Error(`agy exited before init (code=${code ?? 'null'})`))
+          reject(
+            new Error(
+              fatalDetail || `agy exited before init (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+            ),
+          )
+          return
         }
         if (this.pendingTurn) {
           const pending = this.pendingTurn
           this.pendingTurn = null
-          pending.resolve()
+          if (!this.closed && code !== 0) {
+            pending.reject(
+              new Error(
+                fatalDetail || `AGY 进程异常结束 (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+              ),
+            )
+          } else {
+            pending.resolve()
+          }
         }
       })
     })
@@ -281,6 +306,12 @@ class AgyStreamSession implements EngineSession {
 
   private handleAgyEvent(event: Record<string, unknown>): void {
     const eventName = event.event
+    if (eventName === 'init') {
+      if (typeof event.conversation_id === 'string' && event.conversation_id) {
+        this.conversationId = event.conversation_id
+      }
+      return
+    }
     if (eventName === 'step_update' && event.step_update && typeof event.step_update === 'object') {
       const step = event.step_update as Record<string, unknown>
       const stepType = step.step_type
@@ -340,6 +371,9 @@ class AgyStreamSession implements EngineSession {
 
     if (eventName === 'result' && event.result && typeof event.result === 'object') {
       const res = event.result as Record<string, unknown>
+      if (typeof res.conversation_id === 'string' && res.conversation_id) {
+        this.conversationId = res.conversation_id
+      }
       if (!this.emittedDeltaInTurn && typeof res.response === 'string' && res.response.length > 0) {
         this.init.emit({
           type: 'message.assistant.delta',
@@ -347,15 +381,35 @@ class AgyStreamSession implements EngineSession {
           text: res.response,
         })
       }
+      if (res.usage && typeof res.usage === 'object') {
+        const u = res.usage as Record<string, unknown>
+        const inputTokens = typeof u.input_tokens === 'number' ? u.input_tokens : undefined
+        const outputTokens = typeof u.output_tokens === 'number' ? u.output_tokens : undefined
+        if (inputTokens !== undefined || outputTokens !== undefined) {
+          this.init.emit({ type: 'usage', inputTokens, outputTokens })
+        }
+      }
       if (this.pendingTurn) {
         const pending = this.pendingTurn
         this.pendingTurn = null
-        if (res.status === 'ERROR') {
-          pending.reject(new Error(String(res.error ?? 'AGY execution failed')))
+        if (res.status === 'ERROR' || res.stop_reason === 'error') {
+          const detail =
+            typeof res.error === 'string' && res.error.trim()
+              ? res.error.trim()
+              : summarizeAgyStderr(this.stderrTail) || 'AGY execution failed'
+          pending.reject(new Error(detail))
         } else {
           pending.resolve()
         }
       }
     }
   }
+}
+
+function summarizeAgyStderr(raw: string): string {
+  const lines = raw
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l.length > 0 && !/^warning:/i.test(l))
+  return lines.slice(-4).join('\n').slice(0, 500)
 }

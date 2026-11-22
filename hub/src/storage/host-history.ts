@@ -31,9 +31,13 @@ import {
   readCodexLocalSettings,
   readCodexModelsCache,
 } from './host-history/engine-settings.ts'
-import { TerminalBridge, type ClaudeLiveSessionMeta } from './terminal-bridge.ts'
+import {
+  TerminalApprovalError,
+  TerminalBridge,
+  type ClaudeLiveSessionMeta,
+} from './terminal-bridge.ts'
 
-export { classifyRawToolCall, extractAgyUserRequests, filterAgyQueuedFromHistory }
+export { classifyRawToolCall, extractAgyUserRequests, filterAgyQueuedFromHistory, TerminalApprovalError }
 
 interface WatchedHostSession {
   sessionId: string
@@ -47,6 +51,8 @@ interface WatchedHostSession {
   terminalPolling: Promise<void> | null
   activePermRequestId: string | null
   activePermEvent: Extract<AgentEvent, { type: 'permission.requested' }> | null
+  pendingPromptUntil: number
+  pendingPromptSeqBaseline: number
   watcher: fs.FSWatcher | null
 }
 
@@ -373,7 +379,15 @@ export class HostTaskInspector {
       liveState = Date.now() - st.mtimeMs < 75_000 && parsedRunning ? 'running' : 'idle'
     }
 
+    const lastSeq = events.length > 0 ? events[events.length - 1]!.seq : -1
     const activeWatch = this.watched.get(sessionId)
+    if (activeWatch && activeWatch.pendingPromptUntil > 0) {
+      if (lastSeq > activeWatch.pendingPromptSeqBaseline || Date.now() > activeWatch.pendingPromptUntil) {
+        activeWatch.pendingPromptUntil = 0
+      } else if (liveState === 'idle') {
+        liveState = 'running'
+      }
+    }
     if (activeWatch?.activePermEvent) {
       liveState = 'waiting_permission'
     }
@@ -405,11 +419,14 @@ export class HostTaskInspector {
       model: parsedModel ?? entry.meta.model,
       reasoningEffort: parsedEffort ?? entry.meta.reasoningEffort,
       state: liveState,
-      liveStatusText: activeWatch?.lastLiveStatus ?? entry.meta.liveStatusText,
+      liveStatusText:
+        liveState === 'running' || liveState === 'waiting_permission'
+          ? (activeWatch?.lastLiveStatus ?? entry.meta.liveStatusText)
+          : undefined,
       turnStartedAt: liveState === 'running' ? (turnStartedAt ?? Math.floor(st.mtimeMs)) : undefined,
       queuedPrompts: queuedPrompts && queuedPrompts.length > 0 ? queuedPrompts : undefined,
       updatedAt: Math.floor(st.mtimeMs),
-      lastSeq: events.length > 0 ? events[events.length - 1]!.seq : -1,
+      lastSeq,
     }
     entry.meta = updatedMeta
     return { session: updatedMeta, events }
@@ -417,6 +434,125 @@ export class HostTaskInspector {
 
   getActiveHostPermission(sessionId: string): Extract<AgentEvent, { type: 'permission.requested' }> | null {
     return this.watched.get(sessionId)?.activePermEvent ?? null
+  }
+
+  /**
+   * Attempts to inject a mobile-sent prompt directly into an active `tmux` / `iTerm2` CLI session
+   * (`host:agy:*` or `host:claude:*`) so computer terminal and mobile UI stay 100% in sync.
+   * Returns `true` if delivered to a live terminal, `false` if the session is closed on the host
+   * (so `SessionManager` may safely resume it headlessly), or throws `TerminalApprovalError` if
+   * blocked by an active approval menu or an unreachable IDE terminal window.
+   */
+  async tryPromptLiveHostSession(
+    sessionId: string,
+    terminalPromptText: string,
+    displayUserText: string,
+  ): Promise<boolean> {
+    const entry = this.getHostSession(sessionId)
+    if (!entry) return false
+    const engineId = entry.meta.engineId
+    if (engineId !== 'claude' && engineId !== 'agy') {
+      return false
+    }
+
+    if (engineId === 'claude') {
+      this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
+    }
+    const claudeRt = engineId === 'claude' ? this.claudeRuntimeMap.get(entry.nativeId) : undefined
+
+    const delivery = await this.terminalBridge.sendPromptToSession(
+      {
+        nativeId: entry.nativeId,
+        engineId,
+        cwd: entry.meta.cwd,
+        title: entry.meta.title,
+        claudeRuntime: claudeRt,
+      },
+      terminalPromptText,
+    )
+
+    if (!delivery.delivered) {
+      if (delivery.reason === 'unreachable_terminal') {
+        const where = delivery.hostAppHint ? `${delivery.hostAppHint} 内置终端` : '非 tmux / iTerm2 终端窗口'
+        throw new TerminalApprovalError(
+          `该会话正在电脑的 ${where} 中打开，暂不支持直接写入终端输入；请在 tmux 或 iTerm2 中运行以实现双向实时同步，或新建会话。`,
+        )
+      }
+      return false
+    }
+
+    const snap = this.readHostSessionEvents(sessionId)
+    const wasBusy =
+      snap?.session.state === 'running' ||
+      snap?.session.state === 'waiting_permission' ||
+      entry.meta.state === 'running' ||
+      entry.meta.state === 'waiting_permission'
+
+    const w = this.watched.get(sessionId)
+    const now = Date.now()
+    if (w) {
+      w.pendingPromptUntil = now + 5_000
+      w.pendingPromptSeqBaseline = snap?.session.lastSeq ?? entry.meta.lastSeq
+      w.lastState = 'running'
+      if (!wasBusy) {
+        w.lastLiveStatus = '已同步至电脑终端，正在响应…'
+      }
+    }
+
+    const nextQueued = wasBusy
+      ? [...new Set([...(entry.meta.queuedPrompts ?? []), displayUserText])]
+      : entry.meta.queuedPrompts
+
+    entry.meta = {
+      ...entry.meta,
+      state: 'running',
+      liveStatusText: wasBusy ? entry.meta.liveStatusText : '已同步至电脑终端，正在响应…',
+      turnStartedAt: entry.meta.turnStartedAt ?? now,
+      queuedPrompts: nextQueued && nextQueued.length > 0 ? nextQueued : undefined,
+      updatedAt: now,
+    }
+    if (w) {
+      w.lastQueuedKey = (entry.meta.queuedPrompts ?? []).join('\u0000')
+    }
+    this.liveCallbacks?.onSessionUpdated(entry.meta)
+
+    for (const delayMs of [180, 520, 1_200, 2_500]) {
+      const t = setTimeout(() => {
+        if (!this.watched.has(sessionId)) return
+        this.pollWatchedSession(sessionId)
+        if (delayMs === 520 || delayMs === 2_500) {
+          void this.pollTerminalForWatched(sessionId, false)
+        }
+      }, delayMs)
+      t.unref?.()
+    }
+
+    return true
+  }
+
+  async cancelLiveHostSession(sessionId: string): Promise<boolean> {
+    const entry = this.getHostSession(sessionId)
+    if (!entry) return false
+    const engineId = entry.meta.engineId
+    if (engineId !== 'claude' && engineId !== 'agy') return false
+    if (engineId === 'claude') {
+      this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
+    }
+    const claudeRt = engineId === 'claude' ? this.claudeRuntimeMap.get(entry.nativeId) : undefined
+    const ok = await this.terminalBridge.sendCancelToSession({
+      nativeId: entry.nativeId,
+      engineId,
+      cwd: entry.meta.cwd,
+      title: entry.meta.title,
+      claudeRuntime: claudeRt,
+    })
+    if (ok) {
+      setTimeout(() => {
+        this.pollWatchedSession(sessionId)
+        void this.pollTerminalForWatched(sessionId, true)
+      }, 300)
+    }
+    return ok
   }
 
   async respondHostPermission(
@@ -507,6 +643,8 @@ export class HostTaskInspector {
       terminalPolling: null,
       activePermRequestId: null,
       activePermEvent: null,
+      pendingPromptUntil: 0,
+      pendingPromptSeqBaseline: snap.session.lastSeq,
       watcher: null,
     }
     try {

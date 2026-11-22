@@ -64,7 +64,14 @@ interface AgyTtyProcess {
   tty: string
   args: string
   cwd: string
+  presenceConvIds: string[]
+  openConvIds: string[]
 }
+
+export type TerminalPromptDeliveryResult =
+  | { delivered: true }
+  | { delivered: false; reason: 'not_running' }
+  | { delivered: false; reason: 'unreachable_terminal'; hostAppHint?: string }
 
 interface CachedAgyProcesses {
   fetchedAt: number
@@ -74,6 +81,7 @@ interface CachedAgyProcesses {
 const defaultRunCommand: TerminalCommandRunner = async (bin, args, timeoutMs, env) => {
   const { stdout } = await execFileAsync(bin, args, {
     timeout: timeoutMs,
+    maxBuffer: 4 * 1024 * 1024,
     encoding: 'utf8',
     ...(env ? { env } : {}),
   })
@@ -252,6 +260,89 @@ export class TerminalBridge {
     return true
   }
 
+  /**
+   * Delivers a user prompt directly into a verified live `tmux` or `iTerm2` pane running
+   * the exact `claude` or `agy` CLI session (`nativeId`), so computer terminal & mobile UI
+   * stay 100% synchronized without spawning a conflicting background process.
+   */
+  async sendPromptToSession(
+    params: {
+      nativeId: string
+      engineId: string
+      cwd?: string
+      title?: string
+      claudeRuntime?: ClaudeLiveSessionMeta
+    },
+    rawText: string,
+  ): Promise<TerminalPromptDeliveryResult> {
+    if (process.platform !== 'darwin' && process.platform !== 'linux') {
+      return { delivered: false, reason: 'not_running' }
+    }
+    if (params.engineId !== 'claude' && params.engineId !== 'agy') {
+      return { delivered: false, reason: 'not_running' }
+    }
+
+    const cleanText = sanitizeTerminalPromptText(rawText)
+    if (!cleanText) {
+      throw new TerminalApprovalError('发送内容不能为空')
+    }
+
+    // Force fresh PID/TTY verification right before injecting into any pane so we never
+    // type into a bare shell if the CLI process just exited milliseconds earlier.
+    this.agyProcCache = null
+    if (params.claudeRuntime?.pid) {
+      this.pidTtyCache.delete(params.claudeRuntime.pid)
+    }
+
+    const target = await this.findTarget(params)
+    if (!target) {
+      // Check whether the conversation is actively open in an unreachable terminal/IDE window
+      if (params.engineId === 'claude') {
+        const rt = params.claudeRuntime
+        if (rt?.pid && rt.sessionId === params.nativeId && this.pidAlive(rt.pid)) {
+          const hostAppHint = await this.detectParentHostApp(rt.pid)
+          return { delivered: false, reason: 'unreachable_terminal', hostAppHint }
+        }
+        return { delivered: false, reason: 'not_running' }
+      }
+
+      const agyProcs = await this.getAgyTtyProcesses()
+      const liveUnreachable = this.matchAgyProcess(params.nativeId, params.cwd, agyProcs)
+      if (liveUnreachable && this.pidAlive(liveUnreachable.pid)) {
+        const hostAppHint = await this.detectParentHostApp(liveUnreachable.pid)
+        return { delivered: false, reason: 'unreachable_terminal', hostAppHint }
+      }
+      return { delivered: false, reason: 'not_running' }
+    }
+
+    const screen = await this.readScreenTail(target, 35)
+    if (!screen || screen.length === 0) {
+      return { delivered: false, reason: 'unreachable_terminal' }
+    }
+    const activePerm = parseTerminalPermissionPrompt(params.nativeId, screen)
+    if (activePerm) {
+      throw new TerminalApprovalError('当前电脑终端正在等待执行审批，请先在手机或电脑上完成审批后再发送消息')
+    }
+
+    await this.sendPromptPayload(target, cleanText)
+    return { delivered: true }
+  }
+
+  async sendCancelToSession(params: {
+    nativeId: string
+    engineId: string
+    cwd?: string
+    title?: string
+    claudeRuntime?: ClaudeLiveSessionMeta
+  }): Promise<boolean> {
+    if (process.platform !== 'darwin' && process.platform !== 'linux') return false
+    this.agyProcCache = null
+    const target = await this.findTarget(params)
+    if (!target) return false
+    await this.sendRawText(target, '\u001b')
+    return true
+  }
+
   private async findTarget(params: {
     nativeId: string
     engineId: string
@@ -293,6 +384,40 @@ export class TerminalBridge {
     return null
   }
 
+  private matchAgyProcess(
+    nativeId: string,
+    sessionCwd: string | undefined,
+    candidates: AgyTtyProcess[],
+  ): AgyTtyProcess | null {
+    if (candidates.length === 0) return null
+
+    // 1. Exact `--conversation <nativeId>` match on command line
+    const byExplicitFlag = candidates.find(p => p.args.includes(nativeId))
+    if (byExplicitFlag) return byExplicitFlag
+
+    // 2. Exact active TUI presence lock (`~/.gemini/antigravity-cli/presence/<convId>.lock`)
+    const byPresence = candidates.find(p => p.presenceConvIds.includes(nativeId))
+    if (byPresence) return byPresence
+
+    // 3. Unambiguous open SQLite conversation database (`conversations/<convId>.db`)
+    const byOpenDb = candidates.filter(p => p.openConvIds.includes(nativeId))
+    if (byOpenDb.length === 1) return byOpenDb[0]!
+
+    // 4. Fallback: unambiguous 1-to-1 working directory match among `agy` processes that do NOT
+    // hold an active presence lock for a different conversation (prevents closed historical
+    // conversations in the same repo from colliding with a live terminal session!).
+    if (sessionCwd) {
+      const targetReal = safeRealpath(sessionCwd)
+      const byCwd = candidates.filter(
+        p => p.presenceConvIds.length === 0 && p.cwd && safeRealpath(p.cwd) === targetReal,
+      )
+      if (byCwd.length === 1) {
+        return byCwd[0]!
+      }
+    }
+    return null
+  }
+
   private async findAgyTarget(
     nativeId: string,
     sessionCwd: string | undefined,
@@ -300,23 +425,8 @@ export class TerminalBridge {
   ): Promise<TerminalTarget | null> {
     const procs = await this.getAgyTtyProcesses()
     const reachable = procs.filter(p => topo.byTty.has(p.tty))
-    if (reachable.length === 0) return null
-
-    // 1. Exact `--conversation <nativeId>` match on command line
-    const byExplicitFlag = reachable.find(p => p.args.includes(nativeId))
-    if (byExplicitFlag) {
-      return topo.byTty.get(byExplicitFlag.tty) ?? null
-    }
-
-    // 2. Unambiguous 1-to-1 working directory match among live TTY-attached `agy` CLI processes
-    if (sessionCwd) {
-      const targetReal = safeRealpath(sessionCwd)
-      const byCwd = reachable.filter(p => p.cwd && safeRealpath(p.cwd) === targetReal)
-      if (byCwd.length === 1) {
-        return topo.byTty.get(byCwd[0]!.tty) ?? null
-      }
-    }
-    return null
+    const matched = this.matchAgyProcess(nativeId, sessionCwd, reachable)
+    return matched ? (topo.byTty.get(matched.tty) ?? null) : null
   }
 
   private async getAgyTtyProcesses(): Promise<AgyTtyProcess[]> {
@@ -337,7 +447,8 @@ export class TerminalBridge {
         if (!pid || rawTty === '??' || rawTty === '?') continue
         if (cmd.includes('--hub') || cmd.includes('Antigravity Helper')) continue
         const firstToken = cmd.split(/\s+/)[0] ?? ''
-        if (path.basename(firstToken) !== 'agy') continue
+        const baseName = path.basename(firstToken)
+        if (baseName !== 'agy' && !baseName.startsWith('agy.')) continue
         const tty = rawTty.startsWith('/dev/') ? rawTty : `/dev/${rawTty}`
         candidates.push({ pid, tty, args: cmd })
       }
@@ -351,15 +462,42 @@ export class TerminalBridge {
     }
 
     const cwdByPid = new Map<number, string>()
+    const presenceByPid = new Map<number, Set<string>>()
+    const openDbByPid = new Map<number, Set<string>>()
     try {
       const pidCsv = candidates.map(c => String(c.pid)).join(',')
-      const lsofOut = await this.runCmd('lsof', ['-a', '-d', 'cwd', '-Fn', '-p', pidCsv], 1_800)
+      const lsofOut = await this.runCmd('lsof', ['-Ffn', '-p', pidCsv], 2_200)
       let currentPid = 0
+      let currentFd = ''
       for (const line of lsofOut.split('\n')) {
         if (line.startsWith('p')) {
           currentPid = Number(line.slice(1).trim()) || 0
+          currentFd = ''
+        } else if (line.startsWith('f')) {
+          currentFd = line.slice(1).trim()
         } else if (line.startsWith('n') && currentPid > 0) {
-          cwdByPid.set(currentPid, line.slice(1).trim())
+          const filePath = line.slice(1).trim()
+          if (currentFd === 'cwd' || (!currentFd && !cwdByPid.has(currentPid))) {
+            cwdByPid.set(currentPid, filePath)
+          }
+          const presMatch = /[/\\]presence[/\\]([A-Za-z0-9_-]{6,64})\.lock$/.exec(filePath)
+          if (presMatch?.[1]) {
+            let set = presenceByPid.get(currentPid)
+            if (!set) {
+              set = new Set()
+              presenceByPid.set(currentPid, set)
+            }
+            set.add(presMatch[1])
+          }
+          const dbMatch = /[/\\]conversations[/\\]([A-Za-z0-9_-]{6,64})\.db$/.exec(filePath)
+          if (dbMatch?.[1]) {
+            let set = openDbByPid.get(currentPid)
+            if (!set) {
+              set = new Set()
+              openDbByPid.set(currentPid, set)
+            }
+            set.add(dbMatch[1])
+          }
         }
       }
     } catch {
@@ -369,6 +507,8 @@ export class TerminalBridge {
     const list: AgyTtyProcess[] = candidates.map(c => ({
       ...c,
       cwd: cwdByPid.get(c.pid) ?? '',
+      presenceConvIds: [...(presenceByPid.get(c.pid) ?? [])],
+      openConvIds: [...(openDbByPid.get(c.pid) ?? [])],
     }))
     this.agyProcCache = { fetchedAt: now, list }
     return list
@@ -605,6 +745,55 @@ export class TerminalBridge {
       await this.runCmd(tmuxBin, [...prefix, 'send-keys', '-t', target.id, ...keyArgs], 2_500, env)
     }
   }
+
+  private async sendPromptPayload(target: TerminalTarget, cleanText: string): Promise<void> {
+    const env = augmentedPathEnv(process.env)
+    const isMultiline = cleanText.includes('\n')
+
+    if (target.kind === 'iterm2') {
+      const it2Bin = this.resolveIt2Bin()
+      if (!it2Bin) throw new Error('it2 CLI not available')
+      const body = isMultiline ? `\u001b[200~${cleanText}\u001b[201~` : cleanText
+      await this.runCmd(it2Bin, ['session', 'send', body, '-s', target.id], 3_500, env)
+      await new Promise(r => setTimeout(r, 120))
+      await this.runCmd(it2Bin, ['session', 'send', '\r', '-s', target.id], 2_500, env)
+      return
+    }
+
+    const tmuxBin = this.resolveTmuxBin()
+    if (!tmuxBin) throw new Error('tmux not available')
+    const prefix = target.socketPath ? ['-u', '-S', target.socketPath] : ['-u']
+    if (target.inCopyMode) {
+      await this.runCmd(tmuxBin, [...prefix, 'send-keys', '-t', target.id, '-X', 'cancel'], 1_200, env).catch(
+        () => undefined,
+      )
+    }
+    if (isMultiline) {
+      const bufName = `lework_prompt_${crypto.randomBytes(4).toString('hex')}`
+      try {
+        await this.runCmd(tmuxBin, [...prefix, 'set-buffer', '-b', bufName, '--', cleanText], 3_000, env)
+        await this.runCmd(tmuxBin, [...prefix, 'paste-buffer', '-d', '-p', '-b', bufName, '-t', target.id], 3_000, env)
+      } finally {
+        await this.runCmd(tmuxBin, [...prefix, 'delete-buffer', '-b', bufName], 1_000, env).catch(() => undefined)
+      }
+    } else {
+      await this.runCmd(tmuxBin, [...prefix, 'send-keys', '-t', target.id, '-l', '--', cleanText], 3_000, env)
+    }
+    await new Promise(r => setTimeout(r, 120))
+    await this.runCmd(tmuxBin, [...prefix, 'send-keys', '-t', target.id, 'Enter'], 2_500, env)
+  }
+}
+
+/**
+ * Strips terminal escape sequences and C0 control bytes (`ESC`, `Ctrl+C`, `Ctrl+D`, `NUL`, etc.)
+ * while preserving Unicode text and line breaks (`\n`).
+ */
+export function sanitizeTerminalPromptText(raw: string): string {
+  return raw
+    .replace(/\r\n?/g, '\n')
+    .replace(/\t/g, '  ')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
+    .trim()
 }
 
 export class TerminalApprovalError extends Error {

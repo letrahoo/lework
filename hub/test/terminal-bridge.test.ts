@@ -4,6 +4,7 @@ import {
   parseLiveSpinnerLine,
   parseTerminalPermissionPrompt,
   parseTerminalSessionMode,
+  sanitizeTerminalPromptText,
 } from '../src/storage/terminal-bridge.ts'
 
 describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
@@ -362,5 +363,91 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
     expect(parseTerminalSessionMode(['> ', 'esc to cancel   auto · Gemini 4 Carbon · high'])).toBe('auto')
     expect(parseTerminalSessionMode(['❯ ', '  ⏵⏵ bypass permissions on'])).toBe('bypassPermissions')
     expect(parseTerminalSessionMode(['❯ '])).toBeUndefined()
+  })
+
+  it('[T7.1] disambiguates multiple live AGY sessions in same cwd via presence/*.lock, strips control bytes, and delivers single/multi-line prompts without colliding with closed sessions', async () => {
+    expect(sanitizeTerminalPromptText('hello\u001b[2J\u0003\u0004 world\r\nline2')).toBe('hello[2J world\nline2')
+
+    const sentCommands: Array<{ bin: string; args: string[] }> = []
+    const bridge = new TerminalBridge({
+      tmuxBin: '/opt/homebrew/bin/tmux',
+      it2Bin: null,
+      tmuxSocketPaths: ['/private/tmp/tmux-501/default'],
+      isPidAlive: pid => pid === 29707 || pid === 36266,
+      runCommand: async (bin, args) => {
+        sentCommands.push({ bin, args })
+        if (bin.endsWith('tmux') && args.includes('list-panes')) {
+          return '%2|/dev/ttys005|0\n%3|/dev/ttys006|0\n'
+        }
+        if (bin === 'ps' && args[0] === '-axo') {
+          return '29707 ttys005 agy\n36266 ttys006 agy.179512.old -c\n'
+        }
+        if (bin === 'lsof') {
+          return [
+            'p29707',
+            'fcwd',
+            'n/Users/demo',
+            'f12',
+            'n/Users/demo/.gemini/antigravity-cli/presence/107e3d2f-ecd4-4f74-95f8-6be89ad15b4f.lock',
+            'p36266',
+            'fcwd',
+            'n/Users/demo',
+            'f14',
+            'n/Users/demo/.gemini/antigravity-cli/presence/c5b3ceae-2900-4f91-b09e-03c815fccc7c.lock',
+          ].join('\n')
+        }
+        if (bin.endsWith('tmux') && args.includes('capture-pane')) {
+          return '> \n  auto · Gemini 4 Carbon · high\n'
+        }
+        return ''
+      },
+    })
+
+    // 1. Live session #2 (`c5b3ceae-...`) routes specifically to `%3` despite sharing `/Users/demo` with `%2`!
+    const res1 = await bridge.sendPromptToSession(
+      {
+        nativeId: 'c5b3ceae-2900-4f91-b09e-03c815fccc7c',
+        engineId: 'agy',
+        cwd: '/Users/demo',
+      },
+      '帮我看下当前状态\u001b\u0003',
+    )
+    expect(res1).toEqual({ delivered: true })
+    const literalSend = sentCommands.find(c => c.args.includes('-l'))
+    expect(literalSend?.args.slice(-4)).toEqual(['-t', '%3', '-l', '--', '帮我看下当前状态'].slice(-4))
+    expect(literalSend?.args).toContain('%3')
+    expect(sentCommands.at(-1)?.args.slice(-3)).toEqual(['-t', '%3', 'Enter'])
+
+    // 2. Multi-line prompt uses bracketed paste (`set-buffer` + `paste-buffer -d -p`) into `%2`!
+    sentCommands.length = 0
+    const res2 = await bridge.sendPromptToSession(
+      {
+        nativeId: '107e3d2f-ecd4-4f74-95f8-6be89ad15b4f',
+        engineId: 'agy',
+        cwd: '/Users/demo',
+      },
+      '第一行指令\n第二行补充说明',
+    )
+    expect(res2).toEqual({ delivered: true })
+    expect(sentCommands.some(c => c.args.includes('set-buffer') && c.args.at(-1) === '第一行指令\n第二行补充说明')).toBe(
+      true,
+    )
+    expect(sentCommands.some(c => c.args.includes('paste-buffer') && c.args.includes('-p') && c.args.includes('%2'))).toBe(
+      true,
+    )
+    expect(sentCommands.some(c => c.args.includes('send-keys') && c.args.includes('%2') && c.args.at(-1) === 'Enter')).toBe(
+      true,
+    )
+
+    // 3. Closed historical conversation in `/Users/demo` MUST NOT collide with `%2` or `%3`!
+    const resClosed = await bridge.sendPromptToSession(
+      {
+        nativeId: 'deadbeef-0000-4000-8000-closed000001',
+        engineId: 'agy',
+        cwd: '/Users/demo',
+      },
+      '继续旧任务',
+    )
+    expect(resClosed).toEqual({ delivered: false, reason: 'not_running' })
   })
 })

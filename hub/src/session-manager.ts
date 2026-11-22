@@ -18,7 +18,7 @@ import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/
 import { defaultDataDir, SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
-import { HostTaskInspector } from './storage/host-history.ts'
+import { HostTaskInspector, TerminalApprovalError } from './storage/host-history.ts'
 import { CheckpointManager } from './storage/workspace-fs.ts'
 
 const MAX_EVENTS_PER_SESSION = 5_000
@@ -239,6 +239,11 @@ export class SessionManager {
     if (!text.trim() && rawImages.length === 0) {
       throw new HubRpcError(ErrorCode.InvalidParams, 'Prompt text or image attachment is required.')
     }
+
+    const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`
+    const stagedImages = this.stagePromptImages(sessionId, turnId, rawImages)
+    const displayUserText = text.trim() || `（已发送 ${stagedImages.length} 张图片）`
+
     let managed = this.sessions.get(sessionId)
     if (!managed && sessionId.startsWith('host:')) {
       const hostLoaded = this.hostInspector.readHostSessionEvents(sessionId)
@@ -246,6 +251,43 @@ export class SessionManager {
       if (!hostLoaded || !hostEntry) {
         throw new HubRpcError(ErrorCode.NotFound, `Host session "${sessionId}" not found`)
       }
+
+      // First: if this `host:*` conversation is actively open in a reachable local `tmux` / `iTerm2`
+      // terminal, deliver the prompt directly into that live terminal so computer & phone stay in sync!
+      const imgPrefix =
+        stagedImages.length > 0
+          ? `[用户附加了本地图片文件，请使用读取文件工具查看：${stagedImages.map(i => i.stagedPath).join(', ')}]\n\n`
+          : ''
+      const terminalPromptText = `${imgPrefix}${text.trim() || '请结合所附图片进行分析。'}`
+      let deliveredToTerminal = false
+      try {
+        deliveredToTerminal = await this.hostInspector.tryPromptLiveHostSession(
+          sessionId,
+          terminalPromptText,
+          displayUserText,
+        )
+      } catch (err) {
+        if (err instanceof TerminalApprovalError) {
+          throw new HubRpcError(ErrorCode.Conflict, err.message)
+        }
+        throw err
+      }
+
+      if (deliveredToTerminal) {
+        try {
+          const summary = displayUserText.replace(/\s+/g, ' ').trim().slice(0, 18)
+          this.checkpoints.create(
+            sessionId,
+            hostLoaded.session.cwd,
+            summary ? `对话前自动快照 · ${summary}` : '对话前自动快照',
+            { deduplicateUnchanged: true },
+          )
+        } catch {
+          // Non-git directories gracefully skip checkpointing
+        }
+        return { turnId }
+      }
+
       await this.createSession({
         engineId: hostLoaded.session.engineId,
         cwd: hostLoaded.session.cwd,
@@ -276,10 +318,6 @@ export class SessionManager {
     if (overrides?.mode) {
       managed.meta.mode = overrides.mode
     }
-
-    const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`
-    const stagedImages = this.stagePromptImages(sessionId, turnId, rawImages)
-    const displayUserText = text.trim() || `（已发送 ${stagedImages.length} 张图片）`
 
     this.appendEvent(managed, {
       type: 'message.user',
@@ -370,8 +408,16 @@ export class SessionManager {
   }
 
   async cancel(sessionId: string): Promise<void> {
-    const managed = this.requireSession(sessionId)
-    await managed.handle.cancel()
+    const managed = this.sessions.get(sessionId)
+    if (!managed && sessionId.startsWith('host:')) {
+      const ok = await this.hostInspector.cancelLiveHostSession(sessionId)
+      if (!ok) {
+        throw new HubRpcError(ErrorCode.NotFound, `Active terminal for "${sessionId}" not found`)
+      }
+      return
+    }
+    const req = this.requireSession(sessionId)
+    await req.handle.cancel()
   }
 
   async respondPermission(

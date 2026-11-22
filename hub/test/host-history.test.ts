@@ -5,6 +5,8 @@ import zlib from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AgentEvent, SessionMeta } from '@lework/protocol'
 import { collectLanIpv4Addresses } from '../src/bonjour.ts'
+import { AgyEngineAdapter } from '../src/engines/agy-adapter.ts'
+import { SessionManager } from '../src/session-manager.ts'
 import {
   HostTaskInspector,
   extractAgyUserRequests,
@@ -423,5 +425,176 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
     expect(agySessions).toHaveLength(1)
     expect(agySessions[0]?.model).toBe('gemini-4-carbon')
     expect(agySessions[0]?.reasoningEffort).toBe('high')
+  })
+
+  it('[T7.2] syncs mobile prompt into live tmux AGY session without spawning a conflicting process, streams reply, and clears thinking state', async () => {
+    const home = makeFakeHome()
+    const wsDir = path.join(home, 'work', 'lework')
+    fs.mkdirSync(wsDir, { recursive: true })
+    const convId = 'c7757162-047a-4b72-adcd-8d76a7c73f99'
+    const logsDir = path.join(home, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs')
+    fs.mkdirSync(logsDir, { recursive: true })
+    const tpFile = path.join(logsDir, 'transcript.jsonl')
+    fs.writeFileSync(
+      tpFile,
+      [
+        JSON.stringify({
+          step_index: 0,
+          type: 'USER_INPUT',
+          created_at: '2026-11-22T08:00:00Z',
+          content: '<USER_REQUEST>\n初始终端对话\n</USER_REQUEST>',
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          created_at: '2026-11-22T08:00:05Z',
+          content: '初始回复完成。',
+        }),
+      ].join('\n') + '\n',
+    )
+
+    const injectedTexts: string[] = []
+    let spawnedAdapterSessions = 0
+    const mockBridge = new TerminalBridge({
+      homeDir: home,
+      tmuxBin: '/opt/homebrew/bin/tmux',
+      it2Bin: null,
+      tmuxSocketPaths: ['/private/tmp/tmux-501/default'],
+      isPidAlive: pid => pid === 10253,
+      runCommand: async (bin, args) => {
+        if (bin.endsWith('tmux') && args.includes('list-panes')) {
+          return '%0|/dev/ttys001|0\n'
+        }
+        if (bin === 'ps' && args[0] === '-axo') {
+          return '10253 ttys001 agy -c\n'
+        }
+        if (bin === 'lsof') {
+          return [
+            'p10253',
+            'fcwd',
+            `n${wsDir}`,
+            'f10',
+            `n${home}/.gemini/antigravity-cli/presence/${convId}.lock`,
+          ].join('\n')
+        }
+        if (bin.endsWith('tmux') && args.includes('capture-pane')) {
+          return '> \n  auto · Gemini 4 Carbon · high\n'
+        }
+        if (bin.endsWith('tmux') && args.includes('send-keys') && args.includes('-l')) {
+          injectedTexts.push(args.at(-1) ?? '')
+        }
+        return ''
+      },
+    })
+
+    const inspector = new HostTaskInspector({ homeDir: home, terminalBridge: mockBridge })
+    const events: AgentEvent[] = []
+    const updates: SessionMeta[] = []
+    const sm = new SessionManager(
+      [home],
+      [
+        {
+          id: 'agy',
+          displayName: 'AGY',
+          kind: 'cli',
+          probe: async () => ({ installed: true, ready: true }),
+          capabilities: () => ({
+            permissions: true,
+            images: true,
+            modelSwitch: true,
+            modes: true,
+            history: true,
+            cancel: true,
+          }),
+          openSession: async () => {
+            spawnedAdapterSessions++
+            throw new Error('Should not spawn background AGY process when live tmux terminal is active!')
+          },
+        },
+      ],
+      {
+        onEvent: ev => events.push(ev),
+        onSessionUpdated: m => updates.push({ ...m }),
+      },
+      undefined,
+      inspector,
+    )
+
+    const sid = `host:agy:${convId}`
+    sm.retainHostWatch(sid)
+    const snap0 = sm.subscribeSnapshot(sid, -1)
+    expect(snap0.session.state).toBe('idle')
+
+    await sm.prompt(sid, '从手机发往当前终端的消息')
+    expect(spawnedAdapterSessions).toBe(0)
+    expect(injectedTexts).toEqual(['从手机发往当前终端的消息'])
+    expect(updates.at(-1)?.state).toBe('running')
+
+    // Simulate live `agy` TUI on Mac writing the injected USER_INPUT + PLANNER_RESPONSE to transcript.jsonl
+    const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+    fs.appendFileSync(
+      tpFile,
+      [
+        JSON.stringify({
+          step_index: 2,
+          type: 'USER_INPUT',
+          created_at: nowIso,
+          content: '<USER_REQUEST>\n从手机发往当前终端的消息\n</USER_REQUEST>',
+        }),
+        JSON.stringify({
+          step_index: 3,
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          created_at: nowIso,
+          content: '电脑终端已收到并同步回复手机！',
+        }),
+      ].join('\n') + '\n',
+    )
+
+    await new Promise(r => setTimeout(r, 650))
+    sm.releaseHostWatch(sid)
+    await sm.closeAll()
+
+    expect(events.some(e => e.type === 'message.user' && e.text === '从手机发往当前终端的消息')).toBe(true)
+    expect(
+      events.some(e => e.type === 'message.assistant.delta' && e.text === '电脑终端已收到并同步回复手机！'),
+    ).toBe(true)
+    expect(updates.at(-1)?.state).toBe('idle')
+  })
+
+  it('[T7.3] surfaces AGY stream-json stderr failures and returns session state to idle instead of hanging on thinking', async () => {
+    const fakeBinDir = makeFakeHome()
+    const fakeAgy = path.join(fakeBinDir, 'fake-agy.mjs')
+    fs.writeFileSync(
+      fakeAgy,
+      [
+        '#!/usr/bin/env node',
+        'process.stdin.once("data", () => {',
+        '  process.stderr.write("warning: --mode auto is not available\\n");',
+        '  process.stderr.write("FAILED_PRECONDITION (code 400): User location is not supported for the API use.\\n");',
+        '  process.exit(1);',
+        '});',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+
+    const adapter = new AgyEngineAdapter({
+      binary: process.execPath,
+      args: [fakeAgy],
+    })
+    const emitted: Array<{ type: string; state?: string; message?: string; stopReason?: string }> = []
+    const session = await adapter.openSession({
+      sessionId: 'sess_test_agy_err',
+      cwd: fakeBinDir,
+      emit: ev => emitted.push(ev as any),
+    })
+
+    await session.prompt('t1', 'hello')
+    await session.close()
+
+    expect(emitted.some(e => e.type === 'error' && e.message?.includes('FAILED_PRECONDITION'))).toBe(true)
+    expect(emitted.some(e => e.type === 'turn.done' && e.stopReason === 'error')).toBe(true)
+    expect(emitted.filter(e => e.type === 'session.state').at(-1)?.state).toBe('idle')
   })
 })
