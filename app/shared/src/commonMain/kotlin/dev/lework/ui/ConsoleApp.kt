@@ -65,6 +65,16 @@ fun ConsoleApp(
     var showDiffSheet by remember { mutableStateOf(false) }
     var promptText by remember { mutableStateOf("") }
 
+    LaunchedEffect(state.unsentDraftToRestore) {
+        val restore = state.unsentDraftToRestore
+        if (!restore.isNullOrEmpty()) {
+            if (promptText.isBlank()) {
+                promptText = restore
+            }
+            store.consumeRestoredDraft()
+        }
+    }
+
     LaunchedEffect(store, autoBootstrap) {
         if (autoBootstrap) {
             store.bootstrapOrConnect()
@@ -249,6 +259,45 @@ fun ConsoleApp(
                                     showUsageSheet = true
                                 },
                             )
+                        }
+
+                        if (!state.promptErrorText.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Everforest.Red.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, Everforest.Red.copy(alpha = 0.4f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.ErrorOutline,
+                                        contentDescription = null,
+                                        tint = Everforest.Red,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Text(
+                                        text = state.promptErrorText.orEmpty(),
+                                        fontSize = 12.5.sp,
+                                        lineHeight = 17.sp,
+                                        color = Everforest.Fg,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "关闭提示",
+                                        tint = Everforest.CommentGrey,
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .clickable { store.dismissPromptError() },
+                                    )
+                                }
+                            }
                         }
 
                         ClaudeStyleComposer(

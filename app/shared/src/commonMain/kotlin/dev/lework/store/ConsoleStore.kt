@@ -1486,6 +1486,7 @@ class ConsoleStore(
                 checkpointNotice = null,
                 submittingApprovalRequestId = null,
                 approvalErrorText = null,
+                promptErrorText = null,
                 selectedEngineId = targetEngineId,
                 selectedModelId = resolvedModel,
                 selectedEffort = resolvedEffort,
@@ -1656,6 +1657,14 @@ class ConsoleStore(
         }
     }
 
+    fun dismissPromptError() {
+        _state.update { it.copy(promptErrorText = null) }
+    }
+
+    fun consumeRestoredDraft() {
+        _state.update { it.copy(unsentDraftToRestore = null) }
+    }
+
     fun sendPrompt(text: String) {
         val trimmed = text.trim()
         val s = _state.value
@@ -1667,6 +1676,8 @@ class ConsoleStore(
                 composerAttachedImages = emptyList(),
                 mentionQuery = null,
                 workspaceFileSuggestions = emptyList(),
+                promptErrorText = null,
+                unsentDraftToRestore = null,
             )
         }
         scope.launch {
@@ -1703,10 +1714,12 @@ class ConsoleStore(
                     mode = s.selectedMode,
                 )
             } catch (t: Throwable) {
+                val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "消息发送未成功，请检查连接后重试"
                 _state.update { st ->
                     st.copy(
                         composerAttachedImages = st.composerAttachedImages.ifEmpty { attached },
-                        connectionError = t.message,
+                        promptErrorText = errMsg,
+                        unsentDraftToRestore = trimmed.takeIf { it.isNotEmpty() },
                     )
                 }
             }

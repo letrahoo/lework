@@ -157,6 +157,8 @@ data class ConsoleUiState(
     val checkpointNotice: String? = null,
     val submittingApprovalRequestId: String? = null,
     val approvalErrorText: String? = null,
+    val promptErrorText: String? = null,
+    val unsentDraftToRestore: String? = null,
     // Embedded Tailscale `tsnet` mesh & multi-host asset book
     val tsnetStatus: MobileTsnetStatus = MobileTsnetStatus(available = isMobileTsnetAvailable()),
     val tsnetLoggingIn: Boolean = false,
