@@ -17,9 +17,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -90,7 +92,26 @@ private fun MobileConsoleApp(
     var showUsageSheet by remember { mutableStateOf(false) }
     var showDiffSheet by remember { mutableStateOf(false) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
-    var promptText by remember { mutableStateOf("") }
+    var promptField by remember { mutableStateOf(TextFieldValue("")) }
+    var cursorSyncRequest by remember { mutableStateOf<Triple<Long, String, Int>?>(null) }
+
+    LaunchedEffect(cursorSyncRequest) {
+        val req = cursorSyncRequest ?: return@LaunchedEffect
+        withFrameNanos {}
+        if (promptField.text == req.second &&
+            (promptField.selection != TextRange(req.third) || promptField.composition != null)
+        ) {
+            promptField = TextFieldValue(
+                text = req.second,
+                selection = TextRange(req.third),
+                composition = null,
+            )
+        }
+        withFrameNanos {}
+        if (cursorSyncRequest?.first == req.first) {
+            cursorSyncRequest = null
+        }
+    }
 
     // Automatically resign software keyboard & focus whenever the navigation drawer opens or closes
     // (covers both tapping the top-left Menu button AND edge-swipe drawer gestures).
@@ -115,8 +136,11 @@ private fun MobileConsoleApp(
     LaunchedEffect(state.unsentDraftToRestore) {
         val restore = state.unsentDraftToRestore
         if (!restore.isNullOrEmpty()) {
-            if (promptText.isBlank()) {
-                promptText = restore
+            if (promptField.text.isBlank()) {
+                promptField = TextFieldValue(
+                    text = restore,
+                    selection = TextRange(restore.length),
+                )
             }
             store.consumeRestoredDraft()
         }
@@ -383,10 +407,28 @@ private fun MobileConsoleApp(
 
                 ClaudeStyleComposer(
                     state = state,
-                    text = promptText,
-                    onTextChange = { next ->
-                        promptText = next
-                        store.updateComposerTextForMentions(next)
+                    value = promptField,
+                    onValueChange = { nextField ->
+                        val syncReq = cursorSyncRequest
+                        if (syncReq != null &&
+                            nextField.text == syncReq.second &&
+                            nextField.composition == null &&
+                            nextField.selection != TextRange(syncReq.third)
+                        ) {
+                            // Guard against iOS UIKit IME unmarkText() snapping caret back to pre-mention index
+                            promptField = TextFieldValue(
+                                text = syncReq.second,
+                                selection = TextRange(syncReq.third),
+                                composition = null,
+                            )
+                            cursorSyncRequest = null
+                        } else {
+                            if (syncReq != null && nextField.text != syncReq.second) {
+                                cursorSyncRequest = null
+                            }
+                            promptField = nextField
+                            store.updateComposerTextForMentions(nextField.text, nextField.selection.end)
+                        }
                     },
                     onOpenWorkspaceSheet = {
                         dismissKeyboard()
@@ -406,8 +448,10 @@ private fun MobileConsoleApp(
                     },
                     onSend = {
                         dismissKeyboard()
-                        val msg = promptText
-                        promptText = ""
+                        val msg = promptField.text
+                        cursorSyncRequest = null
+                        promptField = TextFieldValue("")
+                        store.dismissMentionSuggestions()
                         store.sendPrompt(msg)
                     },
                     onCancel = store::cancelActiveTurn,
@@ -421,8 +465,31 @@ private fun MobileConsoleApp(
                     },
                     onRemoveImage = store::removeAttachedImage,
                     onSelectMentionFile = { relPath ->
-                        promptText = replaceTrailingMention(promptText, relPath)
+                        val (nextText, nextCursor) = replaceMentionAtCursor(
+                            text = promptField.text,
+                            relativeFilePath = relPath,
+                            cursorIndex = promptField.selection.end,
+                        )
+                        promptField = TextFieldValue(
+                            text = nextText,
+                            selection = TextRange(nextCursor),
+                            composition = null,
+                        )
+                        cursorSyncRequest = Triple((cursorSyncRequest?.first ?: 0L) + 1L, nextText, nextCursor)
                         store.dismissMentionSuggestions()
+                    },
+                    onInsertAtMention = {
+                        val (nextText, nextCursor) = insertAtTriggerAtCursor(
+                            text = promptField.text,
+                            cursorIndex = promptField.selection.end,
+                        )
+                        promptField = TextFieldValue(
+                            text = nextText,
+                            selection = TextRange(nextCursor),
+                            composition = null,
+                        )
+                        cursorSyncRequest = Triple((cursorSyncRequest?.first ?: 0L) + 1L, nextText, nextCursor)
+                        store.updateComposerTextForMentions(nextText, nextCursor)
                     },
                     onDismissMention = store::dismissMentionSuggestions,
                 )

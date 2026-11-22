@@ -785,4 +785,39 @@ class UiAutomationStressTest {
                 }
             }
         }
+
+    @Test
+    fun `T8_6 selecting @file mention moves input caret to end of inserted file path and retains focus`() =
+        runComposeUiTest {
+            val transport = FakeHubTransport()
+            setContent {
+                val scope: CoroutineScope = rememberCoroutineScope()
+                val created = androidx.compose.runtime.remember { ConsoleStore(scope, transport) }
+                Box(modifier = Modifier.size(width = 402.dp, height = 874.dp)) {
+                    ConsoleApp(externalStore = created, autoBootstrap = true)
+                }
+            }
+            waitForIdle()
+
+            // Type prompt with @serv trigger
+            onNodeWithTag("composer_input").performClick()
+            onNodeWithTag("composer_input").performTextInput("请检查 @serv")
+            waitUntil(timeoutMillis = 3_000L) {
+                onAllNodesWithTag("mention_item_hub/src/server.ts").fetchSemanticsNodes().isNotEmpty()
+            }
+
+            // Tap the autocomplete suggestion item
+            onNodeWithTag("mention_item_hub/src/server.ts").performClick()
+            waitForIdle()
+
+            val expectedText = "请检查 @hub/src/server.ts "
+            val node = onNodeWithTag("composer_input").fetchSemanticsNode()
+            val actualText = node.config[androidx.compose.ui.semantics.SemanticsProperties.EditableText].text
+            val actualSelection = node.config[androidx.compose.ui.semantics.SemanticsProperties.TextSelectionRange]
+            val isFocused = node.config[androidx.compose.ui.semantics.SemanticsProperties.Focused]
+
+            assertEquals(expectedText, actualText)
+            assertEquals(androidx.compose.ui.text.TextRange(expectedText.length), actualSelection)
+            assertTrue(isFocused, "Composer input must remain focused after tapping @file suggestion")
+        }
 }

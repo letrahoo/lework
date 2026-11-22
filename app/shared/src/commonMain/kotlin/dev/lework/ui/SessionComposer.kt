@@ -18,14 +18,19 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,8 +43,8 @@ import dev.lework.store.*
 @Composable
 internal fun ClaudeStyleComposer(
     state: ConsoleUiState,
-    text: String,
-    onTextChange: (String) -> Unit,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
     onOpenWorkspaceSheet: () -> Unit,
     onCycleMode: () -> Unit,
     onCycleEffort: () -> Unit,
@@ -49,8 +54,12 @@ internal fun ClaudeStyleComposer(
     onCaptureCamera: () -> Unit = {},
     onRemoveImage: (Int) -> Unit = {},
     onSelectMentionFile: (String) -> Unit = {},
+    onInsertAtMention: () -> Unit = {},
     onDismissMention: () -> Unit = {},
+    focusRequester: FocusRequester = remember { FocusRequester() },
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val text = value.text
     val activeSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
     val isSessionRunning = activeSess != null &&
         (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
@@ -99,8 +108,13 @@ internal fun ClaudeStyleComposer(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onSelectMentionFile(relPath) }
-                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                                .clickable {
+                                    onSelectMentionFile(relPath)
+                                    runCatching { focusRequester.requestFocus() }
+                                    keyboardController?.show()
+                                }
+                                .padding(horizontal = 12.dp, vertical = 7.dp)
+                                .testTag("mention_item_$relPath"),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
@@ -249,8 +263,8 @@ internal fun ClaudeStyleComposer(
                         )
                     }
                     BasicTextField(
-                        value = text,
-                        onValueChange = onTextChange,
+                        value = value,
+                        onValueChange = onValueChange,
                         textStyle = TextStyle(
                             color = Everforest.Fg,
                             fontSize = 15.sp,
@@ -260,6 +274,7 @@ internal fun ClaudeStyleComposer(
                         maxLines = 5,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .focusRequester(focusRequester)
                             .testTag("composer_input"),
                     )
                 }
@@ -352,8 +367,9 @@ internal fun ClaudeStyleComposer(
                             tint = Everforest.CommentGrey,
                             labelColor = Everforest.Fg,
                             onClick = {
-                                val next = if (text.isEmpty() || text.last().isWhitespace()) "$text@" else "$text @"
-                                onTextChange(next)
+                                onInsertAtMention()
+                                runCatching { focusRequester.requestFocus() }
+                                keyboardController?.show()
                             },
                         )
                         val isWorktreeActive =

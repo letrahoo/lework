@@ -2122,8 +2122,8 @@ class ConsoleStore(
         _state.update { it.copy(signingExpiryDismissed = true) }
     }
 
-    fun updateComposerTextForMentions(nextText: String) {
-        val query = extractTrailingMentionQuery(nextText)
+    fun updateComposerTextForMentions(nextText: String, cursorIndex: Int = nextText.length) {
+        val query = extractMentionQueryAtCursor(nextText, cursorIndex)
         if (query == null) {
             mentionJob?.cancel()
             if (_state.value.mentionQuery != null || _state.value.workspaceFileSuggestions.isNotEmpty()) {
@@ -2814,20 +2814,63 @@ internal fun parsePairingPayload(raw: String): QrPairingPayloadDto? {
     }.getOrNull()
 }
 
-internal fun extractTrailingMentionQuery(text: String): String? {
-    val atIdx = text.lastIndexOf('@')
+internal fun extractMentionQueryAtCursor(text: String, cursorIndex: Int = text.length): String? {
+    if (text.isEmpty()) return null
+    val safeCursor = cursorIndex.coerceIn(0, text.length)
+    val beforeCursor = text.substring(0, safeCursor)
+    val atIdx = beforeCursor.lastIndexOf('@')
     if (atIdx < 0) return null
-    if (atIdx > 0 && !text[atIdx - 1].isWhitespace()) return null
-    val tail = text.substring(atIdx + 1)
+    if (atIdx > 0 && !beforeCursor[atIdx - 1].isWhitespace()) return null
+    val tail = beforeCursor.substring(atIdx + 1)
     if (tail.any { it.isWhitespace() }) return null
     return tail
 }
 
-internal fun replaceTrailingMention(text: String, relativeFilePath: String): String {
-    val atIdx = text.lastIndexOf('@')
-    if (atIdx < 0) return "$text @$relativeFilePath "
-    return text.substring(0, atIdx) + "@$relativeFilePath "
+internal fun extractTrailingMentionQuery(text: String): String? =
+    extractMentionQueryAtCursor(text, text.length)
+
+internal fun replaceMentionAtCursor(
+    text: String,
+    relativeFilePath: String,
+    cursorIndex: Int = text.length,
+): Pair<String, Int> {
+    val safeCursor = cursorIndex.coerceIn(0, text.length)
+    val beforeCursor = text.substring(0, safeCursor)
+    val suffix = text.substring(safeCursor)
+    val atIdx = beforeCursor.lastIndexOf('@')
+    if (atIdx < 0) {
+        val needsLeadingSpace = beforeCursor.isNotEmpty() && !beforeCursor.last().isWhitespace()
+        val lead = if (needsLeadingSpace) " " else ""
+        val hasTrailingSpace = suffix.startsWith(' ')
+        val trail = if (hasTrailingSpace) "" else " "
+        val inserted = "$lead@$relativeFilePath$trail"
+        val nextText = beforeCursor + inserted + suffix
+        val nextCursor = beforeCursor.length + lead.length + 1 + relativeFilePath.length + 1
+        return nextText to nextCursor.coerceAtMost(nextText.length)
+    }
+    val prefix = beforeCursor.substring(0, atIdx)
+    val hasTrailingSpace = suffix.startsWith(' ')
+    val insertion = if (hasTrailingSpace) "@$relativeFilePath" else "@$relativeFilePath "
+    val nextText = prefix + insertion + suffix
+    val nextCursor = (prefix.length + 1 + relativeFilePath.length + 1).coerceAtMost(nextText.length)
+    return nextText to nextCursor
 }
+
+internal fun insertAtTriggerAtCursor(
+    text: String,
+    cursorIndex: Int = text.length,
+): Pair<String, Int> {
+    val safeCursor = cursorIndex.coerceIn(0, text.length)
+    val before = text.substring(0, safeCursor)
+    val after = text.substring(safeCursor)
+    val insert = if (before.isEmpty() || before.last().isWhitespace()) "@" else " @"
+    val nextText = before + insert + after
+    val nextCursor = before.length + insert.length
+    return nextText to nextCursor
+}
+
+internal fun replaceTrailingMention(text: String, relativeFilePath: String): String =
+    replaceMentionAtCursor(text, relativeFilePath, text.length).first
 
 private fun decodeUrlComponent(encoded: String): String {
     val bytes = mutableListOf<Byte>()
