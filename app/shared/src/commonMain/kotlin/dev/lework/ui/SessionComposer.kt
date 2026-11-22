@@ -47,9 +47,9 @@ internal fun ClaudeStyleComposer(
     onDismissMention: () -> Unit = {},
 ) {
     val activeSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
-    val isHubRunning = activeSess != null &&
-        activeSess.source == SessionSource.HUB &&
+    val isSessionRunning = activeSess != null &&
         (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
+    val queuedCount = activeSess?.queuedPrompts?.size ?: 0
     val imageSupported = remember { canPickImages() } && (state.selectedEngine?.capabilities?.images != false)
 
     Column(
@@ -126,6 +126,26 @@ internal fun ClaudeStyleComposer(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                if (queuedCount > 0) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Schedule,
+                            contentDescription = null,
+                            tint = Everforest.BoldGold,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Text(
+                            text = "已加入待发队列 ($queuedCount 条)，当前轮次结束后自动继续",
+                            fontSize = 11.5.sp,
+                            color = Everforest.BoldGold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 if (state.composerAttachedImages.isNotEmpty()) {
                     Row(
                         modifier = Modifier
@@ -264,42 +284,53 @@ internal fun ClaudeStyleComposer(
 
                     Spacer(Modifier.width(8.dp))
 
-                    if (isHubRunning) {
-                        Surface(
-                            shape = CircleShape,
-                            color = Everforest.Red,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .clickable { onCancel() },
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Stop,
-                                    contentDescription = "停止",
-                                    tint = Everforest.BgDim,
-                                    modifier = Modifier.size(18.dp),
-                                )
+                    val hasDraft = text.isNotBlank() || state.composerAttachedImages.isNotEmpty()
+                    val canQueueWhileRunning =
+                        isSessionRunning && hasDraft && activeSess?.state == SessionState.RUNNING
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (isSessionRunning) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Everforest.Red,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .clickable { onCancel() }
+                                    .testTag("composer_stop_btn"),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Stop,
+                                        contentDescription = "停止",
+                                        tint = Everforest.BgDim,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
                             }
                         }
-                    } else {
-                        val enabled = text.isNotBlank() || state.composerAttachedImages.isNotEmpty()
-                        Surface(
-                            shape = CircleShape,
-                            color = if (enabled) Everforest.Green else Everforest.Bg2,
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .clickable(enabled = enabled) { onSend() }
-                                .testTag("composer_send_btn"),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.ArrowUpward,
-                                    contentDescription = "发送",
-                                    tint = if (enabled) Everforest.BgDim else Everforest.Grey0,
-                                    modifier = Modifier.size(18.dp),
-                                )
+
+                        if (!isSessionRunning || canQueueWhileRunning) {
+                            Surface(
+                                shape = CircleShape,
+                                color = if (hasDraft) Everforest.Green else Everforest.Bg2,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .clickable(enabled = hasDraft) { onSend() }
+                                    .testTag("composer_send_btn"),
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.ArrowUpward,
+                                        contentDescription = if (canQueueWhileRunning) "排队发送" else "发送",
+                                        tint = if (hasDraft) Everforest.BgDim else Everforest.Grey0,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
                             }
                         }
                     }

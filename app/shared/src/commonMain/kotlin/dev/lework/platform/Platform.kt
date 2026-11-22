@@ -105,3 +105,4 @@ expect fun saveHostAccessToken(hubId: String, token: String?)
 expect fun canPickImages(): Boolean
 expect fun requestImagePick(onResult: (PickedImagePayload?) -> Unit)
 expect fun signingExpiryRemainingHours(): Int?
+expect fun dismissNativeKeyboard()

@@ -372,4 +372,57 @@ class UiAutomationStressTest {
             assertTrue(col0.right < col1.left, "Col 0 overlapped Col 1: $col0 vs $col1")
             assertTrue(col1.right < col2.left, "Col 1 overlapped Col 2: $col1 vs $col2")
         }
+
+    @Test
+    fun `T8_5 dismisses software keyboard and clears composer focus when opening drawer or bottom sheets`() =
+        runComposeUiTest {
+            val transport = FakeHubTransport()
+            val sid = "host:agy:kbd_test"
+            transport.sessions.add(
+                SessionMeta(
+                    id = sid,
+                    engineId = "agy",
+                    cwd = "/workspace/lework",
+                    title = "输入法收起校验",
+                    state = SessionState.IDLE,
+                    createdAt = 1_000L,
+                    updatedAt = 2_000L,
+                    lastSeq = 0,
+                ),
+            )
+            transport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "测试键盘焦点"),
+            )
+
+            lateinit var store: ConsoleStore
+            setContent {
+                val scope = rememberCoroutineScope()
+                val created = androidx.compose.runtime.remember { ConsoleStore(scope, transport) }
+                store = created
+                Box(modifier = Modifier.size(width = 402.dp, height = 874.dp)) {
+                    ConsoleApp(externalStore = created, autoBootstrap = true)
+                }
+            }
+            waitForIdle()
+            runOnIdle { store.selectSession(sid) }
+            waitForIdle()
+
+            // 1. Focus composer input and type draft text
+            onNodeWithTag("composer_input").performClick()
+            onNodeWithTag("composer_input").performTextInput("准备测试展开左侧菜单")
+            waitForIdle()
+            onNodeWithTag("composer_input").assertIsFocused()
+
+            val beforeDismissCount = JvmPlatformTestHooks.keyboardDismissCount
+
+            // 2. Tap top-left menu button -> composer focus MUST clear and native keyboard dismisser MUST fire!
+            onNodeWithTag("topbar_btn_menu").performClick()
+            waitForIdle()
+
+            onNodeWithTag("composer_input").assertIsNotFocused()
+            assertTrue(
+                JvmPlatformTestHooks.keyboardDismissCount > beforeDismissCount,
+                "Expected dismissNativeKeyboard() to fire when opening drawer",
+            )
+        }
 }

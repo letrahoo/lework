@@ -27,6 +27,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -40,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.MobileTsnetStatus
 import dev.lework.platform.appVersionLabel
+import dev.lework.platform.dismissNativeKeyboard
 import dev.lework.platform.epochMillis
 import dev.lework.platform.loadSavedRelayUrls
 import dev.lework.protocol.*
@@ -147,4 +150,21 @@ internal fun formatBytes(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     else -> "${bytes / (1024 * 1024)} MB"
+}
+
+/**
+ * Unified keyboard & focus dismisser across Compose Multiplatform and iOS UIKit responder chain
+ * (including active Chinese Pinyin IME uncommitted marked-text sessions).
+ */
+@Composable
+internal fun rememberKeyboardDismisser(): () -> Unit {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    return remember(focusManager, keyboardController) {
+        {
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+            dismissNativeKeyboard()
+        }
+    }
 }

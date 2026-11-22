@@ -82,6 +82,8 @@ class AgyStreamSession implements EngineSession {
   private emittedDeltaInTurn = false
   private pendingTurn: {
     turnId: string
+    sawStreamActivity: boolean
+    onActivity: () => void
     resolve: () => void
     reject: (err: Error) => void
   } | null = null
@@ -180,6 +182,16 @@ class AgyStreamSession implements EngineSession {
       child.stderr.on('data', (chunk: Buffer) => {
         const str = chunk.toString('utf8')
         this.stderrTail = (this.stderrTail + str).slice(-4_096)
+        if (
+          this.pendingTurn &&
+          /(already open|already in use|failed to.*lock|conversation.*locked)/i.test(str)
+        ) {
+          const pending = this.pendingTurn
+          this.pendingTurn = null
+          pending.reject(
+            new Error('该 AGY 会话正在电脑终端窗口中打开并占用锁，请在 tmux 或 iTerm2 中运行以双向同步'),
+          )
+        }
       })
 
       child.on('error', err => {
@@ -241,7 +253,49 @@ class AgyStreamSession implements EngineSession {
 
     try {
       await new Promise<void>((resolve, reject) => {
-        this.pendingTurn = { turnId, resolve, reject }
+        // Guard against presence-lock deadlocks where `agy --conversation <id>` blocks before emitting `init`.
+        // Cleared immediately upon the first `init` / `step_update` / `result` event so long coding turns never time out!
+        const initGuardTimer = setTimeout(() => {
+          if (this.pendingTurn && this.pendingTurn.turnId === turnId && !this.pendingTurn.sawStreamActivity) {
+            const pending = this.pendingTurn
+            this.pendingTurn = null
+            if (this.proc && !this.proc.killed) {
+              try {
+                this.proc.kill('SIGINT')
+              } catch {
+                // ignore
+              }
+              this.proc = null
+            }
+            const stderrHint = summarizeAgyStderr(this.stderrTail)
+            pending.reject(
+              new Error(
+                stderrHint ||
+                  'AGY 会话可能已在电脑其他终端窗口打开并持有锁，请在对应终端继续或新建会话。',
+              ),
+            )
+          }
+        }, 20_000)
+        initGuardTimer.unref?.()
+
+        this.pendingTurn = {
+          turnId,
+          sawStreamActivity: false,
+          onActivity: () => {
+            if (this.pendingTurn && !this.pendingTurn.sawStreamActivity) {
+              this.pendingTurn.sawStreamActivity = true
+              clearTimeout(initGuardTimer)
+            }
+          },
+          resolve: () => {
+            clearTimeout(initGuardTimer)
+            resolve()
+          },
+          reject: err => {
+            clearTimeout(initGuardTimer)
+            reject(err)
+          },
+        }
         const payload = JSON.stringify({
           event: 'user',
           message: { content: effectiveContent },
@@ -308,6 +362,7 @@ class AgyStreamSession implements EngineSession {
   }
 
   private handleAgyEvent(event: Record<string, unknown>): void {
+    this.pendingTurn?.onActivity()
     const eventName = event.event
     if (eventName === 'init') {
       if (typeof event.conversation_id === 'string' && event.conversation_id) {

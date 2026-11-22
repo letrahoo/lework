@@ -7,6 +7,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -15,6 +17,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -36,6 +40,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -71,10 +76,22 @@ internal fun TasksSidebarContent(
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
     val remainingSignHours = remember { signingExpiryRemainingHours() }
+    val dismissKeyboard = rememberKeyboardDismisser()
+    val drawerListState = rememberLazyListState()
+    val isDraggingDrawerList by drawerListState.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(isDraggingDrawerList) {
+        if (isDraggingDrawerList) {
+            dismissKeyboard()
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+            ) { dismissKeyboard() }
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
@@ -363,6 +380,8 @@ internal fun TasksSidebarContent(
                         value = state.drawerSearchQuery,
                         onValueChange = onSearchQueryChange,
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { dismissKeyboard() }),
                         textStyle = TextStyle(
                             fontSize = 12.5.sp,
                             color = Everforest.Fg,
@@ -483,6 +502,7 @@ internal fun TasksSidebarContent(
         Spacer(Modifier.height(10.dp))
 
         LazyColumn(
+            state = drawerListState,
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
@@ -516,9 +536,18 @@ internal fun TasksSidebarContent(
                             session = sess,
                             selected = sess.id == state.activeSessionId,
                             showQuickUnarchive = true,
-                            onClick = { onSelectSession(sess.id) },
-                            onRename = { onRequestRenameSession(sess) },
-                            onToggleArchive = { onToggleArchiveSession(sess.id, false) },
+                            onClick = {
+                                dismissKeyboard()
+                                onSelectSession(sess.id)
+                            },
+                            onRename = {
+                                dismissKeyboard()
+                                onRequestRenameSession(sess)
+                            },
+                            onToggleArchive = {
+                                dismissKeyboard()
+                                onToggleArchiveSession(sess.id, false)
+                            },
                         )
                     }
                 }
@@ -538,9 +567,18 @@ internal fun TasksSidebarContent(
                         SessionDrawerRow(
                             session = sess,
                             selected = sess.id == state.activeSessionId,
-                            onClick = { onSelectSession(sess.id) },
-                            onRename = { onRequestRenameSession(sess) },
-                            onToggleArchive = { onToggleArchiveSession(sess.id, !sess.archived) },
+                            onClick = {
+                                dismissKeyboard()
+                                onSelectSession(sess.id)
+                            },
+                            onRename = {
+                                dismissKeyboard()
+                                onRequestRenameSession(sess)
+                            },
+                            onToggleArchive = {
+                                dismissKeyboard()
+                                onToggleArchiveSession(sess.id, !sess.archived)
+                            },
                         )
                     }
                     item(key = "sp_running") { Spacer(Modifier.height(8.dp)) }
@@ -575,9 +613,18 @@ internal fun TasksSidebarContent(
                         SessionDrawerRow(
                             session = sess,
                             selected = sess.id == state.activeSessionId,
-                            onClick = { onSelectSession(sess.id) },
-                            onRename = { onRequestRenameSession(sess) },
-                            onToggleArchive = { onToggleArchiveSession(sess.id, !sess.archived) },
+                            onClick = {
+                                dismissKeyboard()
+                                onSelectSession(sess.id)
+                            },
+                            onRename = {
+                                dismissKeyboard()
+                                onRequestRenameSession(sess)
+                            },
+                            onToggleArchive = {
+                                dismissKeyboard()
+                                onToggleArchiveSession(sess.id, !sess.archived)
+                            },
                         )
                     }
                 }
@@ -839,9 +886,13 @@ internal fun RenameSessionDialog(
     onConfirm: (String) -> Unit,
 ) {
     var draft by remember(session.id, session.title) { mutableStateOf(session.title) }
+    val dismissKeyboard = rememberKeyboardDismisser()
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            dismissKeyboard()
+            onDismiss()
+        },
         containerColor = Everforest.Bg1,
         titleContentColor = Everforest.Fg,
         textContentColor = Everforest.Grey2,
@@ -882,6 +933,15 @@ internal fun RenameSessionDialog(
                                 value = draft,
                                 onValueChange = { if (it.length <= 120) draft = it },
                                 singleLine = true,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        if (draft.trim().isNotEmpty()) {
+                                            dismissKeyboard()
+                                            onConfirm(draft.trim())
+                                        }
+                                    },
+                                ),
                                 textStyle = TextStyle(
                                     fontSize = 14.sp,
                                     color = Everforest.Fg,
@@ -920,7 +980,10 @@ internal fun RenameSessionDialog(
         confirmButton = {
             Button(
                 enabled = draft.trim().isNotEmpty(),
-                onClick = { onConfirm(draft.trim()) },
+                onClick = {
+                    dismissKeyboard()
+                    onConfirm(draft.trim())
+                },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Everforest.Green,
                     contentColor = Everforest.BgDim,
@@ -931,7 +994,12 @@ internal fun RenameSessionDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                onClick = {
+                    dismissKeyboard()
+                    onDismiss()
+                },
+            ) {
                 Text("取消", color = Everforest.Grey1)
             }
         },

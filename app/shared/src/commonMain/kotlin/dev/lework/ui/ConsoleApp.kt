@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -58,6 +59,7 @@ fun ConsoleApp(
     val state by store.state.collectAsState()
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val dismissKeyboard = rememberKeyboardDismisser()
     var showModelSheet by remember { mutableStateOf(false) }
     var showWorkspaceSheet by remember { mutableStateOf(false) }
     var showFilesSheet by remember { mutableStateOf(false) }
@@ -65,6 +67,26 @@ fun ConsoleApp(
     var showDiffSheet by remember { mutableStateOf(false) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
     var promptText by remember { mutableStateOf("") }
+
+    // Automatically resign software keyboard & focus whenever the navigation drawer opens or closes
+    // (covers both tapping the top-left Menu button AND edge-swipe drawer gestures).
+    LaunchedEffect(drawerState.targetValue, drawerState.isOpen) {
+        if (drawerState.targetValue == DrawerValue.Open || drawerState.isOpen) {
+            dismissKeyboard()
+        } else if (drawerState.targetValue == DrawerValue.Closed && !drawerState.isOpen) {
+            dismissKeyboard()
+        }
+    }
+
+    // Automatically resign software keyboard before any modal bottom sheet or pairing dialog appears
+    val anyOverlaySheetOpen =
+        showModelSheet || showWorkspaceSheet || showFilesSheet || showUsageSheet || showDiffSheet ||
+            state.pendingDeepLinkPairing != null
+    LaunchedEffect(anyOverlaySheetOpen) {
+        if (anyOverlaySheetOpen) {
+            dismissKeyboard()
+        }
+    }
 
     LaunchedEffect(state.unsentDraftToRestore) {
         val restore = state.unsentDraftToRestore
@@ -160,15 +182,21 @@ fun ConsoleApp(
                         MinimalTopBar(
                             state = state,
                             onOpenDrawer = {
+                                dismissKeyboard()
                                 store.refreshHostSessions()
                                 scope.launch { drawerState.open() }
                             },
-                            onOpenModelSheet = { showModelSheet = true },
+                            onOpenModelSheet = {
+                                dismissKeyboard()
+                                showModelSheet = true
+                            },
                             onOpenDiffSheet = {
+                                dismissKeyboard()
                                 store.refreshDiffAndCheckpoints()
                                 showDiffSheet = true
                             },
                             onOpenFilesSheet = {
+                                dismissKeyboard()
                                 store.browseDirectory()
                                 showFilesSheet = true
                             },
@@ -178,8 +206,12 @@ fun ConsoleApp(
                         if (topActiveSess != null) {
                             ActiveSessionTitleStrip(
                                 session = topActiveSess,
-                                onRename = { renamingSessionId = topActiveSess.id },
+                                onRename = {
+                                    dismissKeyboard()
+                                    renamingSessionId = topActiveSess.id
+                                },
                                 onToggleArchive = {
+                                    dismissKeyboard()
                                     store.archiveSession(topActiveSess.id, !topActiveSess.archived)
                                 },
                             )
@@ -216,7 +248,11 @@ fun ConsoleApp(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .fillMaxWidth(),
+                                .fillMaxWidth()
+                                .clickable(
+                                    indication = null,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                ) { dismissKeyboard() },
                         ) {
                             val activeKey = state.activeSessionId ?: "draft"
                             val activeSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
@@ -224,7 +260,10 @@ fun ConsoleApp(
                             if (state.activeSessionId == null && transcript.items.isEmpty()) {
                                 CalmHomeEmptyState(
                                     state = state,
-                                    onOpenRunningSession = { sid -> store.selectSession(sid) },
+                                    onOpenRunningSession = { sid ->
+                                        dismissKeyboard()
+                                        store.selectSession(sid)
+                                    },
                                 )
                             } else if (
                                 state.activeSessionId != null &&
@@ -242,6 +281,7 @@ fun ConsoleApp(
                                         transcript = transcript,
                                         isSessionRunning = sessRunning,
                                         onLoadOlder = { store.loadOlderHistory(activeKey) },
+                                        onDismissKeyboard = dismissKeyboard,
                                     )
                                 }
                             }
@@ -282,6 +322,7 @@ fun ConsoleApp(
                                 fallbackInputTokens = state.activeTranscript.inputTokens,
                                 fallbackOutputTokens = state.activeTranscript.outputTokens,
                                 onClick = {
+                                    dismissKeyboard()
                                     store.refreshUsageDashboard()
                                     showUsageSheet = true
                                 },
@@ -334,7 +375,10 @@ fun ConsoleApp(
                                 promptText = next
                                 store.updateComposerTextForMentions(next)
                             },
-                            onOpenWorkspaceSheet = { showWorkspaceSheet = true },
+                            onOpenWorkspaceSheet = {
+                                dismissKeyboard()
+                                showWorkspaceSheet = true
+                            },
                             onCycleMode = {
                                 val modes = state.availableModes
                                 val idx = modes.indexOf(state.selectedMode)
@@ -348,12 +392,16 @@ fun ConsoleApp(
                                 store.selectEffort(next)
                             },
                             onSend = {
+                                dismissKeyboard()
                                 val msg = promptText
                                 promptText = ""
                                 store.sendPrompt(msg)
                             },
                             onCancel = store::cancelActiveTurn,
-                            onPickImage = store::pickAndAttachImage,
+                            onPickImage = {
+                                dismissKeyboard()
+                                store.pickAndAttachImage()
+                            },
                             onRemoveImage = store::removeAttachedImage,
                             onSelectMentionFile = { relPath ->
                                 promptText = replaceTrailingMention(promptText, relPath)
@@ -641,7 +689,10 @@ private fun MinimalTopBar(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Box {
-            IconButton(onClick = onOpenDrawer) {
+            IconButton(
+                onClick = onOpenDrawer,
+                modifier = Modifier.testTag("topbar_btn_menu"),
+            ) {
                 Icon(
                     imageVector = Icons.Rounded.Menu,
                     contentDescription = "菜单",

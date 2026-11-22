@@ -62,6 +62,7 @@ import platform.Foundation.NSNetServiceDelegateProtocol
 import platform.Foundation.NSNotificationCenter
 import platform.Foundation.NSOperationQueue
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
+import platform.Foundation.NSSelectorFromString
 import platform.Foundation.NSString
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLIsExcludedFromBackupKey
@@ -75,6 +76,7 @@ import platform.UIKit.UIApplicationDidBecomeActiveNotification
 import platform.UIKit.UIApplicationDidEnterBackgroundNotification
 import platform.UIKit.UIDevice
 import platform.UIKit.UIPasteboard
+import platform.UIKit.endEditing
 import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
@@ -781,4 +783,17 @@ private fun parseIso8601UtcEpochSeconds(iso: String): Long? {
     }
     days += (day - 1)
     return days * 86_400L + hour * 3_600L + min * 60L + sec
+}
+
+actual fun dismissNativeKeyboard() {
+    dispatch_async(dispatch_get_main_queue()) {
+        UIApplication.sharedApplication.sendAction(
+            action = NSSelectorFromString("resignFirstResponder"),
+            to = null,
+            from = null,
+            forEvent = null,
+        )
+        @Suppress("DEPRECATION")
+        UIApplication.sharedApplication.keyWindow?.endEditing(true)
+    }
 }

@@ -3,6 +3,7 @@ package dev.lework.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -54,11 +55,16 @@ internal fun AuthEntryView(
     }
     var manualToken by remember { mutableStateOf("") }
     val qrSupported = remember { canScanQrCode() }
+    val dismissKeyboard = rememberKeyboardDismisser()
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Everforest.Bg0)
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+            ) { dismissKeyboard() }
             .windowInsetsPadding(WindowInsets.safeDrawing)
             .padding(20.dp),
         contentAlignment = Alignment.Center,
@@ -424,7 +430,10 @@ internal fun AuthEntryView(
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Button(
-                            onClick = { onManualConnect(manualHost, manualToken) },
+                            onClick = {
+                                dismissKeyboard()
+                                onManualConnect(manualHost, manualToken)
+                            },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = Everforest.Bg3,
                                 contentColor = Everforest.Fg,

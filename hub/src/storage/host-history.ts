@@ -459,6 +459,12 @@ export class HostTaskInspector {
     return this.watched.get(sessionId)?.activePermEvent ?? null
   }
 
+  async isAgyLockedInInteractiveTerminal(
+    nativeId: string,
+  ): Promise<{ locked: boolean; hostAppHint?: string }> {
+    return this.terminalBridge.checkAgyPresenceLock(nativeId)
+  }
+
   /**
    * Attempts to inject a mobile-sent prompt directly into an active `tmux` / `iTerm2` CLI session
    * (`host:agy:*` or `host:claude:*`) so computer terminal and mobile UI stay 100% in sync.

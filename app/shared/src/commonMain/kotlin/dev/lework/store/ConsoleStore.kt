@@ -13,6 +13,7 @@ import dev.lework.security.isTrustedOAuthUrl
 import dev.lework.security.normalizeHubBaseUrl
 import dev.lework.transport.HubRpcClient
 import dev.lework.transport.HubTransport
+import dev.lework.transport.HubTrustException
 import dev.lework.transport.RpcCallException
 import kotlin.io.encoding.Base64
 import kotlinx.coroutines.CancellationException
@@ -1093,13 +1094,14 @@ class ConsoleStore(
                 feederJob?.cancel()
             }
             if (found == null) {
-                if (fromNetworkHandoff) {
-                    // Transient signal drop (e.g., elevator Wi-Fi -> 5G transition): stay in workspace
-                    // with RECONNECTING status so the next NetworkCallback event resumes automatically!
+                if (fromNetworkHandoff || _state.value.hasEnteredWorkspace) {
+                    // Transient signal drop, Wi-Fi wake delay, or brief Hub daemon restart:
+                    // keep `hasEnteredWorkspace = true` with RECONNECTING status so `reconnectRetryJob`
+                    // (every 3.5s) and NetworkCallback / Bonjour recover automatically without bouncing to login!
                     _state.update {
                         it.copy(
                             connectionStatus = ConnectionStatus.RECONNECTING,
-                            connectionError = null,
+                            connectionError = if (fromNetworkHandoff) null else "正在重连主机，恢复网络或服务后将自动同步…",
                         )
                     }
                 } else {
@@ -1414,6 +1416,15 @@ class ConsoleStore(
                 }
                 if (isForegroundResume && _state.value.oauthEnabled) {
                     startOAuthLoginFlow(_state.value.discoveredBaseUrl, wsUrl)
+                }
+            } else if (isForegroundResume && _state.value.hasEnteredWorkspace && t !is HubTrustException) {
+                // Transient socket / Hub-restart failure while already authenticated in workspace:
+                // keep `hasEnteredWorkspace = true` + `RECONNECTING` so `reconnectRetryJob` auto-recovers!
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.RECONNECTING,
+                        connectionError = "连接中断，正在自动重连…",
+                    )
                 }
             } else {
                 _state.update {
@@ -2135,12 +2146,24 @@ class ConsoleStore(
     private suspend fun subscribeAndCatchUp(sessionId: String) {
         val reqToken = subscribeSeqToken
         val existing = _state.value.transcripts[sessionId]
-        val isInitialLoad = existing == null || existing.lastSeq < 0
-        val snap = rpc.subscribeSession(
+        var isInitialLoad = existing == null || existing.lastSeq < 0
+        var snap = rpc.subscribeSession(
             sessionId = sessionId,
             afterSeq = if (isInitialLoad) -1 else existing!!.lastSeq,
             limit = if (isInitialLoad) 220 else null,
         )
+
+        // If Hub restarted or handed a `host:*` session back to disk transcript inspection with a lower
+        // `lastSeq` than the client's cached `lastSeq`, reload the authoritative tail window immediately
+        // so new events are never masked by a stale high-water mark.
+        if (!isInitialLoad && snap.session.lastSeq >= 0 && snap.session.lastSeq < existing!!.lastSeq) {
+            isInitialLoad = true
+            snap = rpc.subscribeSession(
+                sessionId = sessionId,
+                afterSeq = -1,
+                limit = 220,
+            )
+        }
 
         // Strict session check: if the user already switched away while `subscribeSession` was in flight,
         // unsubscribe immediately and do NOT contaminate the newly selected conversation.
@@ -2151,8 +2174,12 @@ class ConsoleStore(
 
         _state.update { s ->
             if (s.activeSessionId != sessionId) return@update s
-            val updatedSessions = s.sessions.map { item ->
-                if (item.id == snap.session.id) snap.session else item
+            val updatedSessions = if (s.sessions.any { it.id == snap.session.id }) {
+                s.sessions.map { item ->
+                    if (item.id == snap.session.id) snap.session else item
+                }
+            } else {
+                listOf(snap.session) + s.sessions
             }
             val nextTranscript = if (isInitialLoad) {
                 val built = reduceTranscriptBatch(SessionTranscript(), snap.events)

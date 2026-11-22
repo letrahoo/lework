@@ -46,6 +46,7 @@ class FakeHubTransport : HubTransport {
 
     var listSessionsException: Throwable? = null
     var connectHelloException: Throwable? = null
+    var discoverNullRemaining: Int = 0
     var simulateTailscaleSameUser: Boolean = false
     var tailscaleHandshakeCount: Int = 0
     var pairRedeemCount: Int = 0
@@ -83,6 +84,10 @@ class FakeHubTransport : HubTransport {
         waitWindowMs: Long,
         preferredHubId: String?,
     ): DiscoveredEndpoint? {
+        if (discoverNullRemaining > 0) {
+            discoverNullRemaining--
+            return null
+        }
         val chosen = candidates.firstOrNull() ?: "https://127.0.0.1:64450"
         return DiscoveredEndpoint(
             baseUrl = chosen,

@@ -750,4 +750,74 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T11_1 auto-recovers from transient wake-up Wi-Fi drop without bouncing out of workspace and resyncs rolled-back lastSeq`() = runTest {
+        val transport = FakeHubTransport()
+        val sid = "host:agy:live_conv"
+        transport.sessions.add(
+            SessionMeta(
+                id = sid,
+                engineId = "agy",
+                cwd = "/workspace/lework",
+                title = "Levi-app-dev",
+                state = SessionState.IDLE,
+                createdAt = 1_000L,
+                updatedAt = 2_000L,
+                lastSeq = 10,
+            ),
+        )
+        transport.sessionEventsMap[sid] = mutableListOf(
+            AgentEvent.UserMessage(9, sid, 1_000L, "u_9", "旧序号提问"),
+            AgentEvent.AssistantDelta(10, sid, 1_100L, "a_10", "旧序号回复"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sid)
+            runCurrent()
+            assertEquals(10, store.state.value.activeTranscript.lastSeq)
+
+            // 1. iPhone locks (`isForeground = false`), WebSocket closes, and on immediate unlock
+            //    Wi-Fi is not up yet (`discoverNullRemaining = 1`).
+            JvmPlatformTestHooks.setForeground(false)
+            runCurrent()
+            transport.emitDisconnected("Background socket closed")
+            runCurrent()
+
+            // Simulate Hub restart / handback where disk transcript now has lower seq (seq 0..2) with new reply!
+            transport.sessions[0] = transport.sessions[0].copy(lastSeq = 2, updatedAt = 5_000L)
+            transport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 4_000L, "u_0", "终端最新提问"),
+                AgentEvent.AssistantDelta(1, sid, 4_500L, "a_1", "电脑端已完成但序号重排的最新回复"),
+                AgentEvent.TurnDone(2, sid, 4_600L, "t_2", "end_turn"),
+            )
+
+            transport.discoverNullRemaining = 1
+            JvmPlatformTestHooks.setForeground(true)
+            runCurrent()
+
+            // Must stay inside workspace with RECONNECTING instead of kicking user out to ERROR screen!
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.RECONNECTING, store.state.value.connectionStatus)
+
+            // 2. `reconnectRetryJob` fires automatically after 3.5s -> reconnects AND detects `lastSeq` rollback (2 < 10)!
+            advanceTimeBy(4_000L)
+            runCurrent()
+
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.CONNECTED, store.state.value.connectionStatus)
+            assertEquals(2, store.state.value.activeTranscript.lastSeq)
+            val assistantTexts = store.state.value.activeTranscript.items
+                .filterIsInstance<ChatTimelineItem.Assistant>()
+                .map { it.text }
+            assertEquals(listOf("电脑端已完成但序号重排的最新回复"), assistantTexts)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

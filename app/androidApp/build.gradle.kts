@@ -47,8 +47,8 @@ android {
         applicationId = "dev.lework.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.6.7"
+        versionCode = 14
+        versionName = "0.6.8"
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }

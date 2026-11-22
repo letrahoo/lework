@@ -43,6 +43,7 @@ object JvmPlatformTestHooks {
     var imagePickSupported: Boolean = true
     var nextPickedImage: PickedImagePayload? = null
     var signingExpiryHours: Int? = null
+    var keyboardDismissCount: Int = 0
 
     fun setForeground(isForeground: Boolean) {
         _foreground.value = isForeground
@@ -87,6 +88,7 @@ object JvmPlatformTestHooks {
         imagePickSupported = true
         nextPickedImage = null
         signingExpiryHours = null
+        keyboardDismissCount = 0
     }
 }
 
@@ -223,3 +225,7 @@ actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
 }
 
 actual fun signingExpiryRemainingHours(): Int? = JvmPlatformTestHooks.signingExpiryHours
+
+actual fun dismissNativeKeyboard() {
+    JvmPlatformTestHooks.keyboardDismissCount++
+}

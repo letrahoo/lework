@@ -187,7 +187,12 @@ export class TerminalBridge {
     claudeRuntime?: ClaudeLiveSessionMeta
   }): Promise<LiveTerminalInspection | null> {
     if (process.platform !== 'darwin' && process.platform !== 'linux') return null
-    const target = await this.findTarget(params)
+    let target = await this.findTarget(params)
+    if (!target && this.topologyCache) {
+      // Refresh terminal pane topology once in case a new tmux pane / iTerm2 tab opened seconds ago
+      this.topologyCache = null
+      target = await this.findTarget(params)
+    }
     if (!target) {
       const hostAppHint =
         params.claudeRuntime?.pid ? await this.detectParentHostApp(params.claudeRuntime.pid) : undefined
@@ -294,7 +299,12 @@ export class TerminalBridge {
       this.pidTtyCache.delete(params.claudeRuntime.pid)
     }
 
-    const target = await this.findTarget(params)
+    let target = await this.findTarget(params)
+    if (!target && this.topologyCache) {
+      // Refresh terminal pane topology once in case a new tmux pane / iTerm2 tab opened seconds ago
+      this.topologyCache = null
+      target = await this.findTarget(params)
+    }
     if (!target) {
       // Check whether the conversation is actively open in an unreachable terminal/IDE window
       if (params.engineId === 'claude') {
@@ -341,6 +351,37 @@ export class TerminalBridge {
     if (!target) return false
     await this.sendRawText(target, '\u001b')
     return true
+  }
+
+  async checkAgyPresenceLock(nativeId: string): Promise<{ locked: boolean; hostAppHint?: string }> {
+    if (process.platform !== 'darwin' && process.platform !== 'linux') {
+      return { locked: false }
+    }
+    this.agyProcCache = null
+    const procs = await this.getAgyTtyProcesses()
+    const holder = procs.find(p => p.presenceConvIds.includes(nativeId) && this.pidAlive(p.pid))
+    if (holder) {
+      const hostAppHint = await this.detectParentHostApp(holder.pid)
+      return { locked: true, hostAppHint }
+    }
+    const lockFile = path.join(this.homeDir, '.gemini', 'antigravity-cli', 'presence', `${nativeId}.lock`)
+    if (!fs.existsSync(lockFile)) return { locked: false }
+    let out = ''
+    try {
+      out = await this.runCmd('lsof', ['-b', '-w', '-Fp', lockFile], 2_000)
+    } catch (err) {
+      const partial = (err as { stdout?: unknown } | null)?.stdout
+      if (typeof partial === 'string') out = partial
+    }
+    for (const line of out.split('\n')) {
+      if (!line.startsWith('p')) continue
+      const pid = Number(line.slice(1).trim())
+      if (pid > 0 && this.pidAlive(pid)) {
+        const hostAppHint = await this.detectParentHostApp(pid)
+        return { locked: true, hostAppHint }
+      }
+    }
+    return { locked: false }
   }
 
   private async findTarget(params: {
@@ -391,13 +432,15 @@ export class TerminalBridge {
   ): AgyTtyProcess | null {
     if (candidates.length === 0) return null
 
-    // 1. Exact `--conversation <nativeId>` match on command line
-    const byExplicitFlag = candidates.find(p => p.args.includes(nativeId))
-    if (byExplicitFlag) return byExplicitFlag
-
-    // 2. Exact active TUI presence lock (`~/.gemini/antigravity-cli/presence/<convId>.lock`)
+    // 1. Exact active TUI presence lock (`~/.gemini/antigravity-cli/presence/<convId>.lock`) — authoritative!
     const byPresence = candidates.find(p => p.presenceConvIds.includes(nativeId))
     if (byPresence) return byPresence
+
+    // 2. Exact `--conversation <nativeId>` match on command line (when not holding another conversation's lock)
+    const byExplicitFlag = candidates.find(
+      p => p.args.includes(nativeId) && (p.presenceConvIds.length === 0 || p.presenceConvIds.includes(nativeId)),
+    )
+    if (byExplicitFlag) return byExplicitFlag
 
     // 3. Unambiguous open SQLite conversation database (`conversations/<convId>.db`)
     const byOpenDb = candidates.filter(p => p.openConvIds.includes(nativeId))
@@ -445,7 +488,15 @@ export class TerminalBridge {
         const rawTty = m[2]!
         const cmd = m[3]!
         if (!pid || rawTty === '??' || rawTty === '?') continue
-        if (cmd.includes('--hub') || cmd.includes('Antigravity Helper')) continue
+        if (
+          cmd.includes('--hub') ||
+          cmd.includes('Antigravity Helper') ||
+          cmd.includes('--input-format') ||
+          cmd.includes('stream-json') ||
+          /\s(-p|--print|--prompt)(\s|$)/.test(cmd)
+        ) {
+          continue
+        }
         const firstToken = cmd.split(/\s+/)[0] ?? ''
         const baseName = path.basename(firstToken)
         if (baseName !== 'agy' && !baseName.startsWith('agy.')) continue
@@ -467,7 +518,9 @@ export class TerminalBridge {
     const pidCsv = candidates.map(c => String(c.pid)).join(',')
     let lsofOut = ''
     try {
-      lsofOut = await this.runCmd('lsof', ['-Ffn', '-p', pidCsv], 3_000)
+      // `-b` prevents kernel blocks on sleeping external disks or Xcode CoreDevice FUSE mounts;
+      // `-w` suppresses non-fatal stat() warnings so lsof finishes in ~100ms instead of timing out!
+      lsofOut = await this.runCmd('lsof', ['-b', '-w', '-Ffn', '-p', pidCsv], 4_000)
     } catch (err) {
       // On macOS, `lsof` exits with code 1 whenever any transient fd closes mid-scan while still
       // writing all valid process fds (`presence/*.lock`, `cwd`) to `stdout`!

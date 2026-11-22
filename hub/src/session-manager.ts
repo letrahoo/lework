@@ -24,12 +24,21 @@ import { CheckpointManager } from './storage/workspace-fs.ts'
 
 const MAX_EVENTS_PER_SESSION = 5_000
 
+interface QueuedTurnItem {
+  turnId: string
+  rawText: string
+  displayUserText: string
+  stagedImages: StagedPromptImage[]
+}
+
 interface ManagedSession {
   meta: SessionMeta
   autoTitle: string
   handle: EngineSession
   events: AgentEvent[]
   baseSeq: number
+  queuedTurns: QueuedTurnItem[]
+  closed?: boolean
   nativeId?: string
 }
 
@@ -104,6 +113,33 @@ export class SessionManager {
       })
     }
     return out
+  }
+
+  private releaseIdleHostWrapperIfDiskAdvanced(
+    sessionId: string,
+    diskLastSeq?: number,
+    diskState?: SessionMeta['state'],
+  ): void {
+    if (!sessionId.startsWith('host:')) return
+    const managed = this.sessions.get(sessionId)
+    if (!managed) return
+    if (
+      managed.meta.state === 'running' ||
+      managed.meta.state === 'waiting_permission' ||
+      managed.queuedTurns.length > 0
+    ) {
+      return
+    }
+    const diskProgressed =
+      (typeof diskLastSeq === 'number' && diskLastSeq > managed.meta.lastSeq) ||
+      diskState === 'running' ||
+      diskState === 'waiting_permission'
+    if (diskProgressed) {
+      managed.closed = true
+      this.sessions.delete(sessionId)
+      void managed.handle?.close().catch(() => undefined)
+      this.hostInspector.retainWatch(sessionId)
+    }
   }
 
   private isSupersededByHubSession(hostOrHubSessionId: string): boolean {
@@ -217,6 +253,7 @@ export class SessionManager {
       handle: null as unknown as EngineSession,
       events: [...seed],
       baseSeq: seed[0]?.seq ?? 0,
+      queuedTurns: [],
       ...(params.resumeNativeId ? { nativeId: params.resumeNativeId } : {}),
     }
     this.sessions.set(sessionId, managed)
@@ -277,70 +314,103 @@ export class SessionManager {
     const displayUserText = text.trim() || `（已发送 ${stagedImages.length} 张图片）`
 
     let managed = this.sessions.get(sessionId)
-    if (!managed && sessionId.startsWith('host:')) {
+    const canProbeLiveTerminal =
+      sessionId.startsWith('host:') &&
+      (!managed || (managed.meta.state !== 'running' && managed.meta.state !== 'waiting_permission'))
+
+    if (canProbeLiveTerminal) {
       const hostLoaded = this.hostInspector.readHostSessionEvents(sessionId)
       const hostEntry = this.hostInspector.getHostSession(sessionId)
-      if (!hostLoaded || !hostEntry) {
+      if (!managed && (!hostLoaded || !hostEntry)) {
         throw new HubRpcError(ErrorCode.NotFound, `Host session "${sessionId}" not found`)
       }
 
-      // First: if this `host:*` conversation is actively open in a reachable local `tmux` / `iTerm2`
-      // terminal, deliver the prompt directly into that live terminal so computer & phone stay in sync!
-      const imgPrefix =
-        stagedImages.length > 0
-          ? `[用户附加了本地图片文件，请使用读取文件工具查看：${stagedImages.map(i => i.stagedPath).join(', ')}]\n\n`
-          : ''
-      const terminalPromptText = `${imgPrefix}${text.trim() || '请结合所附图片进行分析。'}`
-      let deliveredToTerminal = false
-      try {
-        deliveredToTerminal = await this.hostInspector.tryPromptLiveHostSession(
-          sessionId,
-          terminalPromptText,
-          displayUserText,
-        )
-      } catch (err) {
-        if (err instanceof TerminalApprovalError) {
-          throw new HubRpcError(ErrorCode.Conflict, err.message)
-        }
-        throw err
-      }
-
-      if (deliveredToTerminal) {
+      if (hostLoaded && hostEntry) {
+        // First: if this `host:*` conversation is actively open in a reachable local `tmux` / `iTerm2`
+        // terminal, deliver the prompt directly into that live terminal so computer & phone stay in sync!
+        const imgPrefix =
+          stagedImages.length > 0
+            ? `[用户附加了本地图片文件，请使用读取文件工具查看：${stagedImages.map(i => i.stagedPath).join(', ')}]\n\n`
+            : ''
+        const terminalPromptText = `${imgPrefix}${text.trim() || '请结合所附图片进行分析。'}`
+        let deliveredToTerminal = false
         try {
-          const summary = displayUserText.replace(/\s+/g, ' ').trim().slice(0, 18)
-          this.checkpoints.create(
+          deliveredToTerminal = await this.hostInspector.tryPromptLiveHostSession(
             sessionId,
-            hostLoaded.session.cwd,
-            summary ? `对话前自动快照 · ${summary}` : '对话前自动快照',
-            { deduplicateUnchanged: true },
+            terminalPromptText,
+            displayUserText,
           )
-        } catch {
-          // Non-git directories gracefully skip checkpointing
+        } catch (err) {
+          if (err instanceof TerminalApprovalError) {
+            throw new HubRpcError(ErrorCode.Conflict, err.message)
+          }
+          throw err
         }
-        return { turnId }
-      }
 
-      await this.createSession({
-        engineId: hostLoaded.session.engineId,
-        cwd: hostLoaded.session.cwd,
-        workspaces: hostLoaded.session.workspaces,
-        title: hostLoaded.session.title,
-        modelId: overrides?.modelId ?? hostLoaded.session.model,
-        reasoningEffort: overrides?.reasoningEffort,
-        mode: overrides?.mode,
-        fixedSessionId: sessionId,
-        resumeNativeId: hostEntry.nativeId,
-        seedEvents: hostLoaded.events,
-      })
-      managed = this.sessions.get(sessionId)
+        if (!deliveredToTerminal && hostLoaded.session.engineId === 'agy') {
+          // Guardrail: never spawn a shadow `agy --conversation <id>` process if an interactive `agy`
+          // terminal already holds `presence/<id>.lock` (spawning a duplicate deadlocks on the lock!).
+          const lockCheck = await this.hostInspector.isAgyLockedInInteractiveTerminal(hostEntry.nativeId)
+          if (lockCheck.locked) {
+            deliveredToTerminal = await this.hostInspector.tryPromptLiveHostSession(
+              sessionId,
+              terminalPromptText,
+              displayUserText,
+            )
+            if (!deliveredToTerminal) {
+              const where = lockCheck.hostAppHint ? `${lockCheck.hostAppHint} 窗口` : '电脑其他终端窗口'
+              throw new HubRpcError(
+                ErrorCode.Conflict,
+                `该 AGY 会话正在 ${where} 中打开并占用会话锁；请在 tmux 或 iTerm2 中运行以实现手机双向同步，或先关闭电脑上的该会话窗口。`,
+              )
+            }
+          }
+        }
+
+        if (deliveredToTerminal) {
+          if (managed) {
+            this.sessions.delete(sessionId)
+            void managed.handle.close().catch(() => {})
+            this.hostInspector.retainWatch(sessionId)
+          }
+          try {
+            const summary = displayUserText.replace(/\s+/g, ' ').trim().slice(0, 18)
+            this.checkpoints.create(
+              sessionId,
+              hostLoaded.session.cwd,
+              summary ? `对话前自动快照 · ${summary}` : '对话前自动快照',
+              { deduplicateUnchanged: true },
+            )
+          } catch {
+            // Non-git directories gracefully skip checkpointing
+          }
+          return { turnId }
+        }
+
+        if (!managed) {
+          await this.createSession({
+            engineId: hostLoaded.session.engineId,
+            cwd: hostLoaded.session.cwd,
+            workspaces: hostLoaded.session.workspaces,
+            title: hostLoaded.session.title,
+            modelId: overrides?.modelId ?? hostLoaded.session.model,
+            reasoningEffort: overrides?.reasoningEffort,
+            mode: overrides?.mode,
+            fixedSessionId: sessionId,
+            resumeNativeId: hostEntry.nativeId,
+            seedEvents: hostLoaded.events,
+          })
+          managed = this.sessions.get(sessionId)
+        }
+      }
     }
     if (!managed) {
       throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
     }
-    if (managed.meta.state === 'running' || managed.meta.state === 'waiting_permission') {
-      throw new HubRpcError(ErrorCode.Conflict, 'Session is already processing a turn.')
+    if (managed.meta.state === 'waiting_permission') {
+      throw new HubRpcError(ErrorCode.Conflict, '当前会话正在等待权限确认，请先完成审批后再发送。')
     }
-    if (overrides?.modelId && managed.handle.setModel) {
+    if (overrides?.modelId && managed.handle.setModel && managed.meta.state !== 'running') {
       await managed.handle.setModel(overrides.modelId).catch(() => undefined)
       managed.meta.model = overrides.modelId
     }
@@ -350,6 +420,37 @@ export class SessionManager {
     if (overrides?.mode) {
       managed.meta.mode = overrides.mode
     }
+
+    if (managed.meta.state === 'running') {
+      if (managed.queuedTurns.length >= 8) {
+        throw new HubRpcError(ErrorCode.Conflict, '待执行消息队列已满（最多 8 条），请等待当前轮次完成。')
+      }
+      managed.queuedTurns.push({
+        turnId,
+        rawText: text,
+        displayUserText,
+        stagedImages,
+      })
+      managed.meta.queuedPrompts = managed.queuedTurns.map(q => q.displayUserText)
+      managed.meta.updatedAt = Date.now()
+      managed.meta = this.decorateManagedMeta(managed)
+      this.callbacks.onSessionUpdated(managed.meta)
+      return { turnId }
+    }
+
+    this.startManagedTurn(managed, {
+      turnId,
+      rawText: text,
+      displayUserText,
+      stagedImages,
+    })
+
+    return { turnId }
+  }
+
+  private startManagedTurn(managed: ManagedSession, item: QueuedTurnItem): void {
+    const { turnId, rawText, displayUserText, stagedImages } = item
+    const sessionId = managed.meta.id
 
     this.appendEvent(managed, {
       type: 'message.user',
@@ -377,19 +478,39 @@ export class SessionManager {
       // Non-git directories gracefully skip checkpointing
     }
 
+    managed.meta.state = 'running'
+    managed.meta.turnStartedAt = Date.now()
+    managed.meta = this.decorateManagedMeta(managed)
+    this.callbacks.onSessionUpdated(managed.meta)
+
     this.sleepInhibitor.acquire()
     void managed.handle
-      .prompt(turnId, text, stagedImages.length > 0 ? stagedImages : undefined)
+      .prompt(turnId, rawText, stagedImages.length > 0 ? stagedImages : undefined)
       .catch(err => {
         const msg = err instanceof Error ? err.message : String(err)
         this.appendEvent(managed, { type: 'error', message: msg })
-        this.appendEvent(managed, { type: 'session.state', state: 'error', detail: msg })
+        this.appendEvent(managed, { type: 'session.state', state: 'idle', detail: msg })
       })
       .finally(() => {
         this.sleepInhibitor.release()
+        if (managed.closed || !this.sessions.has(sessionId)) {
+          return
+        }
+        const nextQueued = managed.queuedTurns.shift()
+        managed.meta.queuedPrompts =
+          managed.queuedTurns.length > 0 ? managed.queuedTurns.map(q => q.displayUserText) : undefined
+        if (nextQueued) {
+          this.startManagedTurn(managed, nextQueued)
+        } else if (managed.meta.state === 'running') {
+          managed.meta.state = 'idle'
+          managed.meta.turnStartedAt = undefined
+          managed.meta = this.decorateManagedMeta(managed)
+          this.callbacks.onSessionUpdated(managed.meta)
+        } else {
+          managed.meta = this.decorateManagedMeta(managed)
+          this.callbacks.onSessionUpdated(managed.meta)
+        }
       })
-
-    return { turnId }
   }
 
   getSessionMeta(sessionId: string): SessionMeta | undefined {
@@ -451,7 +572,13 @@ export class SessionManager {
       return
     }
     const req = this.requireSession(sessionId)
+    req.queuedTurns = []
+    req.meta.queuedPrompts = undefined
     await req.handle.cancel()
+    req.meta.state = 'idle'
+    req.meta.turnStartedAt = undefined
+    req.meta = this.decorateManagedMeta(req)
+    this.callbacks.onSessionUpdated(req.meta)
   }
 
   async respondPermission(
@@ -567,6 +694,9 @@ export class SessionManager {
 
   async closeSession(sessionId: string): Promise<void> {
     const managed = this.requireSession(sessionId)
+    managed.closed = true
+    managed.queuedTurns = []
+    managed.meta.queuedPrompts = undefined
     await managed.handle.close()
     managed.meta.state = 'closed'
     managed.meta.updatedAt = Date.now()
@@ -619,7 +749,18 @@ export class SessionManager {
     earliestSeq: number
     hasMoreBefore: boolean
   } {
-    const managed = this.sessions.get(sessionId)
+    let managed = this.sessions.get(sessionId)
+    if (managed && sessionId.startsWith('host:')) {
+      const hostProbe = this.hostInspector.readHostSessionEvents(sessionId)
+      if (hostProbe) {
+        this.releaseIdleHostWrapperIfDiskAdvanced(
+          sessionId,
+          hostProbe.session.lastSeq,
+          hostProbe.session.state,
+        )
+        managed = this.sessions.get(sessionId)
+      }
+    }
     if (managed) {
       managed.meta = this.decorateManagedMeta(managed)
       return sliceSessionWindow(managed.meta, managed.events, afterSeq, managed.baseSeq, opts)

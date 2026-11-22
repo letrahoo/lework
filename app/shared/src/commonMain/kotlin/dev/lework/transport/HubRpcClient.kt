@@ -25,6 +25,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -231,47 +232,72 @@ class HubRpcClient(
         var firstUnpinned: DiscoveredEndpoint? = null
         val requirePinned = HubTrust.pinned().isNotEmpty()
         val probedMutex = Mutex()
-        val probed = mutableSetOf<String>()
+        val inFlight = mutableSetOf<String>()
+        val succeeded = mutableSetOf<String>()
         val jobs = mutableListOf<Job>()
 
         suspend fun launchProbeIfNew(base: String) {
             val normalized = normalizeHubBaseUrl(base)
             if (normalized.isEmpty()) return
-            val shouldStart = probedMutex.withLock { probed.add(normalized) }
+            val shouldStart = probedMutex.withLock {
+                if (normalized in inFlight || normalized in succeeded) {
+                    false
+                } else {
+                    inFlight.add(normalized)
+                }
+            }
             if (!shouldStart) return
             val perProbeTimeoutMs =
-                if (normalized.startsWith("https://127.0.0.1:") || normalized.startsWith("https://100.")) 9_000L else 5_000L
+                if (normalized.startsWith("https://127.0.0.1:") || normalized.startsWith("https://100.")) 6_500L else 3_800L
+            // On iOS lock-screen wake or network handoff, Wi-Fi / utun routes can take ~0.4s-1.2s to come up,
+            // causing the initial t=0ms probe to fail immediately. Retry live discovery candidates instead of
+            // blacklisting them for the entire waitWindowMs!
+            val maxAttempts = if (dynamicCandidates != null && normalized != "https://127.0.0.1:64450") 3 else 1
 
             val job = scope.launch {
                 try {
-                    val res = withTimeout(perProbeTimeoutMs) {
-                        probeClient.get("$normalized/v1/auth/discover")
-                    }
-                    if (res.status.isSuccess()) {
-                        val text = res.bodyAsText()
-                        val info = ProtocolJson.decodeFromString(HubDiscoverResult.serializer(), text)
-                        val endpoint = DiscoveredEndpoint(
-                            baseUrl = normalized,
-                            // Never trust a server-supplied path (could smuggle userinfo/host)
-                            wsUrl = hubWsUrlOf(normalized),
-                            discover = info.copy(relayUrls = emptyList()),
-                        )
-                        val fp = HubTrust.observedFor(normalized)
-                        val matchesPreferred = preferredHubId == null || info.hub.id == preferredHubId
-                        val trustedOrSameAccount =
-                            !requirePinned || (fp != null && HubTrust.isPinned(fp)) || info.tailscaleSameUser
-                        if (matchesPreferred && trustedOrSameAccount) {
-                            winner.complete(endpoint)
-                        } else {
-                            probedMutex.withLock {
-                                if (firstUnpinned == null || (preferredHubId != null && info.hub.id == preferredHubId)) {
-                                    firstUnpinned = endpoint
-                                }
+                    for (attempt in 0 until maxAttempts) {
+                        if (winner.isCompleted) break
+                        try {
+                            val res = withTimeout(perProbeTimeoutMs) {
+                                probeClient.get("$normalized/v1/auth/discover")
                             }
+                            if (res.status.isSuccess()) {
+                                val text = res.bodyAsText()
+                                val info = ProtocolJson.decodeFromString(HubDiscoverResult.serializer(), text)
+                                val endpoint = DiscoveredEndpoint(
+                                    baseUrl = normalized,
+                                    // Never trust a server-supplied path (could smuggle userinfo/host)
+                                    wsUrl = hubWsUrlOf(normalized),
+                                    discover = info.copy(relayUrls = emptyList()),
+                                )
+                                probedMutex.withLock { succeeded.add(normalized) }
+                                val fp = HubTrust.observedFor(normalized)
+                                val matchesPreferred = preferredHubId == null || info.hub.id == preferredHubId
+                                val trustedOrSameAccount =
+                                    !requirePinned || (fp != null && HubTrust.isPinned(fp)) || info.tailscaleSameUser
+                                if (matchesPreferred && trustedOrSameAccount) {
+                                    winner.complete(endpoint)
+                                } else {
+                                    probedMutex.withLock {
+                                        if (firstUnpinned == null || (preferredHubId != null && info.hub.id == preferredHubId)) {
+                                            firstUnpinned = endpoint
+                                        }
+                                    }
+                                }
+                                break
+                            }
+                        } catch (ce: kotlinx.coroutines.CancellationException) {
+                            if (!currentCoroutineContext().isActive) throw ce
+                        } catch (_: Throwable) {
+                            // transient candidate failure — retry below if attempts remain
+                        }
+                        if (attempt + 1 < maxAttempts && !winner.isCompleted) {
+                            delay(850L)
                         }
                     }
-                } catch (_: Throwable) {
-                    // ignore individual candidate failure
+                } finally {
+                    probedMutex.withLock { inFlight.remove(normalized) }
                 }
             }
             probedMutex.withLock { jobs.add(job) }
@@ -394,8 +420,14 @@ class HubRpcClient(
                     )
                 }
             }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            if (!currentCoroutineContext().isActive) throw ce
+            throw IllegalStateException("连接主机超时，正在重试身份校验", ce)
         } catch (t: Throwable) {
-            throw HubTrustException("无法连接主机进行身份校验: ${t.message ?: "网络错误"}")
+            throw IllegalStateException("无法连接主机进行身份校验: ${t.message ?: "网络错误"}", t)
+        }
+        if (res.status.value >= 500) {
+            throw IllegalStateException("主机服务正在重启或暂时不可用 (HTTP ${res.status.value})")
         }
         if (!res.status.isSuccess()) {
             throw HubTrustException("主机身份校验未通过（令牌不被该主机认可），已阻止发送令牌")
@@ -404,6 +436,7 @@ class HubRpcClient(
             ProtocolJson.decodeFromString(AttestResponse.serializer(), res.bodyAsText())
         }.getOrNull() ?: throw HubTrustException("主机身份校验响应无效，已阻止发送令牌")
         val seen = HubTrust.observedFor(base)
+            ?: cleanExpected?.takeIf { HubTrust.isPinned(it) }
             ?: throw HubTrustException("未获取到主机证书，已阻止发送令牌")
         if (cleanExpected != null && !constantTimeEquals(seen, cleanExpected)) {
             throw HubTrustException("主机证书指纹与已配对记录不匹配，已阻止发送令牌")
@@ -527,7 +560,7 @@ class HubRpcClient(
                     token = token,
                     client = ClientInfo(
                         name = "lework-mobile",
-                        version = "0.6.7",
+                        version = "0.6.8",
                         platform = platformName,
                     ),
                 ),

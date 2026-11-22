@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -121,8 +123,15 @@ internal fun ConversationStreamView(
     transcript: SessionTranscript,
     isSessionRunning: Boolean,
     onLoadOlder: () -> Unit,
+    onDismissKeyboard: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
+    val isUserDragging by listState.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(isUserDragging) {
+        if (isUserDragging) {
+            onDismissKeyboard()
+        }
+    }
     val segments = remember(transcript.items) { groupTimelineSegments(transcript.items) }
     val reversedSegments = remember(segments) { segments.asReversed() }
     val showLiveSpinner = activeSession != null &&
@@ -183,6 +192,10 @@ internal fun ConversationStreamView(
         reverseLayout = true,
         modifier = Modifier
             .fillMaxSize()
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+            ) { onDismissKeyboard() }
             .padding(horizontal = 16.dp)
             .testTag("conversation_lazy_list"),
         contentPadding = PaddingValues(vertical = 12.dp),

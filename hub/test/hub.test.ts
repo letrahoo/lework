@@ -439,4 +439,112 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
       fs.rmSync(fakeHome, { recursive: true, force: true })
     }
   })
+
+  it('queues follow-up prompts while a turn is running instead of throwing Session is already processing a turn', async () => {
+    let releaseFirstTurn: (() => void) | null = null
+    const receivedPrompts: string[] = []
+    const slowAdapter = {
+      id: 'mock',
+      displayName: 'Slow Queue Test Engine',
+      kind: 'cli' as const,
+      async probe() {
+        return { ready: true, detail: 'ok' }
+      },
+      capabilities() {
+        return { streaming: true, approvals: false, setModel: false, images: false }
+      },
+      async openSession(opts: any) {
+        return {
+          async prompt(turnId: string, text: string) {
+            receivedPrompts.push(text)
+            if (receivedPrompts.length === 1) {
+              await new Promise<void>(resolve => {
+                releaseFirstTurn = resolve
+              })
+            }
+            opts.emit({
+              type: 'message.assistant.delta',
+              messageId: `a_${turnId}`,
+              delta: `完成:${text}`,
+            })
+            opts.emit({
+              type: 'turn.done',
+              turnId,
+              stopReason: 'end_turn',
+            })
+          },
+          async cancel() {
+            releaseFirstTurn?.()
+          },
+          async respondPermission() {},
+          async close() {
+            releaseFirstTurn?.()
+          },
+        }
+      },
+    }
+
+    server = new HubServer({
+      config: {
+        hubId: 'hub_queue_test',
+        name: 'QueueMac',
+        role: 'slave',
+        host: '127.0.0.1',
+        port: 0,
+        token: 'secret-queue-token',
+        workspaceRoots: [repoRoot],
+        cpaEndpoint: 'http://127.0.0.1:8317',
+      },
+      adapters: [slowAdapter as any],
+    })
+
+    const { port } = await server.start()
+    const client = new TestRpcClient()
+    await client.connect(`wss://127.0.0.1:${port}/v1/ws`)
+    await client.call('hub.hello', {
+      protocolVersion: PROTOCOL_VERSION,
+      token: 'secret-queue-token',
+      client: { name: 'test-ios', version: '0.6.8', platform: 'ios' },
+    })
+
+    const created = await client.call('session.create', {
+      engineId: 'mock',
+      cwd: repoRoot,
+    })
+    const sid = created.session.id
+
+    // First prompt starts running and blocks on `releaseFirstTurn`
+    const firstTurn = await client.call('session.prompt', {
+      sessionId: sid,
+      text: '第一条任务',
+    })
+    expect(firstTurn.turnId).toMatch(/^turn_/)
+
+    // Second prompt sent while state === 'running' MUST queue instead of throwing Conflict!
+    const secondTurn = await client.call('session.prompt', {
+      sessionId: sid,
+      text: '第二条追加指令',
+    })
+    expect(secondTurn.turnId).toMatch(/^turn_/)
+
+    const listedWhileRunning = await client.call('session.list', {})
+    const runningMeta = listedWhileRunning.sessions.find((s: any) => s.id === sid)
+    expect(runningMeta?.state).toBe('running')
+    expect(runningMeta?.queuedPrompts).toEqual(['第二条追加指令'])
+
+    // Release first turn -> queued second turn drains automatically and session returns to idle!
+    releaseFirstTurn!()
+    await client.waitForEvent(
+      'turn.done',
+      ev => ev.sessionId === sid && ev.turnId === secondTurn.turnId,
+    )
+
+    expect(receivedPrompts).toEqual(['第一条任务', '第二条追加指令'])
+    const listedAfterDrain = await client.call('session.list', {})
+    const idleMeta = listedAfterDrain.sessions.find((s: any) => s.id === sid)
+    expect(idleMeta?.state).toBe('idle')
+    expect(idleMeta?.queuedPrompts).toBeUndefined()
+
+    client.close()
+  })
 })
