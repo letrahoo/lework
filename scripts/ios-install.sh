@@ -66,15 +66,27 @@ fi
 if [[ "$MODE" == "--install" ]]; then
   DEVICE_ID="${2:-${IOS_DEVICE_UDID:-}}"
   if [[ -z "$DEVICE_ID" ]]; then
-    DEVICE_ID="$(xcrun devicectl list devices | awk '/physical/ && /iPhone/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F-]{20,}$/) {print $i; exit}}')"
+    DEVICE_ID="$(xcrun devicectl list devices --timeout 8 2>/dev/null | awk '/iPhone/ && (/available/ || /connected/) {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F-]{20,}$/) {print $i; exit}}' || true)"
   fi
   if [[ -z "$DEVICE_ID" ]]; then
-    echo "Error: No paired physical iPhone detected. Pass <DEVICE_UDID> explicitly." >&2
+    DEVICE_ID="$(xcrun xctrace list devices 2>/dev/null | awk '/^== Devices ==/{on=1; next} /^==/{on=0} on && /iPhone/ {if (match($0, /\([0-9A-F-]{20,}\)$/)) {print substr($0, RSTART+1, RLENGTH-2); exit}}' || true)"
+  fi
+  if [[ -z "$DEVICE_ID" ]]; then
+    OFFLINE_HINT="$(xcrun xctrace list devices 2>/dev/null | awk '/^== Devices Offline ==/{on=1; next} /^==/{on=0} on && /iPhone/ {print; exit}' || true)"
+    if [[ -n "$OFFLINE_HINT" ]]; then
+      echo "Error: Paired iPhone detected offline ($OFFLINE_HINT)." >&2
+      echo "Unlock your iPhone on the same Wi-Fi (with Xcode 'Connect via network' enabled once) and re-run." >&2
+    else
+      echo "Error: No paired physical iPhone detected. Pass <DEVICE_UDID> explicitly." >&2
+    fi
     exit 1
   fi
 
   if [[ -z "$TEAM_ID" ]]; then
-    echo "Error: APPLE_TEAM_ID is not set (set env APPLE_TEAM_ID or configure ~/.lework/ios.env)." >&2
+    TEAM_ID="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*Apple Development:.*(\([A-Z0-9]\{10\}\)).*/\1/p' | head -n 1 || true)"
+  fi
+  if [[ -z "$TEAM_ID" ]]; then
+    echo "Error: APPLE_TEAM_ID is not set and could not be auto-detected from Keychain." >&2
     exit 1
   fi
 

@@ -5,6 +5,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
 import android.net.Uri
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -27,10 +29,13 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -63,11 +68,68 @@ object AndroidPlatformRuntime {
     internal var tsnetForwarderSecret: String = ""
 
     internal val foregroundFlow = MutableStateFlow(true)
+    internal val networkEpochFlow = MutableStateFlow(0L)
     internal val incomingUriFlow = MutableStateFlow<String?>(null)
     private var activeDiscoveryListener: NsdManager.DiscoveryListener? = null
+    private val bgScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile
+    private var networkCallbackRegistered = false
+    @Volatile
+    private var lastNetworkSignature: String? = null
 
     fun attach(context: Context) {
-        appContext = context.applicationContext
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        registerNetworkMonitorIfNeeded(appCtx)
+    }
+
+    private fun registerNetworkMonitorIfNeeded(ctx: Context) {
+        if (networkCallbackRegistered) return
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        networkCallbackRegistered = true
+        runCatching {
+            val initialNet = cm.activeNetwork
+            val initialIf = if (initialNet != null) cm.getLinkProperties(initialNet)?.interfaceName.orEmpty() else ""
+            lastNetworkSignature = if (initialNet != null) "${initialNet.networkHandle}:$initialIf" else "none"
+
+            cm.registerDefaultNetworkCallback(
+                object : ConnectivityManager.NetworkCallback() {
+                    private fun onRouteUpdated(sig: String, clearLanNsd: Boolean = false) {
+                        val prev = lastNetworkSignature
+                        if (prev == sig) return
+                        lastNetworkSignature = sig
+                        if (clearLanNsd) {
+                            updateNsdUrls(emptyList())
+                        } else {
+                            startNsdDiscovery()
+                        }
+                        bgScope.launch {
+                            AndroidTsnetDaemon.notifyNetworkChanged()
+                        }
+                        if (prev != null) {
+                            networkEpochFlow.value = networkEpochFlow.value + 1L
+                        }
+                    }
+
+                    override fun onAvailable(network: Network) {
+                        val ifName = runCatching { cm.getLinkProperties(network)?.interfaceName.orEmpty() }.getOrDefault("")
+                        onRouteUpdated("${network.networkHandle}:$ifName")
+                    }
+
+                    override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                        val ifName = linkProperties.interfaceName.orEmpty()
+                        onRouteUpdated("${network.networkHandle}:$ifName")
+                    }
+
+                    override fun onLost(network: Network) {
+                        val active = runCatching { cm.activeNetwork }.getOrNull()
+                        if (active == null || active.networkHandle == network.networkHandle) {
+                            onRouteUpdated("none", clearLanNsd = true)
+                        }
+                    }
+                },
+            )
+        }
     }
 
     fun registerDelegate(delegate: AndroidNativeDelegate?) {
@@ -256,6 +318,12 @@ private object AndroidTsnetDaemon {
     private data class ConfigurePayload(
         val controlUrl: String = "",
         val authKey: String = "",
+    )
+
+    @Serializable
+    private data class NetChangePayload(
+        val dns: String = "",
+        val interfaces: String = "",
     )
 
     private fun resolveBinary(): File? {
@@ -490,6 +558,21 @@ private object AndroidTsnetDaemon {
         }
         return callControl(nextPath, if (nextPath == "/v1/status") "GET" else "POST", if (nextPath == "/v1/status") null else "{}")
     }
+
+    suspend fun notifyNetworkChanged() {
+        val ctx = AndroidPlatformRuntime.appContext ?: return
+        if (proc?.isAlive != true || controlPort <= 0 || secret.isEmpty()) return
+        val body = ProtocolJson.encodeToString(
+            NetChangePayload.serializer(),
+            NetChangePayload(
+                dns = detectActiveDnsServers(ctx),
+                interfaces = detectActiveInterfaces(ctx),
+            ),
+        )
+        runCatching {
+            callControl("/v1/netchange", "POST", body)
+        }
+    }
 }
 
 private var memToken: String? = null
@@ -509,11 +592,13 @@ private fun prefs() =
 
 actual fun platformName(): String = "Android ${Build.VERSION.RELEASE}"
 
-actual fun appVersionLabel(): String = "v0.6.1 (20261122.1235)"
+actual fun appVersionLabel(): String = "v0.6.2 (20261122.1310)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
 actual fun observeAppForeground(): StateFlow<Boolean> = AndroidPlatformRuntime.foregroundFlow.asStateFlow()
+
+actual fun observeNetworkEpoch(): StateFlow<Long> = AndroidPlatformRuntime.networkEpochFlow.asStateFlow()
 
 actual fun observeBonjourHubUrls(): StateFlow<List<String>> = AndroidPlatformRuntime.combinedUrls
 

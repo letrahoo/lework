@@ -10,10 +10,11 @@ import (
 )
 
 type fakeBackend struct {
-	status   *RawTailnetStatus
-	whoisMap map[string]*VerifiedInboundPeer
-	listener net.Listener
-	dialAddr string
+	status          *RawTailnetStatus
+	whoisMap        map[string]*VerifiedInboundPeer
+	listener        net.Listener
+	dialAddr        string
+	linkChangeCalls int
 }
 
 func (f *fakeBackend) Start() error { return nil }
@@ -36,6 +37,10 @@ func (f *fakeBackend) StartInteractiveLogin(_ context.Context) (string, error) {
 	return "https://login.tailscale.com/a/test1234", nil
 }
 func (f *fakeBackend) Logout(_ context.Context) error { return nil }
+func (f *fakeBackend) NotifyLinkChange(_ context.Context) error {
+	f.linkChangeCalls++
+	return nil
+}
 func (f *fakeBackend) WhoIs(_ context.Context, remoteAddr string) (*VerifiedInboundPeer, error) {
 	host, _, _ := net.SplitHostPort(remoteAddr)
 	if v, ok := f.whoisMap[host]; ok {

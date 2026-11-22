@@ -51,6 +51,7 @@ class ConsoleStore(
     private var oauthPollJob: Job? = null
     private var tsnetPollJob: Job? = null
     private var resumeJob: Job? = null
+    private var networkHandoffJob: Job? = null
     private var subscribedSessionId: String? = null
     private var subscribeSeqToken: Long = 0L
     private var userManuallyPickedMode: Boolean = false
@@ -102,6 +103,25 @@ class ConsoleStore(
                         verifyAndResumeForegroundSession()
                     } else if (_state.value.tsnetLoggingIn) {
                         checkTsnetAfterForegroundReturn()
+                    }
+                }
+            }
+        }
+        scope.launch {
+            var lastSeenEpoch = observeNetworkEpoch().value
+            observeNetworkEpoch().collect { epoch ->
+                if (epoch <= lastSeenEpoch) return@collect
+                lastSeenEpoch = epoch
+                networkHandoffJob?.cancel()
+                networkHandoffJob = scope.launch {
+                    delay(650L)
+                    val cur = _state.value
+                    if (manualPairingMode || pairingInFlight) return@launch
+                    if (cur.hasEnteredWorkspace && observeAppForeground().value) {
+                        resumeJob?.cancel()
+                        verifyAndResumeForegroundSession(fromNetworkHandoff = true)
+                    } else if (!cur.hasEnteredWorkspace && cur.connectionStatus == ConnectionStatus.ERROR) {
+                        bootstrapOrConnect()
                     }
                 }
             }
@@ -892,7 +912,7 @@ class ConsoleStore(
      * - Pass: resumes the active Session context seamlessly and catches up missed events (`afterSeq`).
      * - Fail: transitions back to the reconnect / auth screen (`hasEnteredWorkspace = false`).
      */
-    fun verifyAndResumeForegroundSession() {
+    fun verifyAndResumeForegroundSession(fromNetworkHandoff: Boolean = false) {
         if (resumeJob?.isActive == true) return
         resumeJob = scope.launch {
             val cachedToken = loadSavedAccessToken()
@@ -908,10 +928,33 @@ class ConsoleStore(
                 return@launch
             }
 
-            // Fast-path: if WebSocket remained alive across a brief lock, verify permission & catch up in place
-            if (_state.value.connectionStatus == ConnectionStatus.CONNECTED) {
+            // If we were riding on embedded tsnet (`127.0.0.1:<port>`) and a network handoff just fired
+            // (e.g., arriving home onto Wi-Fi), check whether a direct LAN endpoint is now reachable
+            // so we can upgrade to direct LAN speed seamlessly.
+            val currentBase = _state.value.discoveredBaseUrl
+            var shouldUpgradeToLan = false
+            if (fromNetworkHandoff && currentBase.startsWith("https://127.0.0.1:")) {
+                val lanCandidates = candidateHubHttpUrls().filterNot {
+                    it.startsWith("https://127.0.0.1:") || it.startsWith("https://10.0.2.2:") || it.startsWith("https://100.")
+                }
+                if (lanCandidates.isNotEmpty()) {
+                    val preferredId = _state.value.hub?.id ?: loadActiveHostId()
+                    val lanHit = rpc.discoverIntranetHub(
+                        candidates = lanCandidates,
+                        waitWindowMs = 800L,
+                        preferredHubId = preferredId,
+                    )
+                    if (lanHit != null) {
+                        shouldUpgradeToLan = true
+                    }
+                }
+            }
+
+            // Fast-path: if WebSocket remained alive across a brief lock or same-interface refresh, verify & catch up in place
+            if (!shouldUpgradeToLan && _state.value.connectionStatus == ConnectionStatus.CONNECTED) {
+                val fastProbeTimeoutMs = if (fromNetworkHandoff) 1_200L else 3_500L
                 try {
-                    val liveSessions = withTimeout(3_500L) { rpc.listSessions() }
+                    val liveSessions = withTimeout(fastProbeTimeoutMs) { rpc.listSessions() }
                     _state.update { it.copy(sessions = liveSessions, connectionError = null) }
                     val activeId = _state.value.activeSessionId
                     if (activeId != null) {
@@ -935,10 +978,11 @@ class ConsoleStore(
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (_: Throwable) {
-                    // Zombie TCP socket after iOS sleep — fall through to reconnect
+                    // Dead socket after network handoff or sleep — fall through to reconnect
                 }
             }
 
+            runCatching { rpc.disconnect() }
             _state.update {
                 it.copy(
                     connectionStatus = ConnectionStatus.RECONNECTING,
@@ -960,12 +1004,23 @@ class ConsoleStore(
                 feederJob?.cancel()
             }
             if (found == null) {
-                _state.update {
-                    it.copy(
-                        hasEnteredWorkspace = false,
-                        connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = "唤醒校验未通过：未发现同一 Wi‑Fi 主机或 Tailscale 连接，请检查网络后点击重连",
-                    )
+                if (fromNetworkHandoff) {
+                    // Transient signal drop (e.g., elevator Wi-Fi -> 5G transition): stay in workspace
+                    // with RECONNECTING status so the next NetworkCallback event resumes automatically!
+                    _state.update {
+                        it.copy(
+                            connectionStatus = ConnectionStatus.RECONNECTING,
+                            connectionError = null,
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            hasEnteredWorkspace = false,
+                            connectionStatus = ConnectionStatus.ERROR,
+                            connectionError = "唤醒校验未通过：未发现同一 Wi‑Fi 主机或 Tailscale 连接，请检查网络后点击重连",
+                        )
+                    }
                 }
                 return@launch
             }
@@ -982,12 +1037,30 @@ class ConsoleStore(
             }
 
             val resumeToken = loadHostAccessToken(found.discover.hub.id) ?: cachedToken
-            connectWithToken(
+            val ok = connectWithToken(
                 wsUrl = found.wsUrl,
                 token = resumeToken,
                 isForegroundResume = true,
                 expectedHubId = found.discover.hub.id,
             )
+            if (!ok && found.discover.tailscaleSameUser) {
+                val hs = runCatching {
+                    rpc.authenticateViaTailscale(found.baseUrl, platformName())
+                }.getOrNull()
+                if (hs != null) {
+                    val userName = hs.user?.name ?: found.discover.tailscaleUser ?: "Owner"
+                    saveAuthSession(hs.accessToken, userName)
+                    saveHostAccessToken(hs.hub.id, hs.accessToken)
+                    upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
+                    connectWithToken(
+                        wsUrl = found.wsUrl,
+                        token = hs.accessToken,
+                        isForegroundResume = true,
+                        expectedHubId = hs.hub.id,
+                        expectedFingerprint = hs.fingerprint,
+                    )
+                }
+            }
         }
     }
 

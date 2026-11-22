@@ -121,10 +121,23 @@ object IosNativeBridge {
     private val pendingImage = mutableMapOf<Long, (PickedImagePayload?) -> Unit>()
 
     internal val incomingUriFlow = MutableStateFlow<String?>(null)
+    internal val networkEpochFlow = MutableStateFlow(0L)
     internal var tsnetProxyUrls: List<String> = emptyList()
 
     fun registerDelegate(delegate: IosNativeDelegate) {
         this.delegate = delegate
+    }
+
+    fun notifyNetworkChanged(tsnetJson: String, isWifi: Boolean) {
+        if (!isWifi) {
+            IosDiscoveryBus.updateBonjour(emptyList())
+        } else {
+            IosBonjourScanner.startOrRefresh()
+        }
+        if (tsnetJson.isNotBlank() && tsnetJson != "{}") {
+            parseMobileTsnetJson(tsnetJson)
+        }
+        networkEpochFlow.value = networkEpochFlow.value + 1L
     }
 
     internal fun allocTsnetCallback(cb: (String) -> Unit): Long {
@@ -401,6 +414,8 @@ actual fun observeAppForeground(): StateFlow<Boolean> {
     IosAppLifecycle.ensureRegistered()
     return IosAppLifecycle.isForeground
 }
+
+actual fun observeNetworkEpoch(): StateFlow<Long> = IosNativeBridge.networkEpochFlow.asStateFlow()
 
 actual fun observeBonjourHubUrls(): StateFlow<List<String>> = IosDiscoveryBus.combined
 

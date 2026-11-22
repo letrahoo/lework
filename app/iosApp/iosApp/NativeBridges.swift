@@ -1,5 +1,6 @@
 import AVFoundation
 import Darwin
+import Network
 import PhotosUI
 import Shared
 import SwiftUI
@@ -11,10 +12,38 @@ final class NativeBridgeCoordinator: NSObject, ObservableObject, IosNativeDelega
     private var activeQrReqId: Int64?
     private var activeImageReqId: Int64?
     private let tsnetQueue = DispatchQueue(label: "dev.lework.tsnet", qos: .userInitiated)
+    private let pathMonitor = NWPathMonitor()
+    private let pathQueue = DispatchQueue(label: "dev.lework.pathmonitor", qos: .utility)
+    private var lastPathSignature: String?
 
     override init() {
         super.init()
         IosNativeBridge.shared.registerDelegate(delegate: self)
+        startPathMonitor()
+    }
+
+    private func startPathMonitor() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            let isWifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
+            let isCell = path.usesInterfaceType(.cellular)
+            let ifaceNames = path.availableInterfaces.map(\.name).joined(separator: ",")
+            let sig = "\(path.status)-\(isWifi)-\(isCell)-\(ifaceNames)"
+            if self.lastPathSignature == nil {
+                self.lastPathSignature = sig
+                return
+            }
+            guard self.lastPathSignature != sig else { return }
+            self.lastPathSignature = sig
+            self.tsnetQueue.async { [weak self] in
+                guard let self else { return }
+                let json = self.consumeGoCString(LeworkTsnetNotifyLinkChange())
+                DispatchQueue.main.async {
+                    IosNativeBridge.shared.notifyNetworkChanged(tsnetJson: json, isWifi: isWifi)
+                }
+            }
+        }
+        pathMonitor.start(queue: pathQueue)
     }
 
     private func consumeGoCString(_ ptr: UnsafeMutablePointer<CChar>?) -> String {

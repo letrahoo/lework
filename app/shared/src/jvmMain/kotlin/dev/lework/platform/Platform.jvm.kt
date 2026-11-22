@@ -11,6 +11,9 @@ object JvmPlatformTestHooks {
     private val _foreground = MutableStateFlow(true)
     val foreground: StateFlow<Boolean> = _foreground.asStateFlow()
 
+    private val _networkEpoch = MutableStateFlow(0L)
+    val networkEpoch: StateFlow<Long> = _networkEpoch.asStateFlow()
+
     private val _bonjourUrls = MutableStateFlow<List<String>>(emptyList())
     val bonjourUrls: StateFlow<List<String>> = _bonjourUrls.asStateFlow()
 
@@ -45,6 +48,10 @@ object JvmPlatformTestHooks {
         _foreground.value = isForeground
     }
 
+    fun bumpNetworkEpoch() {
+        _networkEpoch.value = _networkEpoch.value + 1L
+    }
+
     fun setBonjourUrls(urls: List<String>) {
         _bonjourUrls.value = urls
     }
@@ -55,6 +62,7 @@ object JvmPlatformTestHooks {
 
     fun reset() {
         _foreground.value = true
+        _networkEpoch.value = 0L
         _bonjourUrls.value = emptyList()
         _incomingPairingUri.value = null
         candidateUrls = listOf("https://127.0.0.1:64450")
@@ -89,6 +97,8 @@ actual fun appVersionLabel(): String = "v0.5.0 (test)"
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
 actual fun observeAppForeground(): StateFlow<Boolean> = JvmPlatformTestHooks.foreground
+
+actual fun observeNetworkEpoch(): StateFlow<Long> = JvmPlatformTestHooks.networkEpoch
 
 actual fun candidateHubHttpUrls(): List<String> =
     (JvmPlatformTestHooks.bonjourUrls.value +

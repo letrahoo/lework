@@ -632,4 +632,52 @@ class ConsoleStoreStateTest {
         assertEquals(setOf(fpA), dev.lework.security.HubTrust.pinned())
         dev.lework.security.HubTrust.resetForTests()
     }
+
+    @Test
+    fun `T12_2 live network handoff upgrades from tsnet forwarder to direct LAN seamlessly without dropping session`() = runTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.candidateUrls = listOf("https://127.0.0.1:59123")
+        val transport = FakeHubTransport()
+        val sess = SessionMeta(
+            id = "host:claude:roaming_1",
+            engineId = "claude",
+            cwd = "/workspace/lework",
+            title = "Roaming Session",
+            state = SessionState.RUNNING,
+            createdAt = 1_000L,
+            updatedAt = 2_000L,
+            lastSeq = 0,
+        )
+        transport.sessions.add(sess)
+        transport.sessionEventsMap[sess.id] = mutableListOf(
+            AgentEvent.UserMessage(0, sess.id, 1_000L, "u_0", "出门测试切网"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sess.id)
+            runCurrent()
+            assertEquals("https://127.0.0.1:59123", store.state.value.discoveredBaseUrl)
+
+            // User walks back onto home Wi-Fi: Bonjour advertises LAN IP, new event appended, network epoch bumps
+            JvmPlatformTestHooks.setBonjourUrls(listOf("https://192.168.1.44:64450"))
+            transport.sessionEventsMap[sess.id]!!.add(
+                AgentEvent.AssistantDelta(1, sess.id, 3_000L, "a_1", "回家切回局域网满速直连"),
+            )
+            JvmPlatformTestHooks.bumpNetworkEpoch()
+            advanceTimeBy(800L)
+            runCurrent()
+
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.CONNECTED, store.state.value.connectionStatus)
+            assertEquals("https://192.168.1.44:64450", store.state.value.discoveredBaseUrl)
+            assertEquals(2, store.state.value.activeTranscript.items.size)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

@@ -31,8 +31,9 @@ type Config struct {
 	AuthKey         string `json:"authKey,omitempty"`
 	HubUpstreamAddr string `json:"hubUpstreamAddr,omitempty"`
 	HubPort         int    `json:"hubPort,omitempty"`
-	ForwarderSecret string `json:"-"`
-	VerboseLog      bool   `json:"verboseLog,omitempty"`
+	ForwarderSecret string                         `json:"-"`
+	OnNetworkChange func(dns, interfaces string)   `json:"-"`
+	VerboseLog      bool                           `json:"verboseLog,omitempty"`
 }
 
 type PeerCandidate struct {
@@ -82,6 +83,7 @@ type EngineBackend interface {
 	StartInteractiveLogin(ctx context.Context) (string, error)
 	Logout(ctx context.Context) error
 	WhoIs(ctx context.Context, remoteAddr string) (*VerifiedInboundPeer, error)
+	NotifyLinkChange(ctx context.Context) error
 }
 
 type RawPeerInfo struct {
@@ -318,6 +320,16 @@ func (b *realTsnetBackend) Logout(ctx context.Context) error {
 	b.authURL = ""
 	b.mu.Unlock()
 	return lc.Logout(ctx)
+}
+
+func (b *realTsnetBackend) NotifyLinkChange(ctx context.Context) error {
+	lc, err := b.srv.LocalClient()
+	if err != nil {
+		return err
+	}
+	_ = lc.DebugAction(ctx, "rebind")
+	_ = lc.DebugAction(ctx, "restun")
+	return nil
 }
 
 func (b *realTsnetBackend) WhoIs(ctx context.Context, remoteAddr string) (*VerifiedInboundPeer, error) {
@@ -590,6 +602,20 @@ func (m *Manager) Logout(ctx context.Context) StatusSnapshot {
 	return m.Status(ctx)
 }
 
+func (m *Manager) NotifyNetworkChange(ctx context.Context, dns, interfaces string) StatusSnapshot {
+	m.mu.Lock()
+	hook := m.cfg.OnNetworkChange
+	b := m.backend
+	m.mu.Unlock()
+	if hook != nil {
+		hook(dns, interfaces)
+	}
+	if b != nil {
+		_ = b.NotifyLinkChange(ctx)
+	}
+	return m.Status(ctx)
+}
+
 func (m *Manager) LookupInboundByLocalPort(localPort int) VerifiedInboundPeer {
 	for attempt := 0; attempt < 100; attempt++ {
 		m.inboundMu.RLock()
@@ -841,6 +867,21 @@ func (m *Manager) ServeControlHTTP(secret string) (int, *http.Server, error) {
 	mux.HandleFunc("/v1/whois", auth(func(w http.ResponseWriter, r *http.Request) {
 		port, _ := strconv.Atoi(r.URL.Query().Get("localPort"))
 		_ = json.NewEncoder(w).Encode(m.LookupInboundByLocalPort(port))
+	}))
+
+	mux.HandleFunc("/v1/netchange", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			DNS        string `json:"dns"`
+			Interfaces string `json:"interfaces"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		_ = json.NewEncoder(w).Encode(m.NotifyNetworkChange(ctx, body.DNS, body.Interfaces))
 	}))
 
 	srv := &http.Server{Handler: mux}

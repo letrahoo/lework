@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -18,7 +19,21 @@ import (
 	"tailscale.com/net/netmon"
 )
 
-func installCustomDNSResolverIfNeeded(rawServers string) {
+type parsedIf struct {
+	name  string
+	addrs []net.Addr
+}
+
+var (
+	activeDNSServers atomic.Pointer[[]string]
+	dnsResolverOnce  sync.Once
+
+	ifStateMu     sync.RWMutex
+	ifStaticList  []parsedIf
+	ifPrimaryName = "wlan0"
+)
+
+func updateCustomDNSResolver(rawServers string) {
 	var servers []string
 	for _, item := range strings.Split(rawServers, ",") {
 		clean := strings.TrimSpace(item)
@@ -30,8 +45,6 @@ func installCustomDNSResolverIfNeeded(rawServers string) {
 		}
 		servers = append(servers, clean)
 	}
-	// On Android (without `/etc/resolv.conf`), Go's pure-Go resolver defaults to `127.0.0.1:53`
-	// unless custom DNS servers are supplied. Fall back to reliable public resolvers.
 	if len(servers) == 0 {
 		if _, err := os.Stat("/etc/resolv.conf"); err != nil {
 			servers = []string{"223.5.5.5:53", "1.1.1.1:53", "8.8.8.8:53"}
@@ -40,25 +53,33 @@ func installCustomDNSResolverIfNeeded(rawServers string) {
 	if len(servers) == 0 {
 		return
 	}
+	activeDNSServers.Store(&servers)
 
-	var rr atomic.Uint32
-	dialer := &net.Dialer{Timeout: 3 * time.Second}
-	net.DefaultResolver = &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			idx := int(rr.Add(1)-1) % len(servers)
-			var lastErr error
-			for i := 0; i < len(servers); i++ {
-				target := servers[(idx+i)%len(servers)]
-				conn, err := dialer.DialContext(ctx, network, target)
-				if err == nil {
-					return conn, nil
+	dnsResolverOnce.Do(func() {
+		var rr atomic.Uint32
+		dialer := &net.Dialer{Timeout: 3 * time.Second}
+		net.DefaultResolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				curPtr := activeDNSServers.Load()
+				if curPtr == nil || len(*curPtr) == 0 {
+					return dialer.DialContext(ctx, network, "223.5.5.5:53")
 				}
-				lastErr = err
-			}
-			return nil, lastErr
-		},
-	}
+				cur := *curPtr
+				idx := int(rr.Add(1)-1) % len(cur)
+				var lastErr error
+				for i := 0; i < len(cur); i++ {
+					target := cur[(idx+i)%len(cur)]
+					conn, err := dialer.DialContext(ctx, network, target)
+					if err == nil {
+						return conn, nil
+					}
+					lastErr = err
+				}
+				return nil, lastErr
+			},
+		}
+	})
 }
 
 func probeOutboundLocalIP() net.IP {
@@ -76,22 +97,10 @@ func probeOutboundLocalIP() net.IP {
 	return nil
 }
 
-// installSafeInterfaceGetterIfNeeded avoids Android 11+ SELinux `NETLINK_ROUTE` denials when
-// `net.Interfaces()` is blocked inside an untrusted_app sandbox.
-func installSafeInterfaceGetterIfNeeded(rawSpec string) {
-	_, stdErr := net.Interfaces()
-	trimmed := strings.TrimSpace(rawSpec)
-	if stdErr == nil && trimmed == "" {
-		return
-	}
-
-	type parsedIf struct {
-		name  string
-		addrs []net.Addr
-	}
+func updateSafeInterfaceSpec(rawSpec string) {
 	var staticList []parsedIf
 	var primaryName string
-	for _, entry := range strings.Split(trimmed, ",") {
+	for _, entry := range strings.Split(strings.TrimSpace(rawSpec), ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
@@ -141,9 +150,29 @@ func installSafeInterfaceGetterIfNeeded(rawSpec string) {
 	if primaryName == "" {
 		primaryName = "wlan0"
 	}
+	ifStateMu.Lock()
+	ifStaticList = staticList
+	ifPrimaryName = primaryName
+	ifStateMu.Unlock()
 	notifyAndroidDefaultRouteInterface(primaryName)
+}
+
+// installSafeInterfaceGetterIfNeeded avoids Android 11+ SELinux `NETLINK_ROUTE` denials when
+// `net.Interfaces()` is blocked inside an untrusted_app sandbox.
+func installSafeInterfaceGetterIfNeeded(rawSpec string) {
+	_, stdErr := net.Interfaces()
+	trimmed := strings.TrimSpace(rawSpec)
+	if stdErr == nil && trimmed == "" {
+		return
+	}
+	updateSafeInterfaceSpec(trimmed)
 
 	netmon.RegisterInterfaceGetter(func() ([]netmon.Interface, error) {
+		ifStateMu.RLock()
+		primaryName := ifPrimaryName
+		staticList := append([]parsedIf(nil), ifStaticList...)
+		ifStateMu.RUnlock()
+
 		out := []netmon.Interface{
 			{
 				Interface: &net.Interface{
@@ -222,7 +251,7 @@ func main() {
 	oneShotLogin := flag.Bool("login", false, "Run interactive login in foreground and exit once Running")
 	flag.Parse()
 
-	installCustomDNSResolverIfNeeded(*dnsServers)
+	updateCustomDNSResolver(*dnsServers)
 	installSafeInterfaceGetterIfNeeded(*interfacesSpec)
 
 	resolvedUpstream := *upstream
@@ -238,7 +267,15 @@ func main() {
 		HubUpstreamAddr: resolvedUpstream,
 		HubPort:         *hubPort,
 		ForwarderSecret: strings.TrimSpace(os.Getenv("LEWORK_FORWARDER_SECRET")),
-		VerboseLog:      *verbose,
+		OnNetworkChange: func(dns, interfaces string) {
+			if strings.TrimSpace(dns) != "" {
+				updateCustomDNSResolver(dns)
+			}
+			if strings.TrimSpace(interfaces) != "" {
+				updateSafeInterfaceSpec(interfaces)
+			}
+		},
+		VerboseLog: *verbose,
 	}, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to start tsnet manager: %v\n", err)

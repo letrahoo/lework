@@ -148,6 +148,23 @@ func LeworkTsnetLogout() *C.char {
 	return toCStringJson(mgr.Logout(ctx))
 }
 
+//export LeworkTsnetNotifyLinkChange
+func LeworkTsnetNotifyLinkChange() *C.char {
+	bridgeMu.Lock()
+	mgr := bridgeMgr
+	bridgeMu.Unlock()
+	if mgr == nil {
+		return toCStringJson(mesh.StatusSnapshot{
+			BackendState: "Stopped",
+			TailscaleIPs: []string{},
+			Peers:        []mesh.PeerCandidate{},
+		})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	return toCStringJson(mgr.NotifyNetworkChange(ctx, "", ""))
+}
+
 //export LeworkTsnetFreeString
 func LeworkTsnetFreeString(ptr *C.char) {
 	if ptr != nil {

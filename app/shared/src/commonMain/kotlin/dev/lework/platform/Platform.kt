@@ -57,6 +57,7 @@ expect fun platformName(): String
 expect fun appVersionLabel(): String
 expect fun epochMillis(): Long
 expect fun observeAppForeground(): StateFlow<Boolean>
+expect fun observeNetworkEpoch(): StateFlow<Long>
 expect fun candidateHubHttpUrls(): List<String>
 expect fun observeBonjourHubUrls(): StateFlow<List<String>>
 expect fun startBonjourDiscovery()
