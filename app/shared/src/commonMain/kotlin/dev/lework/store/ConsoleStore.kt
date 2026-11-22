@@ -1446,6 +1446,94 @@ class ConsoleStore(
         refreshHostSessions()
     }
 
+    fun setDrawerShowArchived(showArchived: Boolean) {
+        _state.update { it.copy(drawerShowArchived = showArchived) }
+    }
+
+    fun setDrawerSearchQuery(query: String) {
+        _state.update { it.copy(drawerSearchQuery = query) }
+    }
+
+    fun renameSession(sessionId: String, newTitle: String) {
+        if (sessionId.isBlank()) return
+        val clean = newTitle.replace(Regex("\\s+"), " ").trim().take(120)
+        val prevSession = _state.value.sessions.firstOrNull { it.id == sessionId }
+        if (clean.isNotEmpty()) {
+            _state.update { s ->
+                s.copy(
+                    sessions = s.sessions.map { item ->
+                        if (item.id == sessionId) item.copy(title = clean, customTitle = clean) else item
+                    },
+                )
+            }
+        }
+        scope.launch {
+            try {
+                if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) {
+                    ensureConnectedForSend(forceReconnect = false)
+                }
+                val updated = rpc.renameSession(sessionId, clean)
+                _state.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map { item -> if (item.id == updated.id) updated else item },
+                    )
+                }
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+            } catch (t: Throwable) {
+                if (prevSession != null) {
+                    _state.update { s ->
+                        s.copy(
+                            sessions = s.sessions.map { item -> if (item.id == sessionId) prevSession else item },
+                            promptErrorText = "重命名未成功: ${t.message ?: "请检查连接后重试"}",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun archiveSession(sessionId: String, archived: Boolean) {
+        if (sessionId.isBlank()) return
+        val prevSession = _state.value.sessions.firstOrNull { it.id == sessionId }
+        val nowMs = epochMillis()
+        _state.update { s ->
+            s.copy(
+                sessions = s.sessions.map { item ->
+                    if (item.id == sessionId) {
+                        item.copy(archived = archived, archivedAt = if (archived) nowMs else null)
+                    } else {
+                        item
+                    }
+                },
+            )
+        }
+        scope.launch {
+            try {
+                if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) {
+                    ensureConnectedForSend(forceReconnect = false)
+                }
+                val updated = rpc.archiveSession(sessionId, archived)
+                _state.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map { item -> if (item.id == updated.id) updated else item },
+                    )
+                }
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+            } catch (t: Throwable) {
+                if (prevSession != null) {
+                    _state.update { s ->
+                        s.copy(
+                            sessions = s.sessions.map { item -> if (item.id == sessionId) prevSession else item },
+                            promptErrorText = "${if (archived) "归档" else "取消归档"}未成功: ${t.message ?: "请检查连接后重试"}",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     /** Starts a clean blank draft session using the computer's aligned engine setup. */
     fun startNewDraftSession() {
         switchSubscriptionTo(null)

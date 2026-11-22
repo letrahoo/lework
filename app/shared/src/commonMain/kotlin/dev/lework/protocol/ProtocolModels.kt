@@ -219,6 +219,9 @@ data class SessionMeta(
     val cwd: String,
     val workspaces: List<String>? = null,
     val title: String,
+    val customTitle: String? = null,
+    val archived: Boolean = false,
+    val archivedAt: Long? = null,
     val state: SessionState,
     val createdAt: Long,
     val updatedAt: Long,
@@ -559,6 +562,18 @@ data class SessionCancelParams(
 data class SessionSetModelParams(
     val sessionId: String,
     val modelId: String,
+)
+
+@Serializable
+data class SessionRenameParams(
+    val sessionId: String,
+    val title: String,
+)
+
+@Serializable
+data class SessionArchiveParams(
+    val sessionId: String,
+    val archived: Boolean,
 )
 
 @Serializable

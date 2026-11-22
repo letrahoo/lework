@@ -155,6 +155,8 @@ interface HubTransport {
 
     suspend fun cancelSession(sessionId: String)
     suspend fun setSessionModel(sessionId: String, modelId: String): SessionMeta
+    suspend fun renameSession(sessionId: String, title: String): SessionMeta
+    suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMeta
 
     suspend fun subscribeSession(
         sessionId: String,
@@ -525,7 +527,7 @@ class HubRpcClient(
                     token = token,
                     client = ClientInfo(
                         name = "lework-mobile",
-                        version = "0.6.6",
+                        version = "0.6.7",
                         platform = platformName,
                     ),
                 ),
@@ -616,6 +618,18 @@ class HubRpcClient(
         call<SessionCreateResult>(
             "session.setModel",
             encodeParams(SessionSetModelParams(sessionId = sessionId, modelId = modelId)),
+        ).session
+
+    override suspend fun renameSession(sessionId: String, title: String): SessionMeta =
+        call<SessionCreateResult>(
+            "session.rename",
+            encodeParams(SessionRenameParams(sessionId = sessionId, title = title)),
+        ).session
+
+    override suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMeta =
+        call<SessionCreateResult>(
+            "session.archive",
+            encodeParams(SessionArchiveParams(sessionId = sessionId, archived = archived)),
         ).session
 
     override suspend fun subscribeSession(

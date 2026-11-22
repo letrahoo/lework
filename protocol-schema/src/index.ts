@@ -207,6 +207,9 @@ export const SessionMeta = z.object({
   cwd: z.string(),
   workspaces: z.array(z.string()).optional(),
   title: z.string(),
+  customTitle: z.string().optional(),
+  archived: z.boolean().optional(),
+  archivedAt: z.number().int().optional(),
   state: SessionState,
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
@@ -565,6 +568,14 @@ export const Methods = {
   },
   'session.setModel': {
     params: z.object({ sessionId: z.string(), modelId: z.string() }),
+    result: z.object({ session: SessionMeta }),
+  },
+  'session.rename': {
+    params: z.object({ sessionId: z.string().min(1).max(256), title: z.string().max(160) }),
+    result: z.object({ session: SessionMeta }),
+  },
+  'session.archive': {
+    params: z.object({ sessionId: z.string().min(1).max(256), archived: z.boolean() }),
     result: z.object({ session: SessionMeta }),
   },
   'session.close': {

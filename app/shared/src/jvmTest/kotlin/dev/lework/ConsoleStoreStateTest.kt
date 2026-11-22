@@ -680,4 +680,74 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T9_1 supports session rename, non-destructive archiving, archived list view, and search filtering`() = runTest {
+        val transport = FakeHubTransport()
+        val sess1 = SessionMeta(
+            id = "host:agy:task_alpha",
+            engineId = "agy",
+            cwd = "/workspace/lework",
+            title = "Initial Alpha Prompt",
+            state = SessionState.IDLE,
+            createdAt = 1_000L,
+            updatedAt = 2_000L,
+            lastSeq = 1,
+        )
+        val sess2 = SessionMeta(
+            id = "host:claude:task_beta",
+            engineId = "claude",
+            cwd = "/workspace/monee",
+            title = "Initial Beta Prompt",
+            state = SessionState.IDLE,
+            createdAt = 1_000L,
+            updatedAt = 3_000L,
+            lastSeq = 1,
+        )
+        transport.sessions.addAll(listOf(sess2, sess1))
+        transport.sessionEventsMap[sess1.id] = mutableListOf(
+            AgentEvent.UserMessage(0, sess1.id, 1_000L, "u_0", "历史记录永久保留校验"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            assertEquals(2, store.state.value.filteredHistorySessions.size)
+            assertEquals(0, store.state.value.archivedSessionsCount)
+
+            // 1. Rename sess1 -> immediately searchable by custom title
+            store.renameSession(sess1.id, "iOS 渲染性能优化专项")
+            runCurrent()
+            assertEquals("iOS 渲染性能优化专项", store.state.value.sessions.first { it.id == sess1.id }.title)
+
+            store.setDrawerSearchQuery("渲染性能")
+            assertEquals(listOf(sess1.id), store.state.value.filteredHistorySessions.map { it.id })
+            store.setDrawerSearchQuery("")
+
+            // 2. Archive sess1 -> moves out of active history into Archived list without deleting transcript
+            store.archiveSession(sess1.id, true)
+            runCurrent()
+            assertEquals(listOf(sess2.id), store.state.value.filteredHistorySessions.map { it.id })
+            assertEquals(1, store.state.value.archivedSessionsCount)
+            assertEquals(listOf(sess1.id), store.state.value.filteredArchivedSessions.map { it.id })
+
+            // 3. Selecting archived session from Archived list still loads full transcript
+            store.setDrawerShowArchived(true)
+            store.selectSession(sess1.id)
+            runCurrent()
+            assertEquals(1, store.state.value.activeTranscript.items.size)
+
+            // 4. Unarchive sess1 -> returns cleanly to active history list
+            store.archiveSession(sess1.id, false)
+            runCurrent()
+            assertEquals(0, store.state.value.archivedSessionsCount)
+            assertEquals(2, store.state.value.filteredHistorySessions.size)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

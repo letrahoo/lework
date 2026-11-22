@@ -57,7 +57,7 @@ import {
 } from './storage/workspace-fs.ts'
 import { UsageService } from './usage/index.ts'
 
-const HUB_VERSION = '0.6.6'
+const HUB_VERSION = '0.6.7'
 
 interface ClientConn {
   ws: WebSocket
@@ -868,6 +868,7 @@ export class HubServer {
             'workspace.fs-readonly.v1',
             'workspace.checkpoint.v1',
             'usage.stats.v1',
+            'session.organize.v1',
           ],
         }
       }
@@ -954,6 +955,16 @@ export class HubServer {
       case 'session.setModel': {
         const p = params as { sessionId: string; modelId: string }
         const session = await this.sessionManager.setModel(p.sessionId, p.modelId)
+        return { session }
+      }
+      case 'session.rename': {
+        const p = params as { sessionId: string; title: string }
+        const session = this.sessionManager.renameSession(p.sessionId, p.title)
+        return { session }
+      }
+      case 'session.archive': {
+        const p = params as { sessionId: string; archived: boolean }
+        const session = this.sessionManager.archiveSession(p.sessionId, p.archived)
         return { session }
       }
       case 'session.close': {

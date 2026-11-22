@@ -132,6 +132,8 @@ data class ConsoleUiState(
     val selectedWorkspacePath: String = "",
     val selectedExtraWorkspaces: List<String> = emptyList(),
     val drawerEngineFilter: String? = null,
+    val drawerShowArchived: Boolean = false,
+    val drawerSearchQuery: String = "",
     val sessions: List<SessionMeta> = emptyList(),
     val activeSessionId: String? = null,
     val loadingSessionId: String? = null,
@@ -230,21 +232,56 @@ data class ConsoleUiState(
             return if (list.size > 1) "$shortName +${list.size - 1}" else shortName
         }
 
+    private fun SessionMeta.matchesDrawerQuery(rawQuery: String): Boolean {
+        val q = rawQuery.trim().lowercase()
+        if (q.isEmpty()) return true
+        if (title.lowercase().contains(q)) return true
+        if (customTitle?.lowercase()?.contains(q) == true) return true
+        if (cwd.lowercase().contains(q)) return true
+        if (engineId.lowercase().contains(q)) return true
+        if (workspaces?.any { it.lowercase().contains(q) } == true) return true
+        return false
+    }
+
     val runningSessions: List<SessionMeta>
         get() = sessions
             .filter {
-                it.state == SessionState.RUNNING || it.state == SessionState.WAITING_PERMISSION
+                !it.archived &&
+                    (it.state == SessionState.RUNNING || it.state == SessionState.WAITING_PERMISSION)
             }
             .sortedBy { if (it.state == SessionState.WAITING_PERMISSION) 0 else 1 }
+
+    val filteredRunningSessions: List<SessionMeta>
+        get() = runningSessions.filter {
+            (drawerEngineFilter == null || it.engineId == drawerEngineFilter) &&
+                it.matchesDrawerQuery(drawerSearchQuery)
+        }
 
     val filteredHistorySessions: List<SessionMeta>
         get() {
             val base = if (drawerEngineFilter == null) sessions
             else sessions.filter { it.engineId == drawerEngineFilter }
-            return base.filterNot {
-                it.state == SessionState.RUNNING || it.state == SessionState.WAITING_PERMISSION
+            return base.filter {
+                !it.archived &&
+                    it.state != SessionState.RUNNING &&
+                    it.state != SessionState.WAITING_PERMISSION &&
+                    it.matchesDrawerQuery(drawerSearchQuery)
             }
         }
+
+    val archivedSessionsCount: Int
+        get() = sessions.count {
+            it.archived && (drawerEngineFilter == null || it.engineId == drawerEngineFilter)
+        }
+
+    val filteredArchivedSessions: List<SessionMeta>
+        get() = sessions
+            .filter {
+                it.archived &&
+                    (drawerEngineFilter == null || it.engineId == drawerEngineFilter) &&
+                    it.matchesDrawerQuery(drawerSearchQuery)
+            }
+            .sortedByDescending { it.archivedAt ?: it.updatedAt }
 }
 
 fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTranscript {

@@ -1,9 +1,11 @@
 package dev.lework.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -62,6 +64,10 @@ internal fun TasksSidebarContent(
     onSwitchHost: (String) -> Unit = {},
     onPairAnotherHost: () -> Unit = {},
     onDismissSigningReminder: () -> Unit = {},
+    onSearchQueryChange: (String) -> Unit = {},
+    onToggleArchivedView: (Boolean) -> Unit = {},
+    onRequestRenameSession: (SessionMeta) -> Unit = {},
+    onToggleArchiveSession: (sessionId: String, archived: Boolean) -> Unit = { _, _ -> },
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
     val remainingSignHours = remember { signingExpiryRemainingHours() }
@@ -324,7 +330,63 @@ internal fun TasksSidebarContent(
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
+
+        // Quick Search Input (Title / Custom Name / Workspace)
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = Everforest.Bg1,
+            border = BorderStroke(1.dp, Everforest.Bg3),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Search,
+                    contentDescription = "搜索会话",
+                    tint = Everforest.CommentGrey,
+                    modifier = Modifier.size(15.dp),
+                )
+                Box(modifier = Modifier.weight(1f)) {
+                    if (state.drawerSearchQuery.isEmpty()) {
+                        Text(
+                            text = "搜索会话名称或工作区…",
+                            fontSize = 12.sp,
+                            color = Everforest.Grey0,
+                            maxLines = 1,
+                        )
+                    }
+                    BasicTextField(
+                        value = state.drawerSearchQuery,
+                        onValueChange = onSearchQueryChange,
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            fontSize = 12.5.sp,
+                            color = Everforest.Fg,
+                        ),
+                        cursorBrush = SolidColor(Everforest.Green),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("drawer_search_input"),
+                    )
+                }
+                if (state.drawerSearchQuery.isNotEmpty()) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "清空搜索",
+                        tint = Everforest.CommentGrey,
+                        modifier = Modifier
+                            .size(15.dp)
+                            .clickable { onSearchQueryChange("") },
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
 
         // Filter by Engine
         Row(
@@ -347,62 +409,177 @@ internal fun TasksSidebarContent(
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
+
+        // Active List vs Archived List Switcher
+        val archivedCount = state.archivedSessionsCount
+        Surface(
+            shape = RoundedCornerShape(9.dp),
+            color = Everforest.Bg1,
+            border = BorderStroke(1.dp, Everforest.Bg2),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                val activeSelected = !state.drawerShowArchived
+                Surface(
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (activeSelected) Everforest.Bg2 else Color.Transparent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(7.dp))
+                        .clickable { onToggleArchivedView(false) }
+                        .testTag("drawer_tab_active"),
+                ) {
+                    Box(
+                        modifier = Modifier.padding(vertical = 5.5.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "会话列表",
+                            fontSize = 11.5.sp,
+                            fontWeight = if (activeSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (activeSelected) Everforest.Fg else Everforest.Grey1,
+                        )
+                    }
+                }
+                val archSelected = state.drawerShowArchived
+                Surface(
+                    shape = RoundedCornerShape(7.dp),
+                    color = if (archSelected) Everforest.Bg2 else Color.Transparent,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(7.dp))
+                        .clickable { onToggleArchivedView(true) }
+                        .testTag("drawer_tab_archived"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(vertical = 5.5.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Inventory2,
+                            contentDescription = null,
+                            tint = if (archSelected) Everforest.BoldGold else Everforest.Grey1,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (archivedCount > 0) "已归档 ($archivedCount)" else "已归档",
+                            fontSize = 11.5.sp,
+                            fontWeight = if (archSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (archSelected) Everforest.BoldGold else Everforest.Grey1,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
 
         LazyColumn(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            val runningList = state.runningSessions.filter {
-                state.drawerEngineFilter == null || it.engineId == state.drawerEngineFilter
-            }
-            if (runningList.isNotEmpty()) {
-                item(key = "hdr_running") {
+            if (state.drawerShowArchived) {
+                item(key = "hdr_archived_hint") {
                     Text(
-                        text = "进行中",
+                        text = "已归档会话（永久保留，点击可查看历史或继续对话）",
+                        fontSize = 10.5.sp,
+                        color = Everforest.CommentGrey,
+                        modifier = Modifier.padding(vertical = 3.dp, horizontal = 4.dp),
+                    )
+                }
+                val archivedList = state.filteredArchivedSessions
+                if (archivedList.isEmpty()) {
+                    item(key = "empty_archived") {
+                        Text(
+                            text = if (state.drawerSearchQuery.isNotBlank()) {
+                                "未找到匹配的已归档会话"
+                            } else {
+                                "暂无归档会话\n在任意会话右侧点「⋯」即可归档收纳，记录不会删除"
+                            },
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            color = Everforest.Grey0,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 14.dp),
+                        )
+                    }
+                } else {
+                    items(archivedList, key = { "arch_${it.id}" }) { sess ->
+                        SessionDrawerRow(
+                            session = sess,
+                            selected = sess.id == state.activeSessionId,
+                            showQuickUnarchive = true,
+                            onClick = { onSelectSession(sess.id) },
+                            onRename = { onRequestRenameSession(sess) },
+                            onToggleArchive = { onToggleArchiveSession(sess.id, false) },
+                        )
+                    }
+                }
+            } else {
+                val runningList = state.filteredRunningSessions
+                if (runningList.isNotEmpty()) {
+                    item(key = "hdr_running") {
+                        Text(
+                            text = "进行中",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.Orange,
+                            modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp),
+                        )
+                    }
+                    items(runningList, key = { "run_${it.id}" }) { sess ->
+                        SessionDrawerRow(
+                            session = sess,
+                            selected = sess.id == state.activeSessionId,
+                            onClick = { onSelectSession(sess.id) },
+                            onRename = { onRequestRenameSession(sess) },
+                            onToggleArchive = { onToggleArchiveSession(sess.id, !sess.archived) },
+                        )
+                    }
+                    item(key = "sp_running") { Spacer(Modifier.height(8.dp)) }
+                }
+
+                item(key = "hdr_history") {
+                    Text(
+                        text = "历史会话",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = Everforest.Orange,
+                        color = Everforest.Grey1,
                         modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp),
                     )
                 }
-                items(runningList, key = { "run_${it.id}" }) { sess ->
-                    SessionDrawerRow(
-                        session = sess,
-                        selected = sess.id == state.activeSessionId,
-                        onClick = { onSelectSession(sess.id) },
-                    )
-                }
-                item(key = "sp_running") { Spacer(Modifier.height(8.dp)) }
-            }
 
-            item(key = "hdr_history") {
-                Text(
-                    text = "历史会话",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Everforest.Grey1,
-                    modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp),
-                )
-            }
-
-            val historyList = state.filteredHistorySessions
-            if (historyList.isEmpty()) {
-                item(key = "empty_history") {
-                    Text(
-                        text = "暂无该引擎的历史记录",
-                        fontSize = 12.sp,
-                        color = Everforest.Grey0,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp),
-                    )
-                }
-            } else {
-                items(historyList, key = { it.id }) { sess ->
-                    SessionDrawerRow(
-                        session = sess,
-                        selected = sess.id == state.activeSessionId,
-                        onClick = { onSelectSession(sess.id) },
-                    )
+                val historyList = state.filteredHistorySessions
+                if (historyList.isEmpty()) {
+                    item(key = "empty_history") {
+                        Text(
+                            text = if (state.drawerSearchQuery.isNotBlank()) {
+                                "未找到匹配的会话记录"
+                            } else {
+                                "暂无该引擎的历史记录"
+                            },
+                            fontSize = 12.sp,
+                            color = Everforest.Grey0,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp),
+                        )
+                    }
+                } else {
+                    items(historyList, key = { it.id }) { sess ->
+                        SessionDrawerRow(
+                            session = sess,
+                            selected = sess.id == state.activeSessionId,
+                            onClick = { onSelectSession(sess.id) },
+                            onRename = { onRequestRenameSession(sess) },
+                            onToggleArchive = { onToggleArchiveSession(sess.id, !sess.archived) },
+                        )
+                    }
                 }
             }
         }
@@ -477,12 +654,17 @@ internal fun SidebarFilterPill(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionDrawerRow(
     session: SessionMeta,
     selected: Boolean,
+    showQuickUnarchive: Boolean = false,
     onClick: () -> Unit,
+    onRename: () -> Unit = {},
+    onToggleArchive: () -> Unit = {},
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
     val wsList = session.workspaces?.filter { it.isNotBlank() }?.distinct().orEmpty()
     val primaryPath = wsList.firstOrNull() ?: session.cwd
     val wsShort = primaryPath.trimEnd('/').substringAfterLast('/').ifBlank { "~" }
@@ -490,86 +672,269 @@ private fun SessionDrawerRow(
     val isWaiting = session.state == SessionState.WAITING_PERMISSION
     val isRunning = session.state == SessionState.RUNNING
 
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = if (selected) Everforest.Bg2 else Color.Transparent,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable { onClick() },
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(9.dp),
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = if (selected) Everforest.Bg2 else Color.Transparent,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { menuExpanded = true },
+                ),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .clip(CircleShape)
-                    .background(
-                        when {
-                            isWaiting -> Everforest.Yellow
-                            isRunning -> Everforest.Orange
-                            else -> engineAccentColor(session.engineId).copy(alpha = 0.75f)
-                        },
-                    ),
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = session.title,
-                    fontSize = 13.sp,
-                    color = if (selected) Everforest.BoldGold else Everforest.Fg,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            Row(
+                modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                isWaiting -> Everforest.Yellow
+                                isRunning -> Everforest.Orange
+                                session.archived -> Everforest.CommentGrey.copy(alpha = 0.65f)
+                                else -> engineAccentColor(session.engineId).copy(alpha = 0.75f)
+                            },
+                        ),
                 )
-                val subtitle = if (isRunning && !session.liveStatusText.isNullOrBlank()) {
-                    session.liveStatusText
-                } else {
-                    "${shortEngineLabel(session.engineId)} · $wsBadge"
-                }
-                Text(
-                    text = subtitle,
-                    fontSize = 11.sp,
-                    color = if (isRunning && !session.liveStatusText.isNullOrBlank()) {
-                        Everforest.BoldGold
-                    } else {
-                        Everforest.Grey0
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (isWaiting) {
-                Surface(
-                    shape = RoundedCornerShape(999.dp),
-                    color = Everforest.BgYellow,
-                    border = BorderStroke(1.dp, Everforest.Yellow.copy(alpha = 0.55f)),
-                ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "待审批",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Everforest.BoldGold,
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        text = session.title,
+                        fontSize = 13.sp,
+                        color = if (selected) Everforest.BoldGold else Everforest.Fg,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    )
+                    val subtitle = if (isRunning && !session.liveStatusText.isNullOrBlank()) {
+                        session.liveStatusText
+                    } else {
+                        "${shortEngineLabel(session.engineId)} · $wsBadge"
+                    }
+                    Text(
+                        text = subtitle,
+                        fontSize = 11.sp,
+                        color = if (isRunning && !session.liveStatusText.isNullOrBlank()) {
+                            Everforest.BoldGold
+                        } else {
+                            Everforest.Grey0
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-            } else if (isRunning && !session.queuedPrompts.isNullOrEmpty()) {
-                Surface(
-                    shape = RoundedCornerShape(999.dp),
-                    color = Everforest.Bg1,
-                    border = BorderStroke(1.dp, Everforest.Bg3),
+                if (isWaiting) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.BgYellow,
+                        border = BorderStroke(1.dp, Everforest.Yellow.copy(alpha = 0.55f)),
+                    ) {
+                        Text(
+                            text = "待审批",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.BoldGold,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        )
+                    }
+                } else if (isRunning && !session.queuedPrompts.isNullOrEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.Bg1,
+                        border = BorderStroke(1.dp, Everforest.Bg3),
+                    ) {
+                        Text(
+                            text = "队列 ${session.queuedPrompts.size}",
+                            fontSize = 10.sp,
+                            color = Everforest.CommentGrey,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                if (showQuickUnarchive) {
+                    IconButton(
+                        onClick = onToggleArchive,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .testTag("session_unarchive_${session.id}"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Unarchive,
+                            contentDescription = "移出归档",
+                            tint = Everforest.Green,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier
+                        .size(28.dp)
+                        .testTag("session_more_${session.id}"),
                 ) {
-                    Text(
-                        text = "队列 ${session.queuedPrompts.size}",
-                        fontSize = 10.sp,
-                        color = Everforest.CommentGrey,
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                    Icon(
+                        imageVector = Icons.Rounded.MoreHoriz,
+                        contentDescription = "会话操作",
+                        tint = Everforest.CommentGrey,
+                        modifier = Modifier.size(16.dp),
                     )
                 }
             }
         }
+
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+            containerColor = Everforest.Bg1,
+        ) {
+            DropdownMenuItem(
+                text = { Text("重命名会话", fontSize = 13.sp, color = Everforest.Fg) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Rounded.Edit,
+                        contentDescription = null,
+                        tint = Everforest.BoldGold,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    onRename()
+                },
+            )
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = if (session.archived) "移出归档" else "归档会话",
+                        fontSize = 13.sp,
+                        color = Everforest.Fg,
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = if (session.archived) Icons.Rounded.Unarchive else Icons.Rounded.Inventory2,
+                        contentDescription = null,
+                        tint = if (session.archived) Everforest.Green else Everforest.CommentGrey,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    onToggleArchive()
+                },
+            )
+        }
     }
+}
+
+@Composable
+internal fun RenameSessionDialog(
+    session: SessionMeta,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var draft by remember(session.id, session.title) { mutableStateOf(session.title) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Everforest.Bg1,
+        titleContentColor = Everforest.Fg,
+        textContentColor = Everforest.Grey2,
+        title = {
+            Text(
+                text = "重命名会话",
+                fontSize = 16.5.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "设置清晰的任务名称便于随时查找（同步保存在本机 Hub，不会影响底层会话数据）：",
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = Everforest.CommentGrey,
+                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Everforest.BgDim,
+                    border = BorderStroke(1.dp, Everforest.Bg3),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            if (draft.isEmpty()) {
+                                Text(
+                                    text = "输入自定义会话名称…",
+                                    fontSize = 14.sp,
+                                    color = Everforest.Grey0,
+                                )
+                            }
+                            BasicTextField(
+                                value = draft,
+                                onValueChange = { if (it.length <= 120) draft = it },
+                                singleLine = true,
+                                textStyle = TextStyle(
+                                    fontSize = 14.sp,
+                                    color = Everforest.Fg,
+                                ),
+                                cursorBrush = SolidColor(Everforest.Green),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("rename_session_input"),
+                            )
+                        }
+                        if (draft.isNotEmpty()) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "清空",
+                                tint = Everforest.CommentGrey,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { draft = "" },
+                            )
+                        }
+                    }
+                }
+                if (!session.customTitle.isNullOrBlank()) {
+                    Text(
+                        text = "恢复自动标题",
+                        fontSize = 12.sp,
+                        color = Everforest.BoldGold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable { onConfirm("") }
+                            .padding(vertical = 2.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = draft.trim().isNotEmpty(),
+                onClick = { onConfirm(draft.trim()) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Everforest.Green,
+                    contentColor = Everforest.BgDim,
+                ),
+                modifier = Modifier.testTag("rename_session_confirm"),
+            ) {
+                Text("保存", fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = Everforest.Grey1)
+            }
+        },
+    )
 }
 

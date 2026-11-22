@@ -36,6 +36,7 @@ import {
   TerminalBridge,
   type ClaudeLiveSessionMeta,
 } from './terminal-bridge.ts'
+import type { SessionMetadataStore } from './session-metadata.ts'
 
 export { classifyRawToolCall, extractAgyUserRequests, filterAgyQueuedFromHistory, TerminalApprovalError }
 
@@ -77,6 +78,7 @@ export class HostTaskInspector {
   private globalScanTimer: ReturnType<typeof setInterval> | null = null
   private lastKnownStates = new Map<string, string>()
   private liveCallbacks?: HostLiveCallbacks
+  private metaStore?: SessionMetadataStore
   private readonly homeDir: string
   private readonly terminalBridge: TerminalBridge
   private claudeRuntimeMap = new Map<string, ClaudeLiveSessionMeta>()
@@ -97,6 +99,10 @@ export class HostTaskInspector {
 
   setCallbacks(callbacks: HostLiveCallbacks): void {
     this.liveCallbacks = callbacks
+  }
+
+  setMetaStore(metaStore: SessionMetadataStore): void {
+    this.metaStore = metaStore
   }
 
   getEngineHostDefaults(engineId: string): {
@@ -251,6 +257,23 @@ export class HostTaskInspector {
     scanClaudeSessions(this.homeDir, this.claudeRuntimeMap, next)
     scanAgySessions(this.homeDir, this.transcriptCache, next, this.agyModelsCache ?? undefined)
     scanDshSessions(this.homeDir, next)
+
+    // Retain any archived or custom-renamed host sessions even if newer tasks pushed them
+    // past the top-20 mtime scan window, without ever modifying or deleting host transcript files.
+    if (this.metaStore) {
+      for (const { sessionId, record } of this.metaStore.pinnedHostEntries()) {
+        if (next.has(sessionId)) continue
+        if (record.filePath && record.snapshotMeta && fs.existsSync(record.filePath)) {
+          const fallbackNativeId =
+            record.nativeId ?? sessionId.split(':').slice(2).join(':')
+          next.set(sessionId, {
+            nativeId: fallbackNativeId,
+            filePath: record.filePath,
+            meta: { ...record.snapshotMeta, id: sessionId, state: 'idle' },
+          })
+        }
+      }
+    }
 
     // Preserve rich runtime/transcript metadata already parsed for watched or cached sessions
     for (const [id, entry] of next) {

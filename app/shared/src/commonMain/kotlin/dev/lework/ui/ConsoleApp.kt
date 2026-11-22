@@ -63,6 +63,7 @@ fun ConsoleApp(
     var showFilesSheet by remember { mutableStateOf(false) }
     var showUsageSheet by remember { mutableStateOf(false) }
     var showDiffSheet by remember { mutableStateOf(false) }
+    var renamingSessionId by remember { mutableStateOf<String?>(null) }
     var promptText by remember { mutableStateOf("") }
 
     LaunchedEffect(state.unsentDraftToRestore) {
@@ -139,6 +140,10 @@ fun ConsoleApp(
                                         store.preparePairAnotherHost()
                                     },
                                     onDismissSigningReminder = store::dismissSigningExpiryReminder,
+                                    onSearchQueryChange = store::setDrawerSearchQuery,
+                                    onToggleArchivedView = store::setDrawerShowArchived,
+                                    onRequestRenameSession = { sess -> renamingSessionId = sess.id },
+                                    onToggleArchiveSession = store::archiveSession,
                                 )
                             } else {
                                 Box(modifier = Modifier.fillMaxSize().background(Everforest.BgDim))
@@ -168,6 +173,17 @@ fun ConsoleApp(
                                 showFilesSheet = true
                             },
                         )
+
+                        val topActiveSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
+                        if (topActiveSess != null) {
+                            ActiveSessionTitleStrip(
+                                session = topActiveSess,
+                                onRename = { renamingSessionId = topActiveSess.id },
+                                onToggleArchive = {
+                                    store.archiveSession(topActiveSess.id, !topActiveSess.archived)
+                                },
+                            )
+                        }
 
                         if (state.connectionStatus == ConnectionStatus.RECONNECTING) {
                             Surface(
@@ -506,6 +522,98 @@ fun ConsoleApp(
                     },
                 )
             }
+
+            val renamingTarget = renamingSessionId?.let { targetId ->
+                state.sessions.firstOrNull { it.id == targetId }
+            }
+            if (renamingTarget != null) {
+                RenameSessionDialog(
+                    session = renamingTarget,
+                    onDismiss = { renamingSessionId = null },
+                    onConfirm = { nextTitle ->
+                        renamingSessionId = null
+                        store.renameSession(renamingTarget.id, nextTitle)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveSessionTitleStrip(
+    session: SessionMeta,
+    onRename: () -> Unit,
+    onToggleArchive: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { onRename() }
+                .padding(vertical = 3.dp, horizontal = 2.dp)
+                .testTag("active_session_rename_trigger"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            if (session.archived) {
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = Everforest.Bg2,
+                ) {
+                    Text(
+                        text = "已归档",
+                        fontSize = 10.sp,
+                        color = Everforest.BoldGold,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                    )
+                }
+            }
+            Text(
+                text = session.title,
+                fontSize = 12.sp,
+                color = Everforest.Grey2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Icon(
+                imageVector = Icons.Rounded.Edit,
+                contentDescription = "重命名当前会话",
+                tint = Everforest.CommentGrey,
+                modifier = Modifier.size(13.dp),
+            )
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { onToggleArchive() }
+                .padding(horizontal = 6.dp, vertical = 3.dp)
+                .testTag("active_session_archive_btn"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(
+                imageVector = if (session.archived) Icons.Rounded.Unarchive else Icons.Rounded.Inventory2,
+                contentDescription = if (session.archived) "移出归档" else "归档会话",
+                tint = if (session.archived) Everforest.Green else Everforest.CommentGrey,
+                modifier = Modifier.size(13.5.dp),
+            )
+            Text(
+                text = if (session.archived) "移出归档" else "归档",
+                fontSize = 11.5.sp,
+                color = if (session.archived) Everforest.Green else Everforest.CommentGrey,
+            )
         }
     }
 }

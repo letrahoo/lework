@@ -392,6 +392,48 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
       const doneEv = await client.waitForEvent('turn.done', ev => ev.sessionId === sessionId)
       expect(doneEv.seq).toBeGreaterThan(lastHistoricalSeq)
 
+      // [T3.5] Non-destructive session rename & archive: custom title + archive state persist without deleting files
+      const renamed = await client.call('session.rename', {
+        sessionId,
+        title: '核心支付重构任务',
+      })
+      expect(renamed.session.title).toBe('核心支付重构任务')
+      expect(renamed.session.customTitle).toBe('核心支付重构任务')
+
+      const archived = await client.call('session.archive', {
+        sessionId,
+        archived: true,
+      })
+      expect(archived.session.archived).toBe(true)
+      expect(typeof archived.session.archivedAt).toBe('number')
+
+      const listWhileArchived = await client.call('session.list', {})
+      const foundArchived = listWhileArchived.sessions.find((s: any) => s.id === sessionId)
+      expect(foundArchived?.title).toBe('核心支付重构任务')
+      expect(foundArchived?.archived).toBe(true)
+
+      // Archived session remains 100% readable via stream.subscribe
+      const archivedSnap = await client.call('stream.subscribe', {
+        sessionId,
+        afterSeq: -1,
+        limit: 10,
+      })
+      expect(archivedSnap.session.archived).toBe(true)
+      expect(archivedSnap.events.length).toBeGreaterThan(0)
+
+      // Unarchiving & resetting custom title restores original state cleanly
+      const unarchived = await client.call('session.archive', {
+        sessionId,
+        archived: false,
+      })
+      expect(Boolean(unarchived.session.archived)).toBe(false)
+
+      const resetTitle = await client.call('session.rename', {
+        sessionId,
+        title: '',
+      })
+      expect(resetTitle.session.customTitle).toBeUndefined()
+
       client.close()
     } finally {
       fs.rmSync(fakeHome, { recursive: true, force: true })

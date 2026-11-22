@@ -19,12 +19,14 @@ import { defaultDataDir, SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
 import { HostTaskInspector, TerminalApprovalError } from './storage/host-history.ts'
+import { SessionMetadataStore } from './storage/session-metadata.ts'
 import { CheckpointManager } from './storage/workspace-fs.ts'
 
 const MAX_EVENTS_PER_SESSION = 5_000
 
 interface ManagedSession {
   meta: SessionMeta
+  autoTitle: string
   handle: EngineSession
   events: AgentEvent[]
   baseSeq: number
@@ -41,6 +43,7 @@ export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>()
   private readonly sleepInhibitor = new SleepInhibitor()
   private readonly checkpoints = new CheckpointManager()
+  private readonly metaStore = new SessionMetadataStore()
   private readonly hostInspector: HostTaskInspector
 
   constructor(
@@ -61,15 +64,17 @@ export class SessionManager {
       },
       onSessionUpdated: (meta: SessionMeta) => {
         if (!this.isSupersededByHubSession(meta.id)) {
-          this.callbacks.onSessionUpdated(meta)
+          this.callbacks.onSessionUpdated(this.metaStore.applyToMeta(meta))
         }
       },
     }
     if (customHostInspector) {
       customHostInspector.setCallbacks(inspectorCallbacks)
+      customHostInspector.setMetaStore(this.metaStore)
       this.hostInspector = customHostInspector
     } else {
       this.hostInspector = new HostTaskInspector(inspectorCallbacks)
+      this.hostInspector.setMetaStore(this.metaStore)
     }
     for (const adapter of adapters) {
       this.adapters.set(adapter.id, adapter)
@@ -112,18 +117,23 @@ export class SessionManager {
     return false
   }
 
+  private decorateManagedMeta(managed: ManagedSession): SessionMeta {
+    return this.metaStore.applyToMeta({ ...managed.meta, title: managed.autoTitle })
+  }
+
   listSessions(engineId?: string): SessionMeta[] {
-    const hubSessions = [...this.sessions.values()].map(s => s.meta)
+    const hubSessions = [...this.sessions.values()].map(s => this.decorateManagedMeta(s))
     const hostSessions = this.hostInspector
       .discoverHostSessions()
       .filter(s => !this.isSupersededByHubSession(s.id))
+      .map(s => this.metaStore.applyToMeta(s))
 
     const merged = [...hubSessions, ...hostSessions]
     const filtered = engineId ? merged.filter(s => s.engineId === engineId) : merged
 
     return filtered.sort((a, b) => {
-      const aActive = a.state === 'running' || a.state === 'waiting_permission' ? 1 : 0
-      const bActive = b.state === 'running' || b.state === 'waiting_permission' ? 1 : 0
+      const aActive = !a.archived && (a.state === 'running' || a.state === 'waiting_permission') ? 1 : 0
+      const bActive = !b.archived && (b.state === 'running' || b.state === 'waiting_permission') ? 1 : 0
       if (aActive !== bActive) return bActive - aActive
       return b.updatedAt - a.updatedAt
     })
@@ -184,12 +194,13 @@ export class SessionManager {
     const seed = params.seedEvents ?? []
     const lastSeedSeq = seed.length > 0 ? seed[seed.length - 1]!.seq : -1
 
+    const initialAutoTitle = params.title?.trim() || `${adapter.displayName} · ${path.basename(realCwd)}`
     const meta: SessionMeta = {
       id: sessionId,
       engineId: adapter.id,
       cwd: realCwd,
       workspaces: resolvedWorkspaces,
-      title: params.title?.trim() || `${adapter.displayName} · ${path.basename(realCwd)}`,
+      title: initialAutoTitle,
       state: 'idle',
       createdAt: now,
       updatedAt: now,
@@ -202,6 +213,7 @@ export class SessionManager {
 
     const managed: ManagedSession = {
       meta,
+      autoTitle: initialAutoTitle,
       handle: null as unknown as EngineSession,
       events: [...seed],
       baseSeq: seed[0]?.seq ?? 0,
@@ -224,8 +236,10 @@ export class SessionManager {
           this.updateModels(managed, currentModel, models)
         },
         onNativeSessionLinked: nativeId => {
-          if (nativeId.trim()) {
-            managed.nativeId = nativeId.trim()
+          const clean = nativeId.trim()
+          if (clean) {
+            managed.nativeId = clean
+            this.metaStore.linkAlias(sessionId, `host:${adapter.id}:${clean}`)
           }
         },
       })
@@ -238,6 +252,7 @@ export class SessionManager {
       )
     }
 
+    managed.meta = this.decorateManagedMeta(managed)
     this.callbacks.onSessionUpdated(managed.meta)
     return managed.meta
   }
@@ -342,9 +357,10 @@ export class SessionManager {
       text: displayUserText,
       ...(stagedImages.length > 0 ? { imageCount: stagedImages.length } : {}),
     })
-    if (managed.meta.lastSeq <= 2 && managed.meta.title.includes(' · ')) {
-      managed.meta.title =
-        displayUserText.slice(0, 48).replace(/\s+/g, ' ').trim() || managed.meta.title
+    if (managed.meta.lastSeq <= 2 && managed.autoTitle.includes(' · ')) {
+      managed.autoTitle =
+        displayUserText.slice(0, 48).replace(/\s+/g, ' ').trim() || managed.autoTitle
+      managed.meta = this.decorateManagedMeta(managed)
       this.callbacks.onSessionUpdated(managed.meta)
     }
 
@@ -378,9 +394,10 @@ export class SessionManager {
 
   getSessionMeta(sessionId: string): SessionMeta | undefined {
     const managed = this.sessions.get(sessionId)
-    if (managed) return managed.meta
+    if (managed) return this.decorateManagedMeta(managed)
     if (sessionId.startsWith('host:')) {
-      return this.hostInspector.getHostSession(sessionId)?.meta
+      const hostMeta = this.hostInspector.getHostSession(sessionId)?.meta
+      return hostMeta ? this.metaStore.applyToMeta(hostMeta) : undefined
     }
     return undefined
   }
@@ -475,8 +492,77 @@ export class SessionManager {
     await managed.handle.setModel(modelId)
     managed.meta.model = modelId
     managed.meta.updatedAt = Date.now()
+    managed.meta = this.decorateManagedMeta(managed)
     this.callbacks.onSessionUpdated(managed.meta)
     return managed.meta
+  }
+
+  renameSession(sessionId: string, title: string): SessionMeta {
+    const managed = this.sessions.get(sessionId)
+    const hostAliasId =
+      managed?.nativeId && !sessionId.startsWith('host:')
+        ? `host:${managed.meta.engineId}:${managed.nativeId}`
+        : undefined
+    const hostEntry = sessionId.startsWith('host:')
+      ? this.hostInspector.getHostSession(sessionId)
+      : hostAliasId
+        ? this.hostInspector.getHostSession(hostAliasId)
+        : undefined
+
+    if (!managed && !hostEntry) {
+      throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+    }
+
+    const baseMeta = hostEntry?.meta ?? (managed ? { ...managed.meta, title: managed.autoTitle } : undefined)
+    this.metaStore.rename(sessionId, title, {
+      hostAliasId,
+      filePath: hostEntry?.filePath,
+      nativeId: hostEntry?.nativeId ?? managed?.nativeId,
+      baseMeta,
+    })
+
+    if (managed) {
+      managed.meta = this.decorateManagedMeta(managed)
+      this.callbacks.onSessionUpdated(managed.meta)
+      return managed.meta
+    }
+    const updated = this.metaStore.applyToMeta(hostEntry!.meta)
+    this.callbacks.onSessionUpdated(updated)
+    return updated
+  }
+
+  archiveSession(sessionId: string, archived: boolean): SessionMeta {
+    const managed = this.sessions.get(sessionId)
+    const hostAliasId =
+      managed?.nativeId && !sessionId.startsWith('host:')
+        ? `host:${managed.meta.engineId}:${managed.nativeId}`
+        : undefined
+    const hostEntry = sessionId.startsWith('host:')
+      ? this.hostInspector.getHostSession(sessionId)
+      : hostAliasId
+        ? this.hostInspector.getHostSession(hostAliasId)
+        : undefined
+
+    if (!managed && !hostEntry) {
+      throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+    }
+
+    const baseMeta = hostEntry?.meta ?? (managed ? { ...managed.meta, title: managed.autoTitle } : undefined)
+    this.metaStore.setArchived(sessionId, archived, {
+      hostAliasId,
+      filePath: hostEntry?.filePath,
+      nativeId: hostEntry?.nativeId ?? managed?.nativeId,
+      baseMeta,
+    })
+
+    if (managed) {
+      managed.meta = this.decorateManagedMeta(managed)
+      this.callbacks.onSessionUpdated(managed.meta)
+      return managed.meta
+    }
+    const updated = this.metaStore.applyToMeta(hostEntry!.meta)
+    this.callbacks.onSessionUpdated(updated)
+    return updated
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -535,6 +621,7 @@ export class SessionManager {
   } {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      managed.meta = this.decorateManagedMeta(managed)
       return sliceSessionWindow(managed.meta, managed.events, afterSeq, managed.baseSeq, opts)
     }
 
@@ -542,7 +629,8 @@ export class SessionManager {
       const hostData = this.hostInspector.readHostSessionEvents(sessionId)
       if (hostData) {
         const baseSeq = hostData.events[0]?.seq ?? 0
-        const sliced = sliceSessionWindow(hostData.session, hostData.events, afterSeq, baseSeq, opts)
+        const decoratedSession = this.metaStore.applyToMeta(hostData.session)
+        const sliced = sliceSessionWindow(decoratedSession, hostData.events, afterSeq, baseSeq, opts)
         const activePerm = opts?.beforeSeq === undefined ? this.hostInspector.getActiveHostPermission(sessionId) : null
         if (activePerm) {
           sliced.events = [...sliced.events, activePerm]
@@ -604,6 +692,7 @@ export class SessionManager {
     if (body.type === 'session.state') {
       managed.meta.state = body.state
       managed.meta.turnStartedAt = body.state === 'running' ? (managed.meta.turnStartedAt ?? Date.now()) : undefined
+      managed.meta = this.decorateManagedMeta(managed)
       this.callbacks.onSessionUpdated(managed.meta)
     }
 
@@ -631,6 +720,7 @@ export class SessionManager {
     if (currentModel && !managed.meta.model) managed.meta.model = currentModel
     managed.meta.models = models
     managed.meta.updatedAt = Date.now()
+    managed.meta = this.decorateManagedMeta(managed)
     this.callbacks.onSessionUpdated(managed.meta)
   }
 }

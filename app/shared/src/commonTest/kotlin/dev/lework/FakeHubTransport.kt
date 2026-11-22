@@ -286,6 +286,32 @@ class FakeHubTransport : HubTransport {
     override suspend fun setSessionModel(sessionId: String, modelId: String): SessionMeta =
         sessions.first { it.id == sessionId }.copy(model = modelId)
 
+    override suspend fun renameSession(sessionId: String, title: String): SessionMeta {
+        val idx = sessions.indexOfFirst { it.id == sessionId }
+        if (idx < 0) throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Session not found")
+        val prev = sessions[idx]
+        val clean = title.trim()
+        val updated = if (clean.isEmpty()) {
+            prev.copy(customTitle = null)
+        } else {
+            prev.copy(title = clean, customTitle = clean)
+        }
+        sessions[idx] = updated
+        return updated
+    }
+
+    override suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMeta {
+        val idx = sessions.indexOfFirst { it.id == sessionId }
+        if (idx < 0) throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Session not found")
+        val prev = sessions[idx]
+        val updated = prev.copy(
+            archived = archived,
+            archivedAt = if (archived) 9_999L else null,
+        )
+        sessions[idx] = updated
+        return updated
+    }
+
     override suspend fun subscribeSession(
         sessionId: String,
         afterSeq: Int,
