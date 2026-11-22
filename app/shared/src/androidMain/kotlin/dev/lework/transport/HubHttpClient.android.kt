@@ -8,6 +8,7 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.websocket.WebSockets
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.Socket
 import java.net.SocketAddress
 import java.security.MessageDigest
@@ -31,7 +32,9 @@ private class PreTlsForwarderSocketFactory : SocketFactory() {
             super.connect(endpoint, timeout)
             val inet = endpoint as? InetSocketAddress ?: return
             val host = inet.address?.hostAddress ?: inet.hostString
-            if (host == "127.0.0.1" && inet.port in AndroidPlatformRuntime.tsnetProxyPorts) {
+            if ((host == "127.0.0.1" || host.equals("localhost", ignoreCase = true)) &&
+                inet.port in AndroidPlatformRuntime.tsnetProxyPorts
+            ) {
                 val secret = AndroidPlatformRuntime.tsnetForwarderSecret
                 if (secret.isNotEmpty()) {
                     val out = getOutputStream()
@@ -108,6 +111,7 @@ actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient {
         followRedirects = false
         engine {
             config {
+                proxy(Proxy.NO_PROXY)
                 socketFactory(PreTlsForwarderSocketFactory())
                 sslSocketFactory(ctx.socketFactory, tm)
                 hostnameVerifier { _, _ -> true }

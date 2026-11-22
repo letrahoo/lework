@@ -18,9 +18,11 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URL
 import java.security.KeyStore
 import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -290,6 +292,29 @@ private object AndroidTsnetDaemon {
         }.getOrDefault("")
     }
 
+    private fun exportSystemCaBundle(ctx: Context): File? = runCatching {
+        val outFile = File(ctx.filesDir, "tsnet-cacerts.pem")
+        if (outFile.isFile && outFile.length() > 16_384L) return@runCatching outFile
+        val ks = KeyStore.getInstance("AndroidCAStore").apply { load(null) }
+        val sb = StringBuilder(131_072)
+        val aliases = ks.aliases()
+        var count = 0
+        while (aliases.hasMoreElements()) {
+            val alias = aliases.nextElement() ?: continue
+            val cert = ks.getCertificate(alias) as? X509Certificate ?: continue
+            val b64 = Base64.encodeToString(cert.encoded, Base64.DEFAULT).trim()
+            if (b64.isNotEmpty()) {
+                sb.append("-----BEGIN CERTIFICATE-----\n")
+                sb.append(b64).append('\n')
+                sb.append("-----END CERTIFICATE-----\n")
+                count++
+            }
+        }
+        if (count == 0) return@runCatching null
+        outFile.writeText(sb.toString())
+        outFile
+    }.getOrNull()
+
     private fun sanitizedHostname(): String {
         val raw = Build.MODEL?.lowercase()?.replace(Regex("[^a-z0-9-]+"), "-")?.trim('-') ?: "android"
         return "lework-android-${raw.ifEmpty { "phone" }}".take(48)
@@ -333,12 +358,16 @@ private object AndroidTsnetDaemon {
                 cmd.add(controlUrl.trim())
             }
 
+            val caBundle = exportSystemCaBundle(ctx)
             lastStderr = ""
             val pb = ProcessBuilder(cmd).apply {
                 environment()["LEWORK_TSNET_SECRET"] = newSecret
                 environment()["LEWORK_FORWARDER_SECRET"] = newForwarderSecret
                 environment()["HOME"] = ctx.filesDir.absolutePath
-                environment()["SSL_CERT_DIR"] = "/system/etc/security/cacerts"
+                environment()["SSL_CERT_DIR"] = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts"
+                if (caBundle != null) {
+                    environment()["SSL_CERT_FILE"] = caBundle.absolutePath
+                }
             }
 
             val started = runCatching { pb.start() }.getOrNull() ?: return@withContext false
@@ -410,7 +439,7 @@ private object AndroidTsnetDaemon {
         }
         return withContext(Dispatchers.IO) {
             runCatching {
-                val conn = (URL("http://127.0.0.1:$controlPort$path").openConnection() as HttpURLConnection).apply {
+                val conn = (URL("http://127.0.0.1:$controlPort$path").openConnection(Proxy.NO_PROXY) as HttpURLConnection).apply {
                     requestMethod = method
                     connectTimeout = 5_000
                     readTimeout = 14_000
@@ -423,7 +452,12 @@ private object AndroidTsnetDaemon {
                 if (jsonBody != null) {
                     conn.outputStream.use { it.write(jsonBody.encodeToByteArray()) }
                 }
-                val raw = conn.inputStream.bufferedReader().use { it.readText() }
+                val stream = if (conn.responseCode in 200..299) {
+                    conn.inputStream
+                } else {
+                    conn.errorStream ?: conn.inputStream
+                }
+                val raw = stream.bufferedReader().use { it.readText() }
                 val parsed = ProtocolJson.decodeFromString(MobileTsnetStatus.serializer(), raw)
                 val withAvail = parsed.copy(available = true)
                 val proxies = withAvail.peers.mapNotNull { it.localProxyUrl?.takeIf { u -> u.isNotBlank() } }
@@ -475,7 +509,7 @@ private fun prefs() =
 
 actual fun platformName(): String = "Android ${Build.VERSION.RELEASE}"
 
-actual fun appVersionLabel(): String = "v0.6.0 (20261120.1530)"
+actual fun appVersionLabel(): String = "v0.6.1 (20261122.1235)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
