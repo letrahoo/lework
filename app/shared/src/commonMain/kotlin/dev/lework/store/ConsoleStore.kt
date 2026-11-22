@@ -487,25 +487,46 @@ class ConsoleStore(
                 return@launch
             }
 
-            val peerSummary = candidates.take(4).joinToString(", ") { it.hostName }
-            _state.update {
-                it.copy(
-                    connectionStatus = ConnectionStatus.CONNECTING,
-                    authStatusText = "正在通过 Tailscale 探测同账号节点 ($peerSummary) 并握手…",
-                )
-            }
+            var currentCandidates = candidates
+            var probed = emptyList<Pair<dev.lework.platform.MobileTsnetPeer, dev.lework.transport.DiscoveredEndpoint>>()
+            // Newly authorized or freshly woken tsnet nodes can flip to "Running" 1–3s before
+            // remote peers receive the new WireGuard public key via Tailscale NetMap or DERP warms up.
+            // Retry fast-failing probes up to 3 times before surfacing an error.
+            for (probeRound in 0 until 3) {
+                val peerSummary = currentCandidates.take(4).joinToString(", ") { it.hostName }
+                _state.update {
+                    it.copy(
+                        connectionStatus = ConnectionStatus.CONNECTING,
+                        authStatusText = "正在通过 Tailscale 探测同账号节点 ($peerSummary) 并握手…",
+                    )
+                }
 
-            val probed = coroutineScope {
-                candidates.map { peer ->
-                    async {
-                        val proxyUrl = peer.localProxyUrl ?: return@async null
-                        val ep = rpc.probeDirectEndpoint(proxyUrl, timeoutMs = 10_000L)
-                        if (ep != null) peer to ep else null
+                probed = coroutineScope {
+                    currentCandidates.map { peer ->
+                        async {
+                            val proxyUrl = peer.localProxyUrl ?: return@async null
+                            val ep = rpc.probeDirectEndpoint(proxyUrl, timeoutMs = 8_000L)
+                            if (ep != null) peer to ep else null
+                        }
+                    }.mapNotNull { it.await() }
+                }
+
+                if (probed.any { it.second.discover.tailscaleSameUser } || (probed.isNotEmpty() && probeRound == 2)) {
+                    break
+                }
+                if (probeRound < 2) {
+                    delay(1_400L)
+                    val refreshed = queryMobileTsnetStatus()
+                    _state.update { it.copy(tsnetStatus = refreshed) }
+                    val nextCandidates = refreshed.peers.filter { !it.localProxyUrl.isNullOrBlank() }
+                    if (nextCandidates.isNotEmpty()) {
+                        currentCandidates = nextCandidates
                     }
-                }.mapNotNull { it.await() }
+                }
             }
 
             if (probed.isEmpty()) {
+                val peerSummary = currentCandidates.take(4).joinToString(", ") { it.hostName }
                 _state.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.ERROR,
