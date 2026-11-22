@@ -1771,6 +1771,103 @@ class ConsoleStore(
         _state.update { it.copy(unsentDraftToRestore = null) }
     }
 
+    private suspend fun ensureConnectedForSend(forceReconnect: Boolean = false): Boolean {
+        if (!forceReconnect && _state.value.connectionStatus == ConnectionStatus.CONNECTED) {
+            return true
+        }
+        val cur = _state.value
+        val wsUrl = cur.discoveredWsUrl
+        val hubId = cur.hub?.id ?: loadActiveHostId()
+        val token = (hubId?.let { loadHostAccessToken(it) } ?: loadSavedAccessToken()).orEmpty()
+        if (wsUrl.isNotBlank() && token.isNotBlank()) {
+            val fastOk = withTimeoutOrNull(5_000L) {
+                connectWithToken(
+                    wsUrl = wsUrl,
+                    token = token,
+                    isForegroundResume = true,
+                    expectedHubId = hubId,
+                )
+            } == true
+            if (fastOk) return true
+        }
+        verifyAndResumeForegroundSession(fromNetworkHandoff = true)
+        var waited = 0L
+        while (waited < 8_000L) {
+            if (_state.value.connectionStatus == ConnectionStatus.CONNECTED) return true
+            if (_state.value.connectionStatus == ConnectionStatus.NEEDS_AUTH) return false
+            delay(200L)
+            waited += 200L
+        }
+        return _state.value.connectionStatus == ConnectionStatus.CONNECTED
+    }
+
+    private suspend fun dispatchPromptRpc(
+        trimmed: String,
+        attached: List<PromptImageAttachment>,
+    ) {
+        val cur = _state.value
+        val sessionId = cur.activeSessionId ?: run {
+            val cwd = cur.selectedWorkspacePath.ifEmpty {
+                cur.workspaces.firstOrNull()?.path ?: throw IllegalStateException("未找到可用工作区目录")
+            }
+            val allWs = (listOf(cwd) + cur.selectedExtraWorkspaces).filter { it.isNotBlank() }.distinct()
+            val created = rpc.createSession(
+                engineId = cur.selectedEngineId,
+                cwd = cwd,
+                workspaces = allWs,
+                providerId = cur.selectedProviderId,
+                modelId = cur.selectedModelId,
+                reasoningEffort = cur.selectedEffort,
+                mode = cur.selectedMode,
+            )
+            switchSubscriptionTo(created.id)
+            _state.update { st ->
+                st.copy(
+                    sessions = listOf(created) + st.sessions.filterNot { item -> item.id == created.id },
+                    activeSessionId = created.id,
+                )
+            }
+            created.id
+        }
+
+        try {
+            rpc.sendPrompt(
+                sessionId = sessionId,
+                text = trimmed,
+                images = attached.takeIf { it.isNotEmpty() },
+                modelId = cur.selectedModelId,
+                reasoningEffort = cur.selectedEffort,
+                mode = cur.selectedMode,
+            )
+        } catch (e: RpcCallException) {
+            // If `sessionId` was a pre-restart `sess_*` ID that is now persisted on disk as `host:*`,
+            // automatically remap to the matching `host:*` session and send seamlessly!
+            if (e.code == ErrorCode.NOT_FOUND && sessionId.startsWith("sess_")) {
+                val prevMeta = cur.sessions.firstOrNull { it.id == sessionId }
+                val freshList = rpc.listSessions()
+                val remapped = freshList.firstOrNull {
+                    it.engineId == (prevMeta?.engineId ?: cur.selectedEngineId) &&
+                        (it.title == prevMeta?.title || it.cwd == (prevMeta?.cwd ?: cur.selectedWorkspacePath))
+                } ?: throw e
+                switchSubscriptionTo(remapped.id)
+                _state.update { st ->
+                    st.copy(sessions = freshList, activeSessionId = remapped.id)
+                }
+                runCatching { subscribeAndCatchUp(remapped.id) }
+                rpc.sendPrompt(
+                    sessionId = remapped.id,
+                    text = trimmed,
+                    images = attached.takeIf { it.isNotEmpty() },
+                    modelId = cur.selectedModelId,
+                    reasoningEffort = cur.selectedEffort,
+                    mode = cur.selectedMode,
+                )
+            } else {
+                throw e
+            }
+        }
+    }
+
     fun sendPrompt(text: String) {
         val trimmed = text.trim()
         val s = _state.value
@@ -1788,37 +1885,30 @@ class ConsoleStore(
         }
         scope.launch {
             try {
-                val sessionId = s.activeSessionId ?: run {
-                    val cwd = s.selectedWorkspacePath.ifEmpty {
-                        s.workspaces.firstOrNull()?.path ?: return@launch
-                    }
-                    val allWs = (listOf(cwd) + s.selectedExtraWorkspaces).filter { it.isNotBlank() }.distinct()
-                    val created = rpc.createSession(
-                        engineId = s.selectedEngineId,
-                        cwd = cwd,
-                        workspaces = allWs,
-                        providerId = s.selectedProviderId,
-                        modelId = s.selectedModelId,
-                        reasoningEffort = s.selectedEffort,
-                        mode = s.selectedMode,
-                    )
-                    switchSubscriptionTo(created.id)
-                    _state.update { st ->
-                        st.copy(
-                            sessions = listOf(created) + st.sessions.filterNot { item -> item.id == created.id },
-                            activeSessionId = created.id,
-                        )
-                    }
-                    created.id
+                if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) {
+                    ensureConnectedForSend(forceReconnect = false)
                 }
-                rpc.sendPrompt(
-                    sessionId = sessionId,
-                    text = trimmed,
-                    images = attached.takeIf { it.isNotEmpty() },
-                    modelId = s.selectedModelId,
-                    reasoningEffort = s.selectedEffort,
-                    mode = s.selectedMode,
-                )
+                try {
+                    dispatchPromptRpc(trimmed, attached)
+                } catch (firstErr: Throwable) {
+                    if (firstErr is CancellationException && !isActive) throw firstErr
+                    if (firstErr is RpcCallException) throw firstErr
+                    // Socket dropped right as the user tapped Send: reconnect once and retry transparently!
+                    if (ensureConnectedForSend(forceReconnect = true)) {
+                        dispatchPromptRpc(trimmed, attached)
+                    } else {
+                        throw firstErr
+                    }
+                }
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+                _state.update { st ->
+                    st.copy(
+                        composerAttachedImages = st.composerAttachedImages.ifEmpty { attached },
+                        promptErrorText = "网络连接刚恢复，请再点一次发送",
+                        unsentDraftToRestore = trimmed.takeIf { it.isNotEmpty() },
+                    )
+                }
             } catch (t: Throwable) {
                 val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "消息发送未成功，请检查连接后重试"
                 _state.update { st ->

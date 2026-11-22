@@ -40,9 +40,11 @@ private fun leafFingerprint(trust: SecTrustRef): String? {
 }
 
 actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient = HttpClient(Darwin) {
-    install(WebSockets) {
-        pingIntervalMillis = 20_000L
-    }
+    // Do NOT set Ktor software `pingIntervalMillis` on Darwin: `NSURLSessionWebSocketTask` consumes
+    // incoming WebSocket Pong frames at the C layer without surfacing `Frame.Pong` to Ktor, which
+    // would cause Ktor's software pinger to cancel the channel ("Channel was cancelled") after 2x interval!
+    // Server-side `ws.ping()` from `hubd` already triggers native Darwin Pong keepalives automatically.
+    install(WebSockets)
     followRedirects = false
     engine {
         handleChallenge { _, _, challenge, completionHandler ->

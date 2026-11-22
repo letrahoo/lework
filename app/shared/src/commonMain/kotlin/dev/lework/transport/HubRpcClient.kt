@@ -24,10 +24,12 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -523,7 +525,7 @@ class HubRpcClient(
                     token = token,
                     client = ClientInfo(
                         name = "lework-mobile",
-                        version = "0.6.4",
+                        version = "0.6.5",
                         platform = platformName,
                     ),
                 ),
@@ -735,6 +737,17 @@ class HubRpcClient(
             return decodeResult(resultElem)
         } catch (t: Throwable) {
             pendingMutex.withLock { pending.remove(id) }
+            // Ktor's WebSocket channels throw `CancellationException("Channel was cancelled")` when the
+            // underlying socket closes even while the caller coroutine is still active.
+            if (t is kotlinx.coroutines.CancellationException && !currentCoroutineContext().isActive) {
+                throw t
+            }
+            if (t !is RpcCallException && wsSession === session) {
+                wsSession = null
+                runCatching { session.close() }
+                _disconnected.tryEmit(t.message ?: "Connection interrupted")
+                throw IllegalStateException("连接已中断，正在自动重连", t)
+            }
             throw t
         }
     }
@@ -773,7 +786,11 @@ class HubRpcClient(
                 _disconnected.tryEmit("Connection closed")
             }
         } catch (ce: kotlinx.coroutines.CancellationException) {
-            failAllPending("Cancelled")
+            failAllPending("Connection interrupted")
+            if (wsSession === session) {
+                wsSession = null
+                _disconnected.tryEmit(ce.message ?: "Connection interrupted")
+            }
             throw ce
         } catch (t: Throwable) {
             failAllPending(t.message ?: "WebSocket error")

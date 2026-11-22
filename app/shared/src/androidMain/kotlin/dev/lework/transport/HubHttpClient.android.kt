@@ -108,9 +108,7 @@ actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient {
     val tm = HubPinningTrustManager(pinnedOnly)
     val ctx = SSLContext.getInstance("TLS").apply { init(null, arrayOf(tm), SecureRandom()) }
     return HttpClient(OkHttp) {
-        install(WebSockets) {
-            pingIntervalMillis = 20_000L
-        }
+        install(WebSockets)
         followRedirects = false
         engine {
             config {
