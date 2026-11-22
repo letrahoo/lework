@@ -57,11 +57,12 @@ import {
 } from './storage/workspace-fs.ts'
 import { UsageService } from './usage/index.ts'
 
-const HUB_VERSION = '0.6.3'
+const HUB_VERSION = '0.6.4'
 
 interface ClientConn {
   ws: WebSocket
   authenticated: boolean
+  isAlive: boolean
   subscribedSessions: Set<string>
   helloTimer: NodeJS.Timeout | null
 }
@@ -107,6 +108,7 @@ export class HubServer {
   private readonly notifier: NotificationDispatcher
   private readonly config: HubConfig
   private bonjour: BonjourAdvertiser | null = null
+  private wsHeartbeatTimer: NodeJS.Timeout | null = null
   private boundPort = 0
   private readonly tls: HubTlsMaterial
 
@@ -254,10 +256,32 @@ export class HubServer {
     })
     this.bonjour.start()
     await this.tsnetManager.startIfConfigured(port)
+    if (!this.wsHeartbeatTimer) {
+      this.wsHeartbeatTimer = setInterval(() => {
+        for (const c of this.clients) {
+          if (c.ws.readyState !== WebSocket.OPEN) continue
+          if (!c.isAlive) {
+            c.ws.terminate()
+            continue
+          }
+          c.isAlive = false
+          try {
+            c.ws.ping()
+          } catch {
+            // ignore broken socket
+          }
+        }
+      }, 20_000)
+      this.wsHeartbeatTimer.unref()
+    }
     return { port, host: this.config.host }
   }
 
   async stop(): Promise<void> {
+    if (this.wsHeartbeatTimer) {
+      clearInterval(this.wsHeartbeatTimer)
+      this.wsHeartbeatTimer = null
+    }
     this.notifier.dispose()
     this.bonjour?.stop()
     this.bonjour = null
@@ -719,6 +743,7 @@ export class HubServer {
     const conn: ClientConn = {
       ws,
       authenticated: false,
+      isAlive: true,
       subscribedSessions: new Set(),
       helloTimer: null,
     }
@@ -727,7 +752,11 @@ export class HubServer {
     }, HELLO_DEADLINE_MS)
     this.clients.add(conn)
 
+    ws.on('pong', () => {
+      conn.isAlive = true
+    })
     ws.on('message', raw => {
+      conn.isAlive = true
       void this.handleWsMessage(conn, String(raw))
     })
 

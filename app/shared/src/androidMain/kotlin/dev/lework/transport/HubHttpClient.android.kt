@@ -11,6 +11,7 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
 import java.net.SocketAddress
+import java.util.concurrent.TimeUnit
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
@@ -107,11 +108,14 @@ actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient {
     val tm = HubPinningTrustManager(pinnedOnly)
     val ctx = SSLContext.getInstance("TLS").apply { init(null, arrayOf(tm), SecureRandom()) }
     return HttpClient(OkHttp) {
-        install(WebSockets)
+        install(WebSockets) {
+            pingIntervalMillis = 20_000L
+        }
         followRedirects = false
         engine {
             config {
                 proxy(Proxy.NO_PROXY)
+                pingInterval(20, TimeUnit.SECONDS)
                 socketFactory(PreTlsForwarderSocketFactory())
                 sslSocketFactory(ctx.socketFactory, tm)
                 hostnameVerifier { _, _ -> true }

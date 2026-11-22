@@ -40,7 +40,9 @@ private fun leafFingerprint(trust: SecTrustRef): String? {
 }
 
 actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient = HttpClient(Darwin) {
-    install(WebSockets)
+    install(WebSockets) {
+        pingIntervalMillis = 20_000L
+    }
     followRedirects = false
     engine {
         handleChallenge { _, _, challenge, completionHandler ->

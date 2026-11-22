@@ -523,7 +523,7 @@ class HubRpcClient(
                     token = token,
                     client = ClientInfo(
                         name = "lework-mobile",
-                        version = "0.6.3",
+                        version = "0.6.4",
                         platform = platformName,
                     ),
                 ),

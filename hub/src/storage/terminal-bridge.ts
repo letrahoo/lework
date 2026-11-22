@@ -464,9 +464,19 @@ export class TerminalBridge {
     const cwdByPid = new Map<number, string>()
     const presenceByPid = new Map<number, Set<string>>()
     const openDbByPid = new Map<number, Set<string>>()
+    const pidCsv = candidates.map(c => String(c.pid)).join(',')
+    let lsofOut = ''
     try {
-      const pidCsv = candidates.map(c => String(c.pid)).join(',')
-      const lsofOut = await this.runCmd('lsof', ['-Ffn', '-p', pidCsv], 2_200)
+      lsofOut = await this.runCmd('lsof', ['-Ffn', '-p', pidCsv], 3_000)
+    } catch (err) {
+      // On macOS, `lsof` exits with code 1 whenever any transient fd closes mid-scan while still
+      // writing all valid process fds (`presence/*.lock`, `cwd`) to `stdout`!
+      const partialStdout = (err as { stdout?: unknown } | null)?.stdout
+      if (typeof partialStdout === 'string' && partialStdout.length > 0) {
+        lsofOut = partialStdout
+      }
+    }
+    if (lsofOut) {
       let currentPid = 0
       let currentFd = ''
       for (const line of lsofOut.split('\n')) {
@@ -500,8 +510,6 @@ export class TerminalBridge {
           }
         }
       }
-    } catch {
-      // ignore lsof failure
     }
 
     const list: AgyTtyProcess[] = candidates.map(c => ({
@@ -834,21 +842,54 @@ export function resolveApprovalKey(prompt: DetectedTerminalPermission, optionId:
  *   `⣷ Running command...`
  */
 export function parseLiveSpinnerLine(lines: string[]): string | undefined {
+  let contentRowsChecked = 0
   for (let i = lines.length - 1; i >= 0; i--) {
     const trimmed = lines[i]?.trim() ?? ''
     if (!trimmed) continue
-    if (trimmed.startsWith('─') || trimmed.startsWith('╌') || trimmed.startsWith('❯') || trimmed.startsWith('>')) {
+    // Skip bottom composer border & footer hints
+    if (
+      trimmed.startsWith('─') ||
+      trimmed.startsWith('╌') ||
+      trimmed.startsWith('❯') ||
+      trimmed.startsWith('>') ||
+      trimmed.startsWith('? for shortcuts') ||
+      trimmed.startsWith('esc to cancel') ||
+      trimmed.startsWith('⏸') ||
+      trimmed.startsWith('⏵⏵')
+    ) {
       continue
     }
+
+    contentRowsChecked++
+    if (contentRowsChecked > 6) {
+      break
+    }
+
+    // Never match background daemon badges (`(ctrl+o to expand)`) or past-tense completed summaries
     if (
-      /^[·✻✽✢✳✶⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●⏺⣷⣯⣟⡿⢿⣻⣽⣾]\s+\S+/.test(trimmed) &&
-      (trimmed.includes('…') ||
-        trimmed.includes('...') ||
-        trimmed.includes('tokens') ||
-        /\(\d+[ms]/.test(trimmed))
+      trimmed.includes('(ctrl+o to expand)') ||
+      /^.\s+(Ran|Read|Edited|Explored|Created|Wrote|Searched|Fetched|Baked|Cooked|Worked|Thought\s+for)\b/i.test(
+        trimmed,
+      )
+    ) {
+      continue
+    }
+
+    // 1. Active braille spinner frames (`⣷ Running command...`, `⣟ Thinking...`)
+    if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣷⣯⣟⡿⢿⣻⣽⣾]\s+\S+/.test(trimmed)) {
+      return trimmed.replace(/\s+/g, ' ').slice(0, 120)
+    }
+
+    // 2. Claude Code active star spinner (`· Sketching… (2m 1s · ↓ 1.0k tokens)`, `✻ Thinking…`)
+    if (
+      /^[·✻✽✢✳✶]\s+\S+/.test(trimmed) &&
+      (trimmed.includes('…') || trimmed.includes('...'))
     ) {
       return trimmed.replace(/\s+/g, ' ').slice(0, 120)
     }
+
+    // Once we encounter finished assistant prose above the prompt box, there is no active bottom spinner
+    break
   }
   return undefined
 }

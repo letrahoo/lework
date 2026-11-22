@@ -25,6 +25,20 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
       '> ',
     ]
     expect(parseLiveSpinnerLine(agyScreen)).toBe('⣷ Running command...')
+
+    // Completed AGY turn with past-tense `● Ran ...` and daemon `(ctrl+o to expand)` MUST return undefined (idle)!
+    const idleAgyWithDaemonScreen = [
+      '● Ran 11 commands, killed 1 task (./hub/node_modules/.bin/tsc -p hub/tsconfig.json...)',
+      '● Running (node ./hub/bin/hub.js serve) (ctrl+o to expand)',
+      '  定位到原因并已在服务端修复生效。',
+      '',
+      '────────────────────────────────────────────────────────────',
+      '> ',
+      '────────────────────────────────────────────────────────────',
+      '? for shortcuts                              auto · Gemini 4 Carbon · high',
+    ]
+    expect(parseLiveSpinnerLine(idleAgyWithDaemonScreen)).toBeUndefined()
+    expect(parseLiveSpinnerLine(['✻ Baked for 1m 12s', '───', '❯ '])).toBeUndefined()
   })
 
   it('[T1.1] parses diverse Agent-internal approval prompts (Bash, Overwrite/Edit, Plan confirmation, AGY sandbox) while ignoring Markdown lists', () => {

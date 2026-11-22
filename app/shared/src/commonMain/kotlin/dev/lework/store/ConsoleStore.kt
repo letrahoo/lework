@@ -52,6 +52,9 @@ class ConsoleStore(
     private var tsnetPollJob: Job? = null
     private var resumeJob: Job? = null
     private var networkHandoffJob: Job? = null
+    private var activeTurnSyncJob: Job? = null
+    private var reconnectRetryJob: Job? = null
+    private var lastRealtimeActivityMs: Long = 0L
     private var subscribedSessionId: String? = null
     private var subscribeSeqToken: Long = 0L
     private var userManuallyPickedMode: Boolean = false
@@ -128,11 +131,18 @@ class ConsoleStore(
         }
         scope.launch {
             rpc.events.collect { ev ->
+                lastRealtimeActivityMs = epochMillis()
                 applyIncomingEvent(ev)
             }
         }
         scope.launch {
             rpc.sessionUpdates.collect { updated ->
+                lastRealtimeActivityMs = epochMillis()
+                val prevActive = _state.value.activeSession?.takeIf { it.id == updated.id }
+                val transitionedToIdle =
+                    prevActive != null &&
+                        (prevActive.state == SessionState.RUNNING || prevActive.state == SessionState.WAITING_PERMISSION) &&
+                        updated.state == SessionState.IDLE
                 _state.update { s ->
                     val existing = s.sessions.indexOfFirst { it.id == updated.id }
                     val nextList = if (existing >= 0) {
@@ -162,22 +172,26 @@ class ConsoleStore(
                         selectedEffort = syncEffort,
                     )
                 }
+                if (transitionedToIdle && _state.value.activeSessionId == updated.id) {
+                    scope.launch {
+                        runCatching { subscribeAndCatchUp(updated.id) }
+                        refreshActiveSessionUsage(updated.id)
+                    }
+                }
             }
         }
         scope.launch {
             rpc.disconnected.collect { reason ->
                 val cur = _state.value
                 if (!manualPairingMode && cur.hasEnteredWorkspace) {
-                    if (!observeAppForeground().value) {
-                        // iOS background / screen locked: keep workspace & Session untouched until foreground return
-                        _state.update {
-                            it.copy(
-                                connectionStatus = ConnectionStatus.RECONNECTING,
-                                connectionError = null,
-                            )
-                        }
-                    } else {
-                        verifyAndResumeForegroundSession()
+                    _state.update {
+                        it.copy(
+                            connectionStatus = ConnectionStatus.RECONNECTING,
+                            connectionError = null,
+                        )
+                    }
+                    if (observeAppForeground().value) {
+                        verifyAndResumeForegroundSession(fromNetworkHandoff = true)
                     }
                 } else {
                     _state.update { s ->
@@ -190,6 +204,81 @@ class ConsoleStore(
                             s
                         }
                     }
+                }
+            }
+        }
+        // State-reactive watchdog: only runs while an active session is RUNNING/WAITING_PERMISSION
+        // (catches missed frames & zombie half-open sockets within 4.5s) or while RECONNECTING in foreground.
+        scope.launch {
+            _state.collect { st ->
+                val activeSess = st.activeSession?.takeIf { it.id == st.activeSessionId }
+                val needTurnWatchdog =
+                    st.hasEnteredWorkspace &&
+                        st.connectionStatus == ConnectionStatus.CONNECTED &&
+                        activeSess != null &&
+                        (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
+
+                if (needTurnWatchdog) {
+                    if (activeTurnSyncJob?.isActive != true) {
+                        activeTurnSyncJob = scope.launch {
+                            while (isActive) {
+                                delay(4_500L)
+                                val cur = _state.value
+                                val sid = cur.activeSessionId ?: break
+                                val curSess = cur.activeSession?.takeIf { it.id == sid } ?: break
+                                if (cur.connectionStatus != ConnectionStatus.CONNECTED ||
+                                    (curSess.state != SessionState.RUNNING && curSess.state != SessionState.WAITING_PERMISSION)
+                                ) {
+                                    break
+                                }
+                                if (!observeAppForeground().value) continue
+                                if (epochMillis() - lastRealtimeActivityMs < 4_000L) continue
+                                try {
+                                    withTimeout(4_000L) {
+                                        subscribeAndCatchUp(sid)
+                                    }
+                                    lastRealtimeActivityMs = epochMillis()
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (_: Throwable) {
+                                    // Dead / half-open zombie WebSocket detected during long turn: reconnect immediately!
+                                    runCatching { rpc.disconnect() }
+                                    _state.update {
+                                        it.copy(connectionStatus = ConnectionStatus.RECONNECTING, connectionError = null)
+                                    }
+                                    verifyAndResumeForegroundSession(fromNetworkHandoff = true)
+                                    break
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    activeTurnSyncJob?.cancel()
+                    activeTurnSyncJob = null
+                }
+
+                val needReconnectRetry =
+                    !manualPairingMode &&
+                        st.hasEnteredWorkspace &&
+                        st.connectionStatus == ConnectionStatus.RECONNECTING
+                if (needReconnectRetry) {
+                    if (reconnectRetryJob?.isActive != true) {
+                        reconnectRetryJob = scope.launch {
+                            while (isActive) {
+                                delay(3_500L)
+                                val cur = _state.value
+                                if (manualPairingMode || !cur.hasEnteredWorkspace || cur.connectionStatus != ConnectionStatus.RECONNECTING) {
+                                    break
+                                }
+                                if (observeAppForeground().value && resumeJob?.isActive != true) {
+                                    verifyAndResumeForegroundSession(fromNetworkHandoff = true)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    reconnectRetryJob?.cancel()
+                    reconnectRetryJob = null
                 }
             }
         }
@@ -1256,7 +1345,23 @@ class ConsoleStore(
             val validWs = workspaces.firstOrNull { it.path == current.selectedWorkspacePath }?.path
                 ?: workspaces.firstOrNull()?.path.orEmpty()
 
+            val prevActiveId = current.activeSessionId
+            val prevActiveMeta = prevActiveId?.let { id -> current.sessions.firstOrNull { it.id == id } }
+            val resolvedActiveId = when {
+                prevActiveId == null -> null
+                sessions.any { it.id == prevActiveId } -> prevActiveId
+                prevActiveId.startsWith("sess_") && prevActiveMeta != null -> {
+                    // Hub restarted: in-memory `sess_*` is now discovered on disk as `host:<engine>:<nativeId>`
+                    sessions.firstOrNull {
+                        it.engineId == prevActiveMeta.engineId &&
+                            (it.title == prevActiveMeta.title || it.cwd == prevActiveMeta.cwd)
+                    }?.id
+                }
+                else -> prevActiveId
+            }
+
             manualPairingMode = false
+            lastRealtimeActivityMs = epochMillis()
             _state.update {
                 it.copy(
                     hasEnteredWorkspace = true,
@@ -1276,13 +1381,14 @@ class ConsoleStore(
                     selectedWorkspacePath = validWs,
                     currentBrowsePath = validWs,
                     sessions = sessions,
+                    activeSessionId = resolvedActiveId,
                 )
             }
             persistCurrentPrefs()
 
-            if (current.activeSessionId != null) {
-                subscribedSessionId = current.activeSessionId
-                runCatching { subscribeAndCatchUp(current.activeSessionId) }
+            if (resolvedActiveId != null) {
+                subscribedSessionId = resolvedActiveId
+                runCatching { subscribeAndCatchUp(resolvedActiveId) }
             }
             val deepLinkSid = pendingDeepLinkSessionId
             if (!deepLinkSid.isNullOrBlank()) {

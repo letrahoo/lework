@@ -900,6 +900,9 @@ export class HostTaskInspector {
         ])
       }
 
+      // Re-read canonical transcript state after async terminal inspection so an already-finished
+      // (`idle`) transcript is never reverted back to `running` by stale pre-await `entry.meta.state`!
+      const freshTranscriptState = this.readHostSessionEvents(sessionId)?.session.state ?? entry.meta.state
       const spinner = inspected?.liveStatusText
       const nextState: SessionMeta['state'] =
         engineId === 'claude'
@@ -908,7 +911,7 @@ export class HostTaskInspector {
             : claudeRt?.status === 'running' || claudeRt?.status === 'busy' || Boolean(spinner)
               ? 'running'
               : 'idle'
-          : Boolean(spinner) || entry.meta.state === 'running'
+          : Boolean(spinner) || freshTranscriptState === 'running'
             ? 'running'
             : 'idle'
 
