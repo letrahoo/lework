@@ -23,8 +23,10 @@ export function extraSearchPaths(): string[] {
   const home = os.homedir()
   return [
     path.join(home, '.local', 'bin'),
+    path.join(home, '.cargo', 'bin'),
     path.join(home, 'Library', 'pnpm'),
     '/opt/homebrew/bin',
+    '/usr/local/go/bin',
     '/usr/local/bin',
     '/usr/bin',
     '/bin',
@@ -85,17 +87,51 @@ export function probeCommandVersion(binPath: string, args: string[] = ['--versio
   return undefined
 }
 
-export function listLanAddresses(): string[] {
-  const nets = os.networkInterfaces()
+const VIRTUAL_IFACE_PREFIXES = [
+  'lo',
+  'utun',
+  'tun',
+  'tap',
+  'tailscale',
+  'ppp',
+  'docker',
+  'podman',
+  'veth',
+  'br-',
+  'virbr',
+  'cni',
+  'flannel',
+]
+
+export function listLanAddresses(
+  nets: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces(),
+): string[] {
   const addrs: string[] = []
-  for (const entries of Object.values(nets)) {
+  for (const [ifName, entries] of Object.entries(nets)) {
+    const lower = ifName.toLowerCase()
+    if (VIRTUAL_IFACE_PREFIXES.some(p => lower.startsWith(p))) continue
     for (const entry of entries ?? []) {
-      if (entry.family === 'IPv4' && !entry.internal) {
-        addrs.push(entry.address)
+      if (entry.family === 'IPv4' && !entry.internal && !entry.address.startsWith('169.254.')) {
+        if (!addrs.includes(entry.address)) addrs.push(entry.address)
       }
     }
   }
   return addrs
+}
+
+/**
+ * Extracts the server IPv4/IPv6 address from `$SSH_CONNECTION` (`<client_ip> <client_port> <server_ip> <server_port>`)
+ * so headless remote Devboxes prioritize the exact routable IP the user connected to.
+ */
+export function resolveSshServerAddress(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.SSH_CONNECTION?.trim()
+  if (!raw) return undefined
+  const parts = raw.split(/\s+/)
+  if (parts.length < 3) return undefined
+  const serverIp = parts[2]!.replace(/^::ffff:/i, '').trim()
+  if (!serverIp || serverIp === '127.0.0.1' || serverIp === '::1') return undefined
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(serverIp)) return serverIp
+  return undefined
 }
 
 /**
@@ -196,22 +232,35 @@ export function ensureUserCliLinks(
 }
 
 export function generateServiceDescriptor(opts: {
-  role: 'master' | 'slave'
+  role: 'master' | 'slave' | 'standalone'
   repoRoot: string
   nodeBin?: string
-}): { platform: SupportedPlatform; pathHint: string; content: string } {
-  const platform = detectPlatform()
+  platformOverride?: SupportedPlatform
+}): { platform: SupportedPlatform; unitOrLabel: string; pathHint: string; content: string } {
+  const platform = opts.platformOverride ?? detectPlatform()
   const nodeBin = opts.nodeBin ?? process.execPath
   const hubTsx = path.join(opts.repoRoot, 'hub', 'node_modules', '.bin', 'tsx')
   const rootTsx = path.join(opts.repoRoot, 'node_modules', '.bin', 'tsx')
-  const tsxBin = fs.existsSync(hubTsx) ? hubTsx : rootTsx
+  const tsxBin = [hubTsx, rootTsx].find(p => fs.existsSync(p))
   const cliEntry = path.join(opts.repoRoot, 'hub', 'src', 'cli.ts')
   const home = os.homedir()
+  const servicePathDirs = [
+    ...new Set([
+      path.dirname(nodeBin),
+      ...extraSearchPaths(),
+      ...(process.env.PATH ?? '').split(path.delimiter).filter(p => p && !p.includes('/tmp/')),
+    ]),
+  ]
+  const pathValue = servicePathDirs.join(':')
+  const execArgs = tsxBin
+    ? [tsxBin, cliEntry, 'serve', '--role', opts.role]
+    : [nodeBin, '--experimental-transform-types', cliEntry, 'serve', '--role', opts.role]
 
   if (platform === 'darwin') {
     const label = `dev.lework.hub-${opts.role}`
     const pathHint = path.join(home, 'Library', 'LaunchAgents', `${label}.plist`)
     const logDir = path.join(home, 'Library', 'Logs')
+    const xmlArgs = execArgs.map(a => `    <string>${a}</string>`).join('\n')
     const content = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -220,18 +269,14 @@ export function generateServiceDescriptor(opts: {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${tsxBin}</string>
-    <string>${cliEntry}</string>
-    <string>serve</string>
-    <string>--role</string>
-    <string>${opts.role}</string>
+${xmlArgs}
   </array>
   <key>WorkingDirectory</key>
   <string>${opts.repoRoot}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>${path.dirname(nodeBin)}:${home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>${pathValue}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -244,26 +289,27 @@ export function generateServiceDescriptor(opts: {
 </dict>
 </plist>
 `
-    return { platform, pathHint, content }
+    return { platform, unitOrLabel: label, pathHint, content }
   }
 
-  // Linux / systemd --user (Master or Linux Slave)
+  // Linux / systemd --user (Master or Linux Slave / Devbox)
   const unitName = `lework-hub-${opts.role}.service`
   const pathHint = path.join(home, '.config', 'systemd', 'user', unitName)
+  const execStart = execArgs.map(a => (a.includes(' ') ? `"${a}"` : a)).join(' ')
   const content = `[Unit]
-Description=lework Hub (${opts.role})
+Description=Lework Hub (${opts.role})
 After=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=${opts.repoRoot}
-Environment="PATH=${path.dirname(nodeBin)}:${home}/.local/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=${tsxBin} ${cliEntry} serve --role ${opts.role}
+Environment="PATH=${pathValue}"
+ExecStart=${execStart}
 Restart=always
 RestartSec=3
 
 [Install]
 WantedBy=default.target
 `
-  return { platform, pathHint, content }
+  return { platform, unitOrLabel: unitName, pathHint, content }
 }

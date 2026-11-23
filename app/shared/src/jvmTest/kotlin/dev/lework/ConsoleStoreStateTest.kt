@@ -896,4 +896,49 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T13_1 creates isolated worktree session, formats branch badge, filters by branch, and marks cleanedUp on archive`() = runTest {
+        val transport = FakeHubTransport()
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            store.selectWorkspace("/Users/test/Projects/lework")
+            store.setDraftUseWorktree(true)
+            store.setDraftWorktreeBranch("feat-worktree")
+            assertEquals("lework · feat-worktree", store.state.value.workspaceDisplayName)
+
+            store.sendPrompt("在独立分支实现新功能")
+            runCurrent()
+
+            assertEquals(true, transport.lastCreateUseWorktree)
+            assertEquals("feat-worktree", transport.lastCreateWorktreeBranch)
+
+            val created = store.state.value.activeSession
+            assertTrue(created != null)
+            assertEquals("lework/feat-worktree", created.worktree?.branch)
+            assertEquals(false, created.worktree?.cleanedUp)
+            assertEquals("lework · feat-worktree", store.state.value.workspaceDisplayName)
+            // Draft custom branch resets after creation while keeping worktree preference intact
+            assertEquals("", store.state.value.draftWorktreeBranch)
+
+            // Search by branch name in sidebar matches the worktree session
+            store.setDrawerSearchQuery("feat-worktree")
+            assertEquals(1, store.state.value.filteredHistorySessions.size)
+            store.setDrawerSearchQuery("")
+
+            // Archive session -> FakeHubTransport marks worktree cleanedUp = true
+            store.archiveSession(created.id, true)
+            runCurrent()
+            val archived = store.state.value.sessions.first { it.id == created.id }
+            assertEquals(true, archived.archived)
+            assertEquals(true, archived.worktree?.cleanedUp)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

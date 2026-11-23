@@ -1647,6 +1647,19 @@ class ConsoleStore(
         }
     }
 
+    fun setDraftUseWorktree(enabled: Boolean) {
+        _state.update {
+            it.copy(
+                draftUseWorktree = enabled,
+                draftWorktreeBranch = if (enabled) it.draftWorktreeBranch else "",
+            )
+        }
+    }
+
+    fun setDraftWorktreeBranch(branch: String) {
+        _state.update { it.copy(draftWorktreeBranch = branch.take(72)) }
+    }
+
     fun switchBrowseWorkspace(path: String) {
         if (path.isBlank()) return
         browseDirectory(path)
@@ -1940,6 +1953,8 @@ class ConsoleStore(
                 engineId = cur.selectedEngineId,
                 cwd = cwd,
                 workspaces = allWs,
+                useWorktree = cur.draftUseWorktree.takeIf { it },
+                worktreeBranch = cur.draftWorktreeBranch.trim().takeIf { cur.draftUseWorktree && it.isNotEmpty() },
                 providerId = cur.selectedProviderId,
                 modelId = cur.selectedModelId,
                 reasoningEffort = cur.selectedEffort,
@@ -1950,6 +1965,10 @@ class ConsoleStore(
                 st.copy(
                     sessions = listOf(created) + st.sessions.filterNot { item -> item.id == created.id },
                     activeSessionId = created.id,
+                    selectedWorkspacePath = created.cwd,
+                    currentBrowsePath = created.cwd,
+                    currentDiffWorkspacePath = created.cwd,
+                    draftWorktreeBranch = "",
                 )
             }
             created.id

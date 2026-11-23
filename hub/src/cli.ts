@@ -1,3 +1,4 @@
+import { spawn, spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import https from 'node:https'
@@ -14,7 +15,14 @@ import { encodePairingDeepLink, type QrPairingPayload } from './auth/pair-manage
 import { IssuedTokenStore } from './auth/token-store.ts'
 import { TsnetManager, type TsnetStatusSnapshot } from './auth/tsnet-manager.ts'
 import { NotificationDispatcher, type NotificationConfig } from './notifications/notifier.ts'
-import { defaultDataDir, ensureUserCliLinks, generateServiceDescriptor, listLanAddresses } from './platform/index.ts'
+import {
+  defaultDataDir,
+  detectPlatform,
+  ensureUserCliLinks,
+  generateServiceDescriptor,
+  listLanAddresses,
+  resolveSshServerAddress,
+} from './platform/index.ts'
 import { loadOrCreateHubTls, shortFingerprint } from './security/tls.ts'
 import { HubServer } from './server.ts'
 
@@ -212,6 +220,8 @@ async function main(): Promise<void> {
   }
 
   if (sub === 'pair') {
+    const explicitEndpoint = parseStringFlag(args, '--endpoint')
+    const explicitHost = parseStringFlag(args, '--host')
     const tls = loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` })
     const liveTicket = await callLocalHubAdmin<{
       pairCode: string
@@ -227,19 +237,36 @@ async function main(): Promise<void> {
       pathname: '/v1/auth/pair/create',
     })
 
-    const fallbackUrls: string[] = []
+    const prioritizedUrls: string[] = []
+    if (explicitEndpoint) {
+      prioritizedUrls.push(explicitEndpoint.replace(/^http:\/\//i, 'https://').replace(/\/+$/, ''))
+    }
+    if (explicitHost) {
+      prioritizedUrls.push(`https://${explicitHost.replace(/^https?:\/\//i, '').replace(/\/+$/, '')}:${cfg.port}`)
+    }
+    const sshIp = resolveSshServerAddress()
+    if (sshIp) {
+      prioritizedUrls.push(`https://${sshIp}:${cfg.port}`)
+    }
+
+    const fallbackUrls: string[] = [...prioritizedUrls]
     for (const ip of collectLanIpv4Addresses()) fallbackUrls.push(`https://${ip}:${cfg.port}`)
     const cleanHost = (cfg.name || os.hostname())
       .replace(/\.local\.?$/i, '')
       .replace(/[^A-Za-z0-9_-]/g, '-')
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '')
-    if (cleanHost) fallbackUrls.push(`https://${cleanHost}.local:${cfg.port}`)
+    if (cleanHost && detectPlatform() === 'darwin') {
+      fallbackUrls.push(`https://${cleanHost}.local:${cfg.port}`)
+    }
     for (const tsIp of collectTailscaleIpv4Addresses()) fallbackUrls.push(`https://${tsIp}:${cfg.port}`)
     for (const r of cfg.relayUrls ?? []) fallbackUrls.push(r.replace(/^http:\/\//i, 'https://'))
     if (fallbackUrls.length === 0) fallbackUrls.push(`https://127.0.0.1:${cfg.port}`)
 
-    const endpoints = liveTicket?.endpoints?.length ? liveTicket.endpoints : fallbackUrls
+    const mergedRaw = liveTicket?.endpoints?.length
+      ? [...prioritizedUrls, ...liveTicket.endpoints]
+      : fallbackUrls
+    const endpoints = [...new Set(mergedRaw.filter(Boolean))]
     const primaryUrl = endpoints[0] ?? `https://127.0.0.1:${cfg.port}`
     const payload: QrPairingPayload = {
       v: 2,
@@ -253,7 +280,7 @@ async function main(): Promise<void> {
     }
     const deepLink = encodePairingDeepLink(payload)
 
-    console.log('Scan with Lework App (or iOS Camera) to pair this host:')
+    console.log('Scan with Lework Mobile App OR paste Deep Link into Lework Desktop to pair this host:')
     for (const ep of endpoints) {
       console.log(`  Endpoint    : ${ep}`)
     }
@@ -264,7 +291,7 @@ async function main(): Promise<void> {
     }
     console.log(`  Fingerprint : ${shortFingerprint(tls.fingerprint)}  (App 「主机指纹」应与此一致)\n`)
     qrcode.generate(deepLink, { small: true })
-    console.log(`\nDeep Link: ${deepLink}`)
+    console.log(`\nDesktop / CLI Pairing Link (复制粘贴至桌面端「粘贴配对链接连接」):\n  ${deepLink}`)
     return
   }
 
@@ -556,8 +583,204 @@ async function main(): Promise<void> {
     return
   }
 
+  if (sub === 'config') {
+    const action = args[1] ?? 'show'
+    if (action === 'show') {
+      console.log(`Config File : ${path.join(defaultDataDir(), 'config.json')}`)
+      console.log(`  Hub ID    : ${cfg.hubId}`)
+      console.log(`  Name      : ${cfg.name}`)
+      console.log(`  Role      : ${cfg.role}`)
+      console.log(`  Listen    : ${cfg.host}:${cfg.port}`)
+      console.log(`  Tailscale : ${cfg.tsnetEnabled ? 'enabled' : 'disabled'}${cfg.tsnetControlUrl ? ` (${cfg.tsnetControlUrl})` : ''}`)
+      console.log('  Workspaces:')
+      for (const w of cfg.workspaceRoots) {
+        console.log(`    - ${w}`)
+      }
+      if (cfg.relayUrls?.length) {
+        console.log('  Relays:')
+        for (const r of cfg.relayUrls) console.log(`    - ${r}`)
+      }
+      return
+    }
+    if (action === 'set-name') {
+      const nextName = args.slice(2).join(' ').trim()
+      if (!nextName) {
+        console.error('Usage: lework config set-name <display-name>')
+        process.exit(1)
+      }
+      updateStoredConfig({ name: nextName })
+      console.log(`Updated host display name to "${nextName}". Restart hubd if running.`)
+      return
+    }
+    if (action === 'add-workspace') {
+      const rawDir = args[2]?.trim()
+      if (!rawDir) {
+        console.error('Usage: lework config add-workspace <directory>')
+        process.exit(1)
+      }
+      const absDir = path.resolve(rawDir)
+      if (!fs.existsSync(absDir) || !fs.statSync(absDir).isDirectory()) {
+        console.error(`Directory does not exist: ${absDir}`)
+        process.exit(1)
+      }
+      const realDir = fs.realpathSync(absDir)
+      const nextRoots = [...new Set([...cfg.workspaceRoots, realDir])]
+      updateStoredConfig({ workspaceRoots: nextRoots })
+      console.log(`Added workspace root: ${realDir}`)
+      return
+    }
+    if (action === 'remove-workspace') {
+      const rawDir = args[2]?.trim()
+      if (!rawDir) {
+        console.error('Usage: lework config remove-workspace <directory>')
+        process.exit(1)
+      }
+      const absDir = path.resolve(rawDir)
+      const realDir = fs.existsSync(absDir) ? fs.realpathSync(absDir) : absDir
+      const nextRoots = cfg.workspaceRoots.filter(w => w !== absDir && w !== realDir)
+      updateStoredConfig({ workspaceRoots: nextRoots })
+      console.log(`Removed workspace root: ${realDir}`)
+      return
+    }
+    if (action === 'add-relay') {
+      const rawUrl = args[2]?.trim()
+      if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+        console.error('Usage: lework config add-relay <https://host:port>')
+        process.exit(1)
+      }
+      const normalized = rawUrl.replace(/^http:\/\//i, 'https://').replace(/\/+$/, '')
+      const nextRelays = [...new Set([...(cfg.relayUrls ?? []), normalized])]
+      updateStoredConfig({ relayUrls: nextRelays })
+      console.log(`Added relay endpoint: ${normalized}`)
+      return
+    }
+    if (action === 'clear-relays') {
+      updateStoredConfig({ relayUrls: [] })
+      console.log('Cleared custom relay endpoints.')
+      return
+    }
+    console.log(
+      'Usage: lework config <show | set-name <name> | add-workspace <dir> | remove-workspace <dir> | add-relay <https://...> | clear-relays>',
+    )
+    process.exit(1)
+  }
+
+  if (sub === 'service') {
+    const action = args[1] ?? 'status'
+    const role: 'master' | 'slave' | 'standalone' = roleOverride ?? cfg.role
+    const desc = generateServiceDescriptor({ role, repoRoot })
+
+    if (desc.platform === 'linux') {
+      const unit = desc.unitOrLabel
+      const runSysctl = (sysArgs: string[], inherit = true) =>
+        spawnSync('systemctl', ['--user', ...sysArgs], {
+          stdio: inherit ? 'inherit' : 'pipe',
+          encoding: 'utf8',
+        })
+
+      if (action === 'install') {
+        fs.mkdirSync(path.dirname(desc.pathHint), { recursive: true, mode: 0o755 })
+        fs.writeFileSync(desc.pathHint, desc.content, { mode: 0o644 })
+        console.log(`Wrote systemd user service: ${desc.pathHint}`)
+        runSysctl(['daemon-reload'])
+        const en = runSysctl(['enable', '--now', unit])
+        if (en.status !== 0) {
+          console.error(`Failed to enable/start ${unit}. Check 'systemctl --user status ${unit}'.`)
+          process.exit(en.status ?? 1)
+        }
+        const user = os.userInfo().username
+        const linger = spawnSync('loginctl', ['show-user', user, '-p', 'Linger', '--value'], {
+          encoding: 'utf8',
+        })
+        if (linger.stdout?.trim() !== 'yes') {
+          const tryEnable = spawnSync('loginctl', ['enable-linger', user], { encoding: 'utf8' })
+          if (tryEnable.status === 0) {
+            console.log(`Enabled systemd linger for "${user}" (hubd will keep running after SSH logout).`)
+          } else {
+            console.log(
+              `\nTip: To keep hubd running after SSH logout on this Linux Devbox, run:\n  sudo loginctl enable-linger ${user}`,
+            )
+          }
+        }
+        console.log(`Lework background service (${unit}) is installed and running.`)
+        return
+      }
+      if (action === 'uninstall') {
+        runSysctl(['disable', '--now', unit], false)
+        if (fs.existsSync(desc.pathHint)) fs.unlinkSync(desc.pathHint)
+        runSysctl(['daemon-reload'], false)
+        console.log(`Removed systemd user service: ${unit}`)
+        return
+      }
+      if (action === 'start' || action === 'stop' || action === 'restart' || action === 'status') {
+        const extra = action === 'status' ? ['--no-pager'] : []
+        const res = runSysctl([action, unit, ...extra])
+        process.exit(res.status ?? 0)
+      }
+      if (action === 'logs') {
+        const follow = !args.includes('--no-follow')
+        const jArgs = ['--user', '-u', unit, '-n', '80', ...(follow ? ['-f'] : ['--no-pager'])]
+        const child = spawn('journalctl', jArgs, { stdio: 'inherit' })
+        await new Promise<void>(resolve => child.on('exit', () => resolve()))
+        return
+      }
+    } else if (desc.platform === 'darwin') {
+      const label = desc.unitOrLabel
+      const uid = typeof process.getuid === 'function' ? process.getuid() : 501
+      const domain = `gui/${uid}`
+
+      if (action === 'install') {
+        fs.mkdirSync(path.dirname(desc.pathHint), { recursive: true, mode: 0o755 })
+        fs.mkdirSync(path.join(os.homedir(), 'Library', 'Logs'), { recursive: true, mode: 0o755 })
+        fs.writeFileSync(desc.pathHint, desc.content, { mode: 0o644 })
+        spawnSync('launchctl', ['bootout', `${domain}/${label}`], { stdio: 'ignore' })
+        const boot = spawnSync('launchctl', ['bootstrap', domain, desc.pathHint], { stdio: 'inherit' })
+        if (boot.status !== 0) {
+          spawnSync('launchctl', ['load', '-w', desc.pathHint], { stdio: 'inherit' })
+        }
+        spawnSync('launchctl', ['kickstart', '-k', `${domain}/${label}`], { stdio: 'inherit' })
+        console.log(`Installed and started macOS LaunchAgent: ${label}`)
+        return
+      }
+      if (action === 'uninstall') {
+        spawnSync('launchctl', ['bootout', `${domain}/${label}`], { stdio: 'ignore' })
+        if (fs.existsSync(desc.pathHint)) fs.unlinkSync(desc.pathHint)
+        console.log(`Uninstalled macOS LaunchAgent: ${label}`)
+        return
+      }
+      if (action === 'start' || action === 'restart') {
+        const res = spawnSync('launchctl', ['kickstart', '-k', `${domain}/${label}`], { stdio: 'inherit' })
+        process.exit(res.status ?? 0)
+      }
+      if (action === 'stop') {
+        const res = spawnSync('launchctl', ['kill', 'SIGTERM', `${domain}/${label}`], { stdio: 'inherit' })
+        process.exit(res.status ?? 0)
+      }
+      if (action === 'status') {
+        const res = spawnSync('launchctl', ['print', `${domain}/${label}`], { stdio: 'inherit' })
+        process.exit(res.status ?? 0)
+      }
+      if (action === 'logs') {
+        const logFile = path.join(os.homedir(), 'Library', 'Logs', `${label}.log`)
+        const errFile = path.join(os.homedir(), 'Library', 'Logs', `${label}.err.log`)
+        const files = [logFile, errFile].filter(f => fs.existsSync(f))
+        if (files.length === 0) {
+          console.log(`No log files found yet at ${logFile}`)
+          return
+        }
+        const follow = !args.includes('--no-follow')
+        const child = spawn('tail', ['-n', '80', ...(follow ? ['-f'] : []), ...files], { stdio: 'inherit' })
+        await new Promise<void>(resolve => child.on('exit', () => resolve()))
+        return
+      }
+    }
+
+    console.log('Usage: lework service <install|uninstall|start|stop|restart|status|logs> [--role master|slave]')
+    process.exit(1)
+  }
+
   if (sub === 'service-config') {
-    const role: 'master' | 'slave' = cfg.role === 'master' ? 'master' : 'slave'
+    const role: 'master' | 'slave' | 'standalone' = cfg.role
     const desc = generateServiceDescriptor({ role, repoRoot })
     console.log(`# Target path (${desc.platform}): ${desc.pathHint}\n`)
     console.log(desc.content)
@@ -607,7 +830,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    'Usage: lework <serve|status|engines|slaves|pair|tsnet|notify|install-cli|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
+    'Usage: lework <serve|service|config|status|engines|slaves|pair|tsnet|notify|install-cli|token rotate|tokens|slave-token|join|service-config> [--role master|slave] [--port N]',
   )
 }
 

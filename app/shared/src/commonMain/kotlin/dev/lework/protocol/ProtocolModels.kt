@@ -213,11 +213,22 @@ data class ModelOption(
 )
 
 @Serializable
+data class SessionWorktreeInfo(
+    val baseRepoPath: String,
+    val worktreePath: String,
+    val branch: String,
+    val baseBranch: String? = null,
+    val baseCommitSha: String? = null,
+    val cleanedUp: Boolean? = null,
+)
+
+@Serializable
 data class SessionMeta(
     val id: String,
     val engineId: String,
     val cwd: String,
     val workspaces: List<String>? = null,
+    val worktree: SessionWorktreeInfo? = null,
     val title: String,
     val customTitle: String? = null,
     val archived: Boolean = false,
@@ -528,6 +539,8 @@ data class SessionCreateParams(
     val engineId: String,
     val cwd: String,
     val workspaces: List<String>? = null,
+    val useWorktree: Boolean? = null,
+    val worktreeBranch: String? = null,
     val title: String? = null,
     val providerId: String? = null,
     val modelId: String? = null,

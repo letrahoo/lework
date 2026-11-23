@@ -132,6 +132,8 @@ data class ConsoleUiState(
     val selectedMode: SessionMode = SessionMode.AUTO,
     val selectedWorkspacePath: String = "",
     val selectedExtraWorkspaces: List<String> = emptyList(),
+    val draftUseWorktree: Boolean = false,
+    val draftWorktreeBranch: String = "",
     val drawerEngineFilter: String? = null,
     val drawerShowArchived: Boolean = false,
     val drawerSearchQuery: String = "",
@@ -226,11 +228,23 @@ data class ConsoleUiState(
 
     val workspaceDisplayName: String
         get() {
+            val activeWt = activeSession?.worktree
+            if (activeWt != null) {
+                val repoName = activeWt.baseRepoPath.trimEnd('/').substringAfterLast('/').ifBlank { "repo" }
+                val shortBranch = activeWt.branch.removePrefix("lework/")
+                return "$repoName · $shortBranch"
+            }
             val list = activeWorkspaces
             val primary = list.firstOrNull().orEmpty()
             if (primary.isBlank()) return "选择工作区"
             val shortName = primary.trimEnd('/').substringAfterLast('/').ifBlank { primary }
-            return if (list.size > 1) "$shortName +${list.size - 1}" else shortName
+            val multiLabel = if (list.size > 1) "$shortName +${list.size - 1}" else shortName
+            return if (activeSession == null && draftUseWorktree) {
+                val customBranch = draftWorktreeBranch.trim().removePrefix("lework/")
+                if (customBranch.isNotEmpty()) "$multiLabel · $customBranch" else "$multiLabel · 独立分支"
+            } else {
+                multiLabel
+            }
         }
 
     private fun SessionMeta.matchesDrawerQuery(rawQuery: String): Boolean {
@@ -240,6 +254,8 @@ data class ConsoleUiState(
         if (customTitle?.lowercase()?.contains(q) == true) return true
         if (cwd.lowercase().contains(q)) return true
         if (engineId.lowercase().contains(q)) return true
+        if (worktree?.branch?.lowercase()?.contains(q) == true) return true
+        if (worktree?.baseRepoPath?.lowercase()?.contains(q) == true) return true
         if (workspaces?.any { it.lowercase().contains(q) } == true) return true
         return false
     }

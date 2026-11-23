@@ -190,11 +190,14 @@ internal fun WorkspacePickerSheet(
     state: ConsoleUiState,
     onSelectPrimary: (String) -> Unit,
     onToggleExtra: (String) -> Unit,
+    onToggleUseWorktree: (Boolean) -> Unit = {},
+    onChangeWorktreeBranch: (String) -> Unit = {},
     onBrowseWorkspaceFiles: (String) -> Unit,
     onStartNewInWorkspace: (String) -> Unit,
     onDone: () -> Unit,
 ) {
     val activeSess = state.activeSession
+    val activeWt = activeSess?.worktree
     val sessionWsList = state.activeWorkspaces
 
     Column(
@@ -221,6 +224,50 @@ internal fun WorkspacePickerSheet(
         }
 
         if (activeSess != null && sessionWsList.isNotEmpty()) {
+            if (activeWt != null) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Everforest.BgGreen,
+                    border = BorderStroke(1.dp, Everforest.Aqua.copy(alpha = 0.55f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("workspace_active_worktree_card"),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AccountTree,
+                                contentDescription = null,
+                                tint = Everforest.Aqua,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = "独立分支工作区 · ${activeWt.branch}",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Everforest.Aqua,
+                            )
+                        }
+                        Text(
+                            text = if (activeWt.cleanedUp == true) {
+                                "归档后已自动清理临时目录 · 主仓库：${activeWt.baseRepoPath}"
+                            } else {
+                                "主仓库：${activeWt.baseRepoPath}"
+                            },
+                            fontSize = 11.sp,
+                            color = Everforest.Grey1,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
             Text(
                 text = "当前会话绑定的工作上下文（点击可浏览文件）",
                 fontSize = 12.sp,
@@ -301,6 +348,102 @@ internal fun WorkspacePickerSheet(
                 color = Everforest.CommentGrey,
             )
         } else {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = if (state.draftUseWorktree) Everforest.BgGreen else Everforest.Bg2.copy(alpha = 0.65f),
+                border = BorderStroke(
+                    1.dp,
+                    if (state.draftUseWorktree) Everforest.Aqua.copy(alpha = 0.6f) else Everforest.Bg3,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("workspace_worktree_toggle_card"),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AccountTree,
+                                contentDescription = null,
+                                tint = if (state.draftUseWorktree) Everforest.Aqua else Everforest.Grey1,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Column {
+                                Text(
+                                    text = "独立分支工作区",
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Everforest.Fg,
+                                )
+                                Text(
+                                    text = "在独立 Git 分支目录中运行此会话，与主工作区代码互不干扰",
+                                    fontSize = 11.sp,
+                                    color = Everforest.CommentGrey,
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = state.draftUseWorktree,
+                            onCheckedChange = onToggleUseWorktree,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Everforest.BgDim,
+                                checkedTrackColor = Everforest.Aqua,
+                                uncheckedThumbColor = Everforest.Grey1,
+                                uncheckedTrackColor = Everforest.Bg0,
+                            ),
+                            modifier = Modifier.testTag("workspace_worktree_switch"),
+                        )
+                    }
+
+                    if (state.draftUseWorktree) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Everforest.Bg0,
+                            border = BorderStroke(1.dp, Everforest.Bg3),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                if (state.draftWorktreeBranch.isEmpty()) {
+                                    Text(
+                                        text = "分支名称（留空自动生成，如 lework/1123-a4f2）",
+                                        fontSize = 12.sp,
+                                        color = Everforest.CommentGrey,
+                                    )
+                                }
+                                BasicTextField(
+                                    value = state.draftWorktreeBranch,
+                                    onValueChange = onChangeWorktreeBranch,
+                                    singleLine = true,
+                                    textStyle = TextStyle(
+                                        fontSize = 12.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Everforest.Fg,
+                                    ),
+                                    cursorBrush = SolidColor(Everforest.Aqua),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("workspace_worktree_branch_input"),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             Text(
                 text = "点击行设为主目录，点右侧「+ 关联」可附加多个目录",
                 fontSize = 12.sp,

@@ -11,6 +11,7 @@ import {
   ProviderInfo,
   ProfileInfo,
   Workspace,
+  SessionWorktreeInfo,
   SessionMeta,
   UsageTotals,
   UsageSummaryResult,
@@ -44,6 +45,7 @@ const bundle = {
     ProviderInfo: z.toJSONSchema(ProviderInfo),
     ProfileInfo: z.toJSONSchema(ProfileInfo),
     Workspace: z.toJSONSchema(Workspace),
+    SessionWorktreeInfo: z.toJSONSchema(SessionWorktreeInfo),
     SessionMeta: z.toJSONSchema(SessionMeta),
     UsageTotals: z.toJSONSchema(UsageTotals),
     UsageSummaryResult: z.toJSONSchema(UsageSummaryResult),
@@ -340,11 +342,22 @@ data class ModelOption(
 )
 
 @Serializable
+data class SessionWorktreeInfo(
+    val baseRepoPath: String,
+    val worktreePath: String,
+    val branch: String,
+    val baseBranch: String? = null,
+    val baseCommitSha: String? = null,
+    val cleanedUp: Boolean? = null,
+)
+
+@Serializable
 data class SessionMeta(
     val id: String,
     val engineId: String,
     val cwd: String,
     val workspaces: List<String>? = null,
+    val worktree: SessionWorktreeInfo? = null,
     val title: String,
     val customTitle: String? = null,
     val archived: Boolean = false,
@@ -430,6 +443,7 @@ sealed interface AgentEvent {
         val messageId: String,
         val text: String,
         val imageCount: Int? = null,
+        val imagePreviews: List<String>? = null,
     ) : AgentEvent
 
     @Serializable
@@ -602,6 +616,7 @@ data class WorkspaceFilesResult(
 data class PromptImageAttachment(
     val mimeType: String,
     val dataBase64: String,
+    val thumbnailBase64: String? = null,
     val fileName: String? = null,
 )
 
@@ -653,6 +668,8 @@ data class SessionCreateParams(
     val engineId: String,
     val cwd: String,
     val workspaces: List<String>? = null,
+    val useWorktree: Boolean? = null,
+    val worktreeBranch: String? = null,
     val title: String? = null,
     val providerId: String? = null,
     val modelId: String? = null,

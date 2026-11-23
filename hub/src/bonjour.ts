@@ -32,8 +32,12 @@ export function collectLanIpv4Addresses(
       lower.startsWith('tailscale') ||
       lower.startsWith('ppp') ||
       lower.startsWith('docker') ||
+      lower.startsWith('podman') ||
       lower.startsWith('veth') ||
-      lower.startsWith('br-')
+      lower.startsWith('br-') ||
+      lower.startsWith('virbr') ||
+      lower.startsWith('cni') ||
+      lower.startsWith('flannel')
     ) {
       continue
     }
