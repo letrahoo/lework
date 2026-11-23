@@ -3,6 +3,7 @@ package dev.lework.store
 import dev.lework.platform.MobileTsnetStatus
 import dev.lework.platform.PairedHost
 import dev.lework.platform.isMobileTsnetAvailable
+import dev.lework.platform.listSshConfigHosts
 import dev.lework.platform.loadActiveHostId
 import dev.lework.platform.loadPairedHosts
 import dev.lework.platform.loadSavedAuthUserName
@@ -176,6 +177,8 @@ data class ConsoleUiState(
     val workspaceFileSuggestions: List<String> = emptyList(),
     val signingExpiryDismissed: Boolean = false,
     val pendingDeepLinkPairing: PendingDeepLinkPairing? = null,
+    val sshPairingInProgress: Boolean = false,
+    val sshConfigHosts: List<String> = listSshConfigHosts(),
 ) {
     val activeSession: SessionMeta?
         get() = sessions.firstOrNull { it.id == activeSessionId }

@@ -21,6 +21,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
@@ -31,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.canCaptureCameraImage
 import dev.lework.platform.canPickImages
+import dev.lework.platform.isDesktopPlatform
 import dev.lework.protocol.*
 import dev.lework.store.*
 
@@ -57,6 +66,7 @@ internal fun ClaudeStyleComposer(
     val queuedCount = activeSess?.queuedPrompts?.size ?: 0
     val imageSupported = remember { canPickImages() } && (state.selectedEngine?.capabilities?.images != false)
     val cameraSupported = remember { canCaptureCameraImage() }
+    val isDesktop = remember { isDesktopPlatform() }
     var showImageSourceMenu by remember { mutableStateOf(false) }
     var lightboxIndex by remember { mutableStateOf<Int?>(null) }
 
@@ -235,15 +245,23 @@ internal fun ClaudeStyleComposer(
                     }
                 }
 
+                val hasDraftForKey = text.isNotBlank() || state.composerAttachedImages.isNotEmpty()
+                val canSubmitNow =
+                    hasDraftForKey && (!isSessionRunning || activeSess?.state == SessionState.RUNNING)
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 28.dp, max = 120.dp),
+                        .heightIn(min = 28.dp, max = if (isDesktop) 180.dp else 120.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     if (text.isEmpty()) {
                         Text(
-                            text = "发消息给 ${shortEngineLabel(state.selectedEngineId)}（输入 @ 可引用文件）…",
+                            text = if (isDesktop) {
+                                "发消息给 ${shortEngineLabel(state.selectedEngineId)}（Enter 发送 · Shift+Enter 换行 · @ 引用文件）…"
+                            } else {
+                                "发消息给 ${shortEngineLabel(state.selectedEngineId)}（输入 @ 可引用文件）…"
+                            },
                             color = Everforest.CommentGrey,
                             fontSize = 15.sp,
                         )
@@ -257,9 +275,29 @@ internal fun ClaudeStyleComposer(
                             lineHeight = 21.sp,
                         ),
                         cursorBrush = SolidColor(Everforest.CodeGreen),
-                        maxLines = 5,
+                        maxLines = if (isDesktop) 8 else 5,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (!isDesktop || keyEvent.type != KeyEventType.KeyDown) {
+                                    return@onPreviewKeyEvent false
+                                }
+                                val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
+                                if (!isEnter) return@onPreviewKeyEvent false
+                                if (keyEvent.isMetaPressed || keyEvent.isCtrlPressed) {
+                                    if (canSubmitNow) onSend()
+                                    return@onPreviewKeyEvent true
+                                }
+                                if (!keyEvent.isShiftPressed) {
+                                    if (state.mentionQuery != null && state.workspaceFileSuggestions.isNotEmpty()) {
+                                        onSelectMentionFile(state.workspaceFileSuggestions.first())
+                                    } else if (canSubmitNow) {
+                                        onSend()
+                                    }
+                                    return@onPreviewKeyEvent true
+                                }
+                                false
+                            }
                             .testTag("composer_input"),
                     )
                 }

@@ -941,4 +941,87 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T14_1 desktop SSH one-click pairing and background running-session stream pre-warming`() = runTest {
+        val transport = FakeHubTransport()
+        val runSidA = "sess_run_a"
+        val runSidB = "sess_run_b"
+        transport.sessions.addAll(
+            listOf(
+                SessionMeta(
+                    id = runSidA,
+                    engineId = "claude",
+                    cwd = "/home/dev/service-a",
+                    title = "Devbox Task A",
+                    state = SessionState.RUNNING,
+                    createdAt = 1_000L,
+                    updatedAt = 2_000L,
+                    lastSeq = 0,
+                ),
+                SessionMeta(
+                    id = runSidB,
+                    engineId = "claude",
+                    cwd = "/home/dev/service-b",
+                    title = "Devbox Task B",
+                    state = SessionState.RUNNING,
+                    createdAt = 1_000L,
+                    updatedAt = 1_900L,
+                    lastSeq = 0,
+                ),
+            ),
+        )
+        transport.sessionEventsMap[runSidA] = mutableListOf(
+            AgentEvent.UserMessage(0, runSidA, 1_000L, "u_a", "编译服务 A"),
+        )
+        transport.sessionEventsMap[runSidB] = mutableListOf(
+            AgentEvent.UserMessage(0, runSidB, 1_000L, "u_b", "压测服务 B"),
+        )
+
+        JvmPlatformTestHooks.simulateDesktopLayout = true
+        JvmPlatformTestHooks.sshConnectSupported = true
+        JvmPlatformTestHooks.sshConfigHosts = listOf("devbox", "devbox-01")
+        // Build valid base64url pairing link for remote devbox
+        val rawPairJson = """{"v":2,"hubId":"hub_fake_1","name":"Remote Devbox","role":"master","urls":["https://192.168.10.20:64450"],"url":"https://192.168.10.20:64450","fp":"${"a".repeat(64)}","pairCode":"lwp_0123456789ab_secret1234567890abcd"}"""
+        val b64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(rawPairJson.encodeToByteArray())
+        JvmPlatformTestHooks.nextSshPairingResult = Result.success("lework://pair?d=$b64")
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            assertEquals(listOf("devbox", "devbox-01"), store.state.value.sshConfigHosts)
+
+            // 1. One-click SSH pairing to `devbox`
+            store.pairViaSshHost("devbox")
+            runCurrent()
+            assertEquals(1, transport.pairRedeemCount)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.CONNECTED, store.state.value.connectionStatus)
+
+            // 2. Select Task A while Task B continues streaming in the background on Desktop!
+            store.selectSession(runSidA)
+            runCurrent()
+
+            transport.emitEvent(
+                AgentEvent.AssistantDelta(
+                    seq = 1,
+                    sessionId = runSidB,
+                    ts = 3_000L,
+                    messageId = "m_b_live",
+                    text = "后台实时流式压测报告：QPS 48,000",
+                ),
+            )
+            runCurrent()
+
+            // Task B's transcript is ALREADY warm in memory BEFORE the user even clicks it!
+            val warmItemsB = store.state.value.transcripts[runSidB]?.items
+                ?.filterIsInstance<ChatTimelineItem.Assistant>()
+                ?.map { it.text }
+                .orEmpty()
+            assertEquals(listOf("后台实时流式压测报告：QPS 48,000"), warmItemsB)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

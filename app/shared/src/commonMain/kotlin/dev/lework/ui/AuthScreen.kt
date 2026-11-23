@@ -22,7 +22,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.appVersionLabel
+import dev.lework.platform.canConnectViaSsh
 import dev.lework.platform.canScanQrCode
+import dev.lework.platform.isDesktopPlatform
 import dev.lework.platform.loadSavedTsnetControlUrl
 import dev.lework.store.*
 
@@ -36,6 +38,8 @@ internal fun AuthEntryView(
     onRetry: () -> Unit,
     onResetCredentials: () -> Unit = {},
     onScanQr: () -> Unit = {},
+    onPasteClipboardPairing: () -> Unit = {},
+    onPairViaSsh: (String) -> Unit = {},
     onStartTsnetLogin: (String?) -> Unit = {},
     onSearchTsnetPeers: () -> Unit = {},
     onLogoutTsnet: () -> Unit = {},
@@ -54,7 +58,12 @@ internal fun AuthEntryView(
         mutableStateOf(state.discoveredBaseUrl)
     }
     var manualToken by remember { mutableStateOf("") }
+    var sshTargetInput by remember {
+        mutableStateOf(state.sshConfigHosts.firstOrNull().orEmpty())
+    }
     val qrSupported = remember { canScanQrCode() }
+    val sshSupported = remember { canConnectViaSsh() }
+    val isDesktop = remember { isDesktopPlatform() }
     val dismissKeyboard = rememberKeyboardDismisser()
 
     Box(
@@ -73,7 +82,9 @@ internal fun AuthEntryView(
             shape = RoundedCornerShape(20.dp),
             color = Everforest.Bg1,
             border = BorderStroke(1.dp, Everforest.Bg3),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .widthIn(max = 480.dp)
+                .fillMaxWidth(),
         ) {
             Column(
                 modifier = Modifier
@@ -105,7 +116,11 @@ internal fun AuthEntryView(
                 )
 
                 Text(
-                    text = "同一 Wi‑Fi 自动直连 · Tailscale 同账号组网 · 扫码配对",
+                    text = if (isDesktop) {
+                        "本机自动直连 · SSH 一键连开发机 · Tailscale 跨网组网"
+                    } else {
+                        "同一 Wi‑Fi 自动直连 · Tailscale 同账号组网 · 扫码配对"
+                    },
                     fontSize = 12.5.sp,
                     lineHeight = 18.sp,
                     color = Everforest.Grey2,
@@ -206,6 +221,120 @@ internal fun AuthEntryView(
                             )
                             Spacer(Modifier.width(8.dp))
                             Text("扫码配对主机 (lework pair)", fontSize = 13.5.sp, fontWeight = FontWeight.Medium)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onPasteClipboardPairing,
+                            border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.55f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Everforest.Fg),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ContentPaste,
+                                contentDescription = null,
+                                tint = Everforest.Green,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("粘贴剪贴板配对链接连接 (lework pair)", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
+
+                    if (sshSupported) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Everforest.Bg0,
+                            border = BorderStroke(1.dp, Everforest.Bg3),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Terminal,
+                                        contentDescription = null,
+                                        tint = Everforest.Aqua,
+                                        modifier = Modifier.size(17.dp),
+                                    )
+                                    Text(
+                                        text = "通过 SSH 一键连接远程开发机",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Everforest.Fg,
+                                    )
+                                }
+                                Text(
+                                    text = "自动调用本机 SSH 获取一次性配对凭证并校验主机指纹（若端口受限将自动建立本地加密转发）",
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.5.sp,
+                                    color = Everforest.Grey1,
+                                )
+                                if (state.sshConfigHosts.isNotEmpty()) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text("快捷选择：", fontSize = 11.sp, color = Everforest.CommentGrey)
+                                        for (alias in state.sshConfigHosts.take(4)) {
+                                            Surface(
+                                                shape = RoundedCornerShape(999.dp),
+                                                color = if (sshTargetInput == alias) Everforest.BgGreen else Everforest.Bg2,
+                                                border = BorderStroke(
+                                                    1.dp,
+                                                    if (sshTargetInput == alias) Everforest.Green else Everforest.Bg3,
+                                                ),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(999.dp))
+                                                    .clickable(enabled = !state.sshPairingInProgress) {
+                                                        sshTargetInput = alias
+                                                        onPairViaSsh(alias)
+                                                    },
+                                            ) {
+                                                Text(
+                                                    text = alias,
+                                                    fontSize = 11.5.sp,
+                                                    color = if (sshTargetInput == alias) Everforest.Green else Everforest.Fg,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    OutlinedTextField(
+                                        value = sshTargetInput,
+                                        onValueChange = { sshTargetInput = it },
+                                        placeholder = { Text("如 devbox 或 user@192.168.10.20", fontSize = 11.5.sp) },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Button(
+                                        onClick = { onPairViaSsh(sshTargetInput) },
+                                        enabled = sshTargetInput.isNotBlank() && !state.sshPairingInProgress,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Everforest.BgGreen,
+                                            contentColor = Everforest.Green,
+                                        ),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.height(48.dp),
+                                    ) {
+                                        Text("连接开发机", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
                         }
                     }
 
