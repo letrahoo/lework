@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="0" x2="920" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#252E34"/>
+      <stop offset="52%" stop-color="#1C2327"/>
+      <stop offset="100%" stop-color="#13191C"/>
+    </linearGradient>
+    <radialGradient id="topLift" cx="512" cy="184" r="680" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38464E" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#1C2327" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="greenHalo" cx="604" cy="420" r="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#83C995" stop-opacity="0.24"/>
+      <stop offset="45%" stop-color="#83C995" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#83C995" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="goldV" x1="210" y1="205" x2="380" y2="815" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F8E3B5"/>
+      <stop offset="52%" stop-color="#E8C688"/>
+      <stop offset="100%" stop-color="#CFA45D"/>
+    </linearGradient>
+    <linearGradient id="goldH" x1="210" y1="650" x2="820" y2="815" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F6DFB0"/>
+      <stop offset="55%" stop-color="#E4BE7C"/>
+      <stop offset="100%" stop-color="#C69850"/>
+    </linearGradient>
+    <linearGradient id="greenTop" x1="490" y1="265" x2="755" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#B9F0C6"/>
+      <stop offset="55%" stop-color="#8BD29D"/>
+      <stop offset="100%" stop-color="#6EB883"/>
+    </linearGradient>
+    <linearGradient id="greenBot" x1="755" y1="420" x2="490" y2="575" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#74BD88"/>
+      <stop offset="55%" stop-color="#5CA472"/>
+      <stop offset="100%" stop-color="#47895C"/>
+    </linearGradient>
+    <filter id="drop" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <filter id="greenGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="24" flood-color="#83C995" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#topLift)"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#greenHalo)"/>
+  <rect x="6" y="6" width="1012" height="1012" rx="224" stroke="#E8DFCC" stroke-opacity="0.14" stroke-width="10"/>
+
+  <!-- Vertical mitered brushed-gold L bar -->
+  <path filter="url(#drop)"
+        d="M210 342 L358 202 L358 648 L210 790 Z"
+        fill="url(#goldV)" stroke="#FFF3D4" stroke-opacity="0.4" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- Horizontal mitered brushed-gold L bar -->
+  <path filter="url(#drop)"
+        d="M372 662 L818 662 L680 810 L224 810 Z"
+        fill="url(#goldH)" stroke="#FFF2D0" stroke-opacity="0.35" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- Luminous faceted forest-green forward command chevron -->
+  <g filter="url(#greenGlow)">
+    <path d="M492 264 L596 264 L754 420 L650 420 Z" fill="url(#greenTop)"/>
+    <path d="M650 420 L754 420 L596 576 L492 576 Z" fill="url(#greenBot)"/>
+    <path d="M492 264 L596 264 L754 420 L596 576 L492 576 L650 420 Z"
+          fill="none" stroke="#D7FBE0" stroke-opacity="0.5" stroke-width="5" stroke-linejoin="round"/>
+  </g>
+</svg>

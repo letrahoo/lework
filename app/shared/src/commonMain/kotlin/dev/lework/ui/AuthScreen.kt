@@ -82,20 +82,7 @@ internal fun AuthEntryView(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = Everforest.BgGreen,
-                    modifier = Modifier.size(48.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.VerifiedUser,
-                            contentDescription = null,
-                            tint = Everforest.Green,
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                }
+                LeworkBrandMark(size = 54.dp)
 
                 Text(
                     text = "Lework",

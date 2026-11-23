@@ -67,6 +67,7 @@ compose.desktop {
             macOS {
                 bundleID = "dev.lework.desktop"
                 dockName = "Lework"
+                iconFile.set(project.file("src/jvmMain/resources/Lework.icns"))
             }
         }
     }

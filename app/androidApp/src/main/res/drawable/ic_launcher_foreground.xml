@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Centered inside 66x66 safe zone (21..87) for Android Adaptive Icon masks -->
+    <group
+        android:translateX="18"
+        android:translateY="18"
+        android:scaleX="0.0703125"
+        android:scaleY="0.0703125">
+
+        <!-- Vertical mitered brushed-gold L bar -->
+        <path android:pathData="M210,342 L358,202 L358,648 L210,790 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="210"
+                    android:startY="202"
+                    android:endX="380"
+                    android:endY="790"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FFF8E3B5" />
+                    <item android:offset="0.52" android:color="#FFE8C688" />
+                    <item android:offset="1.0" android:color="#FFCFA45D" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Horizontal mitered brushed-gold L bar -->
+        <path android:pathData="M372,662 L818,662 L680,810 L224,810 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="224"
+                    android:startY="662"
+                    android:endX="818"
+                    android:endY="810"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FFF6DFB0" />
+                    <item android:offset="0.55" android:color="#FFE4BE7C" />
+                    <item android:offset="1.0" android:color="#FFC69850" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Upper luminous forest-green chevron facet -->
+        <path android:pathData="M492,264 L596,264 L754,420 L650,420 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="492"
+                    android:startY="264"
+                    android:endX="754"
+                    android:endY="420"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FFB9F0C6" />
+                    <item android:offset="0.55" android:color="#FF8BD29D" />
+                    <item android:offset="1.0" android:color="#FF6EB883" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Lower shaded forest-green chevron facet -->
+        <path android:pathData="M650,420 L754,420 L596,576 L492,576 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="754"
+                    android:startY="420"
+                    android:endX="492"
+                    android:endY="576"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FF74BD88" />
+                    <item android:offset="0.55" android:color="#FF5CA472" />
+                    <item android:offset="1.0" android:color="#FF47895C" />
+                </gradient>
+            </aapt:attr>
+        </path>
+    </group>
+</vector>

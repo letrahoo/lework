@@ -9,13 +9,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyShortcut
 import androidx.compose.ui.unit.DpSize
@@ -28,6 +21,7 @@ import androidx.compose.ui.window.rememberWindowState
 import dev.lework.platform.JvmDesktopRuntime
 import dev.lework.store.ConsoleStore
 import dev.lework.ui.ConsoleApp
+import dev.lework.ui.rememberLeworkBrandPainter
 import java.awt.Dimension
 import java.awt.event.WindowEvent
 import java.awt.event.WindowFocusListener
@@ -53,7 +47,7 @@ fun main(args: Array<String>) {
             position = WindowPosition.Aligned(Alignment.Center),
             size = DpSize(1320.dp, 860.dp),
         )
-        val appIcon = rememberLeworkAppIcon()
+        val appIcon = rememberLeworkBrandPainter()
 
         Window(
             onCloseRequest = {
@@ -134,47 +128,6 @@ fun main(args: Array<String>) {
                 externalStore = store,
                 openSettingsSignal = openSettingsSignal,
                 toggleSidebarSignal = toggleSidebarSignal,
-            )
-        }
-    }
-}
-
-@Composable
-private fun rememberLeworkAppIcon(): Painter = remember {
-    object : Painter() {
-        override val intrinsicSize: Size = Size(256f, 256f)
-
-        override fun DrawScope.onDraw() {
-            // Everforest Dark rounded icon badge (#2D353B bg + #83C995 forest green + #E6C384 warm gold)
-            drawRoundRect(
-                color = Color(0xFF232A2E),
-                topLeft = Offset.Zero,
-                size = size,
-                cornerRadius = CornerRadius(size.minDimension * 0.22f),
-            )
-            val stroke = size.minDimension * 0.085f
-            // Prompt chevron `>` in Everforest Green
-            drawLine(
-                color = Color(0xFF83C995),
-                start = Offset(size.width * 0.26f, size.height * 0.33f),
-                end = Offset(size.width * 0.48f, size.height * 0.50f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round,
-            )
-            drawLine(
-                color = Color(0xFF83C995),
-                start = Offset(size.width * 0.48f, size.height * 0.50f),
-                end = Offset(size.width * 0.26f, size.height * 0.67f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round,
-            )
-            // Cursor underscore `_` in Everforest Warm Gold
-            drawLine(
-                color = Color(0xFFE6C384),
-                start = Offset(size.width * 0.54f, size.height * 0.67f),
-                end = Offset(size.width * 0.76f, size.height * 0.67f),
-                strokeWidth = stroke,
-                cap = StrokeCap.Round,
             )
         }
     }
