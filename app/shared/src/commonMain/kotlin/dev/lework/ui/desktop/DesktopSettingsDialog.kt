@@ -34,6 +34,7 @@ import dev.lework.platform.PairedHost
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.copyTextToClipboard
 import dev.lework.store.ConsoleUiState
+import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
 import dev.lework.ui.RenameHostDialog
 import dev.lework.ui.connectionChannelLabel
@@ -235,16 +236,21 @@ internal fun DesktopSettingsDialog(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                                             ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(6.dp)
-                                                        .clip(CircleShape)
-                                                        .background(if (ready) Everforest.Green else Everforest.Grey0),
+                                                EngineGlyphIcon(
+                                                    engineId = eng.id,
+                                                    size = 13.dp,
+                                                    tintOverride = if (ready) null else Everforest.Grey0.copy(alpha = 0.5f),
                                                 )
                                                 Text(
                                                     text = shortEngineLabel(eng.id),
                                                     fontSize = 11.sp,
                                                     color = if (ready) Everforest.Fg else Everforest.Grey0,
+                                                )
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(5.dp)
+                                                        .clip(CircleShape)
+                                                        .background(if (ready) Everforest.Green else Everforest.Grey0.copy(alpha = 0.55f)),
                                                 )
                                             }
                                         }

@@ -258,6 +258,51 @@ data class SessionMeta(
     val queuedPrompts: List<String>? = null,
     val models: List<ModelOption>? = null,
     val subagents: List<SubagentSummary>? = null,
+    val artifactCount: Int? = null,
+)
+
+@Serializable
+enum class ArtifactKind {
+    @SerialName("plan") PLAN,
+    @SerialName("task_list") TASK_LIST,
+    @SerialName("walkthrough") WALKTHROUGH,
+    @SerialName("html") HTML,
+    @SerialName("code") CODE,
+    @SerialName("image") IMAGE,
+    @SerialName("other") OTHER,
+}
+
+@Serializable
+enum class ArtifactSource {
+    @SerialName("agy_brain") AGY_BRAIN,
+    @SerialName("claude_plan") CLAUDE_PLAN,
+    @SerialName("claude_artifact") CLAUDE_ARTIFACT,
+    @SerialName("codex_plan") CODEX_PLAN,
+    @SerialName("session_plan") SESSION_PLAN,
+    @SerialName("other") OTHER,
+}
+
+@Serializable
+data class ArtifactInfo(
+    val id: String,
+    val sessionId: String,
+    val kind: ArtifactKind,
+    val title: String,
+    val summary: String? = null,
+    val fileName: String? = null,
+    val mimeType: String,
+    val sizeBytes: Long? = null,
+    val updatedAt: Long,
+    val source: ArtifactSource,
+    val actionable: Boolean = false,
+)
+
+@Serializable
+data class ArtifactContentResult(
+    val artifact: ArtifactInfo,
+    val content: String,
+    val isBase64: Boolean = false,
+    val truncated: Boolean = false,
 )
 
 @Serializable
@@ -604,6 +649,23 @@ data class SessionRenameParams(
 data class SessionArchiveParams(
     val sessionId: String,
     val archived: Boolean,
+)
+
+@Serializable
+data class ArtifactListParams(
+    val sessionId: String,
+)
+
+@Serializable
+data class ArtifactListResult(
+    val sessionId: String,
+    val artifacts: List<ArtifactInfo> = emptyList(),
+)
+
+@Serializable
+data class ArtifactReadParams(
+    val sessionId: String,
+    val artifactId: String,
 )
 
 @Serializable

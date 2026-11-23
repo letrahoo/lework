@@ -413,12 +413,7 @@ private fun QuotaWindowCard(window: QuotaWindowInfo, nowMs: Long) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(engineAccentColor(window.engineId)),
-                    )
+                    EngineGlyphIcon(engineId = window.engineId, size = 14.dp)
                     Text(
                         text = window.label,
                         fontSize = 12.5.sp,
@@ -649,15 +644,10 @@ private fun EngineBreakdownCard(engines: List<EngineUsageEntry>) {
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
                         modifier = Modifier.weight(1f),
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(engineAccentColor(e.engineId)),
-                        )
+                        EngineGlyphIcon(engineId = e.engineId, size = 15.dp)
                         Column {
                             Text(
                                 text = shortEngineLabel(e.engineId),

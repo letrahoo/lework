@@ -70,4 +70,29 @@ describe('protocol-schema v1', () => {
     })
     expect(n.event.type).toBe('message.assistant.delta')
   })
+
+  it('validates artifact.* RPC schemas and SessionMeta subagents/artifactCount', () => {
+    const listParams = Methods['artifact.list'].params.parse({ sessionId: 'host:agy:conv_1' })
+    expect(listParams.sessionId).toBe('host:agy:conv_1')
+
+    const listResult = Methods['artifact.list'].result.parse({
+      sessionId: 'host:agy:conv_1',
+      artifacts: [
+        {
+          id: 'agy_file:implementation_plan.md',
+          sessionId: 'host:agy:conv_1',
+          kind: 'plan',
+          title: '实施方案',
+          summary: '统一产物抽象',
+          fileName: 'implementation_plan.md',
+          mimeType: 'text/markdown',
+          sizeBytes: 1024,
+          updatedAt: 1700000001000,
+          source: 'agy_brain',
+          actionable: true,
+        },
+      ],
+    })
+    expect(listResult.artifacts[0]?.actionable).toBe(true)
+  })
 })

@@ -249,6 +249,11 @@ data class ConsoleUiState(
     val inspectedSubagentTranscript: SessionTranscript = SessionTranscript(),
     val inspectedSubagentLoading: Boolean = false,
     val inspectedSubagentError: String? = null,
+    // Unified Per-Engine Artifacts & Proposed Plan Closure
+    val activeSessionArtifacts: List<ArtifactInfo> = emptyList(),
+    val artifactsLoading: Boolean = false,
+    val openedArtifact: ArtifactContentResult? = null,
+    val artifactError: String? = null,
 ) {
     val activeHostDisplayName: String
         get() = pairedHosts.firstOrNull { it.hubId == hub?.id }?.displayName

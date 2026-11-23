@@ -102,13 +102,12 @@ internal fun EngineModelPickerSheet(
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(engineAccentColor(eng.id)),
+                        EngineGlyphIcon(
+                            engineId = eng.id,
+                            size = 15.dp,
+                            tintOverride = if (eng.status.ready) null else Everforest.Grey0.copy(alpha = 0.45f),
                         )
                         Text(
                             text = shortEngineLabel(eng.id),
