@@ -961,8 +961,16 @@ export class HubServer {
         return { ok: true as const }
       }
       case 'session.setModel': {
-        const p = params as { sessionId: string; modelId: string }
-        const session = await this.sessionManager.setModel(p.sessionId, p.modelId)
+        const p = params as {
+          sessionId: string
+          modelId: string
+          reasoningEffort?: ReasoningEffort
+          mode?: SessionMode
+        }
+        const session = await this.sessionManager.setModel(p.sessionId, p.modelId, {
+          reasoningEffort: p.reasoningEffort,
+          mode: p.mode,
+        })
         return { session }
       }
       case 'session.rename': {

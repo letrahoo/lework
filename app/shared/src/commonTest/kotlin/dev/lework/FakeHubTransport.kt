@@ -58,9 +58,12 @@ class FakeHubTransport : HubTransport {
     val unsubscribedIds = mutableListOf<String>()
     val respondedApprovals = mutableListOf<Triple<String, String, String?>>()
     val sentPrompts = mutableListOf<Pair<String, String>>()
+    val sentPromptParams = mutableListOf<SessionPromptParams>()
     val sentPromptImages = mutableListOf<Pair<String, List<PromptImageAttachment>>>()
     var lastCreateUseWorktree: Boolean? = null
     var lastCreateWorktreeBranch: String? = null
+    val setModelCalls = mutableListOf<SessionSetModelParams>()
+    var enginesOverride: List<EngineInfo>? = null
     var workspaceFilesList: List<String> = listOf(
         "README.md",
         "hub/src/server.ts",
@@ -174,7 +177,7 @@ class FakeHubTransport : HubTransport {
         HubStatusResult(
             hub = customHubName?.let { hubInfo.copy(name = it) } ?: hubInfo,
             slaves = emptyList(),
-            engines = customEngines ?: listOf(
+            engines = customEngines ?: enginesOverride ?: listOf(
                 EngineInfo(
                     id = "claude",
                     displayName = "Claude Code",
@@ -304,6 +307,16 @@ class FakeHubTransport : HubTransport {
         mode: SessionMode?,
     ): String {
         sentPrompts.add(sessionId to text)
+        sentPromptParams.add(
+            SessionPromptParams(
+                sessionId = sessionId,
+                text = text,
+                images = images,
+                modelId = modelId,
+                reasoningEffort = reasoningEffort,
+                mode = mode,
+            ),
+        )
         if (!images.isNullOrEmpty()) {
             sentPromptImages.add(sessionId to images)
         }
@@ -312,8 +325,31 @@ class FakeHubTransport : HubTransport {
 
     override suspend fun cancelSession(sessionId: String) = Unit
 
-    override suspend fun setSessionModel(sessionId: String, modelId: String): SessionMeta =
-        sessions.first { it.id == sessionId }.copy(model = modelId)
+    override suspend fun setSessionModel(
+        sessionId: String,
+        modelId: String,
+        reasoningEffort: ReasoningEffort?,
+        mode: SessionMode?,
+    ): SessionMeta {
+        setModelCalls.add(
+            SessionSetModelParams(
+                sessionId = sessionId,
+                modelId = modelId,
+                reasoningEffort = reasoningEffort,
+                mode = mode,
+            ),
+        )
+        val idx = sessions.indexOfFirst { it.id == sessionId }
+        if (idx < 0) throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Session not found")
+        val prev = sessions[idx]
+        val updated = prev.copy(
+            model = modelId,
+            reasoningEffort = reasoningEffort ?: prev.reasoningEffort,
+            mode = mode ?: prev.mode,
+        )
+        sessions[idx] = updated
+        return updated
+    }
 
     override suspend fun renameSession(sessionId: String, title: String): SessionMeta {
         val idx = sessions.indexOfFirst { it.id == sessionId }

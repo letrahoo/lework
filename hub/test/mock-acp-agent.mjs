@@ -74,6 +74,15 @@ rl.on('line', async line => {
     return
   }
 
+  if (msg.method === 'session/set_model' || msg.method === 'session/set_mode') {
+    send({
+      jsonrpc: '2.0',
+      id: msg.id,
+      result: {},
+    })
+    return
+  }
+
   if (msg.method === 'session/prompt') {
     const sessionId = msg.params.sessionId
     const userText = msg.params.prompt?.[0]?.text ?? ''

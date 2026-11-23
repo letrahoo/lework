@@ -1,10 +1,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
-import type { EngineCapabilities, EngineStatus } from '@lework/protocol'
+import type { EngineCapabilities, EngineStatus, ReasoningEffort, SessionMode } from '@lework/protocol'
 import { augmentedPathEnv, findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { classifyRawToolCall } from '../storage/host-history.ts'
-import { readAgyLocalSettings } from '../storage/host-history/engine-settings.ts'
+import {
+  parseAgyModelString,
+  readAgyLocalSettings,
+  resolveAgyWireModel,
+} from '../storage/host-history/engine-settings.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 export interface AgyAdapterOptions {
@@ -77,7 +81,9 @@ class AgyStreamSession implements EngineSession {
   private stderrTail = ''
   private conversationId: string | undefined
   private modelFlag: string | undefined
-  private effortFlag: string | undefined
+  private effortFlag: ReasoningEffort | undefined
+  private activeMode: SessionMode | undefined
+  private spawnedSpecKey: string | null = null
   private currentMsgId = `msg_${crypto.randomUUID()}`
   private emittedDeltaInTurn = false
   private pendingTurn: {
@@ -98,6 +104,7 @@ class AgyStreamSession implements EngineSession {
     this.cwd = init.cwd
     this.modelFlag = init.modelId
     this.effortFlag = init.reasoningEffort
+    this.activeMode = init.mode
     this.conversationId = init.resumeNativeId
     if (this.conversationId) {
       this.init.onNativeSessionLinked?.(this.conversationId)
@@ -118,30 +125,81 @@ class AgyStreamSession implements EngineSession {
     await this.spawnWorker()
   }
 
+  private resolveCurrentSpec(): {
+    wireModel?: string
+    wireEffort?: ReasoningEffort
+    mode?: SessionMode
+    key: string
+  } {
+    const { wireModel, wireEffort } = resolveAgyWireModel(this.modelFlag, this.effortFlag)
+    const mode = this.activeMode
+    return {
+      wireModel,
+      wireEffort,
+      mode,
+      key: `${wireModel ?? ''}|${wireEffort ?? ''}|${mode ?? 'default'}`,
+    }
+  }
+
+  private async stopWorkerAndWait(): Promise<void> {
+    const child = this.proc
+    this.proc = null
+    this.spawnedSpecKey = null
+    if (!child || child.exitCode !== null) return
+
+    await new Promise<void>(resolve => {
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        clearTimeout(killTimer)
+        clearTimeout(maxTimer)
+        resolve()
+      }
+      child.once('exit', finish)
+      const killTimer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          // ignore
+        }
+      }, 1_000)
+      killTimer.unref?.()
+      const maxTimer = setTimeout(finish, 1_800)
+      maxTimer.unref?.()
+
+      try {
+        child.stdin.end()
+      } catch {
+        // ignore
+      }
+      try {
+        child.kill('SIGINT')
+      } catch {
+        finish()
+      }
+    })
+  }
+
   private async spawnWorker(): Promise<void> {
+    const spec = this.resolveCurrentSpec()
     const args = [...this.baseArgs]
     if (this.conversationId) {
       args.push('--conversation', this.conversationId)
     }
-    if (this.modelFlag) {
-      const noEffortSuffix =
-        this.modelFlag.includes('orchestrator') ||
-        this.modelFlag.startsWith('gpt-oss') ||
-        Boolean(this.effortFlag && this.modelFlag.endsWith(`-${this.effortFlag}`))
-      const wireModel =
-        this.effortFlag && !noEffortSuffix ? `${this.modelFlag}-${this.effortFlag}` : this.modelFlag
-      args.push('--model', wireModel)
+    if (spec.wireModel) {
+      args.push('--model', spec.wireModel)
     }
-    if (this.effortFlag) {
-      args.push('--effort', this.effortFlag)
+    if (spec.wireEffort) {
+      args.push('--effort', spec.wireEffort)
     }
-    if (this.init.mode === 'bypassPermissions') {
+    if (spec.mode === 'bypassPermissions') {
       args.push('--dangerously-skip-permissions')
-    } else if (this.init.mode === 'plan') {
+    } else if (spec.mode === 'plan') {
       args.push('--mode', 'plan')
-    } else if (this.init.mode === 'acceptEdits') {
+    } else if (spec.mode === 'acceptEdits') {
       args.push('--mode', 'accept-edits')
-    } else if (this.init.mode === 'auto') {
+    } else if (spec.mode === 'auto') {
       args.push('--mode', 'auto')
     }
     const child = spawn(this.bin, args, {
@@ -154,6 +212,7 @@ class AgyStreamSession implements EngineSession {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.proc = child
+    this.spawnedSpecKey = spec.key
     this.buf = Buffer.alloc(0)
     this.stderrTail = ''
 
@@ -236,7 +295,14 @@ class AgyStreamSession implements EngineSession {
   }
 
   async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
-    if (!this.proc || this.proc.exitCode !== null || this.proc.killed) {
+    const desiredKey = this.resolveCurrentSpec().key
+    if (
+      !this.proc ||
+      this.proc.exitCode !== null ||
+      this.proc.killed ||
+      this.spawnedSpecKey !== desiredKey
+    ) {
+      await this.stopWorkerAndWait()
       await this.spawnWorker()
     }
     if (!this.proc) throw new Error('AGY stream session is not running')
@@ -334,12 +400,39 @@ class AgyStreamSession implements EngineSession {
   }
 
   async setModel(modelId: string): Promise<void> {
-    this.modelFlag = modelId
+    const parsed = parseAgyModelString(modelId)
+    this.modelFlag = parsed.modelId ?? modelId
+    if (parsed.effort) {
+      this.effortFlag = parsed.effort
+    }
+    if (!this.pendingTurn && this.proc && this.spawnedSpecKey !== this.resolveCurrentSpec().key) {
+      await this.stopWorkerAndWait()
+    }
+  }
+
+  async setEffort(effort: ReasoningEffort): Promise<void> {
+    this.effortFlag = effort
+    if (!this.pendingTurn && this.proc && this.spawnedSpecKey !== this.resolveCurrentSpec().key) {
+      await this.stopWorkerAndWait()
+    }
+  }
+
+  async setMode(mode: SessionMode): Promise<void> {
+    this.activeMode = mode
+    if (!this.pendingTurn && this.proc && this.spawnedSpecKey !== this.resolveCurrentSpec().key) {
+      await this.stopWorkerAndWait()
+    }
   }
 
   async close(): Promise<void> {
     this.closed = true
-    await this.cancel()
+    if (this.pendingTurn) {
+      const pending = this.pendingTurn
+      this.pendingTurn = null
+      pending.resolve()
+    }
+    await this.stopWorkerAndWait()
+    this.init.emit({ type: 'session.state', state: 'idle' })
   }
 
   private consumeStdout(chunk: Buffer, onEvent?: (ev: Record<string, unknown>) => void): void {
