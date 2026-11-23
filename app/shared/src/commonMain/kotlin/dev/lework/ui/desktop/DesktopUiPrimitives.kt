@@ -176,24 +176,28 @@ internal val LeworkPinIcon: ImageVector by lazy {
         viewportHeight = 24f,
     ).apply {
         path(
-            stroke = SolidColor(Color.White),
-            strokeLineWidth = 1.85f,
-            strokeLineCap = StrokeCap.Round,
-            strokeLineJoin = StrokeJoin.Round,
+            fill = SolidColor(Color.White),
         ) {
-            // Classic diagonal push-pin (Lucide Pin style)
-            moveTo(14.5f, 4.5f)
-            lineTo(19.5f, 9.5f)
-            moveTo(15.5f, 5.5f)
-            lineTo(11.5f, 9.5f)
-            lineTo(8.2f, 9.5f)
-            lineTo(6.5f, 11.2f)
-            lineTo(12.8f, 17.5f)
-            lineTo(14.5f, 15.8f)
-            lineTo(14.5f, 12.5f)
-            lineTo(18.5f, 8.5f)
-            moveTo(9.6f, 14.4f)
-            lineTo(4.5f, 19.5f)
+            // Solid filled diagonal push-pin (tilted thumbtack cap + tapered body + flared collar + sharp needle)
+            moveTo(15.46f, 3.30f)
+            lineTo(20.70f, 8.54f)
+            quadTo(21.25f, 9.09f, 20.40f, 9.94f)
+            quadTo(19.60f, 10.74f, 19.07f, 10.30f)
+            lineTo(17.87f, 9.10f)
+            lineTo(14.55f, 12.85f)
+            lineTo(15.61f, 16.60f)
+            quadTo(15.45f, 17.45f, 14.12f, 17.52f)
+            lineTo(11.29f, 14.69f)
+            lineTo(3.80f, 20.20f)
+            lineTo(9.31f, 12.71f)
+            lineTo(6.48f, 9.88f)
+            quadTo(6.55f, 8.55f, 7.40f, 8.39f)
+            lineTo(11.15f, 9.45f)
+            lineTo(14.90f, 6.13f)
+            lineTo(13.70f, 4.93f)
+            quadTo(13.26f, 4.40f, 14.06f, 3.60f)
+            quadTo(14.91f, 2.75f, 15.46f, 3.30f)
+            close()
         }
     }.build()
 }

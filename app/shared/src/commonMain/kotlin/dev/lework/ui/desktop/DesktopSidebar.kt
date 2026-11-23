@@ -727,7 +727,7 @@ private fun DesktopSessionRow(
 ) {
     val rowHoverSource = remember { MutableInteractionSource() }
     val isRowHovered by rowHoverSource.collectIsHoveredAsState()
-    val showInlineActions = isRowHovered || selected
+    val showInlineActions = isRowHovered
 
     val wsList = session.workspaces?.filter { it.isNotBlank() }?.distinct().orEmpty()
     val primaryPath = session.worktree?.baseRepoPath ?: wsList.firstOrNull() ?: session.cwd
@@ -749,6 +749,7 @@ private fun DesktopSessionRow(
         },
         modifier = Modifier
             .fillMaxWidth()
+            .testTag("session_row_${session.id}")
             .clip(RoundedCornerShape(9.dp))
             .hoverable(rowHoverSource)
             .combinedClickable(
@@ -803,26 +804,11 @@ private fun DesktopSessionRow(
             }
 
             if (showInlineActions) {
-                // Direct Desktop Inline Action Buttons: [置顶 Pin] [重命名] [归档]
+                // Direct Desktop Hover Inline Action Buttons: [重命名] [归档] [置顶 Pin]
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    if (allowPin) {
-                        LeworkIconActionButton(
-                            icon = LeworkPinIcon,
-                            tooltip = if (isPinned) "取消置顶" else "置顶会话",
-                            active = isPinned,
-                            activeTint = Everforest.BoldGold,
-                            activeContainerColor = Everforest.BgYellow,
-                            idleTint = Everforest.Grey1,
-                            hoverTint = Everforest.BoldGold,
-                            size = 24.dp,
-                            iconSize = 13.5.dp,
-                            testTag = "session_pin_${session.id}",
-                            onClick = onTogglePin,
-                        )
-                    }
                     LeworkIconActionButton(
                         icon = Icons.Rounded.Edit,
                         tooltip = "重命名会话",
@@ -843,6 +829,21 @@ private fun DesktopSessionRow(
                         testTag = "session_archive_${session.id}",
                         onClick = onToggleArchive,
                     )
+                    if (allowPin) {
+                        LeworkIconActionButton(
+                            icon = LeworkPinIcon,
+                            tooltip = if (isPinned) "取消置顶" else "置顶会话",
+                            active = isPinned,
+                            activeTint = Everforest.BoldGold,
+                            activeContainerColor = Everforest.BgYellow,
+                            idleTint = Everforest.Grey1,
+                            hoverTint = Everforest.BoldGold,
+                            size = 24.dp,
+                            iconSize = 13.5.dp,
+                            testTag = "session_pin_${session.id}",
+                            onClick = onTogglePin,
+                        )
+                    }
                 }
             } else {
                 if (isWaiting) {
@@ -872,15 +873,6 @@ private fun DesktopSessionRow(
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                         )
                     }
-                } else if (isPinned) {
-                    Icon(
-                        imageVector = LeworkPinIcon,
-                        contentDescription = "已置顶",
-                        tint = Everforest.BoldGold.copy(alpha = 0.85f),
-                        modifier = Modifier
-                            .padding(end = 3.dp)
-                            .size(13.dp),
-                    )
                 }
             }
         }
