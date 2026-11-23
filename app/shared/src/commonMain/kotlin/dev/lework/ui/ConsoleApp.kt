@@ -442,11 +442,13 @@ fun ConsoleApp(
                             state = state,
                             onSelectPrimary = { path ->
                                 store.selectWorkspace(path)
-                                if (state.selectedExtraWorkspaces.isEmpty()) {
+                                if (state.selectedExtraWorkspaces.isEmpty() && !state.draftUseWorktree) {
                                     showWorkspaceSheet = false
                                 }
                             },
                             onToggleExtra = store::toggleExtraWorkspace,
+                            onToggleUseWorktree = store::setDraftUseWorktree,
+                            onChangeWorktreeBranch = store::setDraftWorktreeBranch,
                             onBrowseWorkspaceFiles = { path ->
                                 store.switchBrowseWorkspace(path)
                                 showWorkspaceSheet = false
@@ -626,6 +628,33 @@ private fun ActiveSessionTitleStrip(
                         color = Everforest.BoldGold,
                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
                     )
+                }
+            }
+            session.worktree?.let { wt ->
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = Everforest.BgGreen,
+                    border = BorderStroke(0.8.dp, Everforest.Aqua.copy(alpha = 0.45f)),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AccountTree,
+                            contentDescription = null,
+                            tint = Everforest.Aqua,
+                            modifier = Modifier.size(10.dp),
+                        )
+                        Text(
+                            text = wt.branch.removePrefix("lework/"),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = Everforest.Aqua,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
             Text(

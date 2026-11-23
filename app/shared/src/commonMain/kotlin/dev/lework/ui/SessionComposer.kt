@@ -356,11 +356,14 @@ internal fun ClaudeStyleComposer(
                                 onTextChange(next)
                             },
                         )
+                        val isWorktreeActive =
+                            activeSess?.worktree != null || (activeSess == null && state.draftUseWorktree)
                         ComposerMetaChip(
-                            icon = Icons.Rounded.Folder,
+                            icon = if (isWorktreeActive) Icons.Rounded.AccountTree else Icons.Rounded.Folder,
                             label = state.workspaceDisplayName,
-                            tint = Everforest.CommentGrey,
-                            labelColor = Everforest.Fg,
+                            tint = if (isWorktreeActive) Everforest.Aqua else Everforest.CommentGrey,
+                            labelColor = if (isWorktreeActive) Everforest.Aqua else Everforest.Fg,
+                            testTag = "composer_workspace_chip",
                             onClick = onOpenWorkspaceSheet,
                         )
                         val modeColor = when (state.selectedMode) {

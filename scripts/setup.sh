@@ -60,7 +60,7 @@ if [[ "$SKIP_TSNET" == "true" ]]; then
   echo "    [skip] --skip-tsnet passed."
 else
   GO_FOUND=""
-  for candidate in "${GO_BIN:-}" /opt/homebrew/bin/go /usr/local/go/bin/go "$HOME/go/bin/go" "$(command -v go 2>/dev/null || true)"; do
+  for candidate in "${GO_BIN:-}" /opt/homebrew/bin/go /usr/local/go/bin/go /usr/lib/go/bin/go "$HOME/go/bin/go" "$(command -v go 2>/dev/null || true)"; do
     if [[ -n "$candidate" && -x "$candidate" ]]; then
       GO_FOUND="$candidate"
       break
@@ -68,7 +68,11 @@ else
   done
 
   if [[ -n "$GO_FOUND" ]]; then
-    GO_BIN="$GO_FOUND" bash "$REPO_ROOT/scripts/build-tsnet.sh" --all
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      GO_BIN="$GO_FOUND" bash "$REPO_ROOT/scripts/build-tsnet.sh" --all
+    else
+      GO_BIN="$GO_FOUND" bash "$REPO_ROOT/scripts/build-tsnet.sh" --host
+    fi
   elif [[ "$REQUIRE_GO" == "true" ]]; then
     echo "Error: Go toolchain (>= 1.24) is required by --require-go." >&2
     exit 1

@@ -713,9 +713,13 @@ private fun SessionDrawerRow(
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     val wsList = session.workspaces?.filter { it.isNotBlank() }?.distinct().orEmpty()
-    val primaryPath = wsList.firstOrNull() ?: session.cwd
+    val primaryPath = session.worktree?.baseRepoPath ?: wsList.firstOrNull() ?: session.cwd
     val wsShort = primaryPath.trimEnd('/').substringAfterLast('/').ifBlank { "~" }
-    val wsBadge = if (wsList.size > 1) "$wsShort +${wsList.size - 1}" else wsShort
+    val branchSuffix = session.worktree?.let { wt ->
+        val shortBranch = wt.branch.removePrefix("lework/")
+        if (wt.cleanedUp == true) " · ⎇ $shortBranch (已清理目录)" else " · ⎇ $shortBranch"
+    }.orEmpty()
+    val wsBadge = (if (wsList.size > 1 && session.worktree == null) "$wsShort +${wsList.size - 1}" else wsShort) + branchSuffix
     val isWaiting = session.state == SessionState.WAITING_PERMISSION
     val isRunning = session.state == SessionState.RUNNING
 

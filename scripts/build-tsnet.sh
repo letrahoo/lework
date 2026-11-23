@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TSNET_DIR="$REPO_ROOT/tsnet-bridge"
 GO_BIN="${GO_BIN:-}"
 if [[ -z "$GO_BIN" ]]; then
-  for candidate in /opt/homebrew/bin/go /usr/local/go/bin/go "$HOME/go/bin/go" "$(command -v go 2>/dev/null || true)"; do
+  for candidate in /opt/homebrew/bin/go /usr/local/go/bin/go /usr/lib/go/bin/go "$HOME/go/bin/go" "$(command -v go 2>/dev/null || true)"; do
     if [[ -n "$candidate" && -x "$candidate" ]]; then
       GO_BIN="$candidate"
       break

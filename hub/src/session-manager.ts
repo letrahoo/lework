@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
 import {
   ErrorCode,
@@ -11,6 +12,7 @@ import {
   type ReasoningEffort,
   type SessionMeta,
   type SessionMode,
+  type SessionWorktreeInfo,
 } from '@lework/protocol'
 import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/types.ts'
 import { SleepInhibitor } from './platform/index.ts'
@@ -25,7 +27,13 @@ import {
 } from './storage/attachment-store.ts'
 import { HostTaskInspector, TerminalApprovalError } from './storage/host-history.ts'
 import { SessionMetadataStore } from './storage/session-metadata.ts'
-import { CheckpointManager } from './storage/workspace-fs.ts'
+import {
+  CheckpointManager,
+  cleanupSessionWorktree,
+  createSessionWorktree,
+  getManagedWorktreesRoot,
+  restoreSessionWorktreeIfNeeded,
+} from './storage/workspace-fs.ts'
 
 const MAX_EVENTS_PER_SESSION = 5_000
 
@@ -185,6 +193,8 @@ export class SessionManager {
     engineId: string
     cwd: string
     workspaces?: string[]
+    useWorktree?: boolean
+    worktreeBranch?: string
     title?: string
     providerId?: string
     modelId?: string
@@ -221,27 +231,45 @@ export class SessionManager {
       )
     }
 
-    const realCwd = resolveAllowedWorkspacePath(params.cwd, this.workspaceRoots)
+    const allowedRoots = [...new Set([...this.workspaceRoots, getManagedWorktreesRoot()])]
+    const requestedCwd = resolveAllowedWorkspacePath(params.cwd, allowedRoots)
+    const sessionId = params.fixedSessionId ?? `sess_${crypto.randomBytes(8).toString('hex')}`
+    const shortId = sessionId.replace(/^sess_/, '').slice(0, 6) || crypto.randomBytes(3).toString('hex')
+
+    let realCwd = requestedCwd
+    let worktreeInfo: SessionWorktreeInfo | undefined
+    if (params.useWorktree && !params.fixedSessionId?.startsWith('host:')) {
+      const createdWt = createSessionWorktree({
+        cwd: requestedCwd,
+        workspaceRoots: allowedRoots,
+        requestedBranch: params.worktreeBranch,
+        shortId,
+      })
+      realCwd = createdWt.sessionCwd
+      worktreeInfo = createdWt.worktree
+    }
+
     const resolvedWorkspaces = [realCwd]
     for (const extra of params.workspaces ?? []) {
       try {
-        const w = resolveAllowedWorkspacePath(extra, this.workspaceRoots)
-        if (!resolvedWorkspaces.includes(w)) resolvedWorkspaces.push(w)
+        const w = resolveAllowedWorkspacePath(extra, allowedRoots)
+        if (!resolvedWorkspaces.includes(w) && w !== requestedCwd) resolvedWorkspaces.push(w)
       } catch {
         // ignore invalid extra workspace
       }
     }
-    const sessionId = params.fixedSessionId ?? `sess_${crypto.randomBytes(8).toString('hex')}`
     const now = Date.now()
     const seed = params.seedEvents ?? []
     const lastSeedSeq = seed.length > 0 ? seed[seed.length - 1]!.seq : -1
 
-    const initialAutoTitle = params.title?.trim() || `${adapter.displayName} · ${path.basename(realCwd)}`
+    const displayFolder = worktreeInfo ? path.basename(worktreeInfo.baseRepoPath) : path.basename(realCwd)
+    const initialAutoTitle = params.title?.trim() || `${adapter.displayName} · ${displayFolder}`
     const meta: SessionMeta = {
       id: sessionId,
       engineId: adapter.id,
       cwd: realCwd,
       workspaces: resolvedWorkspaces,
+      ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
       title: initialAutoTitle,
       state: 'idle',
       createdAt: now,
@@ -251,6 +279,10 @@ export class SessionManager {
       ...(params.modelId ? { model: params.modelId } : {}),
       ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
       ...(params.mode ? { mode: params.mode } : {}),
+    }
+
+    if (worktreeInfo) {
+      this.metaStore.setWorktree(sessionId, worktreeInfo, { baseMeta: meta })
     }
 
     const managed: ManagedSession = {
@@ -291,6 +323,10 @@ export class SessionManager {
       managed.handle = handle
     } catch (err) {
       this.sessions.delete(sessionId)
+      if (worktreeInfo) {
+        this.metaStore.setWorktree(sessionId, undefined)
+        cleanupSessionWorktree(worktreeInfo)
+      }
       throw new HubRpcError(
         ErrorCode.EngineError,
         err instanceof Error ? err.message : String(err),
@@ -322,6 +358,55 @@ export class SessionManager {
     const displayUserText = text.trim() || `（已发送 ${stagedImages.length} 张图片）`
 
     let managed = this.sessions.get(sessionId)
+
+    // Automatically resurrect missing / archived-cleaned worktree checkouts before executing a follow-up turn
+    const persistedWt = managed?.meta.worktree ?? this.metaStore.get(sessionId)?.worktree
+    if (persistedWt && (persistedWt.cleanedUp || !fs.existsSync(path.join(persistedWt.worktreePath, '.git')))) {
+      const desiredCwd = managed?.meta.cwd
+      const restored = restoreSessionWorktreeIfNeeded(persistedWt, desiredCwd)
+      const aliasId =
+        managed?.nativeId && !sessionId.startsWith('host:')
+          ? `host:${managed.meta.engineId}:${managed.nativeId}`
+          : undefined
+      this.metaStore.setWorktree(sessionId, restored.worktree, {
+        hostAliasId: aliasId,
+        nativeId: managed?.nativeId,
+        baseMeta: managed ? { ...managed.meta, title: managed.autoTitle } : undefined,
+      })
+      if (managed) {
+        managed.meta.cwd = restored.sessionCwd
+        managed.meta.worktree = restored.worktree
+        if (restored.restored && managed.meta.state === 'idle') {
+          // Reopen engine session handle against the newly recreated worktree inode
+          const prevEvents = [...managed.events]
+          const prevNativeId = managed.nativeId
+          const prevMeta = { ...managed.meta }
+          await managed.handle.close().catch(() => {})
+          this.sessions.delete(sessionId)
+          await this.createSession({
+            engineId: prevMeta.engineId,
+            cwd: restored.sessionCwd,
+            workspaces: prevMeta.workspaces,
+            title: managed.autoTitle,
+            modelId: prevMeta.model,
+            reasoningEffort: prevMeta.reasoningEffort,
+            mode: prevMeta.mode,
+            fixedSessionId: sessionId,
+            resumeNativeId: prevNativeId,
+            seedEvents: prevEvents,
+          })
+          managed = this.sessions.get(sessionId)
+          if (managed) {
+            managed.meta.worktree = restored.worktree
+            managed.meta = this.decorateManagedMeta(managed)
+          }
+        } else {
+          managed.meta = this.decorateManagedMeta(managed)
+          this.callbacks.onSessionUpdated(managed.meta)
+        }
+      }
+    }
+
     const canProbeLiveTerminal =
       sessionId.startsWith('host:') &&
       (!managed || (managed.meta.state !== 'running' && managed.meta.state !== 'waiting_permission'))
@@ -659,6 +744,27 @@ export class SessionManager {
       nativeId: hostEntry?.nativeId ?? managed?.nativeId,
       baseMeta,
     })
+
+    const existingWorktree =
+      managed?.meta.worktree ??
+      this.metaStore.get(sessionId)?.worktree ??
+      (hostAliasId ? this.metaStore.get(hostAliasId)?.worktree : undefined)
+    if (archived && existingWorktree && !existingWorktree.cleanedUp) {
+      const cleanup = cleanupSessionWorktree(existingWorktree)
+      if (cleanup.cleanedUp) {
+        const updatedWt: SessionWorktreeInfo = { ...existingWorktree, cleanedUp: true }
+        if (managed) {
+          managed.meta.worktree = updatedWt
+        }
+        this.metaStore.setWorktree(sessionId, updatedWt, {
+          hostAliasId,
+          filePath: hostEntry?.filePath,
+          nativeId: hostEntry?.nativeId ?? managed?.nativeId,
+          baseMeta,
+        })
+      }
+    }
+
     this.sweepArchivedAttachments()
 
     if (managed) {
@@ -689,14 +795,15 @@ export class SessionManager {
   }
 
   private resolveSessionWorkspaceCwd(sessionId: string): string {
+    const allowedRoots = [...new Set([...this.workspaceRoots, getManagedWorktreesRoot()])]
     const managed = this.sessions.get(sessionId)
     if (managed) {
-      return resolveAllowedWorkspacePath(managed.meta.cwd, this.workspaceRoots)
+      return resolveAllowedWorkspacePath(managed.meta.cwd, allowedRoots)
     }
     if (sessionId.startsWith('host:')) {
       const hostEntry = this.hostInspector.getHostSession(sessionId)
       if (hostEntry?.meta.cwd) {
-        return resolveAllowedWorkspacePath(hostEntry.meta.cwd, this.workspaceRoots)
+        return resolveAllowedWorkspacePath(hostEntry.meta.cwd, allowedRoots)
       }
     }
     throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)

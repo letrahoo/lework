@@ -1,12 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { SessionMeta } from '@lework/protocol'
+import type { SessionMeta, SessionWorktreeInfo } from '@lework/protocol'
 import { defaultDataDir } from '../platform/index.ts'
 
 export interface SessionMetadataRecord {
   customTitle?: string
   archived?: boolean
   archivedAt?: number
+  worktree?: SessionWorktreeInfo
   updatedAt: number
   filePath?: string
   nativeId?: string
@@ -75,12 +76,14 @@ export class SessionMetadataStore {
     const rec = this.records.get(meta.id)
     const cleanCustom = rec?.customTitle?.trim()
     const isArchived = rec?.archived === true
-    if (!cleanCustom && !isArchived) {
-      if (!meta.customTitle && !meta.archived && meta.archivedAt === undefined) return meta
+    const persistedWorktree = rec?.worktree ?? meta.worktree
+    if (!cleanCustom && !isArchived && !persistedWorktree) {
+      if (!meta.customTitle && !meta.archived && meta.archivedAt === undefined && !meta.worktree) return meta
       const copy = { ...meta }
       delete copy.customTitle
       delete copy.archived
       delete copy.archivedAt
+      delete copy.worktree
       return copy
     }
     const copy: SessionMeta = {
@@ -99,7 +102,48 @@ export class SessionMetadataStore {
       delete copy.archived
       delete copy.archivedAt
     }
+    if (persistedWorktree) {
+      copy.worktree = persistedWorktree
+    } else {
+      delete copy.worktree
+    }
     return copy
+  }
+
+  setWorktree(
+    sessionId: string,
+    worktree: SessionWorktreeInfo | undefined,
+    ctx?: {
+      hostAliasId?: string
+      filePath?: string
+      nativeId?: string
+      baseMeta?: SessionMeta
+    },
+  ): void {
+    this.ensureLoaded()
+    const now = Date.now()
+    const ids = [sessionId, ctx?.hostAliasId].filter((v): v is string => Boolean(v && v.trim()))
+    for (const id of new Set(ids)) {
+      const prev = this.records.get(id)
+      const next: SessionMetadataRecord = {
+        ...prev,
+        updatedAt: now,
+        ...(ctx?.filePath ? { filePath: ctx.filePath } : {}),
+        ...(ctx?.nativeId ? { nativeId: ctx.nativeId } : {}),
+        ...(ctx?.baseMeta ? { snapshotMeta: stripOverrides(ctx.baseMeta, id) } : {}),
+      }
+      if (worktree) {
+        next.worktree = worktree
+      } else {
+        delete next.worktree
+      }
+      if (!next.customTitle && !next.archived && !next.worktree) {
+        this.records.delete(id)
+      } else {
+        this.records.set(id, next)
+      }
+    }
+    this.persist()
   }
 
   rename(
@@ -130,7 +174,7 @@ export class SessionMetadataStore {
       } else {
         delete next.customTitle
       }
-      if (!next.customTitle && !next.archived) {
+      if (!next.customTitle && !next.archived && !next.worktree) {
         this.records.delete(id)
       } else {
         this.records.set(id, next)
@@ -168,7 +212,7 @@ export class SessionMetadataStore {
         delete next.archived
         delete next.archivedAt
       }
-      if (!next.customTitle && !next.archived) {
+      if (!next.customTitle && !next.archived && !next.worktree) {
         this.records.delete(id)
       } else {
         this.records.set(id, next)
@@ -188,6 +232,7 @@ export class SessionMetadataStore {
       customTitle: hubRec?.customTitle ?? hostRec?.customTitle,
       archived: hubRec?.archived ?? hostRec?.archived,
       archivedAt: hubRec?.archivedAt ?? hostRec?.archivedAt,
+      worktree: hubRec?.worktree ?? hostRec?.worktree,
       updatedAt: Math.max(hubRec?.updatedAt ?? 0, hostRec?.updatedAt ?? 0, Date.now()),
     }
     this.records.set(hubSessionId, merged)

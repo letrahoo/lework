@@ -201,11 +201,22 @@ export type SessionState = z.infer<typeof SessionState>
 export const ModelOption = z.object({ id: z.string(), name: z.string() })
 export type ModelOption = z.infer<typeof ModelOption>
 
+export const SessionWorktreeInfo = z.object({
+  baseRepoPath: z.string(),
+  worktreePath: z.string(),
+  branch: z.string(),
+  baseBranch: z.string().optional(),
+  baseCommitSha: z.string().optional(),
+  cleanedUp: z.boolean().optional(),
+})
+export type SessionWorktreeInfo = z.infer<typeof SessionWorktreeInfo>
+
 export const SessionMeta = z.object({
   id: z.string(),
   engineId: z.string(),
   cwd: z.string(),
   workspaces: z.array(z.string()).optional(),
+  worktree: SessionWorktreeInfo.optional(),
   title: z.string(),
   customTitle: z.string().optional(),
   archived: z.boolean().optional(),
@@ -545,6 +556,8 @@ export const Methods = {
       engineId: z.string(),
       cwd: z.string().min(1).max(4096),
       workspaces: z.array(z.string().min(1).max(4096)).max(12).optional(),
+      useWorktree: z.boolean().optional(),
+      worktreeBranch: z.string().max(80).optional(),
       title: z.string().max(200).optional(),
       providerId: z.string().optional(),
       modelId: z.string().optional(),

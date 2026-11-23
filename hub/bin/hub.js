@@ -17,7 +17,7 @@ const tsxBin = [
 const cmd = tsxBin ?? process.execPath
 const cmdArgs = tsxBin
   ? [cliEntry, ...process.argv.slice(2)]
-  : ['--experimental-strip-types', cliEntry, ...process.argv.slice(2)]
+  : ['--experimental-transform-types', cliEntry, ...process.argv.slice(2)]
 
 const child = spawn(cmd, cmdArgs, {
   cwd: repoRoot,

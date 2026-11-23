@@ -49,6 +49,7 @@ import {
 import { SessionManager } from './session-manager.ts'
 import type { HostTaskInspector } from './storage/host-history.ts'
 import {
+  getManagedWorktreesRoot,
   inspectWorkspaceGitStatus,
   listWorkspaceDirectory,
   readWorkspaceFile,
@@ -137,7 +138,7 @@ export class HubServer {
     ]
 
     this.sessionManager = new SessionManager(
-      this.config.workspaceRoots,
+      this.effectiveWorkspaceRoots(),
       adapters,
       {
         onEvent: ev => this.broadcastSessionEvent(ev),
@@ -224,6 +225,10 @@ export class HubServer {
   /** SHA-256 (hex) of this Hub's TLS leaf certificate — what clients pin. */
   get tlsFingerprint(): string {
     return this.tls.fingerprint
+  }
+
+  private effectiveWorkspaceRoots(): string[] {
+    return [...new Set([...this.config.workspaceRoots, getManagedWorktreesRoot()])]
   }
 
   getHubInfo(): HubInfo {
@@ -867,6 +872,7 @@ export class HubServer {
             'approval.interactive.v1',
             'workspace.fs-readonly.v1',
             'workspace.checkpoint.v1',
+            'workspace.worktree.v1',
             'usage.stats.v1',
             'session.organize.v1',
           ],
@@ -895,18 +901,18 @@ export class HubServer {
       }
       case 'workspace.files': {
         const p = params as { path: string; query?: string; limit?: number }
-        return searchWorkspaceFiles(p.path, this.config.workspaceRoots, {
+        return searchWorkspaceFiles(p.path, this.effectiveWorkspaceRoots(), {
           query: p.query,
           limit: p.limit,
         })
       }
       case 'fs.list': {
         const p = params as { path: string }
-        return listWorkspaceDirectory(p.path, this.config.workspaceRoots)
+        return listWorkspaceDirectory(p.path, this.effectiveWorkspaceRoots())
       }
       case 'fs.read': {
         const p = params as { path: string }
-        return readWorkspaceFile(p.path, this.config.workspaceRoots)
+        return readWorkspaceFile(p.path, this.effectiveWorkspaceRoots())
       }
       case 'session.list': {
         const p = (params ?? {}) as { engineId?: string }
@@ -917,6 +923,8 @@ export class HubServer {
           engineId: string
           cwd: string
           workspaces?: string[]
+          useWorktree?: boolean
+          worktreeBranch?: string
           title?: string
           providerId?: string
           modelId?: string
@@ -1042,11 +1050,11 @@ export class HubServer {
       }
       case 'git.status': {
         const p = params as { path: string }
-        return inspectWorkspaceGitStatus(p.path, this.config.workspaceRoots)
+        return inspectWorkspaceGitStatus(p.path, this.effectiveWorkspaceRoots())
       }
       case 'git.diff': {
         const p = params as { path: string; filePath?: string; baseCommitSha?: string }
-        return readWorkspaceGitDiff(p.path, this.config.workspaceRoots, {
+        return readWorkspaceGitDiff(p.path, this.effectiveWorkspaceRoots(), {
           filePath: p.filePath,
           baseCommitSha: p.baseCommitSha,
         })

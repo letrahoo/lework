@@ -57,6 +57,8 @@ class FakeHubTransport : HubTransport {
     val respondedApprovals = mutableListOf<Triple<String, String, String?>>()
     val sentPrompts = mutableListOf<Pair<String, String>>()
     val sentPromptImages = mutableListOf<Pair<String, List<PromptImageAttachment>>>()
+    var lastCreateUseWorktree: Boolean? = null
+    var lastCreateWorktreeBranch: String? = null
     var workspaceFilesList: List<String> = listOf(
         "README.md",
         "hub/src/server.ts",
@@ -247,17 +249,37 @@ class FakeHubTransport : HubTransport {
         engineId: String,
         cwd: String,
         workspaces: List<String>?,
+        useWorktree: Boolean?,
+        worktreeBranch: String?,
         title: String?,
         providerId: String?,
         modelId: String?,
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
     ): SessionMeta {
+        lastCreateUseWorktree = useWorktree
+        lastCreateWorktreeBranch = worktreeBranch
+        val wtInfo = if (useWorktree == true) {
+            val branch = worktreeBranch?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                if (it.contains('/')) it else "lework/$it"
+            } ?: "lework/1123-s${sessions.size + 1}"
+            SessionWorktreeInfo(
+                baseRepoPath = cwd,
+                worktreePath = "/Users/test/.lework-worktrees/repo/${branch.replace('/', '-')}",
+                branch = branch,
+                baseBranch = "main",
+                cleanedUp = false,
+            )
+        } else {
+            null
+        }
+        val effectiveCwd = wtInfo?.worktreePath ?: cwd
         val created = SessionMeta(
             id = "sess_${sessions.size + 1}",
             engineId = engineId,
-            cwd = cwd,
-            workspaces = workspaces,
+            cwd = effectiveCwd,
+            workspaces = if (wtInfo != null) listOf(effectiveCwd) else workspaces,
+            worktree = wtInfo,
             title = title ?: "New Session",
             state = SessionState.IDLE,
             createdAt = 1_000L,
@@ -309,9 +331,15 @@ class FakeHubTransport : HubTransport {
         val idx = sessions.indexOfFirst { it.id == sessionId }
         if (idx < 0) throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Session not found")
         val prev = sessions[idx]
+        val updatedWt = if (archived && prev.worktree != null) {
+            prev.worktree.copy(cleanedUp = true)
+        } else {
+            prev.worktree
+        }
         val updated = prev.copy(
             archived = archived,
             archivedAt = if (archived) 9_999L else null,
+            worktree = updatedWt,
         )
         sessions[idx] = updated
         return updated

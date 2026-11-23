@@ -363,6 +363,36 @@
       ],
       "additionalProperties": false
     },
+    "SessionWorktreeInfo": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "baseRepoPath": {
+          "type": "string"
+        },
+        "worktreePath": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "baseBranch": {
+          "type": "string"
+        },
+        "baseCommitSha": {
+          "type": "string"
+        },
+        "cleanedUp": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "baseRepoPath",
+        "worktreePath",
+        "branch"
+      ],
+      "additionalProperties": false
+    },
     "SessionMeta": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -381,6 +411,35 @@
           "items": {
             "type": "string"
           }
+        },
+        "worktree": {
+          "type": "object",
+          "properties": {
+            "baseRepoPath": {
+              "type": "string"
+            },
+            "worktreePath": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "baseBranch": {
+              "type": "string"
+            },
+            "baseCommitSha": {
+              "type": "string"
+            },
+            "cleanedUp": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "baseRepoPath",
+            "worktreePath",
+            "branch"
+          ],
+          "additionalProperties": false
         },
         "title": {
           "type": "string"
@@ -1159,6 +1218,15 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 9007199254740991
+            },
+            "imagePreviews": {
+              "maxItems": 4,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 4,
+                "maxLength": 300000
+              }
             }
           },
           "required": [
@@ -2903,6 +2971,35 @@
                       "type": "string"
                     }
                   },
+                  "worktree": {
+                    "type": "object",
+                    "properties": {
+                      "baseRepoPath": {
+                        "type": "string"
+                      },
+                      "worktreePath": {
+                        "type": "string"
+                      },
+                      "branch": {
+                        "type": "string"
+                      },
+                      "baseBranch": {
+                        "type": "string"
+                      },
+                      "baseCommitSha": {
+                        "type": "string"
+                      },
+                      "cleanedUp": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "baseRepoPath",
+                      "worktreePath",
+                      "branch"
+                    ],
+                    "additionalProperties": false
+                  },
                   "title": {
                     "type": "string"
                   },
@@ -3048,6 +3145,13 @@
                 "maxLength": 4096
               }
             },
+            "useWorktree": {
+              "type": "boolean"
+            },
+            "worktreeBranch": {
+              "type": "string",
+              "maxLength": 80
+            },
             "title": {
               "type": "string",
               "maxLength": 200
@@ -3106,6 +3210,35 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "worktree": {
+                  "type": "object",
+                  "properties": {
+                    "baseRepoPath": {
+                      "type": "string"
+                    },
+                    "worktreePath": {
+                      "type": "string"
+                    },
+                    "branch": {
+                      "type": "string"
+                    },
+                    "baseBranch": {
+                      "type": "string"
+                    },
+                    "baseCommitSha": {
+                      "type": "string"
+                    },
+                    "cleanedUp": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "baseRepoPath",
+                    "worktreePath",
+                    "branch"
+                  ],
+                  "additionalProperties": false
                 },
                 "title": {
                   "type": "string"
@@ -3261,6 +3394,11 @@
                     "minLength": 4,
                     "maxLength": 1000000
                   },
+                  "thumbnailBase64": {
+                    "type": "string",
+                    "minLength": 4,
+                    "maxLength": 260000
+                  },
                   "fileName": {
                     "type": "string",
                     "maxLength": 120
@@ -3385,6 +3523,35 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "worktree": {
+                  "type": "object",
+                  "properties": {
+                    "baseRepoPath": {
+                      "type": "string"
+                    },
+                    "worktreePath": {
+                      "type": "string"
+                    },
+                    "branch": {
+                      "type": "string"
+                    },
+                    "baseBranch": {
+                      "type": "string"
+                    },
+                    "baseCommitSha": {
+                      "type": "string"
+                    },
+                    "cleanedUp": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "baseRepoPath",
+                    "worktreePath",
+                    "branch"
+                  ],
+                  "additionalProperties": false
                 },
                 "title": {
                   "type": "string"
@@ -3551,6 +3718,35 @@
                     "type": "string"
                   }
                 },
+                "worktree": {
+                  "type": "object",
+                  "properties": {
+                    "baseRepoPath": {
+                      "type": "string"
+                    },
+                    "worktreePath": {
+                      "type": "string"
+                    },
+                    "branch": {
+                      "type": "string"
+                    },
+                    "baseBranch": {
+                      "type": "string"
+                    },
+                    "baseCommitSha": {
+                      "type": "string"
+                    },
+                    "cleanedUp": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "baseRepoPath",
+                    "worktreePath",
+                    "branch"
+                  ],
+                  "additionalProperties": false
+                },
                 "title": {
                   "type": "string"
                 },
@@ -3714,6 +3910,35 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "worktree": {
+                  "type": "object",
+                  "properties": {
+                    "baseRepoPath": {
+                      "type": "string"
+                    },
+                    "worktreePath": {
+                      "type": "string"
+                    },
+                    "branch": {
+                      "type": "string"
+                    },
+                    "baseBranch": {
+                      "type": "string"
+                    },
+                    "baseCommitSha": {
+                      "type": "string"
+                    },
+                    "cleanedUp": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "baseRepoPath",
+                    "worktreePath",
+                    "branch"
+                  ],
+                  "additionalProperties": false
                 },
                 "title": {
                   "type": "string"
@@ -3918,6 +4143,35 @@
                     "type": "string"
                   }
                 },
+                "worktree": {
+                  "type": "object",
+                  "properties": {
+                    "baseRepoPath": {
+                      "type": "string"
+                    },
+                    "worktreePath": {
+                      "type": "string"
+                    },
+                    "branch": {
+                      "type": "string"
+                    },
+                    "baseBranch": {
+                      "type": "string"
+                    },
+                    "baseCommitSha": {
+                      "type": "string"
+                    },
+                    "cleanedUp": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "baseRepoPath",
+                    "worktreePath",
+                    "branch"
+                  ],
+                  "additionalProperties": false
+                },
                 "title": {
                   "type": "string"
                 },
@@ -4110,6 +4364,15 @@
                         "type": "integer",
                         "minimum": 0,
                         "maximum": 9007199254740991
+                      },
+                      "imagePreviews": {
+                        "maxItems": 4,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 4,
+                          "maxLength": 300000
+                        }
                       }
                     },
                     "required": [
@@ -5654,6 +5917,15 @@
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 9007199254740991
+                  },
+                  "imagePreviews": {
+                    "maxItems": 4,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 4,
+                      "maxLength": 300000
+                    }
                   }
                 },
                 "required": [
@@ -6182,6 +6454,35 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "worktree": {
+                "type": "object",
+                "properties": {
+                  "baseRepoPath": {
+                    "type": "string"
+                  },
+                  "worktreePath": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string"
+                  },
+                  "baseBranch": {
+                    "type": "string"
+                  },
+                  "baseCommitSha": {
+                    "type": "string"
+                  },
+                  "cleanedUp": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "baseRepoPath",
+                  "worktreePath",
+                  "branch"
+                ],
+                "additionalProperties": false
               },
               "title": {
                 "type": "string"
