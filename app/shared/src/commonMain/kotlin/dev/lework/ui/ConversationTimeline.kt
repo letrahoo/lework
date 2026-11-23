@@ -130,6 +130,8 @@ internal fun ConversationStreamView(
     isSessionRunning: Boolean,
     onLoadOlder: () -> Unit,
     onDismissKeyboard: () -> Unit = {},
+    showInlineErrorRetry: Boolean = false,
+    onRetryLastTurn: (() -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     val isUserDragging by listState.interactionSource.collectIsDraggedAsState()
@@ -140,6 +142,9 @@ internal fun ConversationStreamView(
     }
     val segments = remember(transcript.items) { groupTimelineSegments(transcript.items) }
     val reversedSegments = remember(segments) { segments.asReversed() }
+    val latestErrorNoticeId = remember(transcript.items) {
+        transcript.items.lastOrNull { it is ChatTimelineItem.Notice && it.isError }?.id
+    }
     val nowMs = remember(sessionKey, transcript.lastSeq) { epochMillis() }
     val showLiveSpinner = activeSession != null &&
         activeSession.id == sessionKey &&
@@ -260,6 +265,18 @@ internal fun ConversationStreamView(
                     is TimelineSegment.Single -> MessageTimelineRow(
                         item = segment.item,
                         nowMs = nowMs,
+                        onInlineRetry = if (
+                            showInlineErrorRetry &&
+                            !isSessionRunning &&
+                            onRetryLastTurn != null &&
+                            segment.item is ChatTimelineItem.Notice &&
+                            segment.item.isError &&
+                            segment.item.id == latestErrorNoticeId
+                        ) {
+                            onRetryLastTurn
+                        } else {
+                            null
+                        },
                     )
                 }
             }
@@ -556,6 +573,7 @@ private fun MessageTimestampCaption(
 private fun MessageTimelineRow(
     item: ChatTimelineItem,
     nowMs: Long,
+    onInlineRetry: (() -> Unit)? = null,
 ) {
     when (item) {
         is ChatTimelineItem.User -> {
@@ -690,18 +708,24 @@ private fun MessageTimelineRow(
             ClaudeCliToolCallRow(item = item)
         }
         is ChatTimelineItem.Notice -> {
+            val isNetworkNotice = item.isError && isLikelyNetworkError(item.text)
             Surface(
                 color = if (item.isError) Everforest.BgRed else Everforest.Bg1,
+                border = if (item.isError) BorderStroke(1.dp, Everforest.Red.copy(alpha = 0.35f)) else null,
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Row(
-                    modifier = Modifier.padding(10.dp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Info,
+                        imageVector = when {
+                            isNetworkNotice -> Icons.Rounded.WifiOff
+                            item.isError -> Icons.Rounded.ErrorOutline
+                            else -> Icons.Rounded.Info
+                        },
                         contentDescription = null,
                         tint = if (item.isError) Everforest.Red else Everforest.Grey2,
                         modifier = Modifier.size(16.dp),
@@ -709,8 +733,24 @@ private fun MessageTimelineRow(
                     Text(
                         text = item.text,
                         fontSize = 12.sp,
+                        lineHeight = 17.sp,
                         color = if (item.isError) Everforest.Red else Everforest.Fg,
+                        modifier = Modifier.weight(1f),
                     )
+                    if (onInlineRetry != null) {
+                        TextButton(
+                            onClick = onInlineRetry,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            modifier = Modifier.heightIn(min = 26.dp),
+                        ) {
+                            Text(
+                                text = "重试继续",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Everforest.Green,
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import type { EngineCapabilities, EngineStatus, PermissionOption } from '@lework/protocol'
 import { findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
+import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 export interface CodexAdapterOptions {
@@ -67,6 +68,7 @@ class CodexAppServerSession implements EngineSession {
   readonly cwd: string
   private rpc: StdioJsonRpcProcess | null = null
   private threadId: string | null = null
+  private lastThreadId: string | undefined
   private activeTurnId: string | null = null
   private selectedModel: string | undefined
   private selectedEffort: string | undefined
@@ -77,6 +79,7 @@ class CodexAppServerSession implements EngineSession {
     resolve: () => void
     reject: (err: Error) => void
   } | null = null
+  private activeTurn = false
   private closed = false
 
   constructor(
@@ -86,30 +89,49 @@ class CodexAppServerSession implements EngineSession {
   ) {
     this.sessionId = init.sessionId
     this.cwd = init.cwd
+    this.lastThreadId = init.resumeNativeId
     this.selectedModel = init.modelId
     this.selectedEffort = init.reasoningEffort
   }
 
+  isAlive(): boolean {
+    return Boolean(!this.closed && this.rpc?.isAlive() && this.threadId)
+  }
+
   async start(): Promise<void> {
-    this.rpc = new StdioJsonRpcProcess({
+    const rpc = new StdioJsonRpcProcess({
       command: this.bin,
       args: this.args,
       cwd: this.cwd,
       env: { ...process.env, ...this.init.env },
       onInbound: msg => this.handleInbound(msg),
       onExit: (code, signal) => {
-        if (!this.closed) {
+        this.pendingApprovals.clear()
+        this.activeTurnId = null
+        if (this.rpc === rpc) {
+          this.threadId = null
+        }
+        const detail = formatEngineTurnError(
+          new Error(`Codex app-server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`),
+          rpc.getStderrTail(),
+        )
+        if (this.turnWaiter) {
+          const w = this.turnWaiter
+          this.turnWaiter = null
+          w.reject(new Error(detail))
+        } else if (!this.closed && !this.activeTurn) {
           this.init.emit({
             type: 'session.state',
             state: 'error',
-            detail: `Codex app-server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+            detail,
           })
         }
       },
     })
-    this.rpc.start()
+    this.rpc = rpc
+    rpc.start()
 
-    await this.rpc.request(
+    await rpc.request(
       'initialize',
       {
         clientInfo: {
@@ -124,15 +146,16 @@ class CodexAppServerSession implements EngineSession {
       },
       15_000,
     )
-    this.rpc.notify('initialized', {})
+    rpc.notify('initialized', {})
 
     let threadRes: Record<string, unknown> | null = null
-    if (this.init.resumeNativeId) {
+    const resumeTarget = this.lastThreadId ?? this.init.resumeNativeId
+    if (resumeTarget) {
       try {
-        threadRes = (await this.rpc.request(
+        threadRes = (await rpc.request(
           'thread/resume',
           {
-            threadId: this.init.resumeNativeId,
+            threadId: resumeTarget,
             cwd: this.cwd,
             ...(this.selectedModel ? { model: this.selectedModel } : {}),
           },
@@ -144,7 +167,7 @@ class CodexAppServerSession implements EngineSession {
     }
 
     if (!threadRes) {
-      threadRes = (await this.rpc.request(
+      threadRes = (await rpc.request(
         'thread/start',
         {
           cwd: this.cwd,
@@ -163,12 +186,14 @@ class CodexAppServerSession implements EngineSession {
         ? threadObj.id
         : typeof threadRes?.threadId === 'string'
           ? threadRes.threadId
-          : this.init.resumeNativeId ?? null
+          : resumeTarget ?? null
     if (!tid) {
-      await this.close()
+      await rpc.close()
+      if (this.rpc === rpc) this.rpc = null
       throw new Error('Codex thread/start did not return a thread id')
     }
     this.threadId = tid
+    this.lastThreadId = tid
     this.init.onNativeSessionLinked?.(tid)
 
     this.init.onModelsChanged?.(this.selectedModel ?? 'gpt-5-codex', [
@@ -178,16 +203,21 @@ class CodexAppServerSession implements EngineSession {
     ])
   }
 
-  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
-    if (!this.rpc || !this.threadId) {
-      throw new Error('Codex session is not initialized')
-    }
-    this.currentMsgId = `msg_${turnId}`
-    this.init.emit({ type: 'session.state', state: 'running' })
+  private async ensureRunning(): Promise<void> {
+    if (this.isAlive()) return
+    const stale = this.rpc
+    this.rpc = null
+    this.threadId = null
+    this.activeTurnId = null
+    this.pendingApprovals.clear()
+    await stale?.close().catch(() => undefined)
+    await this.start()
+  }
 
-    const completionPromise = new Promise<void>((resolve, reject) => {
-      this.turnWaiter = { resolve, reject }
-    })
+  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
+    this.currentMsgId = `msg_${turnId}`
+    this.activeTurn = true
+    this.init.emit({ type: 'session.state', state: 'running' })
 
     const inputItems: Array<Record<string, unknown>> = []
     for (const img of images ?? []) {
@@ -199,10 +229,22 @@ class CodexAppServerSession implements EngineSession {
     }
 
     try {
-      const startRes = (await this.rpc.request(
+      await this.ensureRunning()
+      const rpc = this.rpc
+      const threadId = this.threadId
+      if (!rpc || !threadId) {
+        throw new Error('Codex session is not initialized')
+      }
+      rpc.clearStderrTail()
+
+      const completionPromise = new Promise<void>((resolve, reject) => {
+        this.turnWaiter = { resolve, reject }
+      })
+
+      const startRes = (await rpc.request(
         'turn/start',
         {
-          threadId: this.threadId,
+          threadId,
           input: inputItems,
           ...(this.selectedModel ? { model: this.selectedModel } : {}),
           ...(this.selectedEffort ? { effort: this.selectedEffort } : {}),
@@ -219,14 +261,28 @@ class CodexAppServerSession implements EngineSession {
       }
 
       await completionPromise
+      this.activeTurnId = null
       this.init.emit({ type: 'turn.done', turnId, stopReason: 'end_turn' })
       this.init.emit({ type: 'session.state', state: 'idle' })
     } catch (err) {
+      const stderr = this.rpc?.getStderrTail()
       this.turnWaiter = null
-      const msg = err instanceof Error ? err.message : String(err)
+      this.activeTurnId = null
+      for (const [reqId] of this.pendingApprovals.entries()) {
+        this.pendingApprovals.delete(reqId)
+        this.init.emit({
+          type: 'permission.resolved',
+          requestId: reqId,
+          optionId: null,
+          outcome: 'cancelled',
+        })
+      }
+      const msg = formatEngineTurnError(err, stderr)
       this.init.emit({ type: 'error', message: msg })
       this.init.emit({ type: 'turn.done', turnId, stopReason: 'error', error: msg })
       this.init.emit({ type: 'session.state', state: 'idle' })
+    } finally {
+      this.activeTurn = false
     }
   }
 
@@ -361,7 +417,43 @@ class CodexAppServerSession implements EngineSession {
     if (method === 'turn/completed') {
       const w = this.turnWaiter
       this.turnWaiter = null
-      w?.resolve()
+      const turnObj =
+        params.turn && typeof params.turn === 'object'
+          ? (params.turn as Record<string, unknown>)
+          : undefined
+      const errRaw = extractCodexErrorText(params.error ?? turnObj?.error)
+      if (turnObj?.status === 'failed' || errRaw) {
+        w?.reject(new Error(errRaw || 'Codex turn failed'))
+      } else {
+        w?.resolve()
+      }
+      return
+    }
+
+    if (method === 'error' || method === 'turn/failed') {
+      const errMsg = extractCodexErrorText(params.error ?? params.message ?? params) || 'Codex error'
+      if (this.turnWaiter) {
+        const w = this.turnWaiter
+        this.turnWaiter = null
+        w.reject(new Error(errMsg))
+      } else {
+        this.init.emit({ type: 'error', message: formatEngineTurnError(errMsg) })
+      }
     }
   }
+}
+
+function extractCodexErrorText(raw: unknown): string | null {
+  if (!raw) return null
+  if (typeof raw === 'string') return raw.trim() || null
+  if (typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>
+    if (typeof obj.message === 'string' && obj.message.trim()) return obj.message.trim()
+    if (typeof obj.error === 'string' && obj.error.trim()) return obj.error.trim()
+    if (obj.error && typeof obj.error === 'object') {
+      const nested = (obj.error as Record<string, unknown>).message
+      if (typeof nested === 'string' && nested.trim()) return nested.trim()
+    }
+  }
+  return null
 }

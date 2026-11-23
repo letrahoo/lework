@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import { augmentedPathEnv } from '../platform/index.ts'
+import { summarizeStderrLines } from './network-error.ts'
 
 export interface JsonRpcNotification {
   kind: 'notification'
@@ -41,9 +42,29 @@ export class StdioJsonRpcProcess {
   private nextId = 1
   private readonly pending = new Map<string | number, PendingCall>()
   private buf: Buffer = Buffer.alloc(0)
+  private stderrTail = ''
   private closed = false
 
   constructor(private readonly opts: StdioJsonRpcOptions) {}
+
+  isAlive(): boolean {
+    return Boolean(
+      !this.closed &&
+        this.proc &&
+        this.proc.exitCode === null &&
+        !this.proc.killed &&
+        !this.proc.stdin.destroyed &&
+        this.proc.stdin.writable,
+    )
+  }
+
+  getStderrTail(): string {
+    return this.stderrTail
+  }
+
+  clearStderrTail(): void {
+    this.stderrTail = ''
+  }
 
   start(): void {
     if (this.proc) return
@@ -53,13 +74,15 @@ export class StdioJsonRpcProcess {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.proc = child
+    this.stderrTail = ''
 
     child.stdout.on('data', (chunk: Buffer) => {
       this.consumeStdout(Buffer.from(chunk))
     })
 
-    child.stderr.on('data', () => {
-      // Drain stderr so child never blocks on pipe buffer
+    child.stderr.on('data', (chunk: Buffer) => {
+      // Drain stderr so child never blocks on pipe buffer while preserving recent diagnostics
+      this.stderrTail = (this.stderrTail + chunk.toString('utf8')).slice(-4_096)
     })
 
     child.on('error', err => {
@@ -68,7 +91,10 @@ export class StdioJsonRpcProcess {
 
     child.on('exit', (code, signal) => {
       this.proc = null
-      this.failAll(new Error(`ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`))
+      const stderrDetail = code !== 0 ? summarizeStderrLines(this.stderrTail) : ''
+      const exitMsg =
+        stderrDetail || `ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`
+      this.failAll(new Error(exitMsg))
       if (!this.closed) {
         this.opts.onExit?.(code, signal)
       }

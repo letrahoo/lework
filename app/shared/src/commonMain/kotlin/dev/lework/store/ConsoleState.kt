@@ -63,8 +63,63 @@ sealed interface ChatTimelineItem {
         override val id: String,
         val text: String,
         val isError: Boolean = false,
+        val repeatCount: Int = 1,
         override val ts: Long = 0L,
     ) : ChatTimelineItem
+}
+
+data class TurnRecoveryBannerState(
+    val sessionId: String?,
+    val isNetworkError: Boolean,
+    val errorCount: Int = 1,
+    val headline: String,
+    val detail: String,
+    val failedPromptText: String? = null,
+    val failedImages: List<PromptImageAttachment> = emptyList(),
+    val canResumePreviousTurn: Boolean = true,
+    val lastErrorAtMs: Long = 0L,
+)
+
+private val NETWORK_ERROR_PATTERNS = listOf(
+    Regex("\\bECONNRESET\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bECONNREFUSED\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bECONNABORTED\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bENOTFOUND\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bETIMEDOUT\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bEAI_AGAIN\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bEHOSTUNREACH\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bENETUNREACH\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bENETDOWN\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bENOTCONN\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bEPIPE\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bUND_ERR_[A-Z0-9_]+\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bERR_SOCKET_[A-Z0-9_]+\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bERR_NETWORK\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bERR_TLS_[A-Z0-9_]+\\b", RegexOption.IGNORE_CASE),
+    Regex("fetch failed", RegexOption.IGNORE_CASE),
+    Regex("socket hang up", RegexOption.IGNORE_CASE),
+    Regex("connection\\s*(refused|reset|closed|aborted|lost|dropped|timed out|failed|error)", RegexOption.IGNORE_CASE),
+    Regex("network\\s*(error|is unreachable|unreachable|changed|offline|down|timeout|failed)", RegexOption.IGNORE_CASE),
+    Regex("api\\s*connection\\s*error|apiconnectionerror", RegexOption.IGNORE_CASE),
+    Regex("tls\\s*handshake", RegexOption.IGNORE_CASE),
+    Regex("timed\\s*out|\\btimeout\\b", RegexOption.IGNORE_CASE),
+    Regex("\\boffline\\b", RegexOption.IGNORE_CASE),
+    Regex("\\bdns\\b", RegexOption.IGNORE_CASE),
+    Regex("\\b(502|503|504)\\b"),
+    Regex("bad gateway|service unavailable|gateway timeout", RegexOption.IGNORE_CASE),
+    Regex("unable to resolve host|getaddrinfo", RegexOption.IGNORE_CASE),
+    Regex("no route to host", RegexOption.IGNORE_CASE),
+    Regex("\\beof\\b", RegexOption.IGNORE_CASE),
+    Regex("broken pipe", RegexOption.IGNORE_CASE),
+    Regex("premature close", RegexOption.IGNORE_CASE),
+    Regex("unresolvedaddress|connecttimeout|sockettimeout|closedchannel|websocket.*(closed|disconnected|not connected|failed)|connection abort|nsurlerrordomain", RegexOption.IGNORE_CASE),
+    Regex("断网|网络|连接断开|连接超时|连接中断|超时|不可达|无法连接"),
+)
+
+internal fun isLikelyNetworkError(message: String?): Boolean {
+    val text = message?.trim().orEmpty()
+    if (text.isEmpty()) return false
+    return NETWORK_ERROR_PATTERNS.any { it.containsMatchIn(text) }
 }
 
 data class SessionTranscript(
@@ -173,6 +228,8 @@ data class ConsoleUiState(
     val submittingApprovalRequestId: String? = null,
     val approvalErrorText: String? = null,
     val promptErrorText: String? = null,
+    val turnRecoveryBanner: TurnRecoveryBannerState? = null,
+    val retryingTurn: Boolean = false,
     val unsentDraftToRestore: String? = null,
     // Embedded Tailscale `tsnet` mesh & multi-host asset book
     val tsnetStatus: MobileTsnetStatus = MobileTsnetStatus(available = isMobileTsnetAvailable()),
@@ -431,14 +488,7 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
             outTok += event.outputTokens ?: 0
         }
         is AgentEvent.ErrorEvent -> {
-            items.add(
-                ChatTimelineItem.Notice(
-                    id = "err_${event.seq}",
-                    text = event.message,
-                    isError = true,
-                    ts = event.ts,
-                ),
-            )
+            appendOrCollapseErrorNotice(items, event)
         }
         is AgentEvent.SessionStateChanged,
         is AgentEvent.TurnDone -> Unit
@@ -582,14 +632,7 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
                 outTok += event.outputTokens ?: 0
             }
             is AgentEvent.ErrorEvent -> {
-                items.add(
-                    ChatTimelineItem.Notice(
-                        id = "err_${event.seq}",
-                        text = event.message,
-                        isError = true,
-                        ts = event.ts,
-                    ),
-                )
+                appendOrCollapseErrorNotice(items, event)
             }
             is AgentEvent.PermissionRequested,
             is AgentEvent.PermissionResolved,
@@ -605,6 +648,47 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
         planEntries = plans,
         inputTokens = inTok,
         outputTokens = outTok,
+    )
+}
+
+private val REPEAT_SUFFIX_REGEX = Regex("\\s*\\(×\\d+\\)$")
+private val ERROR_VOLATILE_TOKEN_REGEX = Regex("\\b([0-9a-f]{8,}|\\d+)\\b", RegexOption.IGNORE_CASE)
+
+private fun normalizeErrorNoticeSignature(raw: String): String =
+    raw.replace(REPEAT_SUFFIX_REGEX, "")
+        .lowercase()
+        .replace(ERROR_VOLATILE_TOKEN_REGEX, "#")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+
+private fun appendOrCollapseErrorNotice(
+    items: MutableList<ChatTimelineItem>,
+    event: AgentEvent.ErrorEvent,
+) {
+    val cleanMsg = event.message.trim().ifEmpty { "执行异常中断" }
+    val prev = items.lastOrNull() as? ChatTimelineItem.Notice
+    if (prev != null && prev.isError) {
+        val prevBase = prev.text.replace(REPEAT_SUFFIX_REGEX, "").trim()
+        val sameSignature = normalizeErrorNoticeSignature(prevBase) == normalizeErrorNoticeSignature(cleanMsg)
+        val bothNetwork = isLikelyNetworkError(prevBase) && isLikelyNetworkError(cleanMsg)
+        if (sameSignature || bothNetwork) {
+            val nextCount = prev.repeatCount + 1
+            items[items.lastIndex] = prev.copy(
+                text = "$cleanMsg (×$nextCount)",
+                repeatCount = nextCount,
+                ts = if (event.ts > 0L) maxOf(prev.ts, event.ts) else prev.ts,
+            )
+            return
+        }
+    }
+    items.add(
+        ChatTimelineItem.Notice(
+            id = "err_${event.seq}",
+            text = cleanMsg,
+            isError = true,
+            repeatCount = 1,
+            ts = event.ts,
+        ),
     )
 }
 

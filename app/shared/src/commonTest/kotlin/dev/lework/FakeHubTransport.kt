@@ -48,7 +48,10 @@ class FakeHubTransport : HubTransport {
 
     var listSessionsException: Throwable? = null
     var connectHelloException: Throwable? = null
+    var sendPromptException: Throwable? = null
+    var sendPromptFailuresRemaining: Int = 0
     var discoverNullRemaining: Int = 0
+    var subscribeSessionCount: Int = 0
     var simulateTailscaleSameUser: Boolean = false
     var tailscaleHandshakeCount: Int = 0
     var pairRedeemCount: Int = 0
@@ -306,6 +309,11 @@ class FakeHubTransport : HubTransport {
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
     ): String {
+        if (sendPromptFailuresRemaining > 0) {
+            sendPromptFailuresRemaining--
+            throw sendPromptException ?: RuntimeException("ECONNRESET: socket hang up")
+        }
+        sendPromptException?.let { throw it }
         sentPrompts.add(sessionId to text)
         sentPromptParams.add(
             SessionPromptParams(
@@ -389,6 +397,7 @@ class FakeHubTransport : HubTransport {
         beforeSeq: Int?,
         limit: Int?,
     ): StreamSubscribeResult {
+        subscribeSessionCount++
         val delayMs = subscribeDelayMsBySession[sessionId] ?: 0L
         if (delayMs > 0L) delay(delayMs)
 

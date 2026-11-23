@@ -39,6 +39,7 @@ export interface EngineSession {
   setModel?(modelId: string): Promise<void>
   setEffort?(effort: ReasoningEffort): Promise<void>
   setMode?(mode: SessionMode): Promise<void>
+  isAlive?(): boolean
   close(): Promise<void>
 }
 
