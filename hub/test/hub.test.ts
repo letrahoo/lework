@@ -723,7 +723,7 @@ rl.on('line', line => {
         if (bin === 'ps' && args[0] === '-axo') {
           return ` 4242 ttys021 agy --conversation ${convId}\n`
         }
-        if (bin === 'lsof') {
+        if (bin === 'lsof' || bin.endsWith('/lsof')) {
           return `p4242\nfcwd\nn${repoRoot}\n`
         }
         if (bin === '/usr/local/bin/tmux' && args.includes('capture-pane')) {

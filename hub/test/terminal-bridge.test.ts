@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   TerminalBridge,
@@ -168,7 +171,7 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
         if (bin === 'ps' && args[0] === '-axo') {
           return ' 2001 ttys008 agy -c\n 9999 ?? /Applications/Gemini.app/Contents/Helpers/agy --hub\n'
         }
-        if (bin === 'lsof') {
+        if (bin === 'lsof' || bin.endsWith('/lsof')) {
           return 'p2001\nfcwd\nn/tmp/demo-agy-repo\n'
         }
         if (bin === '/usr/local/bin/tmux' && args.includes('capture-pane')) {
@@ -396,7 +399,7 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
         if (bin === 'ps' && args[0] === '-axo') {
           return '29707 ttys005 agy\n36266 ttys006 agy.179512.old -c\n'
         }
-        if (bin === 'lsof') {
+        if (bin === 'lsof' || bin.endsWith('/lsof')) {
           return [
             'p29707',
             'fcwd',
@@ -463,5 +466,141 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
       '继续旧任务',
     )
     expect(resClosed).toEqual({ delivered: false, reason: 'not_running' })
+  })
+
+  it('[T7.2] omits -b on single-file lsof lock probes while keeping -b on PID-scoped lsof scans', async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-lsof-flags-'))
+    try {
+      const convId = 'b4e91c02-7a8d-4f13-9c22-112233445566'
+      const presenceDir = path.join(tmpHome, '.gemini', 'antigravity-cli', 'presence')
+      fs.mkdirSync(presenceDir, { recursive: true })
+      const lockFile = path.join(presenceDir, `${convId}.lock`)
+      fs.writeFileSync(lockFile, 'lock', 'utf8')
+
+      const lsofCalls: Array<{ bin: string; args: string[]; env?: NodeJS.ProcessEnv }> = []
+      const bridge = new TerminalBridge({
+        homeDir: tmpHome,
+        tmuxBin: null,
+        it2Bin: null,
+        lsofBin: '/usr/sbin/lsof',
+        isPidAlive: pid => pid === 41001 || pid === 41002,
+        runCommand: async (bin, args, _timeout, env) => {
+          if (bin === 'ps' && args[0] === '-axo') {
+            return '41001 ttys009 agy\n'
+          }
+          if (bin === '/usr/sbin/lsof') {
+            lsofCalls.push({ bin, args, env })
+            if (args.includes('-p')) {
+              // PID 41001 holds a different conversation, forcing fallback to single-file lock probe
+              return 'p41001\nfcwd\nn/tmp/other-repo\n'
+            }
+            // Simulate macOS `lsof -b <file>` failure if `-b` were ever re-introduced on single-file probe
+            if (args.includes('-b')) {
+              throw new Error(`lsof: status error on ${lockFile}: Resource temporarily unavailable`)
+            }
+            return 'p41002\nf12\n'
+          }
+          if (bin === 'ps' && args[0] === '-o' && args[1] === 'ppid=,command=') {
+            if (args[3] === '41002') return '41000 /bin/zsh -l\n'
+            if (args[3] === '41000') return '1 /Applications/Cursor.app/Contents/MacOS/Cursor\n'
+          }
+          return ''
+        },
+      })
+
+      const lockResult = await bridge.checkAgyPresenceLock(convId)
+      expect(lockResult).toEqual({ locked: true, hostAppHint: 'Cursor' })
+      expect(lsofCalls).toHaveLength(2)
+
+      const pidCall = lsofCalls[0]!
+      expect(pidCall.bin).toBe('/usr/sbin/lsof')
+      expect(pidCall.args).toContain('-b')
+      expect(pidCall.args).toContain('-n')
+      expect(pidCall.args).toContain('-P')
+      expect(pidCall.args).toContain('-p')
+      expect((pidCall.env?.PATH ?? '').split(path.delimiter)).toContain('/usr/sbin')
+
+      const fileCall = lsofCalls[1]!
+      expect(fileCall.bin).toBe('/usr/sbin/lsof')
+      expect(fileCall.args).not.toContain('-b')
+      expect(fileCall.args).toEqual(['-w', '-Fp', lockFile])
+      expect((fileCall.env?.PATH ?? '').split(path.delimiter)).toContain('/usr/sbin')
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true })
+    }
+  })
+
+  it('[T7.3] resolves lsof under minimal launchd PATH (/usr/sbin/lsof) to locate live tmux TTY holding lock file and inject cleanly', async () => {
+    const prevPath = process.env.PATH
+    process.env.PATH = '/usr/bin:/bin'
+    try {
+      const convId = '9f7e6d5c-4b3a-4123-89ab-abcdef012345'
+      const expectedDefaultLsof = fs.existsSync('/usr/sbin/lsof')
+        ? '/usr/sbin/lsof'
+        : fs.existsSync('/usr/bin/lsof')
+          ? '/usr/bin/lsof'
+          : 'lsof'
+
+      const sentCommands: Array<{ bin: string; args: string[]; env?: NodeJS.ProcessEnv }> = []
+      const bridge = new TerminalBridge({
+        tmuxBin: '/opt/homebrew/bin/tmux',
+        it2Bin: null,
+        tmuxSocketPaths: ['/private/tmp/tmux-501/default'],
+        isPidAlive: pid => pid === 55123,
+        runCommand: async (bin, args, _timeout, env) => {
+          sentCommands.push({ bin, args, env })
+          if (bin.endsWith('tmux') && args.includes('list-panes')) {
+            return '%7|/dev/ttys015|0\n'
+          }
+          if (bin === 'ps' && args[0] === '-axo') {
+            return '55123 ttys015 agy\n'
+          }
+          if (bin === expectedDefaultLsof) {
+            return [
+              'p55123',
+              'fcwd',
+              'n/tmp/launchd-sync-repo',
+              'f11',
+              `n/Users/demo/.gemini/antigravity-cli/presence/${convId}.lock`,
+            ].join('\n')
+          }
+          if (bin.endsWith('tmux') && args.includes('capture-pane')) {
+            return '> \n  auto · Gemini 4 Carbon · high\n'
+          }
+          return ''
+        },
+      })
+
+      const delivery = await bridge.sendPromptToSession(
+        {
+          nativeId: convId,
+          engineId: 'agy',
+          cwd: '/tmp/launchd-sync-repo',
+        },
+        '检查当前构建状态',
+      )
+      expect(delivery).toEqual({ delivered: true })
+
+      const lsofCall = sentCommands.find(c => c.bin === expectedDefaultLsof)
+      expect(lsofCall).toBeDefined()
+      if (process.platform === 'darwin') {
+        expect(lsofCall?.bin).toBe('/usr/sbin/lsof')
+      }
+      expect(lsofCall?.args).toContain('-b')
+      expect(lsofCall?.args).toContain('-p')
+      expect((lsofCall?.env?.PATH ?? '').split(path.delimiter)).toContain('/usr/sbin')
+      expect((lsofCall?.env?.PATH ?? '').split(path.delimiter)).toContain('/sbin')
+
+      const sendLiteral = sentCommands.find(c => c.bin.endsWith('tmux') && c.args.includes('-l'))
+      expect(sendLiteral?.args).toContain('%7')
+      expect(sendLiteral?.args.at(-1)).toBe('检查当前构建状态')
+      expect(sentCommands.at(-1)?.args.slice(-3)).toEqual(['-t', '%7', 'Enter'])
+    } finally {
+      if (prevPath === undefined) {
+        delete process.env.PATH
+      } else {
+        process.env.PATH = prevPath
+      }
+    }
   })
 })
