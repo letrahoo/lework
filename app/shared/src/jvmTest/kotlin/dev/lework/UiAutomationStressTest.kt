@@ -820,4 +820,62 @@ class UiAutomationStressTest {
             assertEquals(androidx.compose.ui.text.TextRange(expectedText.length), actualSelection)
             assertTrue(isFocused, "Composer input must remain focused after tapping @file suggestion")
         }
+
+    @Test
+    fun `T8_7 clicking inline-code and bare URLs inside ConversationTimeline dispatches openExternalUrl cleanly`() =
+        runComposeUiTest {
+            JvmPlatformTestHooks.reset()
+            val transport = FakeHubTransport()
+            val sid = "host:agy:link_click_test"
+            transport.sessions.add(
+                SessionMeta(
+                    id = sid,
+                    engineId = "agy",
+                    cwd = "/workspace/lework",
+                    title = "链接点击回归校验",
+                    state = SessionState.IDLE,
+                    createdAt = 1_000L,
+                    updatedAt = 2_000L,
+                    lastSeq = 1,
+                ),
+            )
+            transport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "给下 PR 链接"),
+                AgentEvent.AssistantDelta(
+                    1,
+                    sid,
+                    2_000L,
+                    "a_1",
+                    "- `https://github.com/letrahoo/lework/pull/1`\n\nhttps://github.com/letrahoo/lework/releases/tag/v0.7.1。",
+                ),
+            )
+
+            lateinit var store: ConsoleStore
+            setContent {
+                val scope: CoroutineScope = rememberCoroutineScope()
+                val created = androidx.compose.runtime.remember { ConsoleStore(scope, transport) }
+                store = created
+                Box(modifier = Modifier.size(width = 480.dp, height = 800.dp)) {
+                    ConsoleApp(externalStore = created, autoBootstrap = true)
+                }
+            }
+            waitForIdle()
+            runOnIdle { store.selectSession(sid) }
+            waitForIdle()
+
+            onNodeWithText("https://github.com/letrahoo/lework/pull/1", substring = true, useUnmergedTree = true)
+                .performClick()
+            waitForIdle()
+            onNodeWithText("https://github.com/letrahoo/lework/releases/tag/v0.7.1", substring = true, useUnmergedTree = true)
+                .performClick()
+            waitForIdle()
+
+            assertEquals(
+                listOf(
+                    "https://github.com/letrahoo/lework/pull/1",
+                    "https://github.com/letrahoo/lework/releases/tag/v0.7.1",
+                ),
+                JvmPlatformTestHooks.openedUrls,
+            )
+        }
 }

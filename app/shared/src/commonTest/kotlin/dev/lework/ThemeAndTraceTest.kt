@@ -275,4 +275,28 @@ class ThemeAndTraceTest {
         assertEquals("", dev.lework.ui.formatMessageTimestamp(0L, nowMs = replyEndTs))
         assertEquals("", dev.lework.ui.formatMessageTimestamp(1_000L, nowMs = replyEndTs))
     }
+
+    @Test
+    fun `T7_7 makes inline-code URLs clickable and trims CJK and trailing punctuation from bare URLs`() {
+        val sample = """
+            - **PR #1**：`https://github.com/letrahoo/lework/pull/1`（`fix/ssh-forge-host-filter`）
+            已发布：https://github.com/letrahoo/lework/releases/tag/v0.7.1。
+            参考 (https://en.wikipedia.org/wiki/Foo_(bar))，以及 [文档](https://example.com/a_(b)).
+            非链接代码 `pnpm verify` 与占位 `https://...` 不应挂链接。
+        """.trimIndent()
+
+        val parsed = parseEverforestInline(sample)
+        val links = parsed.getLinkAnnotations(0, parsed.length)
+            .mapNotNull { (it.item as? androidx.compose.ui.text.LinkAnnotation.Clickable)?.tag }
+
+        assertEquals(
+            listOf(
+                "https://github.com/letrahoo/lework/pull/1",
+                "https://github.com/letrahoo/lework/releases/tag/v0.7.1",
+                "https://en.wikipedia.org/wiki/Foo_(bar)",
+                "https://example.com/a_(b)",
+            ),
+            links,
+        )
+    }
 }

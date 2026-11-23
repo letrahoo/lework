@@ -928,6 +928,8 @@ private fun AnnotatedString.Builder.appendInlineRec(
         val ch = text[i]
 
         // 1. Inline code (`...` or ``...``) -> Low-contrast Shell slate-blue #9ab0c1
+        //    When the code span is a single safe http(s) URL (common for PR / CI / Release links),
+        //    attach LinkAnnotation.Clickable so tapping opens the URL directly in the browser.
         if (ch == '`') {
             var ticks = 0
             while (i + ticks < n && text[i + ticks] == '`') ticks++
@@ -935,17 +937,36 @@ private fun AnnotatedString.Builder.appendInlineRec(
             val end = text.indexOf(delim, i + ticks)
             if (end > i + ticks - 1 && end != -1) {
                 val rawCode = text.substring(i + ticks, end)
-                withStyle(
-                    SpanStyle(
-                        color = Everforest.InlineCode,
-                        background = Everforest.Bg1.copy(alpha = 0.42f),
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = codeFontSizeSp.sp,
-                    ),
-                ) {
-                    append("\u2009")
-                    append(rawCode)
-                    append("\u2009")
+                val trimmedUrl = rawCode.trim()
+                val isSingleSafeUrl = isSafeExternalLink(trimmedUrl) &&
+                    trimmedUrl.none { it.isWhitespace() } &&
+                    trimmedUrl.substringAfter("://").isNotEmpty() &&
+                    !trimmedUrl.contains("...")
+                val codeStyle = SpanStyle(
+                    color = Everforest.InlineCode,
+                    background = Everforest.Bg1.copy(alpha = 0.42f),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = codeFontSizeSp.sp,
+                )
+                if (isSingleSafeUrl) {
+                    val clickableCodeStyle = codeStyle.copy(textDecoration = TextDecoration.Underline)
+                    withLink(
+                        LinkAnnotation.Clickable(
+                            tag = trimmedUrl,
+                            styles = TextLinkStyles(style = clickableCodeStyle),
+                            linkInteractionListener = { if (isSafeExternalLink(trimmedUrl)) openExternalUrl(trimmedUrl) },
+                        ),
+                    ) {
+                        append("\u2009")
+                        append(rawCode)
+                        append("\u2009")
+                    }
+                } else {
+                    withStyle(codeStyle) {
+                        append("\u2009")
+                        append(rawCode)
+                        append("\u2009")
+                    }
                 }
                 i = end + ticks
                 continue
@@ -961,7 +982,7 @@ private fun AnnotatedString.Builder.appendInlineRec(
                 text[closeBracket + 1] == '(' &&
                 !text.substring(i + 1, closeBracket).contains('\n')
             ) {
-                val closeParen = text.indexOf(')', closeBracket + 2)
+                val closeParen = findMatchingLinkCloseParen(text, closeBracket + 1)
                 if (closeParen > closeBracket + 2) {
                     val label = text.substring(i + 1, closeBracket)
                     val url = text.substring(closeBracket + 2, closeParen).trim()
@@ -969,7 +990,7 @@ private fun AnnotatedString.Builder.appendInlineRec(
                         color = Everforest.Fg,
                         textDecoration = TextDecoration.Underline,
                     )
-                    if (url.startsWith("http://") || url.startsWith("https://")) {
+                    if (isSafeExternalLink(url)) {
                         withLink(
                             LinkAnnotation.Clickable(
                                 tag = url,
@@ -1054,33 +1075,77 @@ private fun AnnotatedString.Builder.appendInlineRec(
             }
         }
 
-        // 7. Bare URL (https://... or http://...)
-        if (text.startsWith("https://", i) || text.startsWith("http://", i)) {
-            var end = i
-            while (end < n && !text[end].isWhitespace() && text[end] !in charArrayOf(')', ']', '>', '"', '\'')) {
-                end++
-            }
+        // 7. Bare URL (https://... or http://...) -> stops cleanly before CJK/non-ASCII chars & trailing punctuation
+        if (text.startsWith("https://", i, ignoreCase = true) || text.startsWith("http://", i, ignoreCase = true)) {
+            val end = scanBareUrlEnd(text, i)
             val url = text.substring(i, end)
-            val linkStyle = SpanStyle(
-                color = Everforest.CommentGrey,
-                textDecoration = TextDecoration.Underline,
-            )
-            withLink(
-                LinkAnnotation.Clickable(
-                    tag = url,
-                    styles = TextLinkStyles(style = linkStyle),
-                    linkInteractionListener = { if (isSafeExternalLink(url)) openExternalUrl(url) },
-                ),
-            ) {
-                append(url)
+            if (url.substringAfter("://").isNotEmpty() && !url.contains("...")) {
+                val linkStyle = SpanStyle(
+                    color = Everforest.CommentGrey,
+                    textDecoration = TextDecoration.Underline,
+                )
+                withLink(
+                    LinkAnnotation.Clickable(
+                        tag = url,
+                        styles = TextLinkStyles(style = linkStyle),
+                        linkInteractionListener = { if (isSafeExternalLink(url)) openExternalUrl(url) },
+                    ),
+                ) {
+                    append(url)
+                }
+                i = end
+                continue
             }
-            i = end
-            continue
         }
 
         append(ch)
         i++
     }
+}
+
+private fun findMatchingLinkCloseParen(text: String, openParenIdx: Int): Int {
+    var depth = 0
+    var i = openParenIdx
+    while (i < text.length) {
+        when (text[i]) {
+            '(' -> depth++
+            ')' -> {
+                depth--
+                if (depth == 0) return i
+            }
+            '\n' -> return -1
+        }
+        i++
+    }
+    return -1
+}
+
+internal fun scanBareUrlEnd(text: String, start: Int): Int {
+    val n = text.length
+    var end = start
+    while (end < n) {
+        val c = text[end]
+        if (c.isWhitespace() || c.code !in 0x21..0x7E || c in charArrayOf('<', '>', '"', '\'', '`')) {
+            break
+        }
+        end++
+    }
+    while (end > start) {
+        val last = text[end - 1]
+        when {
+            last in charArrayOf('.', ',', ';', ':', '!', '?') -> end--
+            last == ')' -> {
+                val slice = text.substring(start, end)
+                if (slice.count { it == ')' } > slice.count { it == '(' }) end-- else break
+            }
+            last == ']' -> {
+                val slice = text.substring(start, end)
+                if (slice.count { it == ']' } > slice.count { it == '[' }) end-- else break
+            }
+            else -> break
+        }
+    }
+    return end
 }
 
 // ---------------------------------------------------------------------------
