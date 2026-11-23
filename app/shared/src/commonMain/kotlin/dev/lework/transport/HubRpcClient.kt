@@ -1,5 +1,7 @@
 package dev.lework.transport
 
+import dev.lework.platform.appVersionLabel
+import dev.lework.platform.isDesktopPlatform
 import dev.lework.protocol.*
 import dev.lework.security.HubAttestation
 import dev.lework.security.HubTrust
@@ -566,8 +568,8 @@ class HubRpcClient(
                     protocolVersion = PROTOCOL_VERSION,
                     token = token,
                     client = ClientInfo(
-                        name = "lework-mobile",
-                        version = "0.6.9",
+                        name = if (isDesktopPlatform()) "lework-desktop" else "lework-mobile",
+                        version = Regex("""\d+\.\d+\.\d+""").find(appVersionLabel())?.value ?: "0.7.0",
                         platform = platformName,
                     ),
                 ),

@@ -42,6 +42,9 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify unified version consistency
+        run: node scripts/resolve-version.mjs --check
+
       - name: Verify protocol schema codegen & zero drift
         run: |
           pnpm --filter @lework/protocol gen
@@ -83,7 +86,7 @@ jobs:
         run: ./scripts/build-tsnet.sh --android
 
       - name: Run KMP state-machine, TLS pinning & Compose UI tests
-        run: xvfb-run -a ./app/gradlew -p ./app :shared:jvmTest --no-daemon
+        run: xvfb-run -a ./app/gradlew -p ./app :shared:jvmTest :desktopApp:compileKotlinJvm --no-daemon
 
       - name: Assemble Android Debug APK
         run: ./app/gradlew -p ./app :androidApp:assembleDebug --no-daemon
@@ -120,3 +123,6 @@ jobs:
 
       - name: Compile & link iOS arm64 app bundle (unsigned)
         run: ./scripts/ios-install.sh --device-compile
+
+      - name: Package macOS Desktop distributable app check
+        run: ./app/gradlew -p ./app :desktopApp:createDistributable --no-daemon

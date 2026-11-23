@@ -39,6 +39,31 @@ val hasReleaseSigning =
         !releaseStorePassword.isNullOrBlank() &&
         !releaseKeyAlias.isNullOrBlank()
 
+fun resolveRepoVersion(): String {
+    val explicit = (findProperty("leworkVersion") as String?)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: System.getenv("LEWORK_VERSION")?.trim()?.takeIf { it.isNotEmpty() }
+    if (explicit != null) return explicit.removePrefix("v")
+    val rootPkg = File(rootDir.parentFile, "package.json")
+    if (rootPkg.isFile) {
+        val m = Regex(""""version"\s*:\s*"([^"]+)"""").find(rootPkg.readText())
+        if (m != null) return m.groupValues[1].trim().removePrefix("v")
+    }
+    return "0.7.0"
+}
+
+fun computeAndroidVersionCode(semver: String): Int {
+    val parts = semver.removePrefix("v").split(".")
+    val major = parts.getOrNull(0)?.toIntOrNull() ?: 0
+    val minor = parts.getOrNull(1)?.toIntOrNull() ?: 7
+    val patch = parts.getOrNull(2)?.toIntOrNull() ?: 0
+    return major * 1_000_000 + minor * 10_000 + patch * 100
+}
+
+val resolvedVersionName = resolveRepoVersion()
+val resolvedVersionCode = (findProperty("leworkVersionCode") as String?)?.trim()?.toIntOrNull()
+    ?: System.getenv("LEWORK_VERSION_CODE")?.trim()?.toIntOrNull()
+    ?: computeAndroidVersionCode(resolvedVersionName)
+
 android {
     namespace = "dev.lework.android"
     compileSdk = 36
@@ -47,8 +72,8 @@ android {
         applicationId = "dev.lework.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.6.9"
+        versionCode = resolvedVersionCode
+        versionName = resolvedVersionName
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }

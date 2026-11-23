@@ -1,0 +1,273 @@
+name: Release Android & Desktop
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump mode (auto uses package.json milestone or next patch from latest tag)'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      version:
+        description: 'Optional explicit SemVer override (e.g. 0.8.0 or 1.0.0)'
+        required: false
+        default: ''
+        type: string
+      prerelease:
+        description: 'Mark GitHub Release as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve Release Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_release: ${{ steps.resolve.outputs.should_release }}
+      skip_reason: ${{ steps.resolve.outputs.skip_reason }}
+      strategy: ${{ steps.resolve.outputs.strategy }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      android_version_code: ${{ steps.resolve.outputs.android_version_code }}
+      desktop_package_version: ${{ steps.resolve.outputs.desktop_package_version }}
+    steps:
+      - name: Checkout full history & tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Compute next cross-platform version
+        id: resolve
+        run: |
+          ARGS=(--next --github-output)
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ARGS+=(--force)
+            if [[ -n "${{ inputs.version }}" ]]; then
+              ARGS+=(--version "${{ inputs.version }}")
+            elif [[ -n "${{ inputs.bump }}" ]]; then
+              ARGS+=(--bump "${{ inputs.bump }}")
+            fi
+          fi
+          node scripts/resolve-version.mjs "${ARGS[@]}"
+
+  build-android:
+    name: Build Android APK
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      apk_name: ${{ steps.build.outputs.apk_name }}
+      apk_signed_release: ${{ steps.build.outputs.apk_signed_release }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: tsnet-bridge/go.sum
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Android embedded tsnet binaries
+        run: ./scripts/build-tsnet.sh --android
+
+      - name: Assemble Android APK (signed Release when keystore secrets configured, installable Debug fallback)
+        id: build
+        env:
+          KEYSTORE_B64: ${{ secrets.LEWORK_ANDROID_KEYSTORE_BASE64 }}
+          LEWORK_KEYSTORE_PASSWORD: ${{ secrets.LEWORK_KEYSTORE_PASSWORD }}
+          LEWORK_KEY_ALIAS: ${{ secrets.LEWORK_KEY_ALIAS }}
+          LEWORK_KEY_PASSWORD: ${{ secrets.LEWORK_KEY_PASSWORD }}
+          LEWORK_VERSION: ${{ needs.version.outputs.version }}
+          LEWORK_VERSION_CODE: ${{ needs.version.outputs.android_version_code }}
+        run: |
+          mkdir -p dist-android
+          if [[ -n "$KEYSTORE_B64" && -n "$LEWORK_KEYSTORE_PASSWORD" && -n "$LEWORK_KEY_ALIAS" ]]; then
+            echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/android-release.jks"
+            export LEWORK_KEYSTORE_FILE="$RUNNER_TEMP/android-release.jks"
+            ./app/gradlew -p ./app :androidApp:assembleRelease \
+              -PleworkVersion="$LEWORK_VERSION" \
+              -PleworkVersionCode="$LEWORK_VERSION_CODE" \
+              --no-daemon
+            APK_SRC="$(find app/androidApp/build/outputs/apk/release -name '*.apk' ! -name '*-unsigned.apk' | head -n 1)"
+            APK_NAME="lework-v${LEWORK_VERSION}-android-release.apk"
+            cp "$APK_SRC" "dist-android/$APK_NAME"
+            echo "apk_signed_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Android release signing secrets (LEWORK_ANDROID_KEYSTORE_BASE64 / LEWORK_KEYSTORE_PASSWORD / LEWORK_KEY_ALIAS) are not configured; building installable Debug APK."
+            ./app/gradlew -p ./app :androidApp:assembleDebug \
+              -PleworkVersion="$LEWORK_VERSION" \
+              -PleworkVersionCode="$LEWORK_VERSION_CODE" \
+              --no-daemon
+            APK_SRC="$(find app/androidApp/build/outputs/apk/debug -name '*.apk' | head -n 1)"
+            APK_NAME="lework-v${LEWORK_VERSION}-android-debug.apk"
+            cp "$APK_SRC" "dist-android/$APK_NAME"
+            echo "apk_signed_release=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+          ls -lh "dist-android/$APK_NAME"
+
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android-apk
+          path: dist-android/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  build-desktop-macos:
+    name: Build macOS Desktop DMG (Apple Silicon)
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      dmg_name: ${{ steps.build.outputs.dmg_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Package macOS Desktop DMG
+        id: build
+        env:
+          LEWORK_VERSION: ${{ needs.version.outputs.version }}
+          LEWORK_DESKTOP_PACKAGE_VERSION: ${{ needs.version.outputs.desktop_package_version }}
+        run: |
+          ./app/gradlew -p ./app :desktopApp:packageDmg \
+            -PleworkVersion="$LEWORK_VERSION" \
+            -PleworkDesktopPackageVersion="$LEWORK_DESKTOP_PACKAGE_VERSION" \
+            --no-daemon
+          DMG_SRC="$(find app/desktopApp/build/compose/binaries/main/dmg -name '*.dmg' | head -n 1)"
+          if [[ -z "$DMG_SRC" ]]; then
+            echo "Error: No .dmg generated by :desktopApp:packageDmg" >&2
+            exit 1
+          fi
+          mkdir -p dist-desktop
+          DMG_NAME="Lework-v${LEWORK_VERSION}-macos-arm64.dmg"
+          cp "$DMG_SRC" "dist-desktop/$DMG_NAME"
+          echo "dmg_name=$DMG_NAME" >> "$GITHUB_OUTPUT"
+          ls -lh "dist-desktop/$DMG_NAME"
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-macos-dmg
+          path: dist-desktop/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [version, build-android, build-desktop-macos]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        working-directory: release-assets
+        run: |
+          sha256sum *.apk *.dmg > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release with Android APK & macOS DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+          ANDROID_CODE: ${{ needs.version.outputs.android_version_code }}
+          DESKTOP_PKG_VER: ${{ needs.version.outputs.desktop_package_version }}
+          APK_NAME: ${{ needs.build-android.outputs.apk_name }}
+          APK_SIGNED: ${{ needs.build-android.outputs.apk_signed_release }}
+          DMG_NAME: ${{ needs.build-desktop-macos.outputs.dmg_name }}
+          IS_PRERELEASE: ${{ inputs.prerelease || false }}
+        run: |
+          SIGN_NOTE=""
+          if [[ "$APK_SIGNED" != "true" ]]; then
+            SIGN_NOTE="> Note: Android APK in this build uses Debug signing because repository release keystore secrets (\`LEWORK_ANDROID_KEYSTORE_BASE64\`, \`LEWORK_KEYSTORE_PASSWORD\`, \`LEWORK_KEY_ALIAS\`) are not yet configured. It is directly installable; configure those secrets to automatically switch CI to R8-minified signed Release APKs."
+          fi
+
+          cat > release-notes.md <<EOF
+          ### Build Artifacts (\`${TAG}\`)
+
+          | Platform | Artifact | Version Metadata |
+          | --- | --- | --- |
+          | **macOS Desktop (Apple Silicon)** | \`${DMG_NAME}\` | App \`v${VERSION}\` (DMG bundle \`${DESKTOP_PKG_VER}\`) |
+          | **Android** | \`${APK_NAME}\` | \`versionName=${VERSION}\`, \`versionCode=${ANDROID_CODE}\` |
+          | **Checksums** | \`SHA256SUMS.txt\` | SHA-256 verification digests |
+
+          ${SIGN_NOTE}
+          EOF
+
+          RELEASE_ARGS=(
+            "$TAG"
+            release-assets/*.apk
+            release-assets/*.dmg
+            release-assets/SHA256SUMS.txt
+            --target "${{ github.sha }}"
+            --title "Lework ${TAG}"
+            --notes-file release-notes.md
+            --generate-notes
+          )
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            RELEASE_ARGS+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/*.apk release-assets/*.dmg release-assets/SHA256SUMS.txt --clobber
+          else
+            gh release create "${RELEASE_ARGS[@]}"
+          fi

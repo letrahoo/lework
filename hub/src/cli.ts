@@ -11,6 +11,7 @@ import { WebSocket } from 'ws'
 import type { HubRole } from '@lework/protocol'
 import { collectLanIpv4Addresses, collectTailscaleIpv4Addresses } from './bonjour.ts'
 import { loadOrCreateConfig } from './config.ts'
+import { HUB_VERSION } from './version.ts'
 import { encodePairingDeepLink, type QrPairingPayload } from './auth/pair-manager.ts'
 import { IssuedTokenStore } from './auth/token-store.ts'
 import { TsnetManager, type TsnetStatusSnapshot } from './auth/tsnet-manager.ts'
@@ -515,7 +516,7 @@ async function main(): Promise<void> {
             name: cfg.name,
             role: cfg.role,
             platform: 'darwin',
-            version: '0.6.9',
+            version: HUB_VERSION,
           }),
           getSessionMeta: () => undefined,
           getActiveSubscriberCount: () => 0,

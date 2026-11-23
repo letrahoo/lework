@@ -17,7 +17,15 @@ TEAM_ID="${APPLE_TEAM_ID:-}"
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home}"
 export PATH="$JAVA_HOME/bin:/usr/local/go/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
-if [[ ! -f "$REPO_ROOT/tsnet-bridge/build/ios-device/libtsnetbridge.a" || ! -f "$REPO_ROOT/tsnet-bridge/build/ios-sim/libtsnetbridge.a" ]]; then
+TSNET_DEVICE_LIB="$REPO_ROOT/tsnet-bridge/build/ios-device/libtsnetbridge.a"
+TSNET_SIM_LIB="$REPO_ROOT/tsnet-bridge/build/ios-sim/libtsnetbridge.a"
+TSNET_STALE=0
+if [[ ! -f "$TSNET_DEVICE_LIB" || ! -f "$TSNET_SIM_LIB" ]]; then
+  TSNET_STALE=1
+elif [[ -n "$(find "$REPO_ROOT/tsnet-bridge" -maxdepth 3 -name '*.go' -newer "$TSNET_DEVICE_LIB" -print -quit 2>/dev/null || true)" ]]; then
+  TSNET_STALE=1
+fi
+if [[ "$TSNET_STALE" -eq 1 ]]; then
   "$REPO_ROOT/scripts/build-tsnet.sh" --ios
 fi
 
