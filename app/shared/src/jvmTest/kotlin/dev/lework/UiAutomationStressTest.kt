@@ -584,7 +584,7 @@ class UiAutomationStressTest {
                         id = "sess_devbox_bg",
                         engineId = "codex",
                         cwd = "/home/dev/demo-service",
-                        title = "Devbox 远程压测与资源包同步",
+                        title = "Devbox 远程构建与压测",
                         state = SessionState.RUNNING,
                         liveStatusText = "正在执行 go test ./...",
                         createdAt = 1_000L,
