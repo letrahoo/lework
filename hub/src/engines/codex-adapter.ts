@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import type { EngineCapabilities, EngineStatus, PermissionOption } from '@lework/protocol'
+import type { EngineCapabilities, EngineStatus, PermissionOption, SessionMode } from '@lework/protocol'
 import { findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
@@ -14,6 +14,15 @@ interface PendingCodexApproval {
   upstreamId: string | number
   options: PermissionOption[]
 }
+
+// Codex accepts different sandbox representations on thread and turn requests.
+const modePolicies = {
+  default: { sandbox: 'read-only', type: 'readOnly', approvalPolicy: 'on-request' },
+  plan: { sandbox: 'read-only', type: 'readOnly', approvalPolicy: 'never' },
+  acceptEdits: { sandbox: 'workspace-write', type: 'workspaceWrite', approvalPolicy: 'untrusted' },
+  auto: { sandbox: 'workspace-write', type: 'workspaceWrite', approvalPolicy: 'on-request' },
+  bypassPermissions: { sandbox: 'workspace-write', type: 'workspaceWrite', approvalPolicy: 'never' },
+} as const satisfies Record<SessionMode, object>
 
 export class CodexEngineAdapter implements EngineAdapter {
   readonly id = 'codex'
@@ -71,6 +80,7 @@ class CodexAppServerSession implements EngineSession {
   private lastThreadId: string | undefined
   private activeTurnId: string | null = null
   private selectedModel: string | undefined
+  private selectedMode: SessionMode | undefined
   private selectedEffort: string | undefined
   private currentMsgId = `msg_${crypto.randomUUID()}`
   private readonly seenTools = new Set<string>()
@@ -91,6 +101,7 @@ class CodexAppServerSession implements EngineSession {
     this.cwd = init.cwd
     this.lastThreadId = init.resumeNativeId
     this.selectedModel = init.modelId
+    this.selectedMode = init.mode
     this.selectedEffort = init.reasoningEffort
   }
 
@@ -148,6 +159,8 @@ class CodexAppServerSession implements EngineSession {
     )
     rpc.notify('initialized', {})
 
+    const policy = this.selectedMode && modePolicies[this.selectedMode]
+    const threadPolicy = policy ? { sandbox: policy.sandbox, approvalPolicy: policy.approvalPolicy } : {}
     let threadRes: Record<string, unknown> | null = null
     const resumeTarget = this.lastThreadId ?? this.init.resumeNativeId
     if (resumeTarget) {
@@ -155,6 +168,7 @@ class CodexAppServerSession implements EngineSession {
         threadRes = (await rpc.request(
           'thread/resume',
           {
+            ...threadPolicy,
             threadId: resumeTarget,
             cwd: this.cwd,
             ...(this.selectedModel ? { model: this.selectedModel } : {}),
@@ -170,6 +184,7 @@ class CodexAppServerSession implements EngineSession {
       threadRes = (await rpc.request(
         'thread/start',
         {
+          ...threadPolicy,
           cwd: this.cwd,
           ...(this.selectedModel ? { model: this.selectedModel } : {}),
         },
@@ -241,11 +256,13 @@ class CodexAppServerSession implements EngineSession {
         this.turnWaiter = { resolve, reject }
       })
 
+      const policy = this.selectedMode && modePolicies[this.selectedMode]
       const startRes = (await rpc.request(
         'turn/start',
         {
           threadId,
           input: inputItems,
+          ...(policy && { sandboxPolicy: { type: policy.type }, approvalPolicy: policy.approvalPolicy }),
           ...(this.selectedModel ? { model: this.selectedModel } : {}),
           ...(this.selectedEffort ? { effort: this.selectedEffort } : {}),
         },
@@ -310,11 +327,13 @@ class CodexAppServerSession implements EngineSession {
     if (!pending || !this.rpc) {
       throw new Error(`No pending Codex approval with id "${requestId}"`)
     }
-    this.pendingApprovals.delete(requestId)
-    const approved = optionId === 'allow'
+    if (optionId !== null && !pending.options.some(option => option.id === optionId)) {
+      throw new Error(`Unknown Codex approval option: ${optionId}`)
+    }
     this.rpc.respond(pending.upstreamId, {
-      decision: approved ? 'approved' : 'denied',
+      decision: optionId === null ? 'cancel' : optionId === 'allow' ? 'accept' : 'decline',
     })
+    this.pendingApprovals.delete(requestId)
     this.init.emit({
       type: 'permission.resolved',
       requestId,
@@ -324,6 +343,10 @@ class CodexAppServerSession implements EngineSession {
     if (this.pendingApprovals.size === 0) {
       this.init.emit({ type: 'session.state', state: 'running' })
     }
+  }
+
+  async setMode(mode: SessionMode): Promise<void> {
+    this.selectedMode = mode
   }
 
   async setModel(modelId: string): Promise<void> {
@@ -410,6 +433,40 @@ class CodexAppServerSession implements EngineSession {
         requestId,
         title: `Codex 请求执行: ${cmd}`,
         options,
+      })
+      return
+    }
+
+    if (method === 'turn/plan/updated' && Array.isArray(params.plan)) {
+      const entries = (params.plan as Array<Record<string, unknown>>)
+        .map(item => {
+          const content =
+            typeof item.step === 'string'
+              ? item.step.trim()
+              : typeof item.content === 'string'
+                ? item.content.trim()
+                : ''
+          const rawStatus = typeof item.status === 'string' ? item.status.toLowerCase() : 'pending'
+          const status =
+            rawStatus === 'completed' || rawStatus === 'done'
+              ? ('completed' as const)
+              : rawStatus === 'inprogress' || rawStatus === 'in_progress'
+                ? ('in_progress' as const)
+                : ('pending' as const)
+          return content ? { content, status } : null
+        })
+        .filter((e): e is { content: string; status: 'pending' | 'in_progress' | 'completed' } => e !== null)
+      if (entries.length > 0) {
+        this.init.emit({ type: 'plan.updated', entries })
+      }
+      return
+    }
+
+    if (method === 'item/plan/delta' && typeof params.delta === 'string') {
+      this.init.emit({
+        type: 'message.assistant.delta',
+        messageId: `${this.currentMsgId}_plan`,
+        text: params.delta,
       })
       return
     }

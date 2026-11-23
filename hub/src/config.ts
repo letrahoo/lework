@@ -7,9 +7,20 @@ import type { HubRole } from '@lework/protocol'
 import type { NotificationConfig } from './notifications/notifier.ts'
 import { defaultDataDir, detectPlatform } from './platform/index.ts'
 
+function normalizeHostnameForComparison(raw: string): string {
+  return raw.trim().replace(/\.local$/i, '').toLowerCase()
+}
+
 function isSerialLikeHostname(raw: string): boolean {
   const candidate = raw.trim().replace(/\.local$/i, '')
   return /^[A-Z0-9]{8,16}$/.test(candidate) && /[A-Z]/.test(candidate) && /[0-9]/.test(candidate)
+}
+
+export interface HostNameResolutionOptions {
+  hostname?: string
+  platform?: NodeJS.Platform
+  computerName?: string
+  hwModel?: string
 }
 
 function mapMacHardwareModel(rawModel?: string): string | undefined {
@@ -43,12 +54,7 @@ function readDarwinCommand(bin: string, args: string[]): string | undefined {
  * Preserves readable hostnames while replacing serial-number-like macOS hostnames
  * (e.g. MDM-assigned `AB12CD34EF`) with ComputerName or hardware model label.
  */
-export function resolveDefaultHostName(opts?: {
-  hostname?: string
-  platform?: NodeJS.Platform
-  computerName?: string
-  hwModel?: string
-}): string {
+export function resolveDefaultHostName(opts?: HostNameResolutionOptions): string {
   const rawHost = (opts?.hostname !== undefined ? opts.hostname : os.hostname()).trim()
   const platform = opts?.platform ?? process.platform
 
@@ -89,6 +95,46 @@ export function resolveDefaultHostName(opts?: {
   return rawHost || 'Lework Hub'
 }
 
+/**
+ * Resolves the effective Hub name from an optional override and persisted config.
+ * Automatically migrates legacy serial-like macOS hostnames ONLY when they match
+ * the current machine's raw `os.hostname()`, preserving any user-customized names.
+ */
+export function resolveStoredHostName(
+  storedName: string | undefined,
+  opts?: HostNameResolutionOptions & { overrideName?: string },
+): string {
+  const override = opts?.overrideName?.trim()
+  if (override) {
+    return override
+  }
+
+  const rawStored = typeof storedName === 'string' ? storedName : ''
+  const trimmedStored = rawStored.trim()
+  if (!trimmedStored) {
+    return resolveDefaultHostName(opts)
+  }
+
+  if (isSerialLikeHostname(trimmedStored)) {
+    const rawHost = (opts?.hostname !== undefined ? opts.hostname : os.hostname()).trim()
+    const normalizedStored = normalizeHostnameForComparison(trimmedStored)
+    const normalizedHost = normalizeHostnameForComparison(rawHost)
+
+    if (normalizedHost && normalizedStored === normalizedHost) {
+      const upgraded = resolveDefaultHostName({ ...opts, hostname: trimmedStored }).trim()
+      if (
+        upgraded &&
+        !isSerialLikeHostname(upgraded) &&
+        normalizeHostnameForComparison(upgraded) !== normalizedStored
+      ) {
+        return upgraded
+      }
+    }
+  }
+
+  return rawStored
+}
+
 export interface HubConfig {
   hubId: string
   name: string
@@ -110,7 +156,10 @@ export interface HubConfig {
   cpaManagementKey?: string
 }
 
-export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfig {
+export function loadOrCreateConfig(
+  overrides: Partial<HubConfig> = {},
+  hostNameOpts?: HostNameResolutionOptions,
+): HubConfig {
   const dir = defaultDataDir()
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const cfgPath = path.join(dir, 'config.json')
@@ -149,7 +198,7 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
   const fallbackRoot = process.cwd() !== home ? process.cwd() : path.join(home, 'Projects')
   const cfg: HubConfig = {
     hubId: overrides.hubId ?? stored.hubId ?? `hub_${crypto.randomBytes(6).toString('hex')}`,
-    name: overrides.name ?? stored.name ?? resolveDefaultHostName(),
+    name: resolveStoredHostName(stored.name, { ...hostNameOpts, overrideName: overrides.name }),
     role: overrides.role ?? stored.role ?? (platform === 'linux' ? 'master' : 'slave'),
     host: overrides.host ?? stored.host ?? '0.0.0.0',
     port: overrides.port ?? stored.port ?? Number(process.env.LEWORK_PORT ?? 64450),

@@ -114,11 +114,16 @@ class ClaudeAcpSession implements EngineSession {
   }
 
   async start(): Promise<void> {
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, ...this.extraEnv }
+    // Enable Claude Code's native Artifact toolset by default unless explicitly opted out (`CLAUDE_CODE_ARTIFACT=0`)
+    if (childEnv.CLAUDE_CODE_ARTIFACT === undefined) {
+      childEnv.CLAUDE_CODE_ARTIFACT = '1'
+    }
     const rpc = new StdioJsonRpcProcess({
       command: this.acpBin,
       args: this.acpArgs,
       cwd: this.cwd,
-      env: { ...process.env, ...this.extraEnv },
+      env: childEnv,
       onInbound: msg => this.handleInbound(msg),
       onExit: (code, signal) => {
         this.pendingPermissions.clear()

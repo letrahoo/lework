@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.epochMillis
+import dev.lework.platform.isDesktopPlatform
 import dev.lework.platform.loadSavedRelayUrls
 import dev.lework.protocol.*
 import dev.lework.store.*
@@ -135,6 +136,8 @@ internal fun ConversationStreamView(
     showInlineErrorRetry: Boolean = false,
     onRetryLastTurn: (() -> Unit)? = null,
     listTestTag: String = "conversation_lazy_list",
+    onOpenPlanArtifact: (() -> Unit)? = null,
+    onApprovePlan: (() -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     val isUserDragging by listState.interactionSource.collectIsDraggedAsState()
@@ -292,7 +295,11 @@ internal fun ConversationStreamView(
         if (transcript.planEntries.isNotEmpty()) {
             item(key = "plan_card", contentType = "plan_card") {
                 Box(modifier = Modifier.padding(bottom = 12.dp)) {
-                    PlanCard(entries = transcript.planEntries)
+                    PlanCard(
+                        entries = transcript.planEntries,
+                        onOpenPlanArtifact = onOpenPlanArtifact,
+                        onApprovePlan = onApprovePlan,
+                    )
                 }
             }
         }
@@ -569,7 +576,11 @@ private fun formatCliTokens(tokens: Int): String {
 }
 
 @Composable
-private fun PlanCard(entries: List<PlanEntry>) {
+private fun PlanCard(
+    entries: List<PlanEntry>,
+    onOpenPlanArtifact: (() -> Unit)? = null,
+    onApprovePlan: (() -> Unit)? = null,
+) {
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = Everforest.Bg1,
@@ -581,21 +592,67 @@ private fun PlanCard(entries: List<PlanEntry>) {
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Checklist,
-                    contentDescription = null,
-                    tint = Everforest.Aqua,
-                    modifier = Modifier.size(16.dp),
-                )
-                Text(
-                    text = "执行计划",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Everforest.Aqua,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Checklist,
+                        contentDescription = null,
+                        tint = Everforest.Aqua,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = "执行计划",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Everforest.Aqua,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (onOpenPlanArtifact != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Everforest.Bg2,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onOpenPlanArtifact() },
+                        ) {
+                            Text(
+                                text = "查看方案",
+                                fontSize = 10.5.sp,
+                                color = Everforest.BoldGold,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                    if (onApprovePlan != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Everforest.BgGreen,
+                            border = BorderStroke(0.8.dp, Everforest.Green.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onApprovePlan() }
+                                .testTag("plan_card_approve_btn"),
+                        ) {
+                            Text(
+                                text = "确认执行",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.Green,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                }
             }
             for (e in entries) {
                 val (icon, tint) = when (e.status) {
@@ -657,9 +714,15 @@ private fun MessageTimelineRow(
     when (item) {
         is ChatTimelineItem.User -> {
             var lightboxIdx by remember(item.id) { mutableStateOf<Int?>(null) }
+            val isDesktop = isDesktopPlatform()
             val hasPreviews = item.imagePreviews.isNotEmpty()
             val isAutoPlaceholderOnly =
                 hasPreviews && Regex("^（已发送\\s*\\d+\\s*张图片）$").matches(item.text.trim())
+            val bubbleMaxWidth = when {
+                isDesktop && item.imagePreviews.size > 1 -> 460.dp
+                isDesktop && hasPreviews -> 360.dp
+                else -> 316.dp
+            }
 
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -669,7 +732,7 @@ private fun MessageTimelineRow(
                     color = Everforest.Bg2,
                     shape = RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp),
                     border = BorderStroke(1.dp, Everforest.Bg3),
-                    modifier = Modifier.widthIn(max = 316.dp),
+                    modifier = Modifier.widthIn(max = bubbleMaxWidth),
                 ) {
                     Column(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -684,9 +747,13 @@ private fun MessageTimelineRow(
                                 item.imagePreviews.forEachIndexed { idx, b64 ->
                                     val bmp = rememberBase64ImageBitmap(b64)
                                     val thumbModifier = if (item.imagePreviews.size == 1) {
-                                        Modifier.size(width = 172.dp, height = 124.dp)
+                                        if (isDesktop) {
+                                            Modifier.size(width = 220.dp, height = 156.dp)
+                                        } else {
+                                            Modifier.size(width = 172.dp, height = 124.dp)
+                                        }
                                     } else {
-                                        Modifier.size(82.dp)
+                                        Modifier.size(if (isDesktop) 96.dp else 82.dp)
                                     }
                                     Surface(
                                         shape = RoundedCornerShape(12.dp),

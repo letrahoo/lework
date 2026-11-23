@@ -43,6 +43,8 @@ class FakeHubTransport : HubTransport {
     var customEngines: List<EngineInfo>? = null
 
     var sessions: MutableList<SessionMeta> = mutableListOf()
+    val artifactsBySession: MutableMap<String, MutableList<ArtifactInfo>> = mutableMapOf()
+    val artifactContents: MutableMap<Pair<String, String>, ArtifactContentResult> = mutableMapOf()
     val sessionEventsMap: MutableMap<String, MutableList<AgentEvent>> = mutableMapOf()
     val subscribeDelayMsBySession: MutableMap<String, Long> = mutableMapOf()
 
@@ -50,6 +52,9 @@ class FakeHubTransport : HubTransport {
     var connectHelloException: Throwable? = null
     var sendPromptException: Throwable? = null
     var sendPromptFailuresRemaining: Int = 0
+    var cancelSessionException: Throwable? = null
+    var cancelSessionDelayMs: Long = 0L
+    val cancelledSessionIds = mutableListOf<String>()
     var discoverNullRemaining: Int = 0
     var subscribeSessionCount: Int = 0
     var simulateTailscaleSameUser: Boolean = false
@@ -335,7 +340,11 @@ class FakeHubTransport : HubTransport {
         return "turn_${sentPrompts.size}"
     }
 
-    override suspend fun cancelSession(sessionId: String) = Unit
+    override suspend fun cancelSession(sessionId: String) {
+        if (cancelSessionDelayMs > 0L) delay(cancelSessionDelayMs)
+        cancelledSessionIds.add(sessionId)
+        cancelSessionException?.let { throw it }
+    }
 
     override suspend fun cancelQueuedPrompt(
         sessionId: String,
@@ -426,6 +435,13 @@ class FakeHubTransport : HubTransport {
         sessions[idx] = updated
         return updated
     }
+
+    override suspend fun listArtifacts(sessionId: String): List<ArtifactInfo> =
+        artifactsBySession[sessionId]?.toList().orEmpty()
+
+    override suspend fun readArtifact(sessionId: String, artifactId: String): ArtifactContentResult =
+        artifactContents[sessionId to artifactId]
+            ?: throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Artifact not found: $artifactId")
 
     override suspend fun subscribeSession(
         sessionId: String,

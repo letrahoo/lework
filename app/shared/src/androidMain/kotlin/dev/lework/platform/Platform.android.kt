@@ -892,12 +892,19 @@ actual fun readImagesFromClipboard(maxCount: Int): List<PickedImagePayload> = ru
     val clip = cm.primaryClip ?: return@runCatching emptyList()
     val limit = maxCount.coerceIn(1, 4)
     val resolver = ctx.contentResolver
+    val desc = clip.description
+    val clipAdvertisesImage = desc != null && (0 until desc.mimeTypeCount).any { idx ->
+        desc.getMimeType(idx).startsWith("image/", ignoreCase = true)
+    }
+    val imgExtRegex = Regex(".*\\.(png|jpe?g|webp|gif|bmp|heic|heif)$", RegexOption.IGNORE_CASE)
     val out = mutableListOf<PickedImagePayload>()
     for (i in 0 until clip.itemCount) {
         if (out.size >= limit) break
         val uri = clip.getItemAt(i)?.uri ?: continue
         val mime = runCatching { resolver.getType(uri) }.getOrNull().orEmpty()
-        if (!mime.startsWith("image/", ignoreCase = true)) continue
+        val looksLikeImage = mime.startsWith("image/", ignoreCase = true) ||
+            (mime.isBlank() && (clipAdvertisesImage || uri.lastPathSegment?.matches(imgExtRegex) == true))
+        if (!looksLikeImage) continue
         decodeAndroidClipboardImage(ctx, uri, out.size + 1)?.let { out.add(it) }
     }
     out

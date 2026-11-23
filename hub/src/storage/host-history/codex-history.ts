@@ -2,6 +2,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { AgentEvent } from '@lework/protocol'
 import {
+  downscaleInlineImageBase64,
+  parseStagedImagePromptHeader,
+} from '../attachment-store.ts'
+import {
   classifyRawToolCall,
   collectRecentFiles,
   mergeUniqueWorkspaces,
@@ -100,6 +104,76 @@ export function scanCodexSessions(
   }
 }
 
+interface CodexContentPart {
+  type?: string
+  text?: string
+  image_url?: string | { url?: string }
+  url?: string
+  data?: string
+  mime_type?: string
+  mimeType?: string
+  source?: { type?: string; data?: string; media_type?: string }
+}
+
+function extractCodexInlineImages(content: CodexContentPart[] | undefined): {
+  count: number
+  previews: string[]
+} {
+  if (!Array.isArray(content)) return { count: 0, previews: [] }
+  let count = 0
+  const previews: string[] = []
+  const seen = new Set<string>()
+  const pushPreview = (rawB64: string, mimeType?: string): void => {
+    if (previews.length >= 4) return
+    const trimmed = rawB64.trim()
+    if (!trimmed) return
+    const resolved =
+      trimmed.length <= 260_000
+        ? trimmed
+        : downscaleInlineImageBase64(trimmed, mimeType)
+    if (resolved && !seen.has(resolved)) {
+      seen.add(resolved)
+      previews.push(resolved)
+    }
+  }
+
+  for (const item of content) {
+    if (!item || typeof item !== 'object') continue
+    if (item.type !== 'input_image' && item.type !== 'image') continue
+    count++
+    if (previews.length >= 4) continue
+
+    const rawUrl =
+      typeof item.image_url === 'string'
+        ? item.image_url
+        : typeof item.image_url?.url === 'string'
+          ? item.image_url.url
+          : typeof item.url === 'string'
+            ? item.url
+            : undefined
+    if (rawUrl) {
+      const dataMatch = rawUrl.trim().match(/^data:(image\/[^;]+);base64,([\s\S]+)$/i)
+      if (dataMatch) {
+        pushPreview(dataMatch[2]!, dataMatch[1])
+        continue
+      }
+    }
+
+    const rawData =
+      typeof item.data === 'string'
+        ? item.data
+        : typeof item.source?.data === 'string'
+          ? item.source.data
+          : undefined
+    if (rawData) {
+      const dataMatch = rawData.trim().match(/^data:(image\/[^;]+);base64,([\s\S]+)$/i)
+      const mime = item.source?.media_type ?? item.mime_type ?? item.mimeType ?? dataMatch?.[1]
+      pushPreview(dataMatch ? dataMatch[2]! : rawData, mime)
+    }
+  }
+  return { count, previews }
+}
+
 export function parseCodexTranscript(
   sessionId: string,
   filePath: string,
@@ -127,7 +201,7 @@ export function parseCodexTranscript(
           arguments?: string
           input?: string
           output?: string
-          content?: Array<{ type?: string; text?: string }>
+          content?: CodexContentPart[]
         }
       }
       const ts = o.timestamp ? Date.parse(o.timestamp) || Date.now() : Date.now()
@@ -147,17 +221,38 @@ export function parseCodexTranscript(
       if (o.type === 'response_item' && o.payload?.type === 'message') {
         const role = o.payload.role
         const text = (o.payload.content ?? [])
-          .map(c => c.text ?? '')
+          .map(c => (typeof c.text === 'string' ? c.text : ''))
           .join('\n')
           .trim()
-        if (!text) continue
-        if (
-          role === 'user' &&
-          !text.startsWith('# AGENTS.md') &&
-          !text.startsWith('<environment_context>') &&
-          !text.startsWith('<INSTRUCTIONS>') &&
-          !text.startsWith('<skill>')
-        ) {
+        if (role === 'user') {
+          const inlineImages = extractCodexInlineImages(o.payload.content)
+          if (!text && inlineImages.count === 0) continue
+          if (
+            text.startsWith('# AGENTS.md') ||
+            text.startsWith('<environment_context>') ||
+            text.startsWith('<INSTRUCTIONS>') ||
+            text.startsWith('<skill>')
+          ) {
+            continue
+          }
+          const stagedParsed = parseStagedImagePromptHeader(text, true)
+          const mergedPreviews: string[] = []
+          const seenPreviews = new Set<string>()
+          for (const p of [...inlineImages.previews, ...(stagedParsed.imagePreviews ?? [])]) {
+            if (!p || seenPreviews.has(p)) continue
+            seenPreviews.add(p)
+            mergedPreviews.push(p)
+            if (mergedPreviews.length >= 4) break
+          }
+          const totalImgs = Math.min(
+            4,
+            inlineImages.count > 0 && stagedParsed.imageCount > 0
+              ? Math.max(inlineImages.count, stagedParsed.imageCount, mergedPreviews.length)
+              : Math.max(inlineImages.count, stagedParsed.imageCount),
+          )
+          const finalText =
+            stagedParsed.cleanText || (totalImgs > 0 ? `（已发送 ${totalImgs} 张图片）` : '')
+          if (!finalText && totalImgs === 0) continue
           activeTurn = true
           turnStartedAt = ts
           events.push({
@@ -166,9 +261,12 @@ export function parseCodexTranscript(
             ts,
             type: 'message.user',
             messageId: o.payload.id ?? `u_${seq}`,
-            text,
+            text: finalText,
+            ...(totalImgs > 0 ? { imageCount: totalImgs } : {}),
+            ...(mergedPreviews.length > 0 ? { imagePreviews: mergedPreviews } : {}),
           })
         } else if (role === 'assistant') {
+          if (!text) continue
           events.push({
             seq: seq++,
             sessionId,

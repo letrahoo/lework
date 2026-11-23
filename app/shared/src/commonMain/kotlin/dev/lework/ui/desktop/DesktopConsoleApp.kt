@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CompareArrows
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Info
@@ -125,6 +126,15 @@ internal fun DesktopConsoleApp(
                             }
                             true
                         }
+                        ev.key == Key.A && ev.isShiftPressed -> {
+                            if (activeInspectorTab == DesktopInspectorTab.ARTIFACTS) {
+                                activeInspectorTab = null
+                            } else {
+                                store.refreshSessionArtifacts()
+                                activeInspectorTab = DesktopInspectorTab.ARTIFACTS
+                            }
+                            true
+                        }
                         else -> false
                     }
                 },
@@ -204,6 +214,14 @@ internal fun DesktopConsoleApp(
                                 activeInspectorTab = DesktopInspectorTab.FILES
                             }
                         },
+                        onToggleArtifactsInspector = {
+                            if (activeInspectorTab == DesktopInspectorTab.ARTIFACTS) {
+                                activeInspectorTab = null
+                            } else {
+                                store.refreshSessionArtifacts()
+                                activeInspectorTab = DesktopInspectorTab.ARTIFACTS
+                            }
+                        },
                         onRenameSession = {
                             if (topActiveSess != null) renamingSessionId = topActiveSess.id
                         },
@@ -248,6 +266,15 @@ internal fun DesktopConsoleApp(
                             }
                         }
 
+                        ArtifactsQuickBar(
+                            state = state,
+                            onOpenArtifacts = { artId ->
+                                store.refreshSessionArtifacts()
+                                if (artId != null) store.openArtifact(artId)
+                                activeInspectorTab = DesktopInspectorTab.ARTIFACTS
+                            },
+                        )
+
                         val activeSubagents = topActiveSess?.subagents.orEmpty()
                         if (activeSubagents.isNotEmpty()) {
                             SubagentStatusStrip(
@@ -278,6 +305,9 @@ internal fun DesktopConsoleApp(
                             } else {
                                 val sessRunning = topActiveSess != null &&
                                     (topActiveSess.state == SessionState.RUNNING || topActiveSess.state == SessionState.WAITING_PERMISSION)
+                                val planArtifact = state.activeSessionArtifacts.firstOrNull {
+                                    it.actionable || it.kind == dev.lework.protocol.ArtifactKind.PLAN
+                                }
                                 key(activeKey) {
                                     ConversationStreamView(
                                         sessionKey = activeKey,
@@ -290,6 +320,17 @@ internal fun DesktopConsoleApp(
                                         onDismissKeyboard = {},
                                         showInlineErrorRetry = state.turnRecoveryBanner == null,
                                         onRetryLastTurn = store::retryLastTurn,
+                                        onOpenPlanArtifact = planArtifact?.let { art ->
+                                            {
+                                                store.openArtifact(art.id)
+                                                activeInspectorTab = DesktopInspectorTab.ARTIFACTS
+                                            }
+                                        },
+                                        onApprovePlan = if (!sessRunning && (planArtifact != null || state.selectedMode == SessionMode.PLAN)) {
+                                            { store.approveAndExecutePlan(planArtifact?.title) }
+                                        } else {
+                                            null
+                                        },
                                     )
                                 }
                             }
@@ -448,7 +489,7 @@ internal fun DesktopConsoleApp(
                             onCancel = store::cancelActiveTurn,
                             onClearQueuedPrompts = store::clearQueuedPrompts,
                             onPickImage = { store.pickAndAttachImage() },
-                            onPasteClipboardImages = store::pasteImagesFromClipboard,
+                            onPasteClipboardImages = { store.pasteImagesFromClipboard(notifyWhenEmpty = false) },
                             onRemoveImage = store::removeAttachedImage,
                             onSelectMentionFile = { relPath ->
                                 promptText = replaceTrailingMention(promptText, relPath)
@@ -473,20 +514,23 @@ internal fun DesktopConsoleApp(
                         state = state,
                         onSelectTab = { nextTab ->
                             activeInspectorTab = nextTab
-                            if (nextTab == DesktopInspectorTab.DIFF) {
-                                store.refreshDiffAndCheckpoints()
-                            } else {
-                                store.browseDirectory()
+                            when (nextTab) {
+                                DesktopInspectorTab.DIFF -> store.refreshDiffAndCheckpoints()
+                                DesktopInspectorTab.FILES -> store.browseDirectory()
+                                DesktopInspectorTab.ARTIFACTS -> store.refreshSessionArtifacts()
                             }
                         },
                         onClose = { activeInspectorTab = null },
                         onOpenWorkspaceDialog = { showWorkspaceDialog = true },
+                        onPrefillRevisePrompt = { title ->
+                            promptText = "关于方案《$title》，请调整以下部分："
+                        },
                         store = store,
                     )
                 }
             }
 
-            // Narrow desktop window fallback: render Diff / Files in DesktopModalFrame instead of mobile sheet
+            // Narrow desktop window fallback: render Inspector in DesktopModalFrame instead of mobile sheet
             val modalInspectorTab = activeInspectorTab
             if (modalInspectorTab != null && !canDockInspector) {
                 DesktopModalFrame(
@@ -494,8 +538,8 @@ internal fun DesktopConsoleApp(
                     maxWidth = 760.dp,
                     testTag = "desktop_right_inspector_pane",
                 ) {
-                    if (modalInspectorTab == DesktopInspectorTab.DIFF) {
-                        DiffAndCheckpointsSheet(
+                    when (modalInspectorTab) {
+                        DesktopInspectorTab.DIFF -> DiffAndCheckpointsSheet(
                             state = state,
                             onSelectWorkspace = store::switchDiffWorkspace,
                             onRefresh = { store.refreshDiffAndCheckpoints() },
@@ -504,8 +548,7 @@ internal fun DesktopConsoleApp(
                             onCreateCheckpoint = store::createManualCheckpoint,
                             onRestoreCheckpoint = store::restoreCheckpoint,
                         )
-                    } else {
-                        WorkspaceFileTreeSheet(
+                        DesktopInspectorTab.FILES -> WorkspaceFileTreeSheet(
                             state = state,
                             onNavigateUp = store::navigateUpDirectory,
                             onOpenEntry = store::openEntry,
@@ -514,6 +557,20 @@ internal fun DesktopConsoleApp(
                             onSwitchWorkspace = {
                                 activeInspectorTab = null
                                 showWorkspaceDialog = true
+                            },
+                        )
+                        DesktopInspectorTab.ARTIFACTS -> ArtifactsInspectorSheet(
+                            state = state,
+                            onRefresh = { store.refreshSessionArtifacts() },
+                            onOpenArtifact = store::openArtifact,
+                            onCloseArtifact = store::closeOpenedArtifact,
+                            onApprovePlan = { title ->
+                                store.approveAndExecutePlan(title)
+                                activeInspectorTab = null
+                            },
+                            onRevisePlan = { title ->
+                                promptText = "关于方案《$title》，请调整以下部分："
+                                activeInspectorTab = null
                             },
                         )
                     }
@@ -636,6 +693,7 @@ private fun DesktopRightInspectorPane(
     onSelectTab: (DesktopInspectorTab) -> Unit,
     onClose: () -> Unit,
     onOpenWorkspaceDialog: () -> Unit,
+    onPrefillRevisePrompt: (String) -> Unit,
     store: ConsoleStore,
 ) {
     Surface(
@@ -657,8 +715,21 @@ private fun DesktopRightInspectorPane(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
+                    LeworkIconActionButton(
+                        icon = Icons.Rounded.Description,
+                        tooltip = "会话产物",
+                        shortcut = "⇧⌘A",
+                        active = tab == DesktopInspectorTab.ARTIFACTS,
+                        activeTint = Everforest.BoldGold,
+                        showBadgeDot = state.activeSessionArtifacts.isNotEmpty(),
+                        badgeColor = Everforest.BoldGold,
+                        size = DesktopControlSize,
+                        iconSize = 16.dp,
+                        testTag = "inspector_tab_artifacts",
+                        onClick = { onSelectTab(DesktopInspectorTab.ARTIFACTS) },
+                    )
                     LeworkIconActionButton(
                         icon = Icons.AutoMirrored.Rounded.CompareArrows,
                         tooltip = "代码变更与快照",
@@ -680,7 +751,11 @@ private fun DesktopRightInspectorPane(
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
-                        text = if (tab == DesktopInspectorTab.DIFF) "代码变更与快照" else "工作区文件",
+                        text = when (tab) {
+                            DesktopInspectorTab.ARTIFACTS -> "会话产物"
+                            DesktopInspectorTab.DIFF -> "代码变更与快照"
+                            DesktopInspectorTab.FILES -> "工作区文件"
+                        },
                         fontSize = 12.5.sp,
                         fontWeight = FontWeight.Medium,
                         color = Everforest.Fg,
@@ -704,8 +779,8 @@ private fun DesktopRightInspectorPane(
                     .fillMaxWidth()
                     .padding(top = 10.dp),
             ) {
-                if (tab == DesktopInspectorTab.DIFF) {
-                    DiffAndCheckpointsSheet(
+                when (tab) {
+                    DesktopInspectorTab.DIFF -> DiffAndCheckpointsSheet(
                         state = state,
                         onSelectWorkspace = store::switchDiffWorkspace,
                         onRefresh = { store.refreshDiffAndCheckpoints() },
@@ -714,14 +789,21 @@ private fun DesktopRightInspectorPane(
                         onCreateCheckpoint = store::createManualCheckpoint,
                         onRestoreCheckpoint = store::restoreCheckpoint,
                     )
-                } else {
-                    WorkspaceFileTreeSheet(
+                    DesktopInspectorTab.FILES -> WorkspaceFileTreeSheet(
                         state = state,
                         onNavigateUp = store::navigateUpDirectory,
                         onOpenEntry = store::openEntry,
                         onCloseFile = store::closeOpenedFile,
                         onSelectActiveWorkspaceTab = store::switchBrowseWorkspace,
                         onSwitchWorkspace = onOpenWorkspaceDialog,
+                    )
+                    DesktopInspectorTab.ARTIFACTS -> ArtifactsInspectorSheet(
+                        state = state,
+                        onRefresh = { store.refreshSessionArtifacts() },
+                        onOpenArtifact = store::openArtifact,
+                        onCloseArtifact = store::closeOpenedArtifact,
+                        onApprovePlan = { title -> store.approveAndExecutePlan(title) },
+                        onRevisePlan = onPrefillRevisePrompt,
                     )
                 }
             }

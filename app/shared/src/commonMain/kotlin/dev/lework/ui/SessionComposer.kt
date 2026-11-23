@@ -62,7 +62,7 @@ internal fun ClaudeStyleComposer(
     onClearQueuedPrompts: () -> Unit = {},
     onPickImage: () -> Unit = {},
     onCaptureCamera: () -> Unit = {},
-    onPasteClipboardImages: () -> Boolean = { false },
+    onPasteClipboardImages: (notifyWhenEmpty: Boolean) -> Boolean = { false },
     onRemoveImage: (Int) -> Unit = {},
     onSelectMentionFile: (String) -> Unit = {},
     onInsertAtMention: () -> Unit = {},
@@ -307,7 +307,7 @@ internal fun ClaudeStyleComposer(
                                         !keyEvent.isShiftPressed &&
                                         !keyEvent.isAltPressed
                                 if (isPasteShortcut) {
-                                    return@onPreviewKeyEvent onPasteClipboardImages()
+                                    return@onPreviewKeyEvent onPasteClipboardImages(false)
                                 }
                                 false
                             }
@@ -342,11 +342,7 @@ internal fun ClaudeStyleComposer(
                                     testTag = "composer_add_image_btn",
                                     onClick = {
                                         if (remainingSlots <= 0) return@ComposerMetaChip
-                                        if (cameraSupported) {
-                                            showImageSourceMenu = true
-                                        } else {
-                                            onPickImage()
-                                        }
+                                        showImageSourceMenu = true
                                     },
                                 )
                                 DropdownMenu(
@@ -356,21 +352,21 @@ internal fun ClaudeStyleComposer(
                                 ) {
                                     DropdownMenuItem(
                                         text = {
-                                            Text("直接拍照识别", color = Everforest.Fg, fontSize = 13.5.sp)
+                                            Text("粘贴剪贴板图片", color = Everforest.Fg, fontSize = 13.5.sp)
                                         },
                                         leadingIcon = {
                                             Icon(
-                                                imageVector = Icons.Rounded.PhotoCamera,
+                                                imageVector = Icons.Rounded.ContentPaste,
                                                 contentDescription = null,
-                                                tint = Everforest.Aqua,
+                                                tint = Everforest.BoldGold,
                                                 modifier = Modifier.size(17.dp),
                                             )
                                         },
                                         onClick = {
                                             showImageSourceMenu = false
-                                            onCaptureCamera()
+                                            onPasteClipboardImages(true)
                                         },
-                                        modifier = Modifier.testTag("composer_pick_camera"),
+                                        modifier = Modifier.testTag("composer_paste_clipboard_image"),
                                     )
                                     DropdownMenuItem(
                                         text = {
@@ -394,6 +390,26 @@ internal fun ClaudeStyleComposer(
                                         },
                                         modifier = Modifier.testTag("composer_pick_library"),
                                     )
+                                    if (cameraSupported) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text("直接拍照识别", color = Everforest.Fg, fontSize = 13.5.sp)
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.PhotoCamera,
+                                                    contentDescription = null,
+                                                    tint = Everforest.Aqua,
+                                                    modifier = Modifier.size(17.dp),
+                                                )
+                                            },
+                                            onClick = {
+                                                showImageSourceMenu = false
+                                                onCaptureCamera()
+                                            },
+                                            modifier = Modifier.testTag("composer_pick_camera"),
+                                        )
+                                    }
                                 }
                             }
                         }

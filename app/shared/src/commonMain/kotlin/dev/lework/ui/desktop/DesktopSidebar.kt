@@ -39,6 +39,7 @@ import dev.lework.protocol.SessionMeta
 import dev.lework.protocol.SessionState
 import dev.lework.store.ConnectionStatus
 import dev.lework.store.ConsoleUiState
+import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
 import dev.lework.ui.RenameHostDialog
 import dev.lework.ui.connectionChannelLabel
@@ -415,7 +416,7 @@ internal fun DesktopSidebar(
                                 )
                             },
                             leadingIcon = {
-                                EngineGlyphIcon(engineId = eng.id, size = 14.dp)
+                                EngineGlyphIcon(engineId = eng.id, size = 15.dp)
                             },
                             trailingIcon = if (selected) {
                                 {
@@ -494,6 +495,7 @@ internal fun DesktopSidebar(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
+                            EngineGlyphIcon(engineId = state.drawerEngineFilter, size = 11.5.dp)
                             Text(
                                 text = "筛选：${shortEngineLabel(state.drawerEngineFilter)}",
                                 fontSize = 10.5.sp,

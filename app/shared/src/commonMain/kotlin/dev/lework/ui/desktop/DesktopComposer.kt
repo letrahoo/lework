@@ -427,7 +427,7 @@ internal fun DesktopComposer(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(5.dp),
                                 ) {
-                                    EngineGlyphIcon(engineId = state.selectedEngineId, size = 12.5.dp)
+                                    EngineGlyphIcon(engineId = state.selectedEngineId, size = 13.5.dp)
                                     Text(
                                         text = displayModelName,
                                         fontSize = 11.5.sp,

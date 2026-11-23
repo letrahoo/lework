@@ -874,6 +874,7 @@ export class HubServer {
             'workspace.worktree.v1',
             'usage.stats.v1',
             'session.organize.v1',
+            'feature.artifacts.v1',
           ],
         }
       }
@@ -994,6 +995,17 @@ export class HubServer {
         conn.subscribedSessions.delete(p.sessionId)
         await this.sessionManager.closeSession(p.sessionId)
         return { ok: true as const }
+      }
+      case 'artifact.list': {
+        const p = params as { sessionId: string }
+        return {
+          sessionId: p.sessionId,
+          artifacts: this.sessionManager.listArtifacts(p.sessionId),
+        }
+      }
+      case 'artifact.read': {
+        const p = params as { sessionId: string; artifactId: string }
+        return this.sessionManager.readArtifact(p.sessionId, p.artifactId)
       }
       case 'stream.subscribe': {
         const p = params as { sessionId: string; afterSeq: number; beforeSeq?: number; limit?: number }

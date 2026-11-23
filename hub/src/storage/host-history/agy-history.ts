@@ -15,8 +15,143 @@ import {
   type HostTranscriptEntry,
   type ParsedHostTranscript,
 } from './common.ts'
-import { parseStagedImagePromptHeader } from '../attachment-store.ts'
+import {
+  loadImagePreviewBase64FromFile,
+  parseStagedImagePromptHeader,
+  persistentAttachmentsBaseDir,
+  resolveContainedImageFile,
+  runtimeAttachmentsBaseDir,
+} from '../attachment-store.ts'
+import { countQuickAgyArtifacts } from '../artifacts.ts'
 import { parseAgyModelString, readAgyLocalSettings } from './engine-settings.ts'
+
+const AGY_MEDIA_IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|heic|tiff?)$/i
+
+interface AgyMediaItem {
+  mime_type?: string
+  mimeType?: string
+  uri?: string
+  path?: string
+}
+
+function resolveAgyConversationBrainDir(transcriptFilePath: string): string {
+  const logsDir = path.dirname(transcriptFilePath)
+  const parentDir = path.dirname(logsDir)
+  if (path.basename(logsDir) === 'logs' && path.basename(parentDir) === '.system_generated') {
+    return path.dirname(parentDir)
+  }
+  return logsDir
+}
+
+function normalizeAgyLocalMediaPath(raw: string): string | undefined {
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+  if (trimmed.startsWith('file://')) {
+    try {
+      const localPath = fileURLToPath(trimmed)
+      return path.isAbsolute(localPath) ? localPath : undefined
+    } catch {
+      return undefined
+    }
+  }
+  return path.isAbsolute(trimmed) ? trimmed : undefined
+}
+
+function extractAgyNativeMediaPaths(media: AgyMediaItem[] | undefined, rawContent: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const addPath = (candidate: string | undefined): void => {
+    if (!candidate || seen.has(candidate)) return
+    seen.add(candidate)
+    out.push(candidate)
+  }
+
+  if (Array.isArray(media)) {
+    for (const item of media) {
+      if (!item || typeof item !== 'object') continue
+      const mime = (item.mime_type ?? item.mimeType ?? '').toLowerCase().trim()
+      const rawUri = typeof item.uri === 'string' ? item.uri : typeof item.path === 'string' ? item.path : ''
+      const localPath = normalizeAgyLocalMediaPath(rawUri)
+      if (!localPath) continue
+      if (mime ? !mime.startsWith('image/') : !AGY_MEDIA_IMAGE_EXT_RE.test(localPath)) continue
+      addPath(localPath)
+    }
+  }
+
+  if (out.length === 0 && rawContent && rawContent.includes('<ADDITIONAL_METADATA>')) {
+    const metaRe = /<ADDITIONAL_METADATA>([\s\S]*?)<\/ADDITIONAL_METADATA>/g
+    let metaMatch: RegExpExecArray | null
+    while ((metaMatch = metaRe.exec(rawContent)) !== null) {
+      const metaBody = metaMatch[1] ?? ''
+      const lines = metaBody.split(/\r?\n/)
+      let inUploadSection = false
+      for (const rawLine of lines) {
+        const line = rawLine.trim()
+        if (/^The user has uploaded\s+\d+\s+image\(s\):/i.test(line)) {
+          inUploadSection = true
+          continue
+        }
+        if (!inUploadSection) continue
+        if (line.startsWith('- ')) {
+          const localPath = normalizeAgyLocalMediaPath(line.slice(2))
+          if (localPath && AGY_MEDIA_IMAGE_EXT_RE.test(localPath)) {
+            addPath(localPath)
+          }
+        } else {
+          inUploadSection = false
+        }
+      }
+    }
+  }
+
+  return out
+}
+
+function loadAgyNativeMedia(
+  transcriptFilePath: string,
+  media: AgyMediaItem[] | undefined,
+  rawContent: string,
+): { count: number; previews: string[] } {
+  const candidatePaths = extractAgyNativeMediaPaths(media, rawContent)
+  if (candidatePaths.length === 0) return { count: 0, previews: [] }
+
+  const allowedRoots: string[] = [resolveAgyConversationBrainDir(transcriptFilePath)]
+  try {
+    allowedRoots.push(runtimeAttachmentsBaseDir())
+  } catch {
+    // ignore
+  }
+  try {
+    allowedRoots.push(persistentAttachmentsBaseDir())
+  } catch {
+    // ignore
+  }
+
+  const seenRealPaths = new Set<string>()
+  let count = 0
+  const previews: string[] = []
+  for (const candidate of candidatePaths) {
+    if (count >= 4) break
+    let matchedRoot: string | undefined
+    let realPath: string | undefined
+    for (const root of allowedRoots) {
+      const resolved = resolveContainedImageFile(candidate, root)
+      if (resolved) {
+        matchedRoot = root
+        realPath = resolved.realPath
+        break
+      }
+    }
+    if (!matchedRoot || !realPath || seenRealPaths.has(realPath)) continue
+    seenRealPaths.add(realPath)
+    count++
+    const preview = loadImagePreviewBase64FromFile(realPath, matchedRoot)
+    if (preview && previews.length < 4) {
+      previews.push(preview)
+    }
+  }
+  return { count, previews }
+}
 
 export function extractLatestAgyModelSelection(rawContent: string): string | undefined {
   if (!rawContent || !rawContent.includes('Model Selection')) return undefined
@@ -120,16 +255,23 @@ export function scanAgySessions(
             type?: string
             created_at?: string
             content?: string
+            media?: AgyMediaItem[]
             tool_calls?: Array<{ args?: Record<string, unknown>; arguments?: Record<string, unknown> }>
           }
-          if (o.type === 'USER_INPUT' && typeof o.content === 'string') {
-            const sel = extractLatestAgyModelSelection(o.content)
+          if (o.type === 'USER_INPUT' && (typeof o.content === 'string' || Array.isArray(o.media))) {
+            const rawContent = typeof o.content === 'string' ? o.content : ''
+            const sel = extractLatestAgyModelSelection(rawContent)
             if (sel) rawModelSelection = sel
             if (!firstPromptTitle) {
-              const reqs = extractAgyUserRequests(o.content)
+              const reqs = extractAgyUserRequests(rawContent)
               if (reqs.length > 0) {
                 const cleaned = parseStagedImagePromptHeader(reqs[0]!, false).cleanText
                 firstPromptTitle = cleaned.replace(/\s+/g, ' ').trim().slice(0, 48)
+              } else {
+                const mediaCount = loadAgyNativeMedia(c.path, o.media, rawContent).count
+                if (mediaCount > 0) {
+                  firstPromptTitle = `（已发送 ${mediaCount} 张图片）`
+                }
               }
             }
           }
@@ -205,6 +347,7 @@ export function scanAgySessions(
         }
       }
       const subagents = sortAndCapSubagents(subagentSummaries, 12)
+      const artifactCount = countQuickAgyArtifacts(homeDir, c.convId)
 
       out.set(sessionId, {
         nativeId: c.convId,
@@ -225,6 +368,7 @@ export function scanAgySessions(
           mode: agyDefaults.defaultMode,
           source: 'host',
           ...(subagents.length > 0 ? { subagents } : {}),
+          ...(artifactCount > 0 ? { artifactCount } : {}),
         },
       })
     } catch {
@@ -419,6 +563,20 @@ export function parseAgyTranscript(
   const recentUserTexts: string[] = []
   const lines = readFullSessionLines(filePath)
   let seq = 0
+  const failOpenTools = (ts: number, output = '已停止') => {
+    for (const callId of pendingToolIds) {
+      events.push({
+        seq: seq++,
+        sessionId,
+        ts,
+        type: 'tool.update',
+        toolCallId: callId,
+        status: 'failed',
+        output,
+      })
+    }
+    pendingToolIds = []
+  }
   for (const line of lines) {
     try {
       const o = JSON.parse(line) as {
@@ -430,13 +588,19 @@ export function parseAgyTranscript(
         thinking?: string
         input_tokens?: number
         output_tokens?: number
+        media?: AgyMediaItem[]
         tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown; args?: unknown }>
       }
       const ts = o.created_at ? Date.parse(o.created_at) || Date.now() : Date.now()
-      if (o.type === 'USER_INPUT' && typeof o.content === 'string') {
-        const sel = extractLatestAgyModelSelection(o.content)
+      const upperStatus = typeof o.status === 'string' ? o.status.toUpperCase() : ''
+      const upperType = typeof o.type === 'string' ? o.type.toUpperCase() : ''
+      const stepCancelled = isAgyCancelledStatus(upperStatus) || AGY_CANCELLED_STATUSES.has(upperType)
+      if (o.type === 'USER_INPUT' && (typeof o.content === 'string' || (Array.isArray(o.media) && o.media.length > 0))) {
+        const rawContent = typeof o.content === 'string' ? o.content : ''
+        const sel = extractLatestAgyModelSelection(rawContent)
         if (sel) latestModelRaw = sel
-        const reqs = extractAgyUserRequests(o.content)
+        const reqs = extractAgyUserRequests(rawContent)
+        const nativeMedia = loadAgyNativeMedia(filePath, o.media, rawContent)
         if (reqs.length > 0) {
           isRunning = true
           turnStartedAt = ts
@@ -445,19 +609,52 @@ export function parseAgyTranscript(
             recentUserTexts.push(txt)
             if (recentUserTexts.length > 16) recentUserTexts.shift()
             const imgInfo = parseStagedImagePromptHeader(txt, true)
+            let totalImgs = imgInfo.imageCount
+            let mergedPreviews = imgInfo.imagePreviews ?? []
+            if (idx === 0 && nativeMedia.count > 0) {
+              const deduped: string[] = []
+              const seen = new Set<string>()
+              for (const p of [...mergedPreviews, ...nativeMedia.previews]) {
+                if (!p || seen.has(p)) continue
+                seen.add(p)
+                deduped.push(p)
+                if (deduped.length >= 4) break
+              }
+              mergedPreviews = deduped
+              totalImgs = Math.min(
+                4,
+                imgInfo.imageCount > 0
+                  ? Math.max(imgInfo.imageCount, nativeMedia.count, deduped.length)
+                  : nativeMedia.count,
+              )
+            }
             events.push({
               seq: seq++,
               sessionId,
               ts,
               type: 'message.user',
               messageId: idx === 0 ? `u_${o.step_index ?? seq}` : `u_${o.step_index ?? seq}_${idx}`,
-              text: imgInfo.cleanText,
-              ...(imgInfo.imageCount > 0 ? { imageCount: imgInfo.imageCount } : {}),
-              ...(imgInfo.imagePreviews ? { imagePreviews: imgInfo.imagePreviews } : {}),
+              text: imgInfo.cleanText || (totalImgs > 0 ? `（已发送 ${totalImgs} 张图片）` : ''),
+              ...(totalImgs > 0 ? { imageCount: totalImgs } : {}),
+              ...(mergedPreviews.length > 0 ? { imagePreviews: mergedPreviews } : {}),
             })
           })
+        } else if (nativeMedia.count > 0) {
+          isRunning = true
+          turnStartedAt = ts
+          lastUserInputTs = ts
+          events.push({
+            seq: seq++,
+            sessionId,
+            ts,
+            type: 'message.user',
+            messageId: `u_${o.step_index ?? seq}`,
+            text: `（已发送 ${nativeMedia.count} 张图片）`,
+            imageCount: nativeMedia.count,
+            ...(nativeMedia.previews.length > 0 ? { imagePreviews: nativeMedia.previews } : {}),
+          })
         } else if (events.length === 0) {
-          const brief = extractAgySubagentBrief(o.content)
+          const brief = extractAgySubagentBrief(rawContent)
           if (brief) {
             isRunning = true
             turnStartedAt = ts
@@ -469,16 +666,26 @@ export function parseAgyTranscript(
               messageId: `u_${o.step_index ?? seq}`,
               text: brief.slice(0, 4000),
             })
-          } else if (!o.content.trim().startsWith('<SYSTEM_MESSAGE>') && !o.content.trim().startsWith('<CONTEXT_SUMMARY>')) {
+          } else if (!rawContent.trim().startsWith('<SYSTEM_MESSAGE>') && !rawContent.trim().startsWith('<CONTEXT_SUMMARY>')) {
             isRunning = true
             turnStartedAt = ts
           }
-        } else if (!o.content.trim().startsWith('<SYSTEM_MESSAGE>') && !o.content.trim().startsWith('<CONTEXT_SUMMARY>')) {
+        } else if (!rawContent.trim().startsWith('<SYSTEM_MESSAGE>') && !rawContent.trim().startsWith('<CONTEXT_SUMMARY>')) {
           isRunning = true
           turnStartedAt = ts
         }
+        if (stepCancelled) {
+          failOpenTools(ts)
+          isRunning = false
+          turnStartedAt = undefined
+        }
       } else if (o.type === 'PLANNER_RESPONSE') {
-        pendingToolIds = []
+        const plannerAborted = stepCancelled || upperStatus === 'ERROR' || upperStatus === 'FAILED'
+        if (plannerAborted) {
+          failOpenTools(ts)
+        } else {
+          pendingToolIds = []
+        }
         if (typeof o.thinking === 'string' && o.thinking.trim()) {
           events.push({
             seq: seq++,
@@ -498,7 +705,9 @@ export function parseAgyTranscript(
               const rawInput = cleanArgsObj ? JSON.stringify(cleanArgsObj) : undefined
               const normalized = classifyRawToolCall(tc.name, rawInput)
               const callId = tc.id ?? `tc_${o.step_index ?? seq}_${tc.name}`
-              pendingToolIds.push(callId)
+              if (!plannerAborted) {
+                pendingToolIds.push(callId)
+              }
               events.push({
                 seq: seq++,
                 sessionId,
@@ -507,8 +716,9 @@ export function parseAgyTranscript(
                 toolCallId: callId,
                 title: normalized.title,
                 kind: normalized.kind,
-                status: 'in_progress',
+                status: plannerAborted ? 'failed' : 'in_progress',
                 input: normalized.input?.slice(0, 1600),
+                ...(plannerAborted ? { output: '已停止' } : {}),
               })
             }
           }
@@ -533,25 +743,36 @@ export function parseAgyTranscript(
             outputTokens: o.output_tokens,
           })
         }
-        isRunning = hasTools
+        isRunning = plannerAborted ? false : hasTools
         if (!isRunning) turnStartedAt = undefined
       } else if (
         (o.type === 'GENERIC' || o.type === 'TOOL_RESPONSE') &&
         typeof o.content === 'string'
       ) {
-        isRunning = true
         const callId = pendingToolIds.shift()
         if (callId) {
+          const failed = stepCancelled || upperStatus === 'ERROR' || upperStatus === 'FAILED'
           events.push({
             seq: seq++,
             sessionId,
             ts,
             type: 'tool.update',
             toolCallId: callId,
-            status: o.status === 'ERROR' ? 'failed' : 'completed',
-            output: o.content.slice(0, 1600),
+            status: failed ? 'failed' : 'completed',
+            output: o.content.trim() ? o.content.slice(0, 1600) : stepCancelled ? '已停止' : '',
           })
         }
+        if (stepCancelled) {
+          failOpenTools(ts)
+          isRunning = false
+          turnStartedAt = undefined
+        } else {
+          isRunning = true
+        }
+      } else if (stepCancelled) {
+        failOpenTools(ts)
+        isRunning = false
+        turnStartedAt = undefined
       }
     } catch {
       // ignore
@@ -583,7 +804,7 @@ export function extractAgyUserRequests(rawContent: string): string[] {
       const inner = (m[1] ?? '').trim()
       if (inner) out.push(inner)
     }
-    if (out.length > 0) return out
+    if (out.length > 0 || rawContent.includes('</USER_REQUEST>')) return out
     // Fallback when `transcript.jsonl` truncated a very long prompt before `</USER_REQUEST>`
     const idx = rawContent.indexOf('<USER_REQUEST>')
     const fallback = rawContent
@@ -882,6 +1103,12 @@ export function normalizeAgyArgs(raw: unknown): Record<string, unknown> | undefi
   return out
 }
 
+const AGY_CANCELLED_STATUSES = new Set(['CANCELLED', 'CANCELED', 'INTERRUPTED', 'ABORTED'])
+
+function isAgyCancelledStatus(status?: string): boolean {
+  return typeof status === 'string' && AGY_CANCELLED_STATUSES.has(status.toUpperCase())
+}
+
 export function isAgyTailActivelyRunning(tailLines: string[]): boolean {
   for (let i = tailLines.length - 1; i >= 0; i--) {
     try {
@@ -890,7 +1117,16 @@ export function isAgyTailActivelyRunning(tailLines: string[]): boolean {
         status?: string
         tool_calls?: unknown[]
       }
-      if (o.status === 'ERROR' || o.status === 'CANCELLED') return false
+      const upperStatus = typeof o.status === 'string' ? o.status.toUpperCase() : ''
+      const upperType = typeof o.type === 'string' ? o.type.toUpperCase() : ''
+      if (
+        upperStatus === 'ERROR' ||
+        upperStatus === 'FAILED' ||
+        isAgyCancelledStatus(upperStatus) ||
+        AGY_CANCELLED_STATUSES.has(upperType)
+      ) {
+        return false
+      }
       if (o.type === 'PLANNER_RESPONSE') {
         return Array.isArray(o.tool_calls) && o.tool_calls.length > 0
       }

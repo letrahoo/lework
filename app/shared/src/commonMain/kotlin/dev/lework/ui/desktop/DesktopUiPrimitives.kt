@@ -9,9 +9,6 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -43,7 +40,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.lework.ui.Everforest
-import dev.lework.ui.engineAccentColor
 
 // ---------------------------------------------------------------------------
 // Strict Desktop Chrome Geometry Tokens (Pixel-Aligned Grid)
@@ -200,106 +196,6 @@ internal val LeworkPinIcon: ImageVector by lazy {
             close()
         }
     }.build()
-}
-
-internal val LeworkClaudeStarIcon: ImageVector by lazy {
-    ImageVector.Builder(
-        name = "LeworkClaudeStar",
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        path(
-            stroke = SolidColor(Color.White),
-            strokeLineWidth = 1.85f,
-            strokeLineCap = StrokeCap.Round,
-        ) {
-            moveTo(12f, 3.2f); lineTo(12f, 20.8f)
-            moveTo(3.2f, 12f); lineTo(20.8f, 12f)
-            moveTo(5.8f, 5.8f); lineTo(18.2f, 18.2f)
-            moveTo(18.2f, 5.8f); lineTo(5.8f, 18.2f)
-            moveTo(8.5f, 3.9f); lineTo(15.5f, 20.1f)
-            moveTo(20.1f, 8.5f); lineTo(3.9f, 15.5f)
-        }
-    }.build()
-}
-
-internal val LeworkCodexHexIcon: ImageVector by lazy {
-    ImageVector.Builder(
-        name = "LeworkCodexHex",
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        path(
-            stroke = SolidColor(Color.White),
-            strokeLineWidth = 1.85f,
-            strokeLineCap = StrokeCap.Round,
-            strokeLineJoin = StrokeJoin.Round,
-        ) {
-            moveTo(12f, 3.2f)
-            lineTo(19.6f, 7.6f)
-            lineTo(19.6f, 16.4f)
-            lineTo(12f, 20.8f)
-            lineTo(4.4f, 16.4f)
-            lineTo(4.4f, 7.6f)
-            close()
-            moveTo(12f, 8.2f)
-            lineTo(15.4f, 10.1f)
-            lineTo(15.4f, 13.9f)
-            lineTo(12f, 15.8f)
-            lineTo(8.6f, 13.9f)
-            lineTo(8.6f, 10.1f)
-            close()
-        }
-    }.build()
-}
-
-internal val LeworkAgyDeltaIcon: ImageVector by lazy {
-    ImageVector.Builder(
-        name = "LeworkAgyDelta",
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        path(
-            stroke = SolidColor(Color.White),
-            strokeLineWidth = 2.0f,
-            strokeLineCap = StrokeCap.Round,
-            strokeLineJoin = StrokeJoin.Round,
-        ) {
-            moveTo(4.5f, 19.2f)
-            quadTo(9.5f, 6.2f, 12f, 4.2f)
-            quadTo(14.5f, 6.2f, 19.5f, 19.2f)
-            moveTo(7.8f, 15.2f)
-            quadTo(12f, 12.2f, 16.2f, 15.2f)
-        }
-    }.build()
-}
-
-internal fun engineBrandGlyph(engineId: String): ImageVector = when (engineId.lowercase()) {
-    "claude" -> LeworkClaudeStarIcon
-    "codex" -> LeworkCodexHexIcon
-    "agy" -> LeworkAgyDeltaIcon
-    "pi" -> Icons.Rounded.Code
-    else -> Icons.Rounded.Terminal
-}
-
-@Composable
-internal fun EngineGlyphIcon(
-    engineId: String,
-    size: Dp = 15.dp,
-    tintOverride: Color? = null,
-) {
-    Icon(
-        imageVector = engineBrandGlyph(engineId),
-        contentDescription = null,
-        tint = tintOverride ?: engineAccentColor(engineId),
-        modifier = Modifier.size(size),
-    )
 }
 
 // ---------------------------------------------------------------------------

@@ -246,8 +246,53 @@ export const SessionMeta = z.object({
   queuedPrompts: z.array(z.string()).optional(),
   models: z.array(ModelOption).optional(),
   subagents: z.array(SubagentSummary).optional(),
+  artifactCount: z.number().int().nonnegative().optional(),
 })
 export type SessionMeta = z.infer<typeof SessionMeta>
+
+export const ArtifactKind = z.enum([
+  'plan',
+  'task_list',
+  'walkthrough',
+  'html',
+  'code',
+  'image',
+  'other',
+])
+export type ArtifactKind = z.infer<typeof ArtifactKind>
+
+export const ArtifactSource = z.enum([
+  'agy_brain',
+  'claude_plan',
+  'claude_artifact',
+  'codex_plan',
+  'session_plan',
+  'other',
+])
+export type ArtifactSource = z.infer<typeof ArtifactSource>
+
+export const ArtifactInfo = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  kind: ArtifactKind,
+  title: z.string(),
+  summary: z.string().optional(),
+  fileName: z.string().optional(),
+  mimeType: z.string(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  updatedAt: z.number().int(),
+  source: ArtifactSource,
+  actionable: z.boolean().optional(),
+})
+export type ArtifactInfo = z.infer<typeof ArtifactInfo>
+
+export const ArtifactContentResult = z.object({
+  artifact: ArtifactInfo,
+  content: z.string(),
+  isBase64: z.boolean().optional(),
+  truncated: z.boolean(),
+})
+export type ArtifactContentResult = z.infer<typeof ArtifactContentResult>
 
 export const PermissionOptionKind = z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always'])
 export const PermissionOption = z.object({
@@ -633,6 +678,17 @@ export const Methods = {
   'session.close': {
     params: z.object({ sessionId: z.string() }),
     result: z.object({ ok: z.literal(true) }),
+  },
+  'artifact.list': {
+    params: z.object({ sessionId: z.string().min(1).max(256) }),
+    result: z.object({ sessionId: z.string(), artifacts: z.array(ArtifactInfo) }),
+  },
+  'artifact.read': {
+    params: z.object({
+      sessionId: z.string().min(1).max(256),
+      artifactId: z.string().min(1).max(512),
+    }),
+    result: ArtifactContentResult,
   },
   'stream.subscribe': {
     params: z.object({

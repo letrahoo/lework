@@ -84,6 +84,7 @@ class ConsoleStore(
     private var subagentInspectJob: Job? = null
     private var subagentInspectToken: Long = 0L
     private var subscribedSubagentId: String? = null
+    private var cancellingSessionId: String? = null
 
     private fun switchSubscriptionTo(nextSessionId: String?) {
         val prev = subscribedSessionId
@@ -300,6 +301,7 @@ class ConsoleStore(
                     scope.launch {
                         runCatching { subscribeAndCatchUp(updated.id) }
                         refreshActiveSessionUsage(updated.id)
+                        refreshSessionArtifacts(updated.id)
                     }
                 }
             }
@@ -1852,6 +1854,9 @@ class ConsoleStore(
                 loadingSessionId = null,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
+                activeSessionArtifacts = emptyList(),
+                openedArtifact = null,
+                artifactError = null,
                 openedDiffContent = null,
                 openedDiffTitle = null,
                 checkpointNotice = null,
@@ -1948,6 +1953,9 @@ class ConsoleStore(
                 loadingSessionId = if (switchedDifferentEngine) null else s.loadingSessionId,
                 checkpoints = if (switchedDifferentEngine) emptyList() else s.checkpoints,
                 activeSessionUsage = if (switchedDifferentEngine) null else s.activeSessionUsage,
+                activeSessionArtifacts = if (switchedDifferentEngine) emptyList() else s.activeSessionArtifacts,
+                openedArtifact = if (switchedDifferentEngine) null else s.openedArtifact,
+                artifactError = if (switchedDifferentEngine) null else s.artifactError,
                 openedDiffContent = if (switchedDifferentEngine) null else s.openedDiffContent,
                 openedDiffTitle = if (switchedDifferentEngine) null else s.openedDiffTitle,
                 checkpointNotice = if (switchedDifferentEngine) null else s.checkpointNotice,
@@ -2111,6 +2119,9 @@ class ConsoleStore(
                 loadingSessionId = null,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
+                activeSessionArtifacts = emptyList(),
+                openedArtifact = null,
+                artifactError = null,
                 openedDiffContent = null,
                 openedDiffTitle = null,
                 checkpointNotice = null,
@@ -2148,6 +2159,9 @@ class ConsoleStore(
                 loadingSessionId = if (alreadyCached) null else sessionId,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
+                activeSessionArtifacts = emptyList(),
+                openedArtifact = null,
+                artifactError = null,
                 openedDiffContent = null,
                 openedDiffTitle = null,
                 checkpointNotice = null,
@@ -2188,6 +2202,7 @@ class ConsoleStore(
                     _state.update { it.copy(activeSessionUsage = usage) }
                 }
             }
+            refreshSessionArtifacts(sessionId)
         }
     }
 
@@ -2384,13 +2399,18 @@ class ConsoleStore(
         return true
     }
 
-    fun pasteImagesFromClipboard(): Boolean {
+    fun pasteImagesFromClipboard(notifyWhenEmpty: Boolean = false): Boolean {
         val cur = _state.value
         val engineSupportsImages = cur.selectedEngine?.capabilities?.images != false
         val remaining = (4 - cur.composerAttachedImages.size).coerceAtLeast(0)
         val readLimit = if (engineSupportsImages && remaining > 0) 4 else 1
         val clipboardImages = readImagesFromClipboard(maxCount = readLimit)
-        if (clipboardImages.isEmpty()) return false
+        if (clipboardImages.isEmpty()) {
+            if (notifyWhenEmpty) {
+                _state.update { it.copy(promptErrorText = "剪贴板中暂无图片，请先复制图片或截图") }
+            }
+            return false
+        }
         return attachClipboardImages(clipboardImages)
     }
 
@@ -2802,8 +2822,83 @@ class ConsoleStore(
 
     fun cancelActiveTurn() {
         val activeId = _state.value.activeSessionId ?: return
+        if (cancellingSessionId == activeId) return
+        cancellingSessionId = activeId
+        val prevLiveStatus = _state.value.sessions.firstOrNull { it.id == activeId }?.liveStatusText
+        _state.update { s ->
+            s.copy(
+                promptErrorText = null,
+                sessions = s.sessions.map { meta ->
+                    if (meta.id == activeId) {
+                        meta.copy(liveStatusText = "正在停止…")
+                    } else {
+                        meta
+                    }
+                },
+            )
+        }
         scope.launch {
-            runCatching { rpc.cancelSession(activeId) }
+            try {
+                rpc.cancelSession(activeId)
+                _state.update { s ->
+                    val prevTranscript = s.transcripts[activeId]
+                    val updatedTranscripts = if (prevTranscript != null && prevTranscript.pendingPermissions.isNotEmpty()) {
+                        s.transcripts + (activeId to prevTranscript.copy(pendingPermissions = emptyList()))
+                    } else {
+                        s.transcripts
+                    }
+                    s.copy(
+                        promptErrorText = null,
+                        approvalErrorText = if (s.activeSessionId == activeId) null else s.approvalErrorText,
+                        sessions = s.sessions.map { meta ->
+                            if (meta.id == activeId) {
+                                meta.copy(
+                                    state = SessionState.IDLE,
+                                    liveStatusText = null,
+                                    turnStartedAt = null,
+                                    queuedPrompts = null,
+                                )
+                            } else {
+                                meta
+                            }
+                        },
+                        transcripts = updatedTranscripts,
+                    )
+                }
+                reconcileDesktopRunningWarmSubscriptions(_state.value.sessions)
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+                _state.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map { meta ->
+                            if (meta.id == activeId && meta.liveStatusText == "正在停止…") {
+                                meta.copy(liveStatusText = prevLiveStatus)
+                            } else {
+                                meta
+                            }
+                        },
+                        promptErrorText = "停止请求已中断，请重试",
+                    )
+                }
+            } catch (t: Throwable) {
+                val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "停止任务失败，请检查主机连接或直接在电脑终端停止"
+                _state.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map { meta ->
+                            if (meta.id == activeId && meta.liveStatusText == "正在停止…") {
+                                meta.copy(liveStatusText = prevLiveStatus)
+                            } else {
+                                meta
+                            }
+                        },
+                        promptErrorText = errMsg,
+                    )
+                }
+            } finally {
+                if (cancellingSessionId == activeId) {
+                    cancellingSessionId = null
+                }
+            }
         }
     }
 
@@ -3253,6 +3348,100 @@ class ConsoleStore(
         if (event is AgentEvent.Usage || event is AgentEvent.TurnDone) {
             refreshActiveSessionUsage(event.sessionId)
         }
+        if (event is AgentEvent.TurnDone || event is AgentEvent.PlanUpdated) {
+            refreshSessionArtifacts(event.sessionId)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Unified Per-Engine Artifacts & Proposed Plan Actions
+    // -----------------------------------------------------------------------
+
+    fun refreshSessionArtifacts(sessionId: String = _state.value.activeSessionId.orEmpty()) {
+        if (sessionId.isBlank()) return
+        if (_state.value.activeSessionId == sessionId) {
+            _state.update { it.copy(artifactsLoading = true, artifactError = null) }
+        }
+        scope.launch {
+            runCatching {
+                rpc.listArtifacts(sessionId)
+            }.onSuccess { list ->
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update { s ->
+                        val nextOpened = s.openedArtifact?.takeIf { opened ->
+                            list.any { it.id == opened.artifact.id }
+                        }
+                        s.copy(
+                            artifactsLoading = false,
+                            activeSessionArtifacts = list,
+                            openedArtifact = nextOpened,
+                            artifactError = null,
+                        )
+                    }
+                }
+            }.onFailure { err ->
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update {
+                        it.copy(
+                            artifactsLoading = false,
+                            artifactError = err.message ?: "无法获取会话产物",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun openArtifact(artifactId: String) {
+        val sid = _state.value.activeSessionId ?: return
+        if (artifactId.isBlank()) return
+        _state.update { it.copy(artifactsLoading = true, artifactError = null) }
+        scope.launch {
+            runCatching {
+                rpc.readArtifact(sid, artifactId)
+            }.onSuccess { content ->
+                if (_state.value.activeSessionId == sid) {
+                    _state.update {
+                        it.copy(
+                            artifactsLoading = false,
+                            openedArtifact = content,
+                            artifactError = null,
+                        )
+                    }
+                }
+            }.onFailure { err ->
+                if (_state.value.activeSessionId == sid) {
+                    _state.update {
+                        it.copy(
+                            artifactsLoading = false,
+                            artifactError = "无法读取产物内容：${err.message ?: "请稍后重试"}",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun closeOpenedArtifact() {
+        _state.update { it.copy(openedArtifact = null, artifactError = null) }
+    }
+
+    fun approveAndExecutePlan(artifactTitle: String? = null) {
+        val cur = _state.value
+        if (cur.selectedMode == SessionMode.PLAN) {
+            val nextMode = cur.availableModes.firstOrNull { it == SessionMode.AUTO }
+                ?: cur.availableModes.firstOrNull { it == SessionMode.ACCEPT_EDITS }
+                ?: cur.availableModes.firstOrNull { it != SessionMode.PLAN }
+                ?: SessionMode.AUTO
+            selectMode(nextMode)
+        }
+        val cleanTitle = artifactTitle?.trim()?.takeIf { it.isNotEmpty() }
+        val prompt = if (cleanTitle != null) {
+            "已确认执行方案《$cleanTitle》，请开始按方案实施。"
+        } else {
+            "已确认当前执行方案，请开始按方案实施。"
+        }
+        sendPrompt(prompt)
     }
 
     // -----------------------------------------------------------------------

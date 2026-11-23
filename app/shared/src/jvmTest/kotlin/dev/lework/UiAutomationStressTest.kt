@@ -1,12 +1,20 @@
 package dev.lework
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Text
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asSkiaBitmap
 import androidx.compose.ui.graphics.vector.VectorPath
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.unit.dp
 import dev.lework.platform.JvmPlatformTestHooks
@@ -1279,5 +1287,149 @@ class UiAutomationStressTest {
             onNodeWithTag("prompt_notice_dismiss_btn").performClick()
             waitForIdle()
             onNodeWithTag("prompt_notice_banner").assertDoesNotExist()
+        }
+
+    @Test
+    fun `T8_11 renders official brand icons cleanly for all engines in color and dimmed states`() =
+        runComposeUiTest {
+            val engineSpecs = listOf(
+                "claude" to "Claude",
+                "codex" to "Codex",
+                "agy" to "AGY",
+                "pi" to "Pi",
+                "dsh" to "DeepSeek",
+                "acp:cursor" to "Cursor",
+                "acp:trae" to "Trae",
+                "acp:custom" to "ACP",
+            )
+            setContent {
+                Column(
+                    modifier = Modifier
+                        .size(width = 760.dp, height = 260.dp)
+                        .background(dev.lework.ui.Everforest.BgDim)
+                        .padding(20.dp)
+                        .testTag("official_icons_showcase"),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(22.dp),
+                    ) {
+                        for ((id, label) in engineSpecs) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                dev.lework.ui.EngineGlyphIcon(engineId = id, size = 44.dp)
+                                dev.lework.ui.EngineGlyphIcon(engineId = id, size = 18.dp)
+                                dev.lework.ui.EngineGlyphIcon(
+                                    engineId = id,
+                                    size = 18.dp,
+                                    tintOverride = dev.lework.ui.Everforest.Grey0.copy(alpha = 0.45f),
+                                )
+                                Text(
+                                    text = label,
+                                    color = dev.lework.ui.Everforest.Fg,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            waitForIdle()
+            onNodeWithTag("official_icons_showcase").assertIsDisplayed()
+        }
+
+    @Test
+    fun `T8_12 desktop unified artifacts inspector and proposed plan approval coexist cleanly with live subagent status strip`() =
+        runDesktopComposeUiTest(width = 1320, height = 840) {
+            JvmPlatformTestHooks.reset()
+            JvmPlatformTestHooks.simulateDesktopLayout = true
+            try {
+                val transport = FakeHubTransport()
+                val parentSid = "host:agy:parent_demo_1"
+                val childSid = "host:agy:child_research_1"
+                val planArt = ArtifactInfo(
+                    id = "agy_file:implementation_plan.md",
+                    sessionId = parentSid,
+                    kind = ArtifactKind.PLAN,
+                    title = "统一产物架构方案",
+                    summary = "聚合 AGY/Claude/Codex 产物并支持一键确认执行方案",
+                    fileName = "implementation_plan.md",
+                    mimeType = "text/markdown",
+                    sizeBytes = 2048L,
+                    updatedAt = 1_700_000_000_000L,
+                    source = ArtifactSource.AGY_BRAIN,
+                    actionable = true,
+                )
+                val parentMeta = SessionMeta(
+                    id = parentSid,
+                    engineId = "agy",
+                    cwd = "/workspace/lework",
+                    title = "T3Code 最佳实践落地",
+                    state = SessionState.IDLE,
+                    createdAt = 1_700_000_000_000L,
+                    updatedAt = 1_700_000_010_000L,
+                    lastSeq = 1,
+                    model = "gemini-4-carbon",
+                    mode = SessionMode.PLAN,
+                    artifactCount = 1,
+                    subagents = listOf(
+                        SubagentSummary(
+                            id = childSid,
+                            title = "协议结构调研",
+                            role = "Researcher",
+                            state = SessionState.IDLE,
+                            statusText = "已完成调研",
+                            updatedAt = 1_700_000_008_000L,
+                        ),
+                    ),
+                )
+
+                transport.sessions.add(parentMeta)
+                transport.artifactsBySession[parentSid] = mutableListOf(planArt)
+                transport.artifactContents[parentSid to planArt.id] = ArtifactContentResult(
+                    artifact = planArt,
+                    content = "# 统一产物架构方案\n\n- 聚合 AGY / Claude / Codex 产物\n- 一键退出 Plan 模式并开始实施",
+                    isBase64 = false,
+                    truncated = false,
+                )
+                transport.sessionEventsMap[parentSid] = mutableListOf(
+                    AgentEvent.UserMessage(0, parentSid, 1_700_000_000_000L, "u_0", "借鉴 T3Code 落地产物面板"),
+                    AgentEvent.AssistantDelta(1, parentSid, 1_700_000_005_000L, "a_1", "方案已生成，请确认。"),
+                )
+                transport.sessionEventsMap[childSid] = mutableListOf(
+                    AgentEvent.UserMessage(0, childSid, 1_700_000_002_000L, "cu_0", "调研协议定义"),
+                    AgentEvent.AssistantDelta(1, childSid, 1_700_000_006_000L, "ca_1", "子智能体调研完成。"),
+                )
+
+                lateinit var store: ConsoleStore
+                setContent {
+                    val scope: CoroutineScope = rememberCoroutineScope()
+                    val created = androidx.compose.runtime.remember { ConsoleStore(scope, transport) }
+                    store = created
+                    Box(modifier = Modifier.size(width = 1280.dp, height = 800.dp)) {
+                        ConsoleApp(externalStore = created, autoBootstrap = true)
+                    }
+                }
+                waitForIdle()
+                runOnIdle { store.selectSession(parentSid) }
+                waitUntil(timeoutMillis = 4_000L) {
+                    onAllNodesWithTag("lineage_plan_pill").fetchSemanticsNodes().isNotEmpty() &&
+                        onAllNodesWithTag("subagent_status_strip").fetchSemanticsNodes().isNotEmpty()
+                }
+
+                // 1. Open Artifacts inspector via Proposed Plan pill -> approve plan -> exits PLAN mode!
+                onNodeWithTag("lineage_plan_pill").performClick()
+                waitUntil(timeoutMillis = 3_000L) {
+                    onAllNodesWithTag("artifact_approve_plan_btn").fetchSemanticsNodes().isNotEmpty()
+                }
+                onNodeWithTag("artifact_approve_plan_btn").performClick()
+                waitUntil(timeoutMillis = 3_000L) {
+                    transport.sentPrompts.any { it.first == parentSid && it.second.contains("确认执行方案") }
+                }
+                assertEquals(SessionMode.AUTO, store.state.value.selectedMode)
+            } finally {
+                JvmPlatformTestHooks.reset()
+            }
         }
 }

@@ -339,4 +339,15 @@ class ThemeAndTraceTest {
         assertEquals("局域网直连", connectionChannelLabel("https://192.168.10.20:64450", tsnet))
         assertEquals("已连接", connectionChannelLabel("", tsnet))
     }
+
+    @Test
+    fun `T7_9 resolves distinct official SVG vectors for all supported coding engines`() {
+        val ids = listOf("claude", "codex", "agy", "pi", "dsh", "acp:cursor", "acp:trae", "acp:custom")
+        val vectors = ids.associateWith { dev.lework.ui.officialEngineMonoVector(it) }
+        assertEquals(ids.size, vectors.values.map { it.name }.toSet().size)
+        assertTrue(dev.lework.ui.OfficialPiColorIcon.root.size > 0)
+        for ((id, vec) in vectors) {
+            assertTrue(vec.root.size > 0, "Expected non-empty official vector path for engine '$id'")
+        }
+    }
 }

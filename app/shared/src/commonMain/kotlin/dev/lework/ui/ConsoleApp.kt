@@ -91,6 +91,7 @@ private fun MobileConsoleApp(
     var showFilesSheet by remember { mutableStateOf(false) }
     var showUsageSheet by remember { mutableStateOf(false) }
     var showDiffSheet by remember { mutableStateOf(false) }
+    var showArtifactsSheet by remember { mutableStateOf(false) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
     var promptField by remember { mutableStateOf(TextFieldValue("")) }
     var cursorSyncRequest by remember { mutableStateOf<Triple<Long, String, Int>?>(null) }
@@ -126,7 +127,7 @@ private fun MobileConsoleApp(
     // Automatically resign software keyboard before any modal bottom sheet or pairing dialog appears
     val anyOverlaySheetOpen =
         showModelSheet || showWorkspaceSheet || showFilesSheet || showUsageSheet || showDiffSheet ||
-            state.pendingDeepLinkPairing != null || state.inspectedSubagent != null
+            showArtifactsSheet || state.pendingDeepLinkPairing != null || state.inspectedSubagent != null
     LaunchedEffect(anyOverlaySheetOpen) {
         if (anyOverlaySheetOpen) {
             dismissKeyboard()
@@ -244,6 +245,12 @@ private fun MobileConsoleApp(
                 if (topActiveSess != null) {
                     ActiveSessionTitleStrip(
                         session = topActiveSess,
+                        artifactCount = state.activeSessionArtifacts.size,
+                        onOpenArtifacts = {
+                            dismissKeyboard()
+                            store.refreshSessionArtifacts()
+                            showArtifactsSheet = true
+                        },
                         onRename = {
                             dismissKeyboard()
                             renamingSessionId = topActiveSess.id
@@ -251,6 +258,15 @@ private fun MobileConsoleApp(
                         onToggleArchive = {
                             dismissKeyboard()
                             store.archiveSession(topActiveSess.id, !topActiveSess.archived)
+                        },
+                    )
+                    ArtifactsQuickBar(
+                        state = state,
+                        onOpenArtifacts = { artId ->
+                            dismissKeyboard()
+                            store.refreshSessionArtifacts()
+                            if (artId != null) store.openArtifact(artId)
+                            showArtifactsSheet = true
                         },
                     )
                 }
@@ -324,6 +340,9 @@ private fun MobileConsoleApp(
                     } else {
                         val sessRunning = activeSess != null &&
                             (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
+                        val planArtifact = state.activeSessionArtifacts.firstOrNull {
+                            it.actionable || it.kind == ArtifactKind.PLAN
+                        }
                         key(activeKey) {
                             ConversationStreamView(
                                 sessionKey = activeKey,
@@ -338,6 +357,18 @@ private fun MobileConsoleApp(
                                 onRetryLastTurn = {
                                     dismissKeyboard()
                                     store.retryLastTurn()
+                                },
+                                onOpenPlanArtifact = planArtifact?.let { art ->
+                                    {
+                                        dismissKeyboard()
+                                        store.openArtifact(art.id)
+                                        showArtifactsSheet = true
+                                    }
+                                },
+                                onApprovePlan = if (!sessRunning && (planArtifact != null || state.selectedMode == SessionMode.PLAN)) {
+                                    { store.approveAndExecutePlan(planArtifact?.title) }
+                                } else {
+                                    null
                                 },
                             )
                         }
@@ -538,7 +569,10 @@ private fun MobileConsoleApp(
                         dismissKeyboard()
                         store.captureAndAttachImage()
                     },
-                    onPasteClipboardImages = store::pasteImagesFromClipboard,
+                    onPasteClipboardImages = { notifyWhenEmpty ->
+                        if (notifyWhenEmpty) dismissKeyboard()
+                        store.pasteImagesFromClipboard(notifyWhenEmpty = notifyWhenEmpty)
+                    },
                     onRemoveImage = store::removeAttachedImage,
                     onSelectMentionFile = { relPath ->
                         val (nextText, nextCursor) = replaceMentionAtCursor(
@@ -671,6 +705,30 @@ private fun MobileConsoleApp(
             }
         }
 
+        if (showArtifactsSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showArtifactsSheet = false },
+                containerColor = Everforest.Bg1,
+                contentColor = Everforest.Fg,
+            ) {
+                ArtifactsInspectorSheet(
+                    state = state,
+                    onRefresh = { store.refreshSessionArtifacts() },
+                    onOpenArtifact = store::openArtifact,
+                    onCloseArtifact = store::closeOpenedArtifact,
+                    onApprovePlan = { title ->
+                        store.approveAndExecutePlan(title)
+                        showArtifactsSheet = false
+                    },
+                    onRevisePlan = { title ->
+                        val prefix = "关于方案《$title》，请调整以下部分："
+                        promptField = TextFieldValue(prefix, TextRange(prefix.length))
+                        showArtifactsSheet = false
+                    },
+                )
+            }
+        }
+
         val inspectedSub = state.inspectedSubagent
         if (inspectedSub != null) {
             SubagentInspectorDialog(
@@ -776,6 +834,8 @@ internal fun PendingDeepLinkPairingDialog(
 @Composable
 private fun ActiveSessionTitleStrip(
     session: SessionMeta,
+    artifactCount: Int = 0,
+    onOpenArtifacts: () -> Unit = {},
     onRename: () -> Unit,
     onToggleArchive: () -> Unit,
 ) {
@@ -855,25 +915,52 @@ private fun ActiveSessionTitleStrip(
         Spacer(Modifier.width(8.dp))
 
         Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .clickable { onToggleArchive() }
-                .padding(horizontal = 6.dp, vertical = 3.dp)
-                .testTag("active_session_archive_btn"),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Icon(
-                imageVector = if (session.archived) Icons.Rounded.Unarchive else Icons.Rounded.Inventory2,
-                contentDescription = if (session.archived) "移出归档" else "归档会话",
-                tint = if (session.archived) Everforest.Green else Everforest.CommentGrey,
-                modifier = Modifier.size(13.5.dp),
-            )
-            Text(
-                text = if (session.archived) "移出归档" else "归档",
-                fontSize = 11.5.sp,
-                color = if (session.archived) Everforest.Green else Everforest.CommentGrey,
-            )
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { onOpenArtifacts() }
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                    .testTag("mobile_btn_artifacts"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Description,
+                    contentDescription = "会话产物",
+                    tint = if (artifactCount > 0) Everforest.BoldGold else Everforest.CommentGrey,
+                    modifier = Modifier.size(13.5.dp),
+                )
+                Text(
+                    text = if (artifactCount > 0) "产物($artifactCount)" else "产物",
+                    fontSize = 11.5.sp,
+                    color = if (artifactCount > 0) Everforest.BoldGold else Everforest.CommentGrey,
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { onToggleArchive() }
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                    .testTag("active_session_archive_btn"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    imageVector = if (session.archived) Icons.Rounded.Unarchive else Icons.Rounded.Inventory2,
+                    contentDescription = if (session.archived) "移出归档" else "归档会话",
+                    tint = if (session.archived) Everforest.Green else Everforest.CommentGrey,
+                    modifier = Modifier.size(13.5.dp),
+                )
+                Text(
+                    text = if (session.archived) "移出归档" else "归档",
+                    fontSize = 11.5.sp,
+                    color = if (session.archived) Everforest.Green else Everforest.CommentGrey,
+                )
+            }
         }
     }
 }
@@ -936,12 +1023,7 @@ private fun MinimalTopBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(Everforest.CodeGreen.copy(alpha = 0.8f)),
-                )
+                EngineGlyphIcon(engineId = state.selectedEngineId, size = 14.dp)
                 Text(
                     text = buildAnnotatedString {
                         withStyle(SpanStyle(color = Everforest.Fg, fontWeight = FontWeight.SemiBold)) {

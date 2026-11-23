@@ -132,10 +132,15 @@ export function readCodexLocalSettings(homeDir = os.homedir()): {
       const raw = fs.readFileSync(tomlPath, 'utf8')
       const modelMatch = raw.match(/^\s*model\s*=\s*["']([^"']+)["']/m)
       const effortMatch = raw.match(/^\s*model_reasoning_effort\s*=\s*["']([^"']+)["']/m)
-      const approvalMatch = raw.match(/^\s*approval_policy\s*=\s*["']([^"']+)["']/m)
+      // Only root-level keys describe the default profile.
+      const rootSettings = raw.split(/^\s*\[/m, 1)[0] ?? ''
+      const sandbox = rootSettings.match(/^\s*sandbox_mode\s*=\s*["']([^"']+)["']/m)?.[1]
+      const approvalMatch = rootSettings.match(/^\s*approval_policy\s*=\s*["']([^"']+)["']/m)
       return {
         model: modelMatch?.[1]?.trim() || undefined,
-        defaultMode: normalizeHostMode(approvalMatch?.[1], 'default'),
+        defaultMode: approvalMatch?.[1] === 'never'
+          ? (sandbox === 'workspace-write' || sandbox === 'danger-full-access' ? 'bypassPermissions' : 'plan')
+          : 'default',
         effort: normalizeHostEffort(effortMatch?.[1], 'medium'),
       }
     }

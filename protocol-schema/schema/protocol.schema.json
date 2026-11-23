@@ -640,6 +640,11 @@
             ],
             "additionalProperties": false
           }
+        },
+        "artifactCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
@@ -651,6 +656,191 @@
         "createdAt",
         "updatedAt",
         "lastSeq"
+      ],
+      "additionalProperties": false
+    },
+    "ArtifactKind": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "string",
+      "enum": [
+        "plan",
+        "task_list",
+        "walkthrough",
+        "html",
+        "code",
+        "image",
+        "other"
+      ]
+    },
+    "ArtifactSource": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "string",
+      "enum": [
+        "agy_brain",
+        "claude_plan",
+        "claude_artifact",
+        "codex_plan",
+        "session_plan",
+        "other"
+      ]
+    },
+    "ArtifactInfo": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "plan",
+            "task_list",
+            "walkthrough",
+            "html",
+            "code",
+            "image",
+            "other"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "fileName": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "agy_brain",
+            "claude_plan",
+            "claude_artifact",
+            "codex_plan",
+            "session_plan",
+            "other"
+          ]
+        },
+        "actionable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "sessionId",
+        "kind",
+        "title",
+        "mimeType",
+        "updatedAt",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "ArtifactContentResult": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "sessionId": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "plan",
+                "task_list",
+                "walkthrough",
+                "html",
+                "code",
+                "image",
+                "other"
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "fileName": {
+              "type": "string"
+            },
+            "mimeType": {
+              "type": "string"
+            },
+            "sizeBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "updatedAt": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "agy_brain",
+                "claude_plan",
+                "claude_artifact",
+                "codex_plan",
+                "session_plan",
+                "other"
+              ]
+            },
+            "actionable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "sessionId",
+            "kind",
+            "title",
+            "mimeType",
+            "updatedAt",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        "content": {
+          "type": "string"
+        },
+        "isBase64": {
+          "type": "boolean"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact",
+        "content",
+        "truncated"
       ],
       "additionalProperties": false
     },
@@ -3249,6 +3439,11 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "artifactCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
                   }
                 },
                 "required": [
@@ -3539,6 +3734,11 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "artifactCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "required": [
@@ -3975,6 +4175,11 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "artifactCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "required": [
@@ -4219,6 +4424,11 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "artifactCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "required": [
@@ -4462,6 +4672,11 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "artifactCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "required": [
@@ -4508,6 +4723,222 @@
           },
           "required": [
             "ok"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "artifact.list": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "sessionId"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "plan",
+                      "task_list",
+                      "walkthrough",
+                      "html",
+                      "code",
+                      "image",
+                      "other"
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "fileName": {
+                    "type": "string"
+                  },
+                  "mimeType": {
+                    "type": "string"
+                  },
+                  "sizeBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "updatedAt": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "agy_brain",
+                      "claude_plan",
+                      "claude_artifact",
+                      "codex_plan",
+                      "session_plan",
+                      "other"
+                    ]
+                  },
+                  "actionable": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "id",
+                  "sessionId",
+                  "kind",
+                  "title",
+                  "mimeType",
+                  "updatedAt",
+                  "source"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "sessionId",
+            "artifacts"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "artifact.read": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "artifactId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "sessionId",
+            "artifactId"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "artifact": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "plan",
+                    "task_list",
+                    "walkthrough",
+                    "html",
+                    "code",
+                    "image",
+                    "other"
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "fileName": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "sizeBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "updatedAt": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "agy_brain",
+                    "claude_plan",
+                    "claude_artifact",
+                    "codex_plan",
+                    "session_plan",
+                    "other"
+                  ]
+                },
+                "actionable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "sessionId",
+                "kind",
+                "title",
+                "mimeType",
+                "updatedAt",
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            "content": {
+              "type": "string"
+            },
+            "isBase64": {
+              "type": "boolean"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "artifact",
+            "content",
+            "truncated"
           ],
           "additionalProperties": false
         }
@@ -4744,6 +5175,11 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "artifactCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
                 }
               },
               "required": [
@@ -7106,6 +7542,11 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "artifactCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
               }
             },
             "required": [
