@@ -312,16 +312,31 @@ class HubRpcClient(
             probedMutex.withLock { jobs.add(job) }
         }
 
-        candidates.forEach { launchProbeIfNew(it) }
+        val normalizedFirst = candidates.firstOrNull()?.let { normalizeHubBaseUrl(it) }.orEmpty()
+        val preferLoopbackFirst = isDesktopPlatform() &&
+            (normalizedFirst.startsWith("https://127.0.0.1:") ||
+                normalizedFirst.startsWith("https://localhost:") ||
+                normalizedFirst.startsWith("https://[::1]:"))
+        if (preferLoopbackFirst) {
+            launchProbeIfNew(normalizedFirst)
+            withTimeoutOrNull(250L) { winner.await() }
+        }
+        if (!winner.isCompleted) {
+            candidates.forEach { launchProbeIfNew(it) }
+        }
 
-        val dynamicCollector = dynamicCandidates?.let { flow ->
-            scope.launch {
-                flow.collect { urls ->
-                    for (u in urls) {
-                        launchProbeIfNew(u)
+        val dynamicCollector = if (!winner.isCompleted) {
+            dynamicCandidates?.let { flow ->
+                scope.launch {
+                    flow.collect { urls ->
+                        for (u in urls) {
+                            launchProbeIfNew(u)
+                        }
                     }
                 }
             }
+        } else {
+            null
         }
 
         if (dynamicCandidates == null) {

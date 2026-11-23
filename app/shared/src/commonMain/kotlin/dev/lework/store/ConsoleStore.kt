@@ -400,11 +400,13 @@ class ConsoleStore(
             endpoints = mergedEndpoints,
             userName = userName,
             lastConnectedAt = epochMillis(),
+            customName = prev?.customName,
         )
         val nextList = (listOf(updated) + existing.filterNot { it.hubId == hub.id }).take(12)
         savePairedHosts(nextList)
         saveActiveHostId(hub.id)
-        _state.update { it.copy(pairedHosts = nextList, activeHostId = hub.id) }
+        val persistedHosts = loadPairedHosts()
+        _state.update { it.copy(pairedHosts = persistedHosts, activeHostId = hub.id) }
     }
 
     fun bootstrapOrConnect() {
@@ -1066,6 +1068,41 @@ class ConsoleStore(
         }
     }
 
+    fun renamePairedHost(hubId: String, newName: String) {
+        val cleanId = hubId.trim()
+        if (cleanId.isEmpty()) return
+        val normalizedCustomName = newName.trim().take(64).ifEmpty { null }
+        val existing = loadPairedHosts()
+        val next = if (existing.any { it.hubId == cleanId }) {
+            existing.map { host ->
+                if (host.hubId == cleanId) host.copy(customName = normalizedCustomName) else host
+            }
+        } else {
+            val current = _state.value
+            val currentHub = current.hub?.takeIf { it.id == cleanId } ?: return
+            val allowLoopback = isDesktopPlatform()
+            val activeEndpoint = current.discoveredBaseUrl
+                .let { normalizeHubBaseUrl(it) }
+                .takeIf { it.isNotBlank() && (allowLoopback || !it.contains("127.0.0.1")) }
+            val created = PairedHost(
+                hubId = currentHub.id,
+                name = currentHub.name,
+                fingerprint = current.discoveredBaseUrl
+                    .takeIf { it.isNotBlank() }
+                    ?.let { HubTrust.observedFor(it) }
+                    .orEmpty(),
+                endpoints = listOfNotNull(activeEndpoint),
+                userName = current.authUserName ?: loadSavedAuthUserName() ?: "Owner",
+                lastConnectedAt = epochMillis(),
+                customName = normalizedCustomName,
+            )
+            (listOf(created) + existing).take(12)
+        }
+        savePairedHosts(next)
+        val persistedHosts = loadPairedHosts()
+        _state.update { it.copy(pairedHosts = persistedHosts) }
+    }
+
     fun removePairedHost(hubId: String) {
         saveHostAccessToken(hubId, null)
         val next = loadPairedHosts().filterNot { it.hubId == hubId }
@@ -1452,7 +1489,7 @@ class ConsoleStore(
             upsertPairedHost(
                 hub = status.hub,
                 fingerprint = observedFp,
-                endpoints = hello.endpoints + hello.relayUrls + listOf(baseUrl),
+                endpoints = (if (isDesktopPlatform()) listOf(baseUrl) + hello.endpoints else hello.endpoints + listOf(baseUrl)) + hello.relayUrls,
                 userName = resolvedUserName,
             )
             val uiEngines = status.engines.filterNot { it.id == "mock" }

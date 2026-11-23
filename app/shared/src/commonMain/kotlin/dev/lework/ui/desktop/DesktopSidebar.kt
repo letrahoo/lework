@@ -34,11 +34,13 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lework.platform.PairedHost
 import dev.lework.protocol.SessionMeta
 import dev.lework.protocol.SessionState
 import dev.lework.store.ConnectionStatus
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.Everforest
+import dev.lework.ui.RenameHostDialog
 import dev.lework.ui.connectionChannelLabel
 import dev.lework.ui.engineAccentColor
 import dev.lework.ui.shortEngineLabel
@@ -54,6 +56,7 @@ internal fun DesktopSidebar(
     onSelectSession: (String) -> Unit,
     onRefresh: () -> Unit,
     onSwitchHost: (String) -> Unit,
+    onRenameHost: (hubId: String, newName: String) -> Unit = { _, _ -> },
     onPairAnotherHost: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onToggleArchivedView: (Boolean) -> Unit,
@@ -62,9 +65,10 @@ internal fun DesktopSidebar(
     onToggleArchiveSession: (sessionId: String, archived: Boolean) -> Unit,
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
+    var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
     var showFilterMenu by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    val hostName = state.hub?.name ?: "本机工作站"
+    val hostName = state.activeHostDisplayName
     val channelText = connectionChannelLabel(state.discoveredBaseUrl, state.tsnetStatus)
     val archivedCount = state.archivedSessionsCount
 
@@ -162,8 +166,14 @@ internal fun DesktopSidebar(
                     modifier = Modifier.padding(7.dp),
                     verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    for (host in state.pairedHosts) {
+                    val hostList = if (state.hub != null && state.pairedHosts.none { it.hubId == state.hub.id }) {
+                        listOf(PairedHost(hubId = state.hub.id, name = state.hub.name)) + state.pairedHosts
+                    } else {
+                        state.pairedHosts
+                    }
+                    for (host in hostList) {
                         val isCurrent = host.hubId == state.hub?.id
+                        val hasCustomAlias = !host.customName.isNullOrBlank() && host.customName.trim() != host.name
                         val itemHover = remember { MutableInteractionSource() }
                         val hovered by itemHover.collectIsHoveredAsState()
                         Surface(
@@ -183,22 +193,43 @@ internal fun DesktopSidebar(
                                 },
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.5.dp),
+                                modifier = Modifier.padding(start = 9.dp, end = 5.dp, top = 5.5.dp, bottom = 5.5.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
                             ) {
-                                Text(
-                                    text = host.name,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (isCurrent) Everforest.Green else Everforest.Fg,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = host.displayName,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isCurrent) Everforest.Green else Everforest.Fg,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (hasCustomAlias) {
+                                        Text(
+                                            text = host.name,
+                                            fontSize = 10.sp,
+                                            color = Everforest.Grey0,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
                                 if (isCurrent) {
                                     Text("当前", fontSize = 10.5.sp, color = Everforest.Green)
                                 }
+                                LeworkIconActionButton(
+                                    icon = Icons.Rounded.Edit,
+                                    tooltip = "重命名主机",
+                                    size = 22.dp,
+                                    iconSize = 13.dp,
+                                    testTag = "desktop_sidebar_rename_host_${host.hubId}",
+                                    onClick = {
+                                        showHostSwitcher = false
+                                        renamingHost = host
+                                    },
+                                )
                             }
                         }
                     }
@@ -710,6 +741,18 @@ internal fun DesktopSidebar(
                 onClick = onRefresh,
             )
         }
+    }
+
+    val targetHost = renamingHost
+    if (targetHost != null) {
+        RenameHostDialog(
+            host = targetHost,
+            onDismiss = { renamingHost = null },
+            onConfirm = { nextName ->
+                renamingHost = null
+                onRenameHost(targetHost.hubId, nextName)
+            },
+        )
     }
 }
 

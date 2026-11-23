@@ -85,6 +85,8 @@ object JvmDesktopRuntime {
     private var stateFile: File = File(System.getProperty("user.home"), ".lework/desktop/client-state.json")
     private var persisted = PersistedDesktopState()
     @Volatile
+    private var localMacHubId: String? = null
+    @Volatile
     private var localMacLoopbackUrl: String? = null
 
     private val _foreground = MutableStateFlow(true)
@@ -250,12 +252,13 @@ object JvmDesktopRuntime {
             val x509 = ByteArrayInputStream(certFile.readBytes()).use { cf.generateCertificate(it) as X509Certificate }
             val fp = MessageDigest.getInstance("SHA-256").digest(x509.encoded).toHex().lowercase()
             val loopback = "https://127.0.0.1:$port"
+            localMacHubId = hubId
             localMacLoopbackUrl = loopback
 
             val nextPins = persisted.pinnedFingerprints + fp
             val nextHostTokens = persisted.hostTokens + (hubId to token)
             val existing = persisted.pairedHosts.firstOrNull { it.hubId == hubId }
-            val mergedEndpoints = (listOf(loopback) + existing?.endpoints.orEmpty()).distinct()
+            val mergedEndpoints = (listOf(loopback) + existing?.endpoints.orEmpty()).distinct().take(8)
             val seededHost = PairedHost(
                 hubId = hubId,
                 name = name,
@@ -263,8 +266,13 @@ object JvmDesktopRuntime {
                 endpoints = mergedEndpoints,
                 userName = existing?.userName ?: "Owner",
                 lastConnectedAt = existing?.lastConnectedAt ?: System.currentTimeMillis(),
+                customName = existing?.customName,
             )
-            val nextHosts = listOf(seededHost) + persisted.pairedHosts.filterNot { it.hubId == hubId }
+            val nextHosts = prioritizeLocalHostEndpoints(
+                hosts = listOf(seededHost) + persisted.pairedHosts.filterNot { it.hubId == hubId },
+                localHubId = hubId,
+                localLoopbackUrl = loopback,
+            )
             val nextActiveId = persisted.activeHostId ?: hubId
             val nextSavedToken = if (nextActiveId == hubId) token else (persisted.savedToken ?: token)
             persisted = persisted.copy(
@@ -292,18 +300,68 @@ object JvmDesktopRuntime {
         _combinedUrls.value = (bonjourUrls + tsnetProxyUrls).distinct()
     }
 
-    fun candidateUrls(): List<String> = synchronized(stateLock) {
-        val activeHostEndpoints = persisted.activeHostId?.let { id ->
-            persisted.pairedHosts.firstOrNull { it.hubId == id }?.endpoints
+    internal fun prioritizeLocalHostEndpoints(
+        hosts: List<PairedHost>,
+        localHubId: String?,
+        localLoopbackUrl: String?,
+    ): List<PairedHost> {
+        if (localHubId.isNullOrBlank() || localLoopbackUrl.isNullOrBlank()) return hosts
+        return hosts.map { host ->
+            if (host.hubId == localHubId) {
+                host.copy(endpoints = (listOf(localLoopbackUrl) + host.endpoints).distinct().take(8))
+            } else {
+                host
+            }
+        }
+    }
+
+    internal fun buildCandidateUrls(
+        activeHostId: String?,
+        pairedHosts: List<PairedHost>,
+        localHubId: String?,
+        localLoopbackUrl: String?,
+        tunnelUrls: List<String>,
+        combinedDiscoveredUrls: List<String>,
+        lastGoodUrl: String?,
+        savedRelayUrls: List<String>,
+    ): List<String> {
+        val activeHostEndpoints = activeHostId?.let { id ->
+            pairedHosts.firstOrNull { it.hubId == id }?.endpoints
         }.orEmpty()
+        val targetingLocalMac = !localLoopbackUrl.isNullOrBlank() &&
+            (activeHostId == null || activeHostId == localHubId)
+        val ordered = if (targetingLocalMac) {
+            listOf(localLoopbackUrl!!) +
+                activeHostEndpoints +
+                tunnelUrls +
+                combinedDiscoveredUrls +
+                listOfNotNull(lastGoodUrl) +
+                savedRelayUrls +
+                listOf("https://127.0.0.1:64450")
+        } else {
+            activeHostEndpoints +
+                listOfNotNull(localLoopbackUrl) +
+                tunnelUrls +
+                combinedDiscoveredUrls +
+                listOfNotNull(lastGoodUrl) +
+                savedRelayUrls +
+                listOf("https://127.0.0.1:64450")
+        }
+        return ordered.distinct()
+    }
+
+    fun candidateUrls(): List<String> = synchronized(stateLock) {
         val tunnelUrls = sshTunnelProcesses.values.map { "https://127.0.0.1:${it.first}" }
-        (activeHostEndpoints +
-            listOfNotNull(localMacLoopbackUrl) +
-            tunnelUrls +
-            _combinedUrls.value +
-            listOfNotNull(persisted.lastGoodUrl) +
-            persisted.savedRelayUrls +
-            listOf("https://127.0.0.1:64450")).distinct()
+        buildCandidateUrls(
+            activeHostId = persisted.activeHostId,
+            pairedHosts = persisted.pairedHosts,
+            localHubId = localMacHubId,
+            localLoopbackUrl = localMacLoopbackUrl,
+            tunnelUrls = tunnelUrls,
+            combinedDiscoveredUrls = _combinedUrls.value,
+            lastGoodUrl = persisted.lastGoodUrl,
+            savedRelayUrls = persisted.savedRelayUrls,
+        )
     }
 
     fun startBonjourDiscovery() {
@@ -422,7 +480,9 @@ object JvmDesktopRuntime {
 
     fun loadPairedHosts(): List<PairedHost> = synchronized(stateLock) { persisted.pairedHosts }
     fun savePairedHosts(hosts: List<PairedHost>) = synchronized(stateLock) {
-        persisted = persisted.copy(pairedHosts = hosts)
+        persisted = persisted.copy(
+            pairedHosts = prioritizeLocalHostEndpoints(hosts, localMacHubId, localMacLoopbackUrl),
+        )
         persistLocked()
     }
 

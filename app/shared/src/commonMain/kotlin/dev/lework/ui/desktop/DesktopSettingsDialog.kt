@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Computer
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,10 +30,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import dev.lework.platform.PairedHost
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.copyTextToClipboard
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.Everforest
+import dev.lework.ui.RenameHostDialog
 import dev.lework.ui.connectionChannelLabel
 import dev.lework.ui.shortEngineLabel
 
@@ -41,11 +44,13 @@ internal fun DesktopSettingsDialog(
     state: ConsoleUiState,
     onDismiss: () -> Unit,
     onSwitchHost: (String) -> Unit,
+    onRenameHost: (hubId: String, newName: String) -> Unit = { _, _ -> },
     onRemoveHost: (String) -> Unit,
     onPairAnotherHost: () -> Unit,
     onLogout: () -> Unit,
 ) {
     var copiedFingerprint by remember { mutableStateOf(false) }
+    var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
     val onlineCount = state.engines.count { it.status.ready }
 
     Dialog(
@@ -126,8 +131,9 @@ internal fun DesktopSettingsDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Row(
+                                    modifier = Modifier.weight(1f),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
                                     Icon(
                                         imageVector = Icons.Rounded.Computer,
@@ -136,11 +142,28 @@ internal fun DesktopSettingsDialog(
                                         modifier = Modifier.size(17.dp),
                                     )
                                     Text(
-                                        text = state.hub?.name ?: "本机工作站",
+                                        text = state.activeHostDisplayName,
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = Everforest.Fg,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
                                     )
+                                    val activeHub = state.hub
+                                    if (activeHub != null) {
+                                        LeworkIconActionButton(
+                                            icon = Icons.Rounded.Edit,
+                                            tooltip = "重命名主机",
+                                            size = 24.dp,
+                                            iconSize = 13.5.dp,
+                                            testTag = "settings_btn_rename_current_host",
+                                            onClick = {
+                                                renamingHost = state.pairedHosts.firstOrNull { it.hubId == activeHub.id }
+                                                    ?: PairedHost(hubId = activeHub.id, name = activeHub.name)
+                                            },
+                                        )
+                                    }
                                 }
                                 Surface(
                                     shape = RoundedCornerShape(999.dp),
@@ -279,6 +302,7 @@ internal fun DesktopSettingsDialog(
                                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     for (host in state.pairedHosts) {
                                         val isCurrent = host.hubId == state.hub?.id
+                                        val hasCustomAlias = !host.customName.isNullOrBlank() && host.customName.trim() != host.name
                                         Surface(
                                             shape = RoundedCornerShape(8.dp),
                                             color = if (isCurrent) Everforest.BgGreen else Everforest.Bg1,
@@ -293,15 +317,27 @@ internal fun DesktopSettingsDialog(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.SpaceBetween,
                                             ) {
-                                                Column(modifier = Modifier.weight(1f)) {
+                                                Column(
+                                                    modifier = Modifier.weight(1f),
+                                                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                                                ) {
                                                     Text(
-                                                        text = host.name,
+                                                        text = host.displayName,
                                                         fontSize = 12.5.sp,
                                                         fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
                                                         color = if (isCurrent) Everforest.Green else Everforest.Fg,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis,
                                                     )
+                                                    if (hasCustomAlias) {
+                                                        Text(
+                                                            text = "默认名称：${host.name}",
+                                                            fontSize = 10.5.sp,
+                                                            color = Everforest.CommentGrey,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                        )
+                                                    }
                                                     host.endpoints.firstOrNull()?.let { ep ->
                                                         Text(
                                                             text = ep,
@@ -313,17 +349,17 @@ internal fun DesktopSettingsDialog(
                                                         )
                                                     }
                                                 }
-                                                if (isCurrent) {
-                                                    Text(
-                                                        text = "当前连接",
-                                                        fontSize = 11.sp,
-                                                        color = Everforest.Green,
-                                                    )
-                                                } else {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                    ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                ) {
+                                                    if (isCurrent) {
+                                                        Text(
+                                                            text = "当前连接",
+                                                            fontSize = 11.sp,
+                                                            color = Everforest.Green,
+                                                        )
+                                                    } else {
                                                         Text(
                                                             text = "切换",
                                                             fontSize = 11.5.sp,
@@ -337,6 +373,16 @@ internal fun DesktopSettingsDialog(
                                                                 }
                                                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                                                         )
+                                                    }
+                                                    LeworkIconActionButton(
+                                                        icon = Icons.Rounded.Edit,
+                                                        tooltip = "重命名主机",
+                                                        size = 24.dp,
+                                                        iconSize = 13.5.dp,
+                                                        testTag = "settings_btn_rename_host_${host.hubId}",
+                                                        onClick = { renamingHost = host },
+                                                    )
+                                                    if (!isCurrent) {
                                                         LeworkIconActionButton(
                                                             icon = Icons.Rounded.Close,
                                                             tooltip = "移除此开发机记录",
@@ -407,6 +453,18 @@ internal fun DesktopSettingsDialog(
                 }
             }
         }
+    }
+
+    val targetHost = renamingHost
+    if (targetHost != null) {
+        RenameHostDialog(
+            host = targetHost,
+            onDismiss = { renamingHost = null },
+            onConfirm = { nextName ->
+                renamingHost = null
+                onRenameHost(targetHost.hubId, nextName)
+            },
+        )
     }
 }
 

@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lework.platform.PairedHost
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.epochMillis
@@ -67,6 +68,7 @@ internal fun TasksSidebarContent(
     onRefresh: () -> Unit,
     onLogout: () -> Unit,
     onSwitchHost: (String) -> Unit = {},
+    onRenameHost: (hubId: String, newName: String) -> Unit = { _, _ -> },
     onPairAnotherHost: () -> Unit = {},
     onDismissSigningReminder: () -> Unit = {},
     onSearchQueryChange: (String) -> Unit = {},
@@ -75,6 +77,7 @@ internal fun TasksSidebarContent(
     onToggleArchiveSession: (sessionId: String, archived: Boolean) -> Unit = { _, _ -> },
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
+    var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
     val remainingSignHours = remember { signingExpiryRemainingHours() }
     val dismissKeyboard = rememberKeyboardDismisser()
     val drawerListState = rememberLazyListState()
@@ -165,7 +168,7 @@ internal fun TasksSidebarContent(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
-                        text = state.hub?.name ?: "本机工作站",
+                        text = state.activeHostDisplayName,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Everforest.Fg,
@@ -207,8 +210,14 @@ internal fun TasksSidebarContent(
                     modifier = Modifier.padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    for (host in state.pairedHosts) {
+                    val hostList = if (state.hub != null && state.pairedHosts.none { it.hubId == state.hub.id }) {
+                        listOf(PairedHost(hubId = state.hub.id, name = state.hub.name)) + state.pairedHosts
+                    } else {
+                        state.pairedHosts
+                    }
+                    for (host in hostList) {
                         val isCurrent = host.hubId == state.hub?.id
+                        val hasCustomAlias = !host.customName.isNullOrBlank() && host.customName.trim() != host.name
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = if (isCurrent) Everforest.BgGreen else Color.Transparent,
@@ -221,21 +230,47 @@ internal fun TasksSidebarContent(
                                 },
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                Text(
-                                    text = host.name,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (isCurrent) Everforest.Green else Everforest.Fg,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f),
-                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = host.displayName,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isCurrent) Everforest.Green else Everforest.Fg,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (hasCustomAlias) {
+                                        Text(
+                                            text = host.name,
+                                            fontSize = 10.sp,
+                                            color = Everforest.Grey0,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
                                 if (isCurrent) {
                                     Text("当前", fontSize = 10.5.sp, color = Everforest.Green)
+                                }
+                                IconButton(
+                                    onClick = {
+                                        showHostSwitcher = false
+                                        renamingHost = host
+                                    },
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .testTag("drawer_rename_host_${host.hubId}"),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Edit,
+                                        contentDescription = "重命名主机",
+                                        tint = Everforest.Grey1,
+                                        modifier = Modifier.size(14.dp),
+                                    )
                                 }
                             }
                         }
@@ -675,6 +710,18 @@ internal fun TasksSidebarContent(
             }
         }
     }
+
+    val targetHost = renamingHost
+    if (targetHost != null) {
+        RenameHostDialog(
+            host = targetHost,
+            onDismiss = { renamingHost = null },
+            onConfirm = { nextName ->
+                renamingHost = null
+                onRenameHost(targetHost.hubId, nextName)
+            },
+        )
+    }
 }
 
 @Composable
@@ -993,6 +1040,137 @@ internal fun RenameSessionDialog(
                     contentColor = Everforest.BgDim,
                 ),
                 modifier = Modifier.testTag("rename_session_confirm"),
+            ) {
+                Text("保存", fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    dismissKeyboard()
+                    onDismiss()
+                },
+            ) {
+                Text("取消", color = Everforest.Grey1)
+            }
+        },
+    )
+}
+
+@Composable
+internal fun RenameHostDialog(
+    host: PairedHost,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var draft by remember(host.hubId, host.displayName) { mutableStateOf(host.displayName) }
+    val dismissKeyboard = rememberKeyboardDismisser()
+
+    AlertDialog(
+        onDismissRequest = {
+            dismissKeyboard()
+            onDismiss()
+        },
+        containerColor = Everforest.Bg1,
+        titleContentColor = Everforest.Fg,
+        textContentColor = Everforest.Grey2,
+        title = {
+            Text(
+                text = "重命名主机",
+                fontSize = 16.5.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "设置易于识别的主机名称（默认名称：${host.name}，仅保存在本客户端）：",
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = Everforest.CommentGrey,
+                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = Everforest.BgDim,
+                    border = BorderStroke(1.dp, Everforest.Bg3),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(modifier = Modifier.weight(1f)) {
+                            if (draft.isEmpty()) {
+                                Text(
+                                    text = "输入主机名称…",
+                                    fontSize = 14.sp,
+                                    color = Everforest.Grey0,
+                                )
+                            }
+                            BasicTextField(
+                                value = draft,
+                                onValueChange = { if (it.length <= 64) draft = it },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        if (draft.trim().isNotEmpty()) {
+                                            dismissKeyboard()
+                                            onConfirm(draft.trim())
+                                        }
+                                    },
+                                ),
+                                textStyle = TextStyle(
+                                    fontSize = 14.sp,
+                                    color = Everforest.Fg,
+                                ),
+                                cursorBrush = SolidColor(Everforest.Green),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("rename_host_input"),
+                            )
+                        }
+                        if (draft.isNotEmpty()) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "清空",
+                                tint = Everforest.CommentGrey,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { draft = "" },
+                            )
+                        }
+                    }
+                }
+                if (!host.customName.isNullOrBlank()) {
+                    Text(
+                        text = "恢复默认名称",
+                        fontSize = 12.sp,
+                        color = Everforest.BoldGold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable {
+                                dismissKeyboard()
+                                onConfirm("")
+                            }
+                            .padding(vertical = 2.dp)
+                            .testTag("rename_host_reset"),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = draft.trim().isNotEmpty(),
+                onClick = {
+                    dismissKeyboard()
+                    onConfirm(draft.trim())
+                },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Everforest.Green,
+                    contentColor = Everforest.BgDim,
+                ),
+                modifier = Modifier.testTag("rename_host_confirm"),
             ) {
                 Text("保存", fontWeight = FontWeight.SemiBold)
             }
