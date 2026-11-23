@@ -489,7 +489,7 @@ internal fun DesktopConsoleApp(
                             onCancel = store::cancelActiveTurn,
                             onClearQueuedPrompts = store::clearQueuedPrompts,
                             onPickImage = { store.pickAndAttachImage() },
-                            onPasteClipboardImages = store::pasteImagesFromClipboard,
+                            onPasteClipboardImages = { store.pasteImagesFromClipboard(notifyWhenEmpty = false) },
                             onRemoveImage = store::removeAttachedImage,
                             onSelectMentionFile = { relPath ->
                                 promptText = replaceTrailingMention(promptText, relPath)

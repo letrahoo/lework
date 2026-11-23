@@ -900,10 +900,27 @@ actual fun readTextFromClipboard(): String? =
 
 actual fun readImagesFromClipboard(maxCount: Int): List<PickedImagePayload> = runCatching {
     val pb = UIPasteboard.generalPasteboard
-    if (!pb.hasImages) return@runCatching emptyList()
     val limit = maxCount.coerceIn(1, 4)
-    val uiImages = pb.images?.mapNotNull { it as? UIImage }?.takeIf { it.isNotEmpty() }
-        ?: listOfNotNull(pb.image)
+    val directImages = if (pb.hasImages) {
+        pb.images?.mapNotNull { it as? UIImage }?.takeIf { it.isNotEmpty() }
+            ?: listOfNotNull(pb.image)
+    } else {
+        emptyList()
+    }
+    val uiImages = directImages.ifEmpty {
+        val fallbackTypes = listOf(
+            "public.png",
+            "public.jpeg",
+            "public.heic",
+            "public.heif",
+            "com.compuserve.gif",
+            "org.webmproject.webp",
+            "public.tiff",
+        )
+        fallbackTypes.firstNotNullOfOrNull { uti ->
+            pb.dataForPasteboardType(uti)?.let { UIImage.imageWithData(it) }
+        }?.let { listOf(it) } ?: emptyList()
+    }
     if (uiImages.isEmpty()) return@runCatching emptyList()
 
     val ts = epochMillis()
@@ -921,15 +938,14 @@ private fun encodeIosClipboardImage(
     val pngData = if (jpegData == null) UIImagePNGRepresentation(image) else null
     val data = jpegData ?: pngData ?: return@runCatching null
     val rawMime = if (jpegData != null) "image/jpeg" else "image/png"
-    val ext = if (jpegData != null) "jpg" else "png"
 
     val len = data.length.toInt()
-    if (len <= 0 || len > 15 * 1024 * 1024) return@runCatching null
+    if (len <= 0 || len > 20 * 1024 * 1024) return@runCatching null
     val rawBytes = data.bytes?.reinterpret<ByteVar>()?.readBytes(len) ?: return@runCatching null
 
     val skiaImg = SkiaImage.makeFromEncoded(rawBytes)
     val thumbB64 = runCatching {
-        val maxThumb = 220
+        val maxThumb = 520
         val scale = minOf(maxThumb.toFloat() / skiaImg.width.toFloat(), maxThumb.toFloat() / skiaImg.height.toFloat(), 1f)
         val tw = (skiaImg.width * scale).toInt().coerceAtLeast(1)
         val th = (skiaImg.height * scale).toInt().coerceAtLeast(1)
@@ -941,7 +957,7 @@ private fun encodeIosClipboardImage(
         )
         val snapshot = surface.makeImageSnapshot()
         val encoded = snapshot.encodeToData(EncodedImageFormat.JPEG, 72) ?: snapshot.encodeToData(EncodedImageFormat.PNG)
-        encoded?.bytes?.let { Base64.encode(it) }
+        encoded?.bytes?.let { Base64.encode(it) }?.takeIf { it.length <= 240_000 }
     }.getOrNull()
 
     val (finalMime, finalBytes) = if (rawBytes.size <= 700_000) {
@@ -974,8 +990,9 @@ private fun encodeIosClipboardImage(
         "image/jpeg" to finalJpg
     }
 
+    val finalExt = if (finalMime == "image/png") "png" else "jpg"
     PickedImagePayload(
-        fileName = "clipboard_${ts}_$index.$ext",
+        fileName = "clipboard_${ts}_$index.$finalExt",
         mimeType = finalMime,
         dataBase64 = Base64.encode(finalBytes),
         thumbnailBase64 = thumbB64,

@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.epochMillis
+import dev.lework.platform.isDesktopPlatform
 import dev.lework.platform.loadSavedRelayUrls
 import dev.lework.protocol.*
 import dev.lework.store.*
@@ -713,9 +714,15 @@ private fun MessageTimelineRow(
     when (item) {
         is ChatTimelineItem.User -> {
             var lightboxIdx by remember(item.id) { mutableStateOf<Int?>(null) }
+            val isDesktop = isDesktopPlatform()
             val hasPreviews = item.imagePreviews.isNotEmpty()
             val isAutoPlaceholderOnly =
                 hasPreviews && Regex("^（已发送\\s*\\d+\\s*张图片）$").matches(item.text.trim())
+            val bubbleMaxWidth = when {
+                isDesktop && item.imagePreviews.size > 1 -> 460.dp
+                isDesktop && hasPreviews -> 360.dp
+                else -> 316.dp
+            }
 
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -725,7 +732,7 @@ private fun MessageTimelineRow(
                     color = Everforest.Bg2,
                     shape = RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp),
                     border = BorderStroke(1.dp, Everforest.Bg3),
-                    modifier = Modifier.widthIn(max = 316.dp),
+                    modifier = Modifier.widthIn(max = bubbleMaxWidth),
                 ) {
                     Column(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -740,9 +747,13 @@ private fun MessageTimelineRow(
                                 item.imagePreviews.forEachIndexed { idx, b64 ->
                                     val bmp = rememberBase64ImageBitmap(b64)
                                     val thumbModifier = if (item.imagePreviews.size == 1) {
-                                        Modifier.size(width = 172.dp, height = 124.dp)
+                                        if (isDesktop) {
+                                            Modifier.size(width = 220.dp, height = 156.dp)
+                                        } else {
+                                            Modifier.size(width = 172.dp, height = 124.dp)
+                                        }
                                     } else {
-                                        Modifier.size(82.dp)
+                                        Modifier.size(if (isDesktop) 96.dp else 82.dp)
                                     }
                                     Surface(
                                         shape = RoundedCornerShape(12.dp),

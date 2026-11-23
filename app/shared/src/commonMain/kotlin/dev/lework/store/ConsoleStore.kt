@@ -2399,13 +2399,18 @@ class ConsoleStore(
         return true
     }
 
-    fun pasteImagesFromClipboard(): Boolean {
+    fun pasteImagesFromClipboard(notifyWhenEmpty: Boolean = false): Boolean {
         val cur = _state.value
         val engineSupportsImages = cur.selectedEngine?.capabilities?.images != false
         val remaining = (4 - cur.composerAttachedImages.size).coerceAtLeast(0)
         val readLimit = if (engineSupportsImages && remaining > 0) 4 else 1
         val clipboardImages = readImagesFromClipboard(maxCount = readLimit)
-        if (clipboardImages.isEmpty()) return false
+        if (clipboardImages.isEmpty()) {
+            if (notifyWhenEmpty) {
+                _state.update { it.copy(promptErrorText = "剪贴板中暂无图片，请先复制图片或截图") }
+            }
+            return false
+        }
         return attachClipboardImages(clipboardImages)
     }
 

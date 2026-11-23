@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { AgentEvent, SessionMeta, SubagentSummary } from '@lework/protocol'
 import type { ClaudeLiveSessionMeta } from '../terminal-bridge.ts'
-import { parseStagedImagePromptHeader } from '../attachment-store.ts'
+import { downscaleInlineImageBase64, parseStagedImagePromptHeader } from '../attachment-store.ts'
 import {
   classifyRawToolCall,
   collectRecentFiles,
@@ -65,7 +65,15 @@ export function scanClaudeSessions(
               !txt.startsWith('Base directory for this skill:') &&
               !isClaudeInterruptText(txt)
             ) {
-              promptTitle = txt.replace(/\s+/g, ' ').trim().slice(0, 48)
+              const cleaned = parseStagedImagePromptHeader(txt, false).cleanText
+              promptTitle = cleaned.replace(/\s+/g, ' ').trim().slice(0, 48)
+            } else if (!txt && Array.isArray(o.message.content)) {
+              const imgCount = (o.message.content as Array<{ type?: unknown }>).filter(
+                item => item?.type === 'image',
+              ).length
+              if (imgCount > 0) {
+                promptTitle = `（已发送 ${Math.min(imgCount, 4)} 张图片）`
+              }
             }
           }
           if (o.message?.model) model = o.message.model
@@ -681,18 +689,37 @@ function extractClaudeInlineImagePreviews(content: unknown): { count: number; pr
     const obj = item as {
       type?: unknown
       data?: unknown
-      source?: { type?: unknown; data?: unknown }
+      mimeType?: unknown
+      media_type?: unknown
+      source?: { type?: unknown; data?: unknown; media_type?: unknown; mediaType?: unknown }
     }
     if (obj.type === 'image') {
       count++
+      if (previews.length >= 4) continue
       const rawData =
         typeof obj.data === 'string'
-          ? obj.data
+          ? obj.data.trim()
           : typeof obj.source?.data === 'string'
-            ? obj.source.data
+            ? obj.source.data.trim()
             : null
-      if (rawData && rawData.length <= 260_000 && previews.length < 4) {
+      if (!rawData) continue
+      const mediaType =
+        typeof obj.source?.media_type === 'string'
+          ? obj.source.media_type
+          : typeof obj.source?.mediaType === 'string'
+            ? obj.source.mediaType
+            : typeof obj.media_type === 'string'
+              ? obj.media_type
+              : typeof obj.mimeType === 'string'
+                ? obj.mimeType
+                : undefined
+      if (rawData.length <= 260_000) {
         previews.push(rawData)
+      } else {
+        const downscaled = downscaleInlineImageBase64(rawData, mediaType)
+        if (downscaled) {
+          previews.push(downscaled)
+        }
       }
     }
   }
