@@ -31,6 +31,7 @@ export interface LiveTerminalInspection {
   liveStatusText?: string
   liveMode?: SessionMode
   pendingPermission?: DetectedTerminalPermission
+  hasCancelHint?: boolean
 }
 
 export type TerminalCommandRunner = (
@@ -213,12 +214,14 @@ export class TerminalBridge {
     const pendingPermission = parseTerminalPermissionPrompt(params.nativeId, lines)
     const liveStatusText = pendingPermission ? undefined : parseLiveSpinnerLine(lines)
     const liveMode = parseTerminalSessionMode(lines)
+    const hasCancelHint = pendingPermission ? false : parseTerminalCancelHint(lines)
 
     return {
       targetReachable: true,
       liveStatusText,
       liveMode,
       pendingPermission,
+      hasCancelHint,
     }
   }
 
@@ -396,7 +399,14 @@ export class TerminalBridge {
   }): Promise<boolean> {
     if (process.platform !== 'darwin' && process.platform !== 'linux') return false
     this.agyProcCache = null
-    const target = await this.findTarget(params)
+    if (params.claudeRuntime?.pid) {
+      this.pidTtyCache.delete(params.claudeRuntime.pid)
+    }
+    let target = await this.findTarget(params)
+    if (!target && this.topologyCache) {
+      this.topologyCache = null
+      target = await this.findTarget(params)
+    }
     if (!target) return false
     await this.sendRawText(target, '\u001b')
     return true
@@ -1178,6 +1188,16 @@ export function parseTerminalPermissionPrompt(
  *   `⏵⏵ auto mode on`
  *   `⏵⏵ bypass permissions on`
  */
+export function parseTerminalCancelHint(lines: string[]): boolean {
+  const bottom = lines
+    .map(l => l.trim())
+    .filter(Boolean)
+    .slice(-8)
+    .join('\n')
+    .toLowerCase()
+  return /\besc\s+to\s+(cancel|interrupt)\b/.test(bottom)
+}
+
 export function parseTerminalSessionMode(lines: string[]): SessionMode | undefined {
   const bottom = lines.slice(-6).join('\n').toLowerCase()
   if (bottom.includes('plan mode on') || /⏸\s*plan\b/.test(bottom)) return 'plan'

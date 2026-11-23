@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import {
   TerminalBridge,
   parseLiveSpinnerLine,
+  parseTerminalCancelHint,
   parseTerminalPermissionPrompt,
   parseTerminalSessionMode,
   sanitizeTerminalPromptText,
@@ -380,6 +381,9 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
     expect(parseTerminalSessionMode(['> ', 'esc to cancel   auto · Gemini 4 Carbon · high'])).toBe('auto')
     expect(parseTerminalSessionMode(['❯ ', '  ⏵⏵ bypass permissions on'])).toBe('bypassPermissions')
     expect(parseTerminalSessionMode(['❯ '])).toBeUndefined()
+    expect(parseTerminalCancelHint(['> ', 'esc to cancel   auto · Gemini 4 Carbon · high'])).toBe(true)
+    expect(parseTerminalCancelHint(['❯ ', 'esc to interrupt'])).toBe(true)
+    expect(parseTerminalCancelHint(['> ', '? for shortcuts   auto · Gemini 4 Carbon · high'])).toBe(false)
   })
 
   it('[T7.1] disambiguates multiple live AGY sessions in same cwd via presence/*.lock, strips control bytes, and delivers single/multi-line prompts without colliding with closed sessions', async () => {

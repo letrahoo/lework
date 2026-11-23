@@ -56,6 +56,8 @@ interface ManagedSession {
   events: AgentEvent[]
   baseSeq: number
   queuedTurns: QueuedTurnItem[]
+  turnGeneration: number
+  cancelled?: boolean
   closed?: boolean
   nativeId?: string
   providerId?: string
@@ -306,6 +308,7 @@ export class SessionManager {
       events: [...seed],
       baseSeq: seed[0]?.seq ?? 0,
       queuedTurns: [],
+      turnGeneration: 0,
       ...(params.resumeNativeId ? { nativeId: params.resumeNativeId } : {}),
       ...(params.providerId ? { providerId: params.providerId } : {}),
       extraEnv,
@@ -709,7 +712,11 @@ export class SessionManager {
       // Non-git directories gracefully skip checkpointing
     }
 
+    managed.turnGeneration++
+    const myGen = managed.turnGeneration
+    managed.cancelled = false
     managed.meta.state = 'running'
+    managed.meta.liveStatusText = undefined
     managed.meta.turnStartedAt = Date.now()
     managed.meta = this.decorateManagedMeta(managed)
     this.callbacks.onSessionUpdated(managed.meta)
@@ -719,6 +726,9 @@ export class SessionManager {
     void managed.handle
       .prompt(turnId, rawText, stagedImages.length > 0 ? stagedImages : undefined)
       .catch(err => {
+        if (managed.closed || managed.cancelled || managed.turnGeneration !== myGen) {
+          return
+        }
         turnHadError = true
         const msg = formatEngineTurnError(err)
         this.appendEvent(managed, { type: 'error', message: msg })
@@ -727,7 +737,16 @@ export class SessionManager {
       })
       .finally(() => {
         this.sleepInhibitor.release()
-        if (managed.closed || !this.sessions.has(sessionId)) {
+        if (managed.closed || !this.sessions.has(sessionId) || managed.turnGeneration !== myGen) {
+          return
+        }
+        if (managed.cancelled) {
+          managed.meta.state = 'idle'
+          managed.meta.liveStatusText = undefined
+          managed.meta.turnStartedAt = undefined
+          managed.meta.queuedPrompts = undefined
+          managed.meta = this.decorateManagedMeta(managed)
+          this.callbacks.onSessionUpdated(managed.meta)
           return
         }
         const nextQueued = !turnHadError ? managed.queuedTurns.shift() : undefined
@@ -739,12 +758,13 @@ export class SessionManager {
             reasoningEffort: nextQueued.reasoningEffort,
             mode: nextQueued.mode,
           }).finally(() => {
-            if (!managed.closed && this.sessions.has(sessionId)) {
+            if (!managed.closed && !managed.cancelled && this.sessions.has(sessionId) && managed.turnGeneration === myGen) {
               this.startManagedTurn(managed, nextQueued)
             }
           })
         } else if (managed.meta.state === 'running' || managed.meta.state === 'waiting_permission') {
           managed.meta.state = 'idle'
+          managed.meta.liveStatusText = undefined
           managed.meta.turnStartedAt = undefined
           managed.meta = this.decorateManagedMeta(managed)
           this.callbacks.onSessionUpdated(managed.meta)
@@ -779,16 +799,26 @@ export class SessionManager {
     if (!managed && sessionId.startsWith('host:')) {
       const ok = await this.hostInspector.cancelLiveHostSession(sessionId)
       if (!ok) {
-        throw new HubRpcError(ErrorCode.NotFound, `Active terminal for "${sessionId}" not found`)
+        throw new HubRpcError(
+          ErrorCode.NotFound,
+          '未找到正在运行的本机 iTerm2 或 tmux 终端会话，请直接在电脑终端停止',
+        )
       }
       return
     }
     const req = this.requireSession(sessionId)
+    req.cancelled = true
+    req.turnGeneration++
     req.queuedTurns = []
     req.meta.queuedPrompts = undefined
+    req.meta.liveStatusText = undefined
+    req.meta.turnStartedAt = undefined
     await req.handle.cancel()
     req.meta.state = 'idle'
+    req.meta.liveStatusText = undefined
     req.meta.turnStartedAt = undefined
+    req.meta.queuedPrompts = undefined
+    req.meta.updatedAt = Date.now()
     req.meta = this.decorateManagedMeta(req)
     this.callbacks.onSessionUpdated(req.meta)
   }
@@ -1185,6 +1215,13 @@ export class SessionManager {
   }
 
   private appendEvent(managed: ManagedSession, body: AgentEventBody): void {
+    if (
+      managed.cancelled &&
+      body.type === 'session.state' &&
+      (body.state === 'running' || body.state === 'waiting_permission')
+    ) {
+      return
+    }
     const normalizedBody: AgentEventBody =
       body.type === 'error' ? { ...body, message: formatEngineTurnError(body.message) } : body
     const seq = managed.meta.lastSeq + 1
@@ -1195,6 +1232,9 @@ export class SessionManager {
       managed.meta.state = normalizedBody.state
       managed.meta.turnStartedAt =
         normalizedBody.state === 'running' ? (managed.meta.turnStartedAt ?? Date.now()) : undefined
+      if (normalizedBody.state !== 'running' && normalizedBody.state !== 'waiting_permission') {
+        managed.meta.liveStatusText = undefined
+      }
       managed.meta = this.decorateManagedMeta(managed)
       this.callbacks.onSessionUpdated(managed.meta)
     }

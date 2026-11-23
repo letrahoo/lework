@@ -59,7 +59,12 @@ export function scanClaudeSessions(
           }
           if (!promptTitle && o.type === 'user' && o.message?.content) {
             const txt = extractClaudeText(o.message.content)
-            if (txt && !txt.startsWith('<') && !txt.startsWith('Base directory for this skill:')) {
+            if (
+              txt &&
+              !txt.startsWith('<') &&
+              !txt.startsWith('Base directory for this skill:') &&
+              !isClaudeInterruptText(txt)
+            ) {
               promptTitle = txt.replace(/\s+/g, ' ').trim().slice(0, 48)
             }
           }
@@ -471,8 +476,6 @@ export function parseClaudeTranscript(
         continue
       }
       if (o.type === 'user' && o.message?.role === 'user') {
-        isRunning = true
-        if (!turnStartedAt) turnStartedAt = ts
         if (Array.isArray(o.message.content)) {
           for (const item of o.message.content as Array<Record<string, unknown>>) {
             if (item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
@@ -493,6 +496,25 @@ export function parseClaudeTranscript(
             }
           }
         }
+        if (isClaudeUserMessageInterrupted(o.message.content)) {
+          isRunning = false
+          turnStartedAt = undefined
+          for (const callId of openTools) {
+            events.push({
+              seq: seq++,
+              sessionId,
+              ts,
+              type: 'tool.update',
+              toolCallId: callId,
+              status: 'failed',
+              output: '已停止',
+            })
+          }
+          openTools.clear()
+          continue
+        }
+        isRunning = true
+        if (!turnStartedAt) turnStartedAt = ts
         const txt = extractClaudeText(o.message.content)
         const inlineImages = extractClaudeInlineImagePreviews(o.message.content)
         if (
@@ -693,20 +715,47 @@ export function extractClaudeToolResultText(content: unknown): string {
   return ''
 }
 
+function isClaudeInterruptText(text: string): boolean {
+  return /^\[Request interrupted by user(?:\b|\s|\])/i.test(text.trim())
+}
+
+export function isClaudeUserMessageInterrupted(content: unknown): boolean {
+  const txt = extractClaudeText(content)
+  if (txt && isClaudeInterruptText(txt)) return true
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      if (!item || typeof item !== 'object') continue
+      const obj = item as { type?: unknown; is_error?: unknown; content?: unknown; text?: unknown }
+      if (obj.type === 'text' && typeof obj.text === 'string' && isClaudeInterruptText(obj.text)) {
+        return true
+      }
+      if (obj.type === 'tool_result' && obj.is_error === true) {
+        const resTxt = extractClaudeToolResultText(obj.content)
+        if (resTxt && isClaudeInterruptText(resTxt)) {
+          return true
+        }
+      }
+    }
+  }
+  return false
+}
+
 export function isClaudeTailActivelyRunning(tailLines: string[]): boolean {
   for (let i = tailLines.length - 1; i >= 0; i--) {
     try {
       const o = JSON.parse(tailLines[i]!) as {
         type?: string
         subtype?: string
-        message?: { role?: string; stop_reason?: string | null }
+        message?: { role?: string; stop_reason?: string | null; content?: unknown }
       }
       if (o.type === 'system' && o.subtype === 'turn_duration') return false
       if (o.type === 'api-request') return true
       if (o.type === 'assistant' || o.message?.role === 'assistant') {
         return o.message?.stop_reason === 'tool_use'
       }
-      if (o.type === 'user') return true
+      if (o.type === 'user') {
+        return !isClaudeUserMessageInterrupted(o.message?.content)
+      }
     } catch {
       // ignore non-json
     }

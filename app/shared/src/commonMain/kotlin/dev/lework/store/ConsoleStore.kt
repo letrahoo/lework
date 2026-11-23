@@ -84,6 +84,7 @@ class ConsoleStore(
     private var subagentInspectJob: Job? = null
     private var subagentInspectToken: Long = 0L
     private var subscribedSubagentId: String? = null
+    private var cancellingSessionId: String? = null
 
     private fun switchSubscriptionTo(nextSessionId: String?) {
         val prev = subscribedSessionId
@@ -2802,8 +2803,83 @@ class ConsoleStore(
 
     fun cancelActiveTurn() {
         val activeId = _state.value.activeSessionId ?: return
+        if (cancellingSessionId == activeId) return
+        cancellingSessionId = activeId
+        val prevLiveStatus = _state.value.sessions.firstOrNull { it.id == activeId }?.liveStatusText
+        _state.update { s ->
+            s.copy(
+                promptErrorText = null,
+                sessions = s.sessions.map { meta ->
+                    if (meta.id == activeId) {
+                        meta.copy(liveStatusText = "正在停止…")
+                    } else {
+                        meta
+                    }
+                },
+            )
+        }
         scope.launch {
-            runCatching { rpc.cancelSession(activeId) }
+            try {
+                rpc.cancelSession(activeId)
+                _state.update { s ->
+                    val prevTranscript = s.transcripts[activeId]
+                    val updatedTranscripts = if (prevTranscript != null && prevTranscript.pendingPermissions.isNotEmpty()) {
+                        s.transcripts + (activeId to prevTranscript.copy(pendingPermissions = emptyList()))
+                    } else {
+                        s.transcripts
+                    }
+                    s.copy(
+                        promptErrorText = null,
+                        approvalErrorText = if (s.activeSessionId == activeId) null else s.approvalErrorText,
+                        sessions = s.sessions.map { meta ->
+                            if (meta.id == activeId) {
+                                meta.copy(
+                                    state = SessionState.IDLE,
+                                    liveStatusText = null,
+                                    turnStartedAt = null,
+                                    queuedPrompts = null,
+                                )
+                            } else {
+                                meta
+                            }
+                        },
+                        transcripts = updatedTranscripts,
+                    )
+                }
+                reconcileDesktopRunningWarmSubscriptions(_state.value.sessions)
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+                _state.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map { meta ->
+                            if (meta.id == activeId && meta.liveStatusText == "正在停止…") {
+                                meta.copy(liveStatusText = prevLiveStatus)
+                            } else {
+                                meta
+                            }
+                        },
+                        promptErrorText = "停止请求已中断，请重试",
+                    )
+                }
+            } catch (t: Throwable) {
+                val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "停止任务失败，请检查主机连接或直接在电脑终端停止"
+                _state.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map { meta ->
+                            if (meta.id == activeId && meta.liveStatusText == "正在停止…") {
+                                meta.copy(liveStatusText = prevLiveStatus)
+                            } else {
+                                meta
+                            }
+                        },
+                        promptErrorText = errMsg,
+                    )
+                }
+            } finally {
+                if (cancellingSessionId == activeId) {
+                    cancellingSessionId = null
+                }
+            }
         }
     }
 

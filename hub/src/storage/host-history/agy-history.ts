@@ -419,6 +419,20 @@ export function parseAgyTranscript(
   const recentUserTexts: string[] = []
   const lines = readFullSessionLines(filePath)
   let seq = 0
+  const failOpenTools = (ts: number, output = '已停止') => {
+    for (const callId of pendingToolIds) {
+      events.push({
+        seq: seq++,
+        sessionId,
+        ts,
+        type: 'tool.update',
+        toolCallId: callId,
+        status: 'failed',
+        output,
+      })
+    }
+    pendingToolIds = []
+  }
   for (const line of lines) {
     try {
       const o = JSON.parse(line) as {
@@ -433,6 +447,9 @@ export function parseAgyTranscript(
         tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown; args?: unknown }>
       }
       const ts = o.created_at ? Date.parse(o.created_at) || Date.now() : Date.now()
+      const upperStatus = typeof o.status === 'string' ? o.status.toUpperCase() : ''
+      const upperType = typeof o.type === 'string' ? o.type.toUpperCase() : ''
+      const stepCancelled = isAgyCancelledStatus(upperStatus) || AGY_CANCELLED_STATUSES.has(upperType)
       if (o.type === 'USER_INPUT' && typeof o.content === 'string') {
         const sel = extractLatestAgyModelSelection(o.content)
         if (sel) latestModelRaw = sel
@@ -477,8 +494,18 @@ export function parseAgyTranscript(
           isRunning = true
           turnStartedAt = ts
         }
+        if (stepCancelled) {
+          failOpenTools(ts)
+          isRunning = false
+          turnStartedAt = undefined
+        }
       } else if (o.type === 'PLANNER_RESPONSE') {
-        pendingToolIds = []
+        const plannerAborted = stepCancelled || upperStatus === 'ERROR' || upperStatus === 'FAILED'
+        if (plannerAborted) {
+          failOpenTools(ts)
+        } else {
+          pendingToolIds = []
+        }
         if (typeof o.thinking === 'string' && o.thinking.trim()) {
           events.push({
             seq: seq++,
@@ -498,7 +525,9 @@ export function parseAgyTranscript(
               const rawInput = cleanArgsObj ? JSON.stringify(cleanArgsObj) : undefined
               const normalized = classifyRawToolCall(tc.name, rawInput)
               const callId = tc.id ?? `tc_${o.step_index ?? seq}_${tc.name}`
-              pendingToolIds.push(callId)
+              if (!plannerAborted) {
+                pendingToolIds.push(callId)
+              }
               events.push({
                 seq: seq++,
                 sessionId,
@@ -507,8 +536,9 @@ export function parseAgyTranscript(
                 toolCallId: callId,
                 title: normalized.title,
                 kind: normalized.kind,
-                status: 'in_progress',
+                status: plannerAborted ? 'failed' : 'in_progress',
                 input: normalized.input?.slice(0, 1600),
+                ...(plannerAborted ? { output: '已停止' } : {}),
               })
             }
           }
@@ -533,25 +563,36 @@ export function parseAgyTranscript(
             outputTokens: o.output_tokens,
           })
         }
-        isRunning = hasTools
+        isRunning = plannerAborted ? false : hasTools
         if (!isRunning) turnStartedAt = undefined
       } else if (
         (o.type === 'GENERIC' || o.type === 'TOOL_RESPONSE') &&
         typeof o.content === 'string'
       ) {
-        isRunning = true
         const callId = pendingToolIds.shift()
         if (callId) {
+          const failed = stepCancelled || upperStatus === 'ERROR' || upperStatus === 'FAILED'
           events.push({
             seq: seq++,
             sessionId,
             ts,
             type: 'tool.update',
             toolCallId: callId,
-            status: o.status === 'ERROR' ? 'failed' : 'completed',
-            output: o.content.slice(0, 1600),
+            status: failed ? 'failed' : 'completed',
+            output: o.content.trim() ? o.content.slice(0, 1600) : stepCancelled ? '已停止' : '',
           })
         }
+        if (stepCancelled) {
+          failOpenTools(ts)
+          isRunning = false
+          turnStartedAt = undefined
+        } else {
+          isRunning = true
+        }
+      } else if (stepCancelled) {
+        failOpenTools(ts)
+        isRunning = false
+        turnStartedAt = undefined
       }
     } catch {
       // ignore
@@ -882,6 +923,12 @@ export function normalizeAgyArgs(raw: unknown): Record<string, unknown> | undefi
   return out
 }
 
+const AGY_CANCELLED_STATUSES = new Set(['CANCELLED', 'CANCELED', 'INTERRUPTED', 'ABORTED'])
+
+function isAgyCancelledStatus(status?: string): boolean {
+  return typeof status === 'string' && AGY_CANCELLED_STATUSES.has(status.toUpperCase())
+}
+
 export function isAgyTailActivelyRunning(tailLines: string[]): boolean {
   for (let i = tailLines.length - 1; i >= 0; i--) {
     try {
@@ -890,7 +937,16 @@ export function isAgyTailActivelyRunning(tailLines: string[]): boolean {
         status?: string
         tool_calls?: unknown[]
       }
-      if (o.status === 'ERROR' || o.status === 'CANCELLED') return false
+      const upperStatus = typeof o.status === 'string' ? o.status.toUpperCase() : ''
+      const upperType = typeof o.type === 'string' ? o.type.toUpperCase() : ''
+      if (
+        upperStatus === 'ERROR' ||
+        upperStatus === 'FAILED' ||
+        isAgyCancelledStatus(upperStatus) ||
+        AGY_CANCELLED_STATUSES.has(upperType)
+      ) {
+        return false
+      }
       if (o.type === 'PLANNER_RESPONSE') {
         return Array.isArray(o.tool_calls) && o.tool_calls.length > 0
       }
