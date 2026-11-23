@@ -14,6 +14,7 @@
     "check": "pnpm -r check",
     "hub": "pnpm --filter @lework/hub start",
     "desktop": "./app/gradlew -p ./app :desktopApp:run",
+    "desktop:install": "bash ./scripts/desktop-install.sh",
     "desktop:dmg": "./app/gradlew -p ./app :desktopApp:packageDmg",
     "install:cli": "node ./hub/bin/hub.js install-cli"
   },
