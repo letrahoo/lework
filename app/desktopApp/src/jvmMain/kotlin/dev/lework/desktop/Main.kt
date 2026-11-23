@@ -41,7 +41,9 @@ fun main(args: Array<String>) {
         val uiState by store.state.collectAsState()
         var openSettingsSignal by remember { mutableIntStateOf(0) }
         var toggleSidebarSignal by remember { mutableIntStateOf(0) }
-        val hostTitle = uiState.hub?.name?.takeIf { it.isNotBlank() }?.let { "Lework — $it" } ?: "Lework"
+        val hostTitle = uiState.hub?.let {
+            uiState.activeHostDisplayName.takeIf { name -> name.isNotBlank() }
+        }?.let { "Lework — $it" } ?: "Lework"
 
         val windowState = rememberWindowState(
             position = WindowPosition.Aligned(Alignment.Center),
@@ -113,7 +115,7 @@ fun main(args: Array<String>) {
                         Separator()
                         Menu("切换已连接主机") {
                             for (host in uiState.pairedHosts) {
-                                val label = if (host.hubId == uiState.hub?.id) "✓ ${host.name}" else host.name
+                                val label = if (host.hubId == uiState.hub?.id) "✓ ${host.displayName}" else host.displayName
                                 Item(
                                     text = label,
                                     onClick = { store.switchPairedHost(host.hubId) },

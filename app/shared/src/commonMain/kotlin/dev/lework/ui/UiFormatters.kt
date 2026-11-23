@@ -75,12 +75,30 @@ internal fun isTailscaleEndpoint(baseUrl: String, tsnetStatus: MobileTsnetStatus
     return false
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+internal fun isLoopbackEndpoint(baseUrl: String, tsnetStatus: MobileTsnetStatus? = null): Boolean {
+    val trimmed = baseUrl.trim()
+    if (trimmed.isEmpty()) return false
+    if (isTailscaleEndpoint(trimmed, tsnetStatus)) return false
+    val authority = trimmed
+        .substringAfter("://", trimmed)
+        .substringBefore('/')
+        .substringBefore('?')
+        .substringBefore('#')
+    val host = if (authority.startsWith("[")) {
+        val closeIdx = authority.indexOf(']')
+        if (closeIdx > 0) authority.substring(0, closeIdx + 1) else authority
+    } else {
+        authority.substringBefore(':')
+    }.lowercase()
+    return host == "127.0.0.1" || host == "localhost" || host == "[::1]"
+}
+
 internal fun connectionChannelLabel(
     baseUrl: String,
     tsnetStatus: MobileTsnetStatus? = null,
 ): String = when {
     isTailscaleEndpoint(baseUrl, tsnetStatus) -> "Tailscale 内网"
+    isLoopbackEndpoint(baseUrl, tsnetStatus) -> "本机直连"
     loadSavedRelayUrls().any { it.isNotBlank() && baseUrl.startsWith(it) } -> "远程中继"
     baseUrl.isNotBlank() -> "局域网直连"
     else -> "已连接"

@@ -1224,4 +1224,109 @@ class ConsoleStoreStateTest {
         val hosts = dev.lework.platform.JvmDesktopRuntime.parseSshConfigHosts(sampleConfig)
         assertEquals(listOf("devbox", "devbox-01", "gpu-node"), hosts)
     }
+
+    @Test
+    fun `T14_2 renamePairedHost persists custom alias across reconnects and resets cleanly on blank`() = runTest {
+        val transport = FakeHubTransport().apply {
+            customHubName = "AB12CD34EF"
+        }
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            val hubId = store.state.value.hub?.id ?: error("Expected connected hub")
+            assertEquals("AB12CD34EF", store.state.value.activeHostDisplayName)
+
+            // 1. Rename paired host -> updates activeHostDisplayName and persists customName
+            store.renamePairedHost(hubId, "  MacBook Pro 工作站  ")
+            assertEquals("MacBook Pro 工作站", store.state.value.activeHostDisplayName)
+            assertEquals("MacBook Pro 工作站", JvmPlatformTestHooks.pairedHosts.first { it.hubId == hubId }.customName)
+            assertEquals("AB12CD34EF", JvmPlatformTestHooks.pairedHosts.first { it.hubId == hubId }.name)
+
+            // 2. Subsequent reconnect / hub.hello with raw hostname MUST NOT overwrite user's custom alias!
+            JvmPlatformTestHooks.setForeground(false)
+            runCurrent()
+            transport.emitDisconnected("sleep")
+            runCurrent()
+            JvmPlatformTestHooks.setForeground(true)
+            runCurrent()
+            assertEquals(ConnectionStatus.CONNECTED, store.state.value.connectionStatus)
+            assertEquals("MacBook Pro 工作站", store.state.value.activeHostDisplayName)
+            assertEquals("MacBook Pro 工作站", JvmPlatformTestHooks.pairedHosts.first { it.hubId == hubId }.customName)
+
+            // 3. Passing blank clears customName and restores default Hub name
+            store.renamePairedHost(hubId, "   ")
+            assertEquals("AB12CD34EF", store.state.value.activeHostDisplayName)
+            assertNull(JvmPlatformTestHooks.pairedHosts.first { it.hubId == hubId }.customName)
+
+            // 4. Even if pairedHosts was emptied while connected, renamePairedHost upserts from state.hub
+            JvmPlatformTestHooks.pairedHosts = emptyList()
+            store.renamePairedHost(hubId, "备用开发机")
+            assertEquals("备用开发机", store.state.value.activeHostDisplayName)
+            assertEquals(1, JvmPlatformTestHooks.pairedHosts.size)
+            assertEquals("备用开发机", JvmPlatformTestHooks.pairedHosts.first().displayName)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
+
+    @Test
+    fun `T14_3 desktop local Mac Hub prioritizes loopback endpoint ahead of LAN IPs while preserving remote host priority`() {
+        val localHubId = "hub_local_mac"
+        val remoteHubId = "hub_remote_devbox"
+        val loopback = "https://127.0.0.1:64450"
+        val hosts = listOf(
+            dev.lework.platform.PairedHost(
+                hubId = localHubId,
+                name = "MacBook Pro",
+                endpoints = listOf("https://192.168.10.15:64450", loopback),
+            ),
+            dev.lework.platform.PairedHost(
+                hubId = remoteHubId,
+                name = "Remote Devbox",
+                endpoints = listOf("https://192.168.10.20:64450"),
+            ),
+        )
+
+        val prioritized = dev.lework.platform.JvmDesktopRuntime.prioritizeLocalHostEndpoints(
+            hosts = hosts,
+            localHubId = localHubId,
+            localLoopbackUrl = loopback,
+        )
+        assertEquals(
+            listOf(loopback, "https://192.168.10.15:64450"),
+            prioritized.first { it.hubId == localHubId }.endpoints,
+        )
+        assertEquals(
+            listOf("https://192.168.10.20:64450"),
+            prioritized.first { it.hubId == remoteHubId }.endpoints,
+        )
+
+        val localCandidates = dev.lework.platform.JvmDesktopRuntime.buildCandidateUrls(
+            activeHostId = localHubId,
+            pairedHosts = hosts,
+            localHubId = localHubId,
+            localLoopbackUrl = loopback,
+            tunnelUrls = emptyList(),
+            combinedDiscoveredUrls = listOf("https://192.168.10.15:64450"),
+            lastGoodUrl = "https://192.168.10.15:64450",
+            savedRelayUrls = emptyList(),
+        )
+        assertEquals(loopback, localCandidates.first())
+
+        val remoteCandidates = dev.lework.platform.JvmDesktopRuntime.buildCandidateUrls(
+            activeHostId = remoteHubId,
+            pairedHosts = prioritized,
+            localHubId = localHubId,
+            localLoopbackUrl = loopback,
+            tunnelUrls = emptyList(),
+            combinedDiscoveredUrls = emptyList(),
+            lastGoodUrl = null,
+            savedRelayUrls = emptyList(),
+        )
+        assertEquals("https://192.168.10.20:64450", remoteCandidates.first())
+    }
 }

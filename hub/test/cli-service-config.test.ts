@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { collectLanIpv4Addresses } from '../src/bonjour.ts'
+import { loadOrCreateConfig, resolveDefaultHostName } from '../src/config.ts'
 import {
   generateServiceDescriptor,
   listLanAddresses,
@@ -133,5 +134,109 @@ describe('Linux Remote Devbox CLI, systemd service descriptor & network interfac
     expect(pairRes.status).toBe(0)
     expect(pairRes.stdout).toContain('https://192.168.10.20:64450')
     expect(pairRes.stdout).toContain('lework://pair?')
+  })
+
+  it('resolves human-friendly default host names while preserving readable hostnames', () => {
+    // Readable hostnames on any OS are preserved verbatim
+    expect(resolveDefaultHostName({ hostname: 'devbox', platform: 'linux' })).toBe('devbox')
+    expect(resolveDefaultHostName({ hostname: 'ubuntu-gpu', platform: 'linux' })).toBe('ubuntu-gpu')
+    expect(resolveDefaultHostName({ hostname: 'Alice-MacBook', platform: 'darwin' })).toBe('Alice-MacBook')
+
+    // Serial-number-like macOS hostname prefers readable ComputerName
+    expect(
+      resolveDefaultHostName({
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: 'Studio MacBook',
+        hwModel: 'MacBookPro18,3',
+      }),
+    ).toBe('Studio MacBook')
+
+    // Serial-like .local hostname + serial-like ComputerName falls back to hw.model mapping
+    expect(
+      resolveDefaultHostName({
+        hostname: 'AB12CD34EF.local',
+        platform: 'darwin',
+        computerName: 'AB12CD34EF',
+        hwModel: 'MacBookPro18,3',
+      }),
+    ).toBe('MacBook Pro')
+    expect(
+      resolveDefaultHostName({
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: '',
+        hwModel: 'MacBookAir10,1',
+      }),
+    ).toBe('MacBook Air')
+    expect(
+      resolveDefaultHostName({
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: '',
+        hwModel: 'MacStudio1,1',
+      }),
+    ).toBe('Mac Studio')
+    expect(
+      resolveDefaultHostName({
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: '',
+        hwModel: 'Macmini9,1',
+      }),
+    ).toBe('Mac mini')
+    expect(
+      resolveDefaultHostName({
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: '',
+        hwModel: 'iMac21,1',
+      }),
+    ).toBe('iMac')
+    expect(
+      resolveDefaultHostName({
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: '',
+        hwModel: 'MacPro7,1',
+      }),
+    ).toBe('Mac Pro')
+
+    // Missing or generic Apple Silicon hw.model falls back to "My Mac"
+    expect(
+      resolveDefaultHostName({
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: '',
+        hwModel: 'Mac15,6',
+      }),
+    ).toBe('My Mac')
+    expect(
+      resolveDefaultHostName({
+        hostname: '',
+        platform: 'darwin',
+        computerName: '',
+        hwModel: '',
+      }),
+    ).toBe('My Mac')
+  })
+
+  it('never overwrites an existing saved config.name when loading config', () => {
+    const dataDir = path.join(tmpHome, 'existing-cfg')
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(dataDir, 'config.json'),
+      JSON.stringify({ hubId: 'hub_saved_1', name: 'AB12CD34EF' }, null, 2),
+      'utf8',
+    )
+    const prevHome = process.env.LEWORK_HOME
+    process.env.LEWORK_HOME = dataDir
+    try {
+      const cfg = loadOrCreateConfig()
+      expect(cfg.name).toBe('AB12CD34EF')
+    } finally {
+      if (prevHome === undefined) delete process.env.LEWORK_HOME
+      else process.env.LEWORK_HOME = prevHome
+    }
   })
 })

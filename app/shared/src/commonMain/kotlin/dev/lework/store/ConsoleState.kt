@@ -188,6 +188,11 @@ data class ConsoleUiState(
     val sshPairingInProgress: Boolean = false,
     val sshConfigHosts: List<String> = listSshConfigHosts(),
 ) {
+    val activeHostDisplayName: String
+        get() = pairedHosts.firstOrNull { it.hubId == hub?.id }?.displayName
+            ?: hub?.name
+            ?: "本机工作站"
+
     val activeSession: SessionMeta?
         get() = sessions.firstOrNull { it.id == activeSessionId }
 

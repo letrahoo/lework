@@ -49,7 +49,11 @@ data class PairedHost(
     val endpoints: List<String> = emptyList(),
     val userName: String = "Owner",
     val lastConnectedAt: Long = 0L,
-)
+    val customName: String? = null,
+) {
+    val displayName: String
+        get() = customName?.trim()?.takeIf { it.isNotEmpty() } ?: name
+}
 
 enum class ImagePickSource {
     LIBRARY,

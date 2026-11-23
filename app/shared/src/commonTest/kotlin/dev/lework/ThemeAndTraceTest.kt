@@ -1,6 +1,8 @@
 package dev.lework
 
 import androidx.compose.ui.graphics.Color
+import dev.lework.platform.MobileTsnetPeer
+import dev.lework.platform.MobileTsnetStatus
 import dev.lework.protocol.ToolKind
 import dev.lework.protocol.ToolStatus
 import dev.lework.store.ChatTimelineItem
@@ -9,7 +11,9 @@ import dev.lework.ui.Everforest
 import dev.lework.ui.MdBlock
 import dev.lework.ui.MdTableAlign
 import dev.lework.ui.condenseTraceSteps
+import dev.lework.ui.connectionChannelLabel
 import dev.lework.ui.highlightEverforestCode
+import dev.lework.ui.isLoopbackEndpoint
 import dev.lework.ui.parseCliTool
 import dev.lework.ui.parseEverforestInline
 import dev.lework.ui.parseMarkdownBlocks
@@ -298,5 +302,41 @@ class ThemeAndTraceTest {
             ),
             links,
         )
+    }
+
+    @Test
+    fun `T7_8 classifies loopback endpoints as local direct while keeping tsnet local proxy as Tailscale`() {
+        val tsnet = MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            peers = listOf(
+                MobileTsnetPeer(
+                    hostName = "remote-devbox",
+                    tailscaleIp = "100.88.10.20",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = "https://127.0.0.1:54321",
+                ),
+            ),
+        )
+
+        // Direct loopback hosts -> 本机直连
+        assertTrue(isLoopbackEndpoint("https://127.0.0.1:64450", tsnet))
+        assertTrue(isLoopbackEndpoint("https://localhost:64450", tsnet))
+        assertTrue(isLoopbackEndpoint("https://LOCALHOST:64450/", tsnet))
+        assertTrue(isLoopbackEndpoint("https://[::1]:64450", tsnet))
+        assertEquals("本机直连", connectionChannelLabel("https://127.0.0.1:64450", tsnet))
+        assertEquals("本机直连", connectionChannelLabel("https://localhost:64450", tsnet))
+        assertEquals("本机直连", connectionChannelLabel("https://[::1]:64450", tsnet))
+
+        // Tailscale tsnet local proxy on 127.0.0.1:<proxyPort> -> Tailscale 内网 (NOT 本机直连!)
+        assertFalse(isLoopbackEndpoint("https://127.0.0.1:54321", tsnet))
+        assertEquals("Tailscale 内网", connectionChannelLabel("https://127.0.0.1:54321", tsnet))
+        assertEquals("Tailscale 内网", connectionChannelLabel("https://100.88.10.20:64450", tsnet))
+
+        // LAN IP & blank fallback
+        assertFalse(isLoopbackEndpoint("https://192.168.10.20:64450", tsnet))
+        assertEquals("局域网直连", connectionChannelLabel("https://192.168.10.20:64450", tsnet))
+        assertEquals("已连接", connectionChannelLabel("", tsnet))
     }
 }

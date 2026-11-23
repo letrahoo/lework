@@ -194,6 +194,7 @@ private fun MobileConsoleApp(
                                 scope.launch { drawerState.close() }
                                 store.switchPairedHost(hubId)
                             },
+                            onRenameHost = store::renamePairedHost,
                             onPairAnotherHost = {
                                 scope.launch { drawerState.close() }
                                 store.preparePairAnotherHost()

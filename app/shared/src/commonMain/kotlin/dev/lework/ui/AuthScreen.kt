@@ -348,7 +348,7 @@ internal fun AuthEntryView(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = host.name,
+                                                text = host.displayName,
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.Medium,
                                                 color = Everforest.Fg,

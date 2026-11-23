@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -5,6 +6,88 @@ import path from 'node:path'
 import type { HubRole } from '@lework/protocol'
 import type { NotificationConfig } from './notifications/notifier.ts'
 import { defaultDataDir, detectPlatform } from './platform/index.ts'
+
+function isSerialLikeHostname(raw: string): boolean {
+  const candidate = raw.trim().replace(/\.local$/i, '')
+  return /^[A-Z0-9]{8,16}$/.test(candidate) && /[A-Z]/.test(candidate) && /[0-9]/.test(candidate)
+}
+
+function mapMacHardwareModel(rawModel?: string): string | undefined {
+  const model = rawModel?.trim() ?? ''
+  if (!model) return undefined
+  const lower = model.toLowerCase()
+  if (lower.startsWith('macbookpro')) return 'MacBook Pro'
+  if (lower.startsWith('macbookair')) return 'MacBook Air'
+  if (lower.startsWith('macstudio')) return 'Mac Studio'
+  if (lower.startsWith('macmini')) return 'Mac mini'
+  if (lower.startsWith('imac')) return 'iMac'
+  if (lower.startsWith('macpro')) return 'Mac Pro'
+  return undefined
+}
+
+function readDarwinCommand(bin: string, args: string[]): string | undefined {
+  try {
+    const res = spawnSync(bin, args, { encoding: 'utf8', timeout: 1_500 })
+    if (res.status === 0) {
+      const out = (res.stdout ?? '').trim()
+      return out || undefined
+    }
+  } catch {
+    // ignore command errors on restricted environments
+  }
+  return undefined
+}
+
+/**
+ * Resolves a human-friendly default Hub name when creating a fresh config.
+ * Preserves readable hostnames while replacing serial-number-like macOS hostnames
+ * (e.g. MDM-assigned `AB12CD34EF`) with ComputerName or hardware model label.
+ */
+export function resolveDefaultHostName(opts?: {
+  hostname?: string
+  platform?: NodeJS.Platform
+  computerName?: string
+  hwModel?: string
+}): string {
+  const rawHost = (opts?.hostname !== undefined ? opts.hostname : os.hostname()).trim()
+  const platform = opts?.platform ?? process.platform
+
+  if (rawHost && !isSerialLikeHostname(rawHost)) {
+    return rawHost
+  }
+
+  if (platform === 'darwin') {
+    const shouldProbeSystem =
+      process.platform === 'darwin' && opts?.computerName === undefined && opts?.hwModel === undefined
+
+    const computerName = (
+      opts?.computerName !== undefined
+        ? opts.computerName
+        : shouldProbeSystem
+          ? readDarwinCommand('/usr/sbin/scutil', ['--get', 'ComputerName']) ?? ''
+          : ''
+    ).trim()
+    if (computerName && !isSerialLikeHostname(computerName)) {
+      return computerName
+    }
+
+    const hwModel = (
+      opts?.hwModel !== undefined
+        ? opts.hwModel
+        : shouldProbeSystem
+          ? readDarwinCommand('/usr/sbin/sysctl', ['-n', 'hw.model']) ?? ''
+          : ''
+    ).trim()
+    const mappedModel = mapMacHardwareModel(hwModel)
+    if (mappedModel) {
+      return mappedModel
+    }
+
+    return 'My Mac'
+  }
+
+  return rawHost || 'Lework Hub'
+}
 
 export interface HubConfig {
   hubId: string
@@ -66,7 +149,7 @@ export function loadOrCreateConfig(overrides: Partial<HubConfig> = {}): HubConfi
   const fallbackRoot = process.cwd() !== home ? process.cwd() : path.join(home, 'Projects')
   const cfg: HubConfig = {
     hubId: overrides.hubId ?? stored.hubId ?? `hub_${crypto.randomBytes(6).toString('hex')}`,
-    name: overrides.name ?? stored.name ?? os.hostname(),
+    name: overrides.name ?? stored.name ?? resolveDefaultHostName(),
     role: overrides.role ?? stored.role ?? (platform === 'linux' ? 'master' : 'slave'),
     host: overrides.host ?? stored.host ?? '0.0.0.0',
     port: overrides.port ?? stored.port ?? Number(process.env.LEWORK_PORT ?? 64450),
