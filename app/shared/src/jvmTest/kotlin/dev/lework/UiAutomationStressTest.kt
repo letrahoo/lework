@@ -1098,4 +1098,116 @@ class UiAutomationStressTest {
             waitForIdle()
             onNodeWithTag("network_error_recovery_banner").assertDoesNotExist()
         }
+
+    @Test
+    fun `T14_5 desktop composer Meta+V and Ctrl+V paste clipboard images into thumbnails without hijacking text-only paste`() =
+        runDesktopComposeUiTest(width = 1320, height = 840) {
+            JvmPlatformTestHooks.simulateDesktopLayout = true
+            val tinyPngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            val transport = FakeHubTransport().apply {
+                customEngines = listOf(
+                    EngineInfo(
+                        id = "claude",
+                        displayName = "Claude Code",
+                        kind = EngineKind.CLI,
+                        status = EngineStatus(installed = true, ready = true, version = "2.1.328"),
+                        capabilities = EngineCapabilities(
+                            permissions = true,
+                            images = true,
+                            modelSwitch = true,
+                            modes = true,
+                            history = true,
+                            cancel = true,
+                        ),
+                        models = listOf(EngineModelSpec(id = "claude-sonnet-4-6", name = "Claude Sonnet 4.6")),
+                        defaultModel = "claude-sonnet-4-6",
+                    ),
+                )
+            }
+            val sid = "sess_clipboard_paste"
+            transport.sessions.add(
+                SessionMeta(
+                    id = sid,
+                    engineId = "claude",
+                    cwd = "/workspace/lework",
+                    title = "剪贴板粘贴图片校验",
+                    state = SessionState.IDLE,
+                    createdAt = 1_000L,
+                    updatedAt = 2_000L,
+                    lastSeq = 0,
+                ),
+            )
+            transport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "准备粘贴截图"),
+            )
+
+            lateinit var store: ConsoleStore
+            setContent {
+                val scope = rememberCoroutineScope()
+                val created = androidx.compose.runtime.remember { ConsoleStore(scope, transport) }
+                store = created
+                ConsoleApp(externalStore = created, autoBootstrap = true)
+            }
+            waitForIdle()
+            runOnIdle { store.selectSession(sid) }
+            waitForIdle()
+
+            // 1. Focus composer with empty image clipboard -> Meta+V must NOT hijack text paste or attach bogus thumbnails
+            JvmPlatformTestHooks.nextClipboardImages = emptyList()
+            onNodeWithTag("composer_input").performClick()
+            onNodeWithTag("composer_input").performKeyInput {
+                withKeyDown(Key.MetaLeft) {
+                    pressKey(Key.V)
+                }
+            }
+            waitForIdle()
+            onNodeWithTag("composer_thumb_0").assertDoesNotExist()
+            assertEquals(0, store.state.value.composerAttachedImages.size)
+
+            // 2. Populate clipboard with screenshot -> Meta+V attaches it and renders composer_thumb_0
+            JvmPlatformTestHooks.nextClipboardImages = listOf(
+                dev.lework.platform.PickedImagePayload(
+                    fileName = "clipboard_shot_1.png",
+                    mimeType = "image/png",
+                    dataBase64 = tinyPngB64,
+                    thumbnailBase64 = tinyPngB64,
+                ),
+            )
+            onNodeWithTag("composer_input").performKeyInput {
+                withKeyDown(Key.MetaLeft) {
+                    pressKey(Key.V)
+                }
+            }
+            waitForIdle()
+            onNodeWithTag("composer_thumb_0").assertIsDisplayed()
+            assertEquals(1, store.state.value.composerAttachedImages.size)
+            assertEquals("clipboard_shot_1.png", store.state.value.composerAttachedImages.first().fileName)
+
+            // 3. Ctrl+V also pastes clipboard image cleanly and renders composer_thumb_1
+            JvmPlatformTestHooks.nextClipboardImages = listOf(
+                dev.lework.platform.PickedImagePayload(
+                    fileName = "clipboard_shot_2.png",
+                    mimeType = "image/png",
+                    dataBase64 = tinyPngB64,
+                    thumbnailBase64 = tinyPngB64,
+                ),
+            )
+            onNodeWithTag("composer_input").performKeyInput {
+                withKeyDown(Key.CtrlLeft) {
+                    pressKey(Key.V)
+                }
+            }
+            waitForIdle()
+            onNodeWithTag("composer_thumb_1").assertIsDisplayed()
+            assertEquals(2, store.state.value.composerAttachedImages.size)
+
+            // 4. Pressing Enter submits both pasted images cleanly
+            onNodeWithTag("composer_input").performKeyInput {
+                pressKey(Key.Enter)
+            }
+            waitForIdle()
+            assertEquals(0, store.state.value.composerAttachedImages.size)
+            assertEquals(1, transport.sentPromptImages.size)
+            assertEquals(2, transport.sentPromptImages.first().second.size)
+        }
 }

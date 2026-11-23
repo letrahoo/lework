@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -12,6 +13,7 @@ import android.net.Uri
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
+import android.provider.OpenableColumns
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
@@ -20,6 +22,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import dev.lework.protocol.ProtocolJson
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -881,6 +884,91 @@ actual fun readTextFromClipboard(): String? = runCatching {
     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return@runCatching null
     val item = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
     item?.coerceToText(ctx)?.toString()?.takeIf { it.isNotBlank() }
+}.getOrNull()
+
+actual fun readImagesFromClipboard(maxCount: Int): List<PickedImagePayload> = runCatching {
+    val ctx = AndroidPlatformRuntime.appContext ?: return@runCatching emptyList()
+    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return@runCatching emptyList()
+    val clip = cm.primaryClip ?: return@runCatching emptyList()
+    val limit = maxCount.coerceIn(1, 4)
+    val resolver = ctx.contentResolver
+    val out = mutableListOf<PickedImagePayload>()
+    for (i in 0 until clip.itemCount) {
+        if (out.size >= limit) break
+        val uri = clip.getItemAt(i)?.uri ?: continue
+        val mime = runCatching { resolver.getType(uri) }.getOrNull().orEmpty()
+        if (!mime.startsWith("image/", ignoreCase = true)) continue
+        decodeAndroidClipboardImage(ctx, uri, out.size + 1)?.let { out.add(it) }
+    }
+    out
+}.getOrDefault(emptyList())
+
+private fun decodeAndroidClipboardImage(
+    ctx: Context,
+    uri: Uri,
+    index: Int,
+): PickedImagePayload? = runCatching {
+    val resolver = ctx.contentResolver
+    val displayName = runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: "clipboard_$index.jpg"
+
+    val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boundsOpts) }
+    if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return@runCatching null
+
+    val targetMaxDim = 1280
+    var sampleSize = 1
+    while (boundsOpts.outWidth / (sampleSize * 2) >= targetMaxDim ||
+        boundsOpts.outHeight / (sampleSize * 2) >= targetMaxDim
+    ) {
+        sampleSize *= 2
+    }
+    val decodeOpts = BitmapFactory.Options().apply {
+        inSampleSize = sampleSize
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
+    val decoded = resolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, decodeOpts)
+    } ?: return@runCatching null
+
+    try {
+        fun encodeWithinLimit(src: Bitmap, maxDim: Int, quality: Int): String {
+            val longest = maxOf(src.width, src.height)
+            val working = if (longest > maxDim && longest > 0) {
+                val ratio = maxDim.toFloat() / longest.toFloat()
+                val w = (src.width * ratio).toInt().coerceAtLeast(1)
+                val h = (src.height * ratio).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(src, w, h, true)
+            } else {
+                src
+            }
+            val baos = ByteArrayOutputStream()
+            working.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+            if (working !== src) working.recycle()
+            return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+        }
+
+        var b64 = ""
+        for ((dim, q) in listOf(1280 to 78, 1280 to 60, 1024 to 52, 800 to 45)) {
+            b64 = encodeWithinLimit(decoded, dim, q)
+            if (b64.length <= 900_000) break
+        }
+        val thumbB64 = encodeWithinLimit(decoded, 520, 68).takeIf { it.length <= 240_000 }
+        if (b64.isEmpty() || b64.length > 990_000) return@runCatching null
+
+        val finalName = if (displayName.contains('.')) displayName else "$displayName.jpg"
+        PickedImagePayload(
+            fileName = finalName.take(120),
+            mimeType = "image/jpeg",
+            dataBase64 = b64,
+            thumbnailBase64 = thumbB64,
+        )
+    } finally {
+        decoded.recycle()
+    }
 }.getOrNull()
 
 actual fun canConnectViaSsh(): Boolean = false
