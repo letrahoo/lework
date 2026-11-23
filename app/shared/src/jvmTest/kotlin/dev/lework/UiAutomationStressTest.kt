@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.ui.graphics.vector.VectorPath
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.*
 import androidx.compose.ui.unit.dp
@@ -13,6 +14,7 @@ import dev.lework.protocol.*
 import dev.lework.store.ConsoleStore
 import dev.lework.ui.ConsoleApp
 import dev.lework.ui.EverforestMarkdownContent
+import dev.lework.ui.desktop.LeworkPinIcon
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import org.jetbrains.skia.EncodedImageFormat
@@ -684,14 +686,44 @@ class UiAutomationStressTest {
             onNodeWithTag("composer_model_picker_btn").assertIsDisplayed()
             onNodeWithTag("composer_mode_btn").assertIsDisplayed()
 
-            // Verify inline right-side session card buttons on Desktop: [置顶 Pin] [重命名] [归档]
-            onNodeWithTag("session_pin_$sid").assertIsDisplayed()
-            onNodeWithTag("session_rename_$sid").assertIsDisplayed()
-            onNodeWithTag("session_archive_$sid").assertIsDisplayed()
+            // Verify LeworkPinIcon uses solid filled vector path (not stroke-only)
+            val pinPaths = LeworkPinIcon.root.filterIsInstance<VectorPath>()
+            assertTrue(pinPaths.isNotEmpty(), "Expected LeworkPinIcon to define at least one vector path")
+            assertTrue(
+                pinPaths.all { it.fill != null && it.stroke == null },
+                "Expected LeworkPinIcon to use solid filled vector paths (not stroke-only)",
+            )
+
+            // Verify inline right-side session card buttons are hidden by default (even on selected session)
+            onNodeWithTag("session_row_$sid").assertIsDisplayed()
+            onNodeWithTag("session_pin_$sid").assertDoesNotExist()
+            onNodeWithTag("session_rename_$sid").assertDoesNotExist()
+            onNodeWithTag("session_archive_$sid").assertDoesNotExist()
+
+            // Hover session row -> inline actions appear in order: [重命名 Edit] [归档 Archive] [置顶 Pin]
+            onNodeWithTag("session_row_$sid").performMouseInput { enter(center) }
+            waitForIdle()
+            val renameBtnBounds = onNodeWithTag("session_rename_$sid").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val archiveBtnBounds = onNodeWithTag("session_archive_$sid").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val pinBtnBounds = onNodeWithTag("session_pin_$sid").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertTrue(
+                renameBtnBounds.left < archiveBtnBounds.left && archiveBtnBounds.left < pinBtnBounds.left,
+                "Expected inline action order [重命名] < [归档] < [置顶 Pin], got rename=${renameBtnBounds.left}, archive=${archiveBtnBounds.left}, pin=${pinBtnBounds.left}",
+            )
+
+            // Click Pin to pin session to top
             onNodeWithTag("session_pin_$sid").performClick()
             waitForIdle()
             assertTrue(sid in store.state.value.pinnedSessionIds, "Expected Pin button to pin session to top")
             onNodeWithText("已置顶").assertIsDisplayed()
+
+            // Move pointer away -> unhovered pinned row shows no duplicate pin button or static pin icon
+            onNodeWithTag("session_row_$sid").performMouseInput { exit() }
+            waitForIdle()
+            onNodeWithTag("session_pin_$sid").assertDoesNotExist()
+            onNodeWithTag("session_rename_$sid").assertDoesNotExist()
+            onNodeWithTag("session_archive_$sid").assertDoesNotExist()
+            onNodeWithContentDescription("已置顶", useUnmergedTree = true).assertDoesNotExist()
 
             val captureDir = (System.getProperty("lework.captureScreenshotsDir")
                 ?: System.getenv("LEWORK_CAPTURE_DIR"))?.takeIf { it.isNotBlank() }
@@ -703,10 +735,17 @@ class UiAutomationStressTest {
                 }
             }
 
-            // Unpin cleanly to verify toggle off
-            onNodeWithTag("session_pin_$sid").performClick()
+            // Hover pinned row again and click Pin to unpin cleanly, then exit hover and verify actions hide
+            onNodeWithTag("session_row_$sid").performMouseInput { enter(center) }
+            waitForIdle()
+            onNodeWithTag("session_pin_$sid").assertIsDisplayed().performClick()
             waitForIdle()
             assertTrue(sid !in store.state.value.pinnedSessionIds, "Expected second click to unpin session")
+            onNodeWithTag("session_row_$sid").performMouseInput { exit() }
+            waitForIdle()
+            onNodeWithTag("session_pin_$sid").assertDoesNotExist()
+            onNodeWithTag("session_rename_$sid").assertDoesNotExist()
+            onNodeWithTag("session_archive_$sid").assertDoesNotExist()
 
             // Verify clicking Diff icon docks a side-by-side Desktop Right Inspector Pane (zero mobile bottom sheet!)
             onNodeWithTag("topbar_btn_diff").performClick()
