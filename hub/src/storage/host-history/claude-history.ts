@@ -13,6 +13,8 @@ import {
   readFirstAndLastLines,
   readFullSessionLines,
   sortAndCapSubagents,
+  subagentActivity,
+  type TailSignal,
   type HostTranscriptEntry,
   type ParsedHostTranscript,
 } from './common.ts'
@@ -347,18 +349,13 @@ export function inferClaudeSubagentActivity(
   tailLines: string[],
   mtimeMs: number,
 ): { state: SessionMeta['state']; statusText: string } {
-  let sawError = false
   let lastToolActivity: string | undefined
 
   for (let i = tailLines.length - 1; i >= 0; i--) {
     try {
       const o = JSON.parse(tailLines[i]!) as {
         type?: string
-        isApiErrorMessage?: boolean
         message?: { role?: string; content?: unknown }
-      }
-      if (o.isApiErrorMessage || o.type === 'error') {
-        sawError = true
       }
       if (!lastToolActivity && o.message?.role === 'assistant' && Array.isArray(o.message.content)) {
         const blocks = o.message.content as Array<Record<string, unknown>>
@@ -371,20 +368,13 @@ export function inferClaudeSubagentActivity(
           }
         }
       }
-      if (lastToolActivity || sawError) break
+      if (lastToolActivity) break
     } catch {
       // ignore
     }
   }
 
-  const activelyRunning = Date.now() - mtimeMs < 90_000 && isClaudeTailActivelyRunning(tailLines)
-  if (activelyRunning) {
-    return { state: 'running', statusText: lastToolActivity ?? '思考中…' }
-  }
-  if (sawError) {
-    return { state: 'error', statusText: '执行出错' }
-  }
-  return { state: 'idle', statusText: '已完成' }
+  return subagentActivity(claudeTailSignal(tailLines), mtimeMs, lastToolActivity)
 }
 
 export function parseClaudeTranscript(
@@ -768,24 +758,32 @@ export function isClaudeUserMessageInterrupted(content: unknown): boolean {
 }
 
 export function isClaudeTailActivelyRunning(tailLines: string[]): boolean {
+  return claudeTailSignal(tailLines) === 'active'
+}
+
+function claudeTailSignal(tailLines: string[]): TailSignal {
   for (let i = tailLines.length - 1; i >= 0; i--) {
     try {
       const o = JSON.parse(tailLines[i]!) as {
         type?: string
+        isApiErrorMessage?: boolean
         subtype?: string
         message?: { role?: string; stop_reason?: string | null; content?: unknown }
       }
-      if (o.type === 'system' && o.subtype === 'turn_duration') return false
-      if (o.type === 'api-request') return true
+      if (o.isApiErrorMessage || o.type === 'error') return 'error'
+      if (o.type === 'system' && o.subtype === 'turn_duration') return 'done'
+      if (o.type === 'api-request') return 'active'
       if (o.type === 'assistant' || o.message?.role === 'assistant') {
-        return o.message?.stop_reason === 'tool_use'
+        if (o.message?.stop_reason === 'tool_use') return 'active'
+        if (o.message?.stop_reason === 'end_turn' || o.message?.stop_reason === 'stop_sequence') return 'done'
+        return 'unknown'
       }
       if (o.type === 'user') {
-        return !isClaudeUserMessageInterrupted(o.message?.content)
+        return isClaudeUserMessageInterrupted(o.message?.content) ? 'cancelled' : 'active'
       }
     } catch {
       // ignore non-json
     }
   }
-  return false
+  return 'unknown'
 }

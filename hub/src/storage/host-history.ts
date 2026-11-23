@@ -12,12 +12,14 @@ import type {
 import {
   extractAgyUserRequests,
   filterAgyQueuedFromHistory,
+  inferAgySubagentActivity,
   parseAgyTranscript,
   resolveAgyQueuedPrompts,
   resolveAgySubagentEntry,
   scanAgySessions,
 } from './host-history/agy-history.ts'
 import {
+  inferClaudeSubagentActivity,
   parseClaudeTranscript,
   resolveClaudeSubagentEntry,
   scanClaudeSessions,
@@ -26,6 +28,7 @@ import { parseCodexTranscript, scanCodexSessions } from './host-history/codex-hi
 import {
   classifyRawToolCall,
   mergeUniqueWorkspaces,
+  readFirstAndLastLines,
   type CachedTranscript,
   type HostTranscriptEntry,
   type ParsedHostTranscript,
@@ -572,12 +575,16 @@ export class HostTaskInspector {
     const isSubagent = this.isSubagentSession(sessionId)
     let liveState: SessionMeta['state'] = 'idle'
     if (isSubagent) {
-      liveState =
-        Date.now() - st.mtimeMs < 90_000 && parsedRunning
-          ? 'running'
-          : entry.meta.state === 'error'
-            ? 'error'
-            : 'idle'
+      // Preserve the same terminal evidence as the parent strip, including on live file updates.
+      if (entry.meta.updatedAt !== Math.floor(st.mtimeMs) || (cached && cached.size !== st.size)) {
+        const claude = entry.meta.engineId === 'claude'
+        const { last } = readFirstAndLastLines(entry.filePath, 0, claude ? 20 : 12)
+        const activity = (claude ? inferClaudeSubagentActivity : inferAgySubagentActivity)(last, st.mtimeMs)
+        liveState = activity.state
+        entry.meta.liveStatusText = liveState === 'running' ? activity.statusText : undefined
+      } else {
+        liveState = entry.meta.state === 'running' && Date.now() - st.mtimeMs >= 90_000 ? 'idle' : entry.meta.state
+      }
     } else if (entry.meta.engineId === 'claude') {
       this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
       const rt = this.claudeRuntimeMap.get(entry.nativeId)

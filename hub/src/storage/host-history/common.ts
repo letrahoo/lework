@@ -233,14 +233,21 @@ export function classifyRawToolCall(
   return { title: short, kind: 'other', input: rawInput }
 }
 
+export type TailSignal = 'active' | 'done' | 'cancelled' | 'error' | 'unknown'
+
+// Idle means no recent activity, not proof that the subagent finished.
+export function subagentActivity(signal: TailSignal, mtimeMs: number, tool?: string): { state: SessionMeta['state']; statusText: string } {
+  if (signal === 'done') return { state: 'closed', statusText: '已完成' }
+  if (signal === 'cancelled') return { state: 'closed', statusText: '已取消' }
+  if (signal === 'error') return { state: 'error', statusText: '执行出错' }
+  if (signal === 'active' && Date.now() - mtimeMs < 90_000) return { state: 'running', statusText: tool ?? '思考中…' }
+  return { state: 'idle', statusText: '尚未确认结束' }
+}
+
 export function sortAndCapSubagents(list: SubagentSummary[], limit = 12): SubagentSummary[] {
+  const rank = (s: SubagentSummary) => s.state === 'running' || s.state === 'waiting_permission' ? 0 : s.state === 'idle' ? 1 : 2
   return [...list]
-    .sort((a, b) => {
-      const aActive = a.state === 'running' || a.state === 'waiting_permission' ? 0 : 1
-      const bActive = b.state === 'running' || b.state === 'waiting_permission' ? 0 : 1
-      if (aActive !== bActive) return aActive - bActive
-      return b.updatedAt - a.updatedAt
-    })
+    .sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt)
     .slice(0, limit)
 }
 

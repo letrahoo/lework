@@ -11,6 +11,8 @@ import {
   readFirstAndLastLines,
   readFullSessionLines,
   sortAndCapSubagents,
+  subagentActivity,
+  type TailSignal,
   type CachedTranscript,
   type HostTranscriptEntry,
   type ParsedHostTranscript,
@@ -501,7 +503,6 @@ export function inferAgySubagentActivity(
   tailLines: string[],
   mtimeMs: number,
 ): { state: SessionMeta['state']; statusText: string } {
-  let lastStatus: string | undefined
   let lastType: string | undefined
   let lastToolActivity: string | undefined
 
@@ -514,7 +515,6 @@ export function inferAgySubagentActivity(
       }
       if (lastType === undefined && o.type) {
         lastType = o.type
-        lastStatus = o.status
       }
       if (!lastToolActivity && Array.isArray(o.tool_calls) && o.tool_calls.length > 0) {
         const lastTc = o.tool_calls[o.tool_calls.length - 1]!
@@ -532,20 +532,7 @@ export function inferAgySubagentActivity(
     }
   }
 
-  if (lastStatus === 'ERROR') {
-    return { state: 'error', statusText: '执行出错' }
-  }
-  if (lastStatus === 'CANCELLED') {
-    return { state: 'idle', statusText: '已取消' }
-  }
-  const activelyRunning = Date.now() - mtimeMs < 90_000 && isAgyTailActivelyRunning(tailLines)
-  if (activelyRunning) {
-    if (lastType === 'USER_INPUT') {
-      return { state: 'running', statusText: '思考中…' }
-    }
-    return { state: 'running', statusText: lastToolActivity ?? '思考中…' }
-  }
-  return { state: 'idle', statusText: '已完成' }
+  return subagentActivity(agyTailSignal(tailLines), mtimeMs, lastType === 'USER_INPUT' ? undefined : lastToolActivity)
 }
 
 export function parseAgyTranscript(
@@ -1110,6 +1097,10 @@ function isAgyCancelledStatus(status?: string): boolean {
 }
 
 export function isAgyTailActivelyRunning(tailLines: string[]): boolean {
+  return agyTailSignal(tailLines) === 'active'
+}
+
+function agyTailSignal(tailLines: string[]): TailSignal {
   for (let i = tailLines.length - 1; i >= 0; i--) {
     try {
       const o = JSON.parse(tailLines[i]!) as {
@@ -1119,23 +1110,18 @@ export function isAgyTailActivelyRunning(tailLines: string[]): boolean {
       }
       const upperStatus = typeof o.status === 'string' ? o.status.toUpperCase() : ''
       const upperType = typeof o.type === 'string' ? o.type.toUpperCase() : ''
-      if (
-        upperStatus === 'ERROR' ||
-        upperStatus === 'FAILED' ||
-        isAgyCancelledStatus(upperStatus) ||
-        AGY_CANCELLED_STATUSES.has(upperType)
-      ) {
-        return false
-      }
-      if (o.type === 'PLANNER_RESPONSE') {
-        return Array.isArray(o.tool_calls) && o.tool_calls.length > 0
+      if (upperStatus === 'ERROR' || upperStatus === 'FAILED') return 'error'
+      if (isAgyCancelledStatus(upperStatus) || isAgyCancelledStatus(upperType)) return 'cancelled'
+      if (upperType === 'PLANNER_RESPONSE') {
+        if (Array.isArray(o.tool_calls) && o.tool_calls.length > 0) return 'active'
+        return upperStatus === 'DONE' ? 'done' : 'unknown'
       }
       if (o.type === 'USER_INPUT' || o.type === 'TOOL_RESPONSE' || o.type === 'GENERIC') {
-        return true
+        return 'active'
       }
     } catch {
       // ignore
     }
   }
-  return false
+  return 'unknown'
 }

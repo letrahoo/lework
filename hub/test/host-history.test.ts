@@ -702,7 +702,7 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
     expect(leviSess?.subagents?.[0]).toMatchObject({
       id: 'host:agy:conv-sub-1',
       title: 'Subagent Auditor',
-      state: 'idle',
+      state: 'closed',
       statusText: '已完成',
       workspace: fs.realpathSync(leviWs),
     })
@@ -908,7 +908,7 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
     })
     expect(agyParent?.subagents?.[2]).toMatchObject({
       title: '文档校验助手',
-      state: 'idle',
+      state: 'closed',
       statusText: '已完成',
     })
 
@@ -932,11 +932,13 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
     })
     expect(claudeParent?.subagents?.[1]).toMatchObject({
       title: '整理架构文档',
-      state: 'idle',
+      state: 'closed',
       statusText: '已完成',
     })
 
     // On-demand `subscribeSnapshot` works for Claude subagent seamlessly
+    expect(inspector.readHostSessionEvents('host:agy:sub-agy-done')?.session.state).toBe('closed')
+    expect(inspector.readHostSessionEvents(`host:claude-subagent:${claudeParentId}:agent-d4e5f6`)?.session.state).toBe('closed')
     const claudeSubSnap = sm.subscribeSnapshot(
       `host:claude-subagent:${claudeParentId}:agent-a1b2c3`,
       -1,

@@ -300,8 +300,9 @@ private fun MobileConsoleApp(
                 }
 
                 val activeSubagents = topActiveSess?.subagents.orEmpty()
-                if (activeSubagents.isNotEmpty()) {
+                if (topActiveSess != null && activeSubagents.isNotEmpty()) {
                     SubagentStatusStrip(
+                        sessionId = topActiveSess.id,
                         subagents = activeSubagents,
                         onSelectSubagent = { sub ->
                             dismissKeyboard()
