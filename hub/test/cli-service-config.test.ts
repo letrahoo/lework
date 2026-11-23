@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { collectLanIpv4Addresses } from '../src/bonjour.ts'
 import { loadOrCreateConfig, resolveDefaultHostName } from '../src/config.ts'
 import {
+  augmentedPathEnv,
+  extraSearchPaths,
   generateServiceDescriptor,
   listLanAddresses,
   resolveSshServerAddress,
@@ -43,7 +45,36 @@ describe('Linux Remote Devbox CLI, systemd service descriptor & network interfac
     expect(desc.content).toContain('--experimental-transform-types')
     expect(desc.content).toContain('/home/dev/.local/share/fnm/node-versions/v26.13.0/installation/bin')
     expect(desc.content).toContain('/usr/local/go/bin')
+    expect(desc.content).toContain('/usr/sbin')
+    expect(desc.content).toContain('/sbin')
     expect(desc.content).toContain('Restart=always')
+  })
+
+  it('includes /usr/sbin and /sbin in extraSearchPaths, augmentedPathEnv, macOS LaunchAgent descriptor, and deploy script', () => {
+    const paths = extraSearchPaths()
+    expect(paths).toContain('/usr/sbin')
+    expect(paths).toContain('/sbin')
+
+    const augEnv = augmentedPathEnv({ PATH: '/usr/bin:/bin' })
+    const augParts = (augEnv.PATH ?? '').split(path.delimiter)
+    expect(augParts).toContain('/usr/sbin')
+    expect(augParts).toContain('/sbin')
+
+    const emptyRepo = path.join(tmpHome, 'mac-repo')
+    fs.mkdirSync(emptyRepo, { recursive: true })
+    const darwinDesc = generateServiceDescriptor({
+      role: 'slave',
+      repoRoot: emptyRepo,
+      nodeBin: '/opt/homebrew/bin/node',
+      platformOverride: 'darwin',
+    })
+    expect(darwinDesc.platform).toBe('darwin')
+    expect(darwinDesc.unitOrLabel).toBe('dev.lework.hub-slave')
+    expect(darwinDesc.content).toContain('/usr/sbin')
+    expect(darwinDesc.content).toContain('/sbin')
+
+    const deployScript = fs.readFileSync(path.join(repoRoot, 'scripts', 'deploy-master-slave.sh'), 'utf8')
+    expect(deployScript).toMatch(/<key>PATH<\/key><string>[^<]*\/usr\/sbin:\/sbin[^<]*<\/string>/)
   })
 
   it('filters Docker/Podman/virtual bridge interfaces while preserving real Devbox LAN IP', () => {

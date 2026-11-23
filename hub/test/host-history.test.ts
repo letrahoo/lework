@@ -471,7 +471,7 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
         if (bin === 'ps' && args[0] === '-axo') {
           return '10253 ttys001 agy -c\n'
         }
-        if (bin === 'lsof') {
+        if (bin === 'lsof' || bin.endsWith('/lsof')) {
           return [
             'p10253',
             'fcwd',

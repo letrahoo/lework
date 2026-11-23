@@ -46,6 +46,7 @@ export interface TerminalBridgeOptions {
   isPidAlive?: (pid: number) => boolean
   it2Bin?: string | null
   tmuxBin?: string | null
+  lsofBin?: string | null
   tmuxSocketPaths?: string[]
 }
 
@@ -83,7 +84,7 @@ const defaultRunCommand: TerminalCommandRunner = async (bin, args, timeoutMs, en
     timeout: timeoutMs,
     maxBuffer: 4 * 1024 * 1024,
     encoding: 'utf8',
-    ...(env ? { env } : {}),
+    env: env ?? augmentedPathEnv(process.env),
   })
   return stdout
 }
@@ -132,6 +133,11 @@ export class TerminalBridge {
   private resolveTmuxBin(): string | null {
     if (this.opts.tmuxBin !== undefined) return this.opts.tmuxBin
     return findExecutable('tmux')
+  }
+
+  private resolveLsofBin(): string | null {
+    if (this.opts.lsofBin !== undefined) return this.opts.lsofBin
+    return findExecutable('lsof', ['/usr/sbin/lsof', '/usr/bin/lsof']) ?? 'lsof'
   }
 
   /**
@@ -410,11 +416,16 @@ export class TerminalBridge {
     const lockFile = path.join(this.homeDir, '.gemini', 'antigravity-cli', 'presence', `${nativeId}.lock`)
     if (!fs.existsSync(lockFile)) return { locked: false }
     let out = ''
-    try {
-      out = await this.runCmd('lsof', ['-b', '-w', '-Fp', lockFile], 2_000)
-    } catch (err) {
-      const partial = (err as { stdout?: unknown } | null)?.stdout
-      if (typeof partial === 'string') out = partial
+    const lsofBin = this.resolveLsofBin()
+    if (lsofBin) {
+      try {
+        // Do NOT pass `-b` with an explicit file path on macOS: `lsof -b <file>` fails with
+        // `Resource temporarily unavailable` during vnode/stat lookups.
+        out = await this.runCmd(lsofBin, ['-w', '-Fp', lockFile], 2_000, augmentedPathEnv(process.env))
+      } catch (err) {
+        const partial = (err as { stdout?: unknown } | null)?.stdout
+        if (typeof partial === 'string') out = partial
+      }
     }
     for (const line of out.split('\n')) {
       if (!line.startsWith('p')) continue
@@ -560,16 +571,25 @@ export class TerminalBridge {
     const openDbByPid = new Map<number, Set<string>>()
     const pidCsv = candidates.map(c => String(c.pid)).join(',')
     let lsofOut = ''
-    try {
-      // `-b` prevents kernel blocks on sleeping external disks or Xcode CoreDevice FUSE mounts;
-      // `-w` suppresses non-fatal stat() warnings so lsof finishes in ~100ms instead of timing out!
-      lsofOut = await this.runCmd('lsof', ['-b', '-w', '-Ffn', '-p', pidCsv], 4_000)
-    } catch (err) {
-      // On macOS, `lsof` exits with code 1 whenever any transient fd closes mid-scan while still
-      // writing all valid process fds (`presence/*.lock`, `cwd`) to `stdout`!
-      const partialStdout = (err as { stdout?: unknown } | null)?.stdout
-      if (typeof partialStdout === 'string' && partialStdout.length > 0) {
-        lsofOut = partialStdout
+    const lsofBin = this.resolveLsofBin()
+    if (lsofBin) {
+      try {
+        // `-b` prevents kernel blocks on sleeping external disks or Xcode CoreDevice FUSE mounts
+        // for PID-scoped scans; `-n -P` skips DNS/port lookups and `-w` suppresses non-fatal
+        // stat() warnings so lsof finishes in ~100ms instead of timing out!
+        lsofOut = await this.runCmd(
+          lsofBin,
+          ['-b', '-n', '-P', '-w', '-Ffn', '-p', pidCsv],
+          4_000,
+          augmentedPathEnv(process.env),
+        )
+      } catch (err) {
+        // On macOS, `lsof` exits with code 1 whenever any transient fd closes mid-scan while still
+        // writing all valid process fds (`presence/*.lock`, `cwd`) to `stdout`!
+        const partialStdout = (err as { stdout?: unknown } | null)?.stdout
+        if (typeof partialStdout === 'string' && partialStdout.length > 0) {
+          lsofOut = partialStdout
+        }
       }
     }
     if (lsofOut) {

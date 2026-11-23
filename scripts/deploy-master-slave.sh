@@ -42,7 +42,7 @@ cat > "$HUB_PLIST" <<EOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>LANG</key><string>en_US.UTF-8</string>
-    <key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
