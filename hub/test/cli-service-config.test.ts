@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { collectLanIpv4Addresses } from '../src/bonjour.ts'
-import { loadOrCreateConfig, resolveDefaultHostName } from '../src/config.ts'
+import { loadOrCreateConfig, resolveDefaultHostName, resolveStoredHostName } from '../src/config.ts'
 import {
   augmentedPathEnv,
   extraSearchPaths,
@@ -252,19 +252,186 @@ describe('Linux Remote Devbox CLI, systemd service descriptor & network interfac
     ).toBe('My Mac')
   })
 
-  it('never overwrites an existing saved config.name when loading config', () => {
+  it('never overwrites an existing saved config.name when it does not match os.hostname()', () => {
     const dataDir = path.join(tmpHome, 'existing-cfg')
     fs.mkdirSync(dataDir, { recursive: true })
     fs.writeFileSync(
       path.join(dataDir, 'config.json'),
-      JSON.stringify({ hubId: 'hub_saved_1', name: 'AB12CD34EF' }, null, 2),
+      JSON.stringify({ hubId: 'hub_saved_1', name: 'XY98ZT76QR' }, null, 2),
       'utf8',
     )
     const prevHome = process.env.LEWORK_HOME
     process.env.LEWORK_HOME = dataDir
     try {
-      const cfg = loadOrCreateConfig()
-      expect(cfg.name).toBe('AB12CD34EF')
+      const cfg = loadOrCreateConfig(
+        {},
+        {
+          hostname: 'AB12CD34EF',
+          platform: 'darwin',
+          computerName: 'Alex-MBP',
+        },
+      )
+      expect(cfg.name).toBe('XY98ZT76QR')
+
+      const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8')) as { name: string }
+      expect(persisted.name).toBe('XY98ZT76QR')
+    } finally {
+      if (prevHome === undefined) delete process.env.LEWORK_HOME
+      else process.env.LEWORK_HOME = prevHome
+    }
+  })
+
+  it('auto-migrates legacy serial-like config.name matching os.hostname() and persists to disk', () => {
+    const dataDir = path.join(tmpHome, 'migrate-serial-cfg')
+    fs.mkdirSync(dataDir, { recursive: true })
+    const cfgPath = path.join(dataDir, 'config.json')
+    fs.writeFileSync(cfgPath, JSON.stringify({ hubId: 'hub_saved_2', name: 'AB12CD34EF' }, null, 2), 'utf8')
+
+    const prevHome = process.env.LEWORK_HOME
+    process.env.LEWORK_HOME = dataDir
+    try {
+      const cfg = loadOrCreateConfig(
+        {},
+        {
+          hostname: 'AB12CD34EF',
+          platform: 'darwin',
+          computerName: 'Alex-MBP',
+        },
+      )
+      expect(cfg.name).toBe('Alex-MBP')
+
+      const persisted = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { name: string }
+      expect(persisted.name).toBe('Alex-MBP')
+    } finally {
+      if (prevHome === undefined) delete process.env.LEWORK_HOME
+      else process.env.LEWORK_HOME = prevHome
+    }
+  })
+
+  it('preserves friendly names, honors overrides.name, and keeps stored name when no friendly fallback exists', () => {
+    // Pure helper checks: blank/missing stored name falls back to resolveDefaultHostName
+    expect(
+      resolveStoredHostName(undefined, {
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: 'Alex-MBP',
+      }),
+    ).toBe('Alex-MBP')
+    expect(
+      resolveStoredHostName('   ', {
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: 'Alex-MBP',
+      }),
+    ).toBe('Alex-MBP')
+
+    // Case-insensitive + .local normalization during serial hostname migration
+    expect(
+      resolveStoredHostName('AB12CD34EF.local', {
+        hostname: 'ab12cd34ef',
+        platform: 'darwin',
+        computerName: 'Alex-MBP',
+      }),
+    ).toBe('Alex-MBP')
+    expect(
+      resolveStoredHostName('AB12CD34EF', {
+        hostname: 'AB12CD34EF.local',
+        platform: 'darwin',
+        computerName: '',
+        hwModel: 'MacBookPro18,3',
+      }),
+    ).toBe('MacBook Pro')
+
+    // Explicit override always wins even when stored name is serial-like and matches hostname
+    expect(
+      resolveStoredHostName('AB12CD34EF', {
+        hostname: 'AB12CD34EF',
+        platform: 'darwin',
+        computerName: 'Alex-MBP',
+        overrideName: 'Pinned Override',
+      }),
+    ).toBe('Pinned Override')
+
+    // Non-darwin platform where resolveDefaultHostName cannot resolve a different friendly name
+    expect(
+      resolveStoredHostName('AB12CD34EF', {
+        hostname: 'AB12CD34EF',
+        platform: 'linux',
+      }),
+    ).toBe('AB12CD34EF')
+    expect(
+      resolveStoredHostName('AB12CD34EF', {
+        hostname: 'AB12CD34EF.local',
+        platform: 'linux',
+      }),
+    ).toBe('AB12CD34EF')
+
+    const prevHome = process.env.LEWORK_HOME
+    try {
+      // Existing normal friendly name is never overwritten
+      const friendlyDir = path.join(tmpHome, 'friendly-cfg')
+      fs.mkdirSync(friendlyDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(friendlyDir, 'config.json'),
+        JSON.stringify({ hubId: 'hub_saved_3', name: 'Studio MacBook' }, null, 2),
+        'utf8',
+      )
+      process.env.LEWORK_HOME = friendlyDir
+      const friendlyCfg = loadOrCreateConfig(
+        {},
+        {
+          hostname: 'AB12CD34EF',
+          platform: 'darwin',
+          computerName: 'Alex-MBP',
+        },
+      )
+      expect(friendlyCfg.name).toBe('Studio MacBook')
+      expect((JSON.parse(fs.readFileSync(path.join(friendlyDir, 'config.json'), 'utf8')) as { name: string }).name).toBe(
+        'Studio MacBook',
+      )
+
+      // Explicit overrides.name always wins in loadOrCreateConfig
+      const overrideDir = path.join(tmpHome, 'override-cfg')
+      fs.mkdirSync(overrideDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(overrideDir, 'config.json'),
+        JSON.stringify({ hubId: 'hub_saved_4', name: 'AB12CD34EF' }, null, 2),
+        'utf8',
+      )
+      process.env.LEWORK_HOME = overrideDir
+      const overrideCfg = loadOrCreateConfig(
+        { name: 'Pinned Override' },
+        {
+          hostname: 'AB12CD34EF',
+          platform: 'darwin',
+          computerName: 'Alex-MBP',
+        },
+      )
+      expect(overrideCfg.name).toBe('Pinned Override')
+      expect((JSON.parse(fs.readFileSync(path.join(overrideDir, 'config.json'), 'utf8')) as { name: string }).name).toBe(
+        'Pinned Override',
+      )
+
+      // When resolveDefaultHostName cannot yield a different friendly name, stored.name is preserved cleanly
+      const fallbackDir = path.join(tmpHome, 'fallback-cfg')
+      fs.mkdirSync(fallbackDir, { recursive: true })
+      fs.writeFileSync(
+        path.join(fallbackDir, 'config.json'),
+        JSON.stringify({ hubId: 'hub_saved_5', name: 'AB12CD34EF' }, null, 2),
+        'utf8',
+      )
+      process.env.LEWORK_HOME = fallbackDir
+      const fallbackCfg = loadOrCreateConfig(
+        {},
+        {
+          hostname: 'AB12CD34EF.local',
+          platform: 'linux',
+        },
+      )
+      expect(fallbackCfg.name).toBe('AB12CD34EF')
+      expect((JSON.parse(fs.readFileSync(path.join(fallbackDir, 'config.json'), 'utf8')) as { name: string }).name).toBe(
+        'AB12CD34EF',
+      )
     } finally {
       if (prevHome === undefined) delete process.env.LEWORK_HOME
       else process.env.LEWORK_HOME = prevHome
