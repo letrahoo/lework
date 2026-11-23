@@ -97,7 +97,13 @@ internal fun MarkdownBlockItemView(block: MdBlock) {
     when (block) {
         is MdBlock.Heading -> HeadingBlockView(block)
         is MdBlock.Paragraph -> ParagraphBlockView(block.text)
-        is MdBlock.CodeFence -> CodeFenceBlockView(block.lang, block.code)
+        is MdBlock.CodeFence -> {
+            if (block.lang.trim().lowercase() == "mermaid") {
+                MermaidDiagramBlockView(code = block.code)
+            } else {
+                CodeFenceBlockView(block.lang, block.code)
+            }
+        }
         is MdBlock.Quote -> QuoteBlockView(block)
         is MdBlock.ListGroup -> ListGroupBlockView(block.items)
         is MdBlock.Table -> TableBlockView(block)
