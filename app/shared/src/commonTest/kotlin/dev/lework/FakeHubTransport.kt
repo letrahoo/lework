@@ -50,6 +50,9 @@ class FakeHubTransport : HubTransport {
     var connectHelloException: Throwable? = null
     var sendPromptException: Throwable? = null
     var sendPromptFailuresRemaining: Int = 0
+    var cancelSessionException: Throwable? = null
+    var cancelSessionDelayMs: Long = 0L
+    val cancelledSessionIds = mutableListOf<String>()
     var discoverNullRemaining: Int = 0
     var subscribeSessionCount: Int = 0
     var simulateTailscaleSameUser: Boolean = false
@@ -335,7 +338,11 @@ class FakeHubTransport : HubTransport {
         return "turn_${sentPrompts.size}"
     }
 
-    override suspend fun cancelSession(sessionId: String) = Unit
+    override suspend fun cancelSession(sessionId: String) {
+        if (cancelSessionDelayMs > 0L) delay(cancelSessionDelayMs)
+        cancelledSessionIds.add(sessionId)
+        cancelSessionException?.let { throw it }
+    }
 
     override suspend fun cancelQueuedPrompt(
         sessionId: String,

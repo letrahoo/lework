@@ -48,6 +48,19 @@ import type { SessionMetadataStore } from './session-metadata.ts'
 
 export { classifyRawToolCall, extractAgyUserRequests, filterAgyQueuedFromHistory, TerminalApprovalError }
 
+const CANCEL_WATERMARK_TTL_MS = 90_000
+const CANCEL_POLL_GRACE_MS = 1_800
+const CANCEL_SETTLE_WINDOW_MS = 3_000
+const AGY_TERMINAL_IDLE_FILE_MS = 4_000
+
+interface HostCancelWatermark {
+  cancelledAt: number
+  graceUntil: number
+  mtimeMs: number
+  size: number
+  lastSeq: number
+}
+
 interface WatchedHostSession {
   sessionId: string
   filePath: string
@@ -63,6 +76,7 @@ interface WatchedHostSession {
   activePermEvent: Extract<AgentEvent, { type: 'permission.requested' }> | null
   pendingPromptUntil: number
   pendingPromptSeqBaseline: number
+  consecutiveIdleTerminalPolls: number
   watcher: fs.FSWatcher | null
 }
 
@@ -101,6 +115,7 @@ export class HostTaskInspector {
   private claudeRuntimeMap = new Map<string, ClaudeLiveSessionMeta>()
   private lastTerminalModelKey = new Map<string, string>()
   private suppressedHostQueued = new Map<string, Set<string>>()
+  private readonly cancelledWatermarks = new Map<string, HostCancelWatermark>()
   private lastScanAt = 0
 
   constructor(callbacksOrOpts?: HostLiveCallbacks | HostTaskInspectorOptions) {
@@ -295,6 +310,20 @@ export class HostTaskInspector {
       }
     }
 
+    // Reconcile active cancel watermarks BEFORE queued suppression & prev metadata copy so a
+    // cancelled session never bounces back to `running` on global scans or `session.list` refreshes.
+    for (const [id, entry] of next) {
+      if (this.isCancelWatermarkActiveForDiscovery(id, entry, now)) {
+        entry.meta = {
+          ...entry.meta,
+          state: 'idle',
+          liveStatusText: undefined,
+          turnStartedAt: undefined,
+          queuedPrompts: undefined,
+        }
+      }
+    }
+
     // Apply host-side queued prompt suppression and clear stale suppressions once idle
     for (const [id, entry] of next) {
       const isActive = entry.meta.state === 'running' || entry.meta.state === 'waiting_permission'
@@ -349,6 +378,118 @@ export class HostTaskInspector {
     return this.hostIndex.get(sessionId)?.meta.subagents
   }
 
+  private parseTranscriptForEntry(sessionId: string, entry: HostTranscriptEntry): ParsedHostTranscript {
+    const claudeCfg =
+      entry.meta.engineId === 'claude' ? readClaudeLocalSettings(this.homeDir) : undefined
+    return entry.meta.engineId === 'codex'
+      ? parseCodexTranscript(sessionId, entry.filePath)
+      : entry.meta.engineId === 'claude'
+        ? parseClaudeTranscript(sessionId, entry.filePath, claudeCfg?.env)
+        : entry.meta.engineId === 'agy'
+          ? parseAgyTranscript(sessionId, entry.filePath, this.agyModelsCache ?? undefined)
+          : entry.meta.engineId === 'dsh'
+            ? parseDshTranscript(sessionId, entry.filePath)
+            : { events: [], workspaces: [], isRunning: false, turnStartedAt: undefined }
+  }
+
+  private hasPostCancelNewActivity(
+    wm: HostCancelWatermark,
+    events: AgentEvent[],
+    parsedRunning: boolean,
+    mtimeMs: number,
+    now: number,
+  ): boolean {
+    const lastSeq = events.length > 0 ? events[events.length - 1]!.seq : -1
+    if (lastSeq <= wm.lastSeq) return false
+    const newEvents = events.filter(ev => ev.seq > wm.lastSeq)
+    // A brand-new user prompt written after cancel always initiates a fresh turn immediately.
+    if (newEvents.some(ev => ev.type === 'message.user')) {
+      return true
+    }
+    // Sustained running activity after the settle window (e.g. a non-interrupted process
+    // continuing to emit planner/tool steps > 3s after cancel) also supersedes the watermark.
+    if (
+      parsedRunning &&
+      now - wm.cancelledAt > CANCEL_SETTLE_WINDOW_MS &&
+      mtimeMs > wm.mtimeMs + CANCEL_SETTLE_WINDOW_MS &&
+      newEvents.some(
+        ev =>
+          ev.type === 'tool.call' ||
+          ev.type === 'reasoning.delta' ||
+          ev.type === 'message.assistant.delta',
+      )
+    ) {
+      return true
+    }
+    return false
+  }
+
+  private isCancelWatermarkActiveForDiscovery(
+    sessionId: string,
+    entry: HostTranscriptEntry,
+    now: number,
+  ): boolean {
+    const wm = this.cancelledWatermarks.get(sessionId)
+    if (!wm) return false
+    if (now - wm.cancelledAt > CANCEL_WATERMARK_TTL_MS) {
+      this.cancelledWatermarks.delete(sessionId)
+      return false
+    }
+    if (entry.meta.engineId === 'claude') {
+      const rt = this.claudeRuntimeMap.get(entry.nativeId)
+      if (
+        rt &&
+        now >= wm.graceUntil &&
+        (rt.status === 'running' || rt.status === 'busy' || rt.waitingFor === 'permission prompt') &&
+        (rt.updatedAt ?? 0) > wm.cancelledAt
+      ) {
+        this.cancelledWatermarks.delete(sessionId)
+        return false
+      }
+    }
+    let mtimeMs = wm.mtimeMs
+    let size = wm.size
+    try {
+      const st = fs.statSync(entry.filePath)
+      mtimeMs = st.mtimeMs
+      size = st.size
+    } catch {
+      return true
+    }
+    if (mtimeMs <= wm.mtimeMs && size === wm.size) {
+      return true
+    }
+    const cached = this.transcriptCache.get(sessionId)
+    let events: AgentEvent[]
+    let parsedRunning: boolean
+    if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+      events = cached.events
+      parsedRunning = cached.isRunning
+    } else {
+      const parsed = this.parseTranscriptForEntry(sessionId, entry)
+      events = parsed.events
+      parsedRunning = parsed.isRunning
+      this.transcriptCache.set(sessionId, {
+        mtimeMs,
+        size,
+        events: parsed.events,
+        extraWorkspaces: parsed.workspaces,
+        isRunning: parsed.isRunning,
+        turnStartedAt: parsed.turnStartedAt,
+        queuedPrompts: parsed.queuedPrompts,
+        lastUserInputTs: parsed.lastUserInputTs,
+        recentUserTexts: parsed.recentUserTexts,
+        model: parsed.model,
+        reasoningEffort: parsed.reasoningEffort,
+      })
+    }
+    if (this.hasPostCancelNewActivity(wm, events, parsedRunning, mtimeMs, now)) {
+      this.cancelledWatermarks.delete(sessionId)
+      return false
+    }
+    return true
+  }
+
   getHostSession(sessionId: string): HostTranscriptEntry | undefined {
     const direct = this.hostIndex.get(sessionId) ?? this.subagentIndex.get(sessionId)
     if (direct) return direct
@@ -399,18 +540,7 @@ export class HostTaskInspector {
       parsedModel = cached.model
       parsedEffort = cached.reasoningEffort
     } else {
-      const claudeCfg =
-        entry.meta.engineId === 'claude' ? readClaudeLocalSettings(this.homeDir) : undefined
-      const parsed: ParsedHostTranscript =
-        entry.meta.engineId === 'codex'
-          ? parseCodexTranscript(sessionId, entry.filePath)
-          : entry.meta.engineId === 'claude'
-            ? parseClaudeTranscript(sessionId, entry.filePath, claudeCfg?.env)
-            : entry.meta.engineId === 'agy'
-              ? parseAgyTranscript(sessionId, entry.filePath, this.agyModelsCache ?? undefined)
-              : entry.meta.engineId === 'dsh'
-                ? parseDshTranscript(sessionId, entry.filePath)
-                : { events: [], workspaces: [], isRunning: false, turnStartedAt: undefined }
+      const parsed = this.parseTranscriptForEntry(sessionId, entry)
       events = parsed.events
       extraWorkspaces = parsed.workspaces
       parsedRunning = parsed.isRunning
@@ -475,6 +605,33 @@ export class HostTaskInspector {
     }
     if (activeWatch?.activePermEvent) {
       liveState = 'waiting_permission'
+    }
+
+    const wm = this.cancelledWatermarks.get(sessionId)
+    if (wm) {
+      const now = Date.now()
+      let watermarkCleared = false
+      if (now - wm.cancelledAt > CANCEL_WATERMARK_TTL_MS) {
+        this.cancelledWatermarks.delete(sessionId)
+        watermarkCleared = true
+      } else if (this.hasPostCancelNewActivity(wm, events, parsedRunning, st.mtimeMs, now)) {
+        this.cancelledWatermarks.delete(sessionId)
+        watermarkCleared = true
+      } else if (entry.meta.engineId === 'claude') {
+        const rt = this.claudeRuntimeMap.get(entry.nativeId)
+        if (
+          rt &&
+          now >= wm.graceUntil &&
+          (rt.status === 'running' || rt.status === 'busy' || rt.waitingFor === 'permission prompt') &&
+          (rt.updatedAt ?? 0) > wm.cancelledAt
+        ) {
+          this.cancelledWatermarks.delete(sessionId)
+          watermarkCleared = true
+        }
+      }
+      if (!watermarkCleared) {
+        liveState = 'idle'
+      }
     }
 
     // Only surface queuedPrompts when the session is actively running / awaiting permission.
@@ -672,11 +829,15 @@ export class HostTaskInspector {
       entry.meta.state === 'running' ||
       entry.meta.state === 'waiting_permission'
 
+    // Clear any prior cancel watermark now that a fresh prompt has been delivered to the terminal.
+    this.cancelledWatermarks.delete(sessionId)
+
     const w = this.watched.get(sessionId)
     const now = Date.now()
     if (w) {
       w.pendingPromptUntil = now + 5_000
       w.pendingPromptSeqBaseline = snap?.session.lastSeq ?? entry.meta.lastSeq
+      w.consecutiveIdleTerminalPolls = 0
       w.lastState = 'running'
       if (!wasBusy) {
         w.lastLiveStatus = '已同步至电脑终端，正在响应…'
@@ -741,10 +902,69 @@ export class HostTaskInspector {
       claudeRuntime: claudeRt,
     })
     if (ok) {
-      setTimeout(() => {
-        this.pollWatchedSession(sessionId)
-        void this.pollTerminalForWatched(sessionId, true)
-      }, 300)
+      const snap = this.readHostSessionEvents(sessionId)
+      const now = Date.now()
+      let mtimeMs = now
+      let size = 0
+      try {
+        const st = fs.statSync(entry.filePath)
+        mtimeMs = st.mtimeMs
+        size = st.size
+      } catch {
+        // ignore stat failure
+      }
+      const lastSeq = snap?.session.lastSeq ?? entry.meta.lastSeq
+      this.cancelledWatermarks.set(sessionId, {
+        cancelledAt: now,
+        graceUntil: now + CANCEL_POLL_GRACE_MS,
+        mtimeMs,
+        size,
+        lastSeq,
+      })
+
+      const w = this.watched.get(sessionId)
+      if (w) {
+        w.pendingPromptUntil = 0
+        w.consecutiveIdleTerminalPolls = 0
+        if (w.activePermRequestId) {
+          const prevPermId = w.activePermRequestId
+          w.activePermRequestId = null
+          w.activePermEvent = null
+          this.liveCallbacks?.onEvents([
+            {
+              seq: Math.max(0, lastSeq),
+              sessionId,
+              ts: now,
+              type: 'permission.resolved',
+              requestId: prevPermId,
+              optionId: null,
+              outcome: 'cancelled',
+            },
+          ])
+        }
+        w.lastState = 'idle'
+        w.lastLiveStatus = undefined
+        w.lastQueuedKey = ''
+      }
+
+      entry.meta = {
+        ...entry.meta,
+        state: 'idle',
+        liveStatusText: undefined,
+        turnStartedAt: undefined,
+        queuedPrompts: undefined,
+        updatedAt: now,
+      }
+      this.liveCallbacks?.onSessionUpdated(entry.meta)
+
+      for (const delayMs of [350, 1_100, 2_200]) {
+        const t = setTimeout(() => {
+          if (!this.watched.has(sessionId)) return
+          this.pollWatchedSession(sessionId)
+          void this.pollTerminalForWatched(sessionId, false, true)
+        }, delayMs)
+        t.unref?.()
+      }
     }
     return ok
   }
@@ -850,11 +1070,13 @@ export class HostTaskInspector {
       throw new Error('未找到对应的本机 iTerm2 或 tmux 终端窗口，请在电脑终端确认')
     }
 
+    this.cancelledWatermarks.delete(sessionId)
     const w = this.watched.get(sessionId)
     const resolvedId = w?.activePermRequestId ?? requestId
     if (w) {
       w.activePermRequestId = null
       w.activePermEvent = null
+      w.consecutiveIdleTerminalPolls = 0
       w.lastState = 'running'
     }
     this.liveCallbacks?.onEvents([
@@ -870,10 +1092,11 @@ export class HostTaskInspector {
     ])
     entry.meta = { ...entry.meta, state: 'running', liveStatusText: undefined }
     this.liveCallbacks?.onSessionUpdated(entry.meta)
-    setTimeout(() => {
+    const t = setTimeout(() => {
       this.pollWatchedSession(sessionId)
       void this.pollTerminalForWatched(sessionId, true)
     }, 320)
+    t.unref?.()
   }
 
   async syncTerminalNow(sessionId: string): Promise<void> {
@@ -914,6 +1137,7 @@ export class HostTaskInspector {
       activePermEvent: null,
       pendingPromptUntil: 0,
       pendingPromptSeqBaseline: snap.session.lastSeq,
+      consecutiveIdleTerminalPolls: 0,
       watcher: null,
     }
     try {
@@ -1040,7 +1264,11 @@ export class HostTaskInspector {
     }
   }
 
-  private async pollTerminalForWatched(sessionId: string, forcePush: boolean): Promise<void> {
+  private async pollTerminalForWatched(
+    sessionId: string,
+    forcePush: boolean,
+    forceInspect = forcePush,
+  ): Promise<void> {
     const w = this.watched.get(sessionId)
     const entry = this.hostIndex.get(sessionId)
     if (!w || !entry) return
@@ -1080,7 +1308,7 @@ export class HostTaskInspector {
           return
         }
         // Zero-overhead fast path: when Claude is idle with no pending permission prompt, skip screen capture on background ticks!
-        if (claudeRt.status === 'idle' && !claudeRt.waitingFor && !w.activePermRequestId && !forcePush) {
+        if (claudeRt.status === 'idle' && !claudeRt.waitingFor && !w.activePermRequestId && !forceInspect) {
           return
         }
       } else if (
@@ -1088,7 +1316,7 @@ export class HostTaskInspector {
         entry.meta.state === 'idle' &&
         !w.activePermRequestId &&
         w.pendingPromptUntil === 0 &&
-        !forcePush
+        !forceInspect
       ) {
         return
       }
@@ -1104,10 +1332,28 @@ export class HostTaskInspector {
 
       const liveMode = inspected?.liveMode ?? entry.meta.mode
       let perm = inspected?.pendingPermission
+      const spinner = inspected?.liveStatusText
+      const hasCancelHint = Boolean(inspected?.hasCancelHint)
+
+      // Re-read canonical transcript state after async terminal inspection so an already-finished
+      // (`idle`) transcript is never reverted back to `running`, and any post-cancel new user turn
+      // clears the cancel watermark immediately.
+      const freshTranscriptState = this.readHostSessionEvents(sessionId)?.session.state ?? entry.meta.state
+      const nowPoll = Date.now()
+      let activeWm = this.cancelledWatermarks.get(sessionId)
+      if (activeWm && nowPoll - activeWm.cancelledAt > CANCEL_WATERMARK_TTL_MS) {
+        this.cancelledWatermarks.delete(sessionId)
+        activeWm = undefined
+      }
+      const inCancelGrace = Boolean(activeWm && nowPoll < activeWm.graceUntil)
 
       // Guaranteed closure invariant: when Claude's runtime metadata explicitly reports
       // `waitingFor === 'permission prompt'`, NEVER leave the mobile UI without an actionable or explanatory banner!
-      if (!perm && claudeRt?.waitingFor === 'permission prompt') {
+      // Suppress stale pre-cancel runtime metadata while a cancel watermark is still active.
+      const suppressStaleClaudePerm = Boolean(
+        activeWm && (inCancelGrace || (claudeRt?.updatedAt ?? 0) <= activeWm.cancelledAt),
+      )
+      if (!perm && claudeRt?.waitingFor === 'permission prompt' && !suppressStaleClaudePerm) {
         if (inspected?.targetReachable) {
           perm = {
             requestId: `tty_perm_fallback_${entry.nativeId.slice(0, 10)}`,
@@ -1129,7 +1375,26 @@ export class HostTaskInspector {
         }
       }
 
+      if (activeWm) {
+        if (inCancelGrace) {
+          perm = undefined
+        } else {
+          const claudeFreshlyActive =
+            engineId === 'claude' &&
+            Boolean(claudeRt) &&
+            (claudeRt!.status === 'running' ||
+              claudeRt!.status === 'busy' ||
+              claudeRt!.waitingFor === 'permission prompt') &&
+            (claudeRt!.updatedAt ?? 0) > activeWm.cancelledAt
+          if (Boolean(perm) || Boolean(spinner) || hasCancelHint || claudeFreshlyActive) {
+            this.cancelledWatermarks.delete(sessionId)
+            activeWm = undefined
+          }
+        }
+      }
+
       if (perm) {
+        w.consecutiveIdleTerminalPolls = 0
         entry.meta = {
           ...entry.meta,
           state: 'waiting_permission',
@@ -1172,7 +1437,7 @@ export class HostTaskInspector {
         return
       }
 
-      // If a terminal permission prompt was previously open and is now dismissed (e.g. approved on Mac)
+      // If a terminal permission prompt was previously open and is now dismissed (e.g. approved or cancelled)
       if (w.activePermRequestId) {
         const prevId = w.activePermRequestId
         w.activePermRequestId = null
@@ -1185,39 +1450,93 @@ export class HostTaskInspector {
             type: 'permission.resolved',
             requestId: prevId,
             optionId: null,
-            outcome: 'selected',
+            outcome: activeWm ? 'cancelled' : 'selected',
           },
         ])
       }
 
-      // Re-read canonical transcript state after async terminal inspection so an already-finished
-      // (`idle`) transcript is never reverted back to `running` by stale pre-await `entry.meta.state`!
-      const freshTranscriptState = this.readHostSessionEvents(sessionId)?.session.state ?? entry.meta.state
-      const spinner = inspected?.liveStatusText
+      if (activeWm) {
+        w.consecutiveIdleTerminalPolls = 0
+        const nextState: SessionMeta['state'] = 'idle'
+        if (
+          w.lastLiveStatus !== undefined ||
+          nextState !== w.lastState ||
+          liveMode !== entry.meta.mode ||
+          forcePush
+        ) {
+          w.lastLiveStatus = undefined
+          w.lastState = nextState
+          w.lastQueuedKey = ''
+          entry.meta = {
+            ...entry.meta,
+            state: nextState,
+            mode: liveMode,
+            liveStatusText: undefined,
+            turnStartedAt: undefined,
+            queuedPrompts: undefined,
+          }
+          this.liveCallbacks?.onSessionUpdated(entry.meta)
+        }
+        return
+      }
+
+      let terminalConfirmedIdle = false
+      if (engineId === 'agy') {
+        if (inspected?.targetReachable && !spinner && !hasCancelHint && w.pendingPromptUntil === 0) {
+          w.consecutiveIdleTerminalPolls++
+          if (freshTranscriptState === 'running' && w.consecutiveIdleTerminalPolls >= 2) {
+            try {
+              const st = fs.statSync(entry.filePath)
+              if (Date.now() - st.mtimeMs >= AGY_TERMINAL_IDLE_FILE_MS) {
+                terminalConfirmedIdle = true
+                this.cancelledWatermarks.set(sessionId, {
+                  cancelledAt: Date.now(),
+                  graceUntil: 0,
+                  mtimeMs: st.mtimeMs,
+                  size: st.size,
+                  lastSeq: entry.meta.lastSeq,
+                })
+              }
+            } catch {
+              // ignore
+            }
+          }
+        } else {
+          w.consecutiveIdleTerminalPolls = 0
+        }
+      }
+
       const nextState: SessionMeta['state'] =
         engineId === 'claude'
           ? claudeRt?.waitingFor === 'permission prompt'
             ? 'waiting_permission'
-            : claudeRt?.status === 'running' || claudeRt?.status === 'busy' || Boolean(spinner)
+            : claudeRt?.status === 'running' || claudeRt?.status === 'busy' || Boolean(spinner) || hasCancelHint
               ? 'running'
               : 'idle'
-          : Boolean(spinner) || freshTranscriptState === 'running'
-            ? 'running'
-            : 'idle'
+          : terminalConfirmedIdle
+            ? 'idle'
+            : Boolean(spinner) || hasCancelHint || freshTranscriptState === 'running'
+              ? 'running'
+              : 'idle'
 
+      const effectiveLiveStatus = nextState === 'running' ? spinner : undefined
       if (
-        spinner !== w.lastLiveStatus ||
+        effectiveLiveStatus !== w.lastLiveStatus ||
         nextState !== w.lastState ||
         liveMode !== entry.meta.mode ||
         forcePush
       ) {
-        w.lastLiveStatus = spinner
+        w.lastLiveStatus = effectiveLiveStatus
         w.lastState = nextState
+        if (nextState === 'idle') {
+          w.lastQueuedKey = ''
+        }
         entry.meta = {
           ...entry.meta,
           state: nextState,
           mode: liveMode,
-          liveStatusText: nextState === 'running' ? spinner : undefined,
+          liveStatusText: effectiveLiveStatus,
+          ...(nextState === 'idle' ? { turnStartedAt: undefined, queuedPrompts: undefined } : {}),
         }
         this.liveCallbacks?.onSessionUpdated(entry.meta)
       }
