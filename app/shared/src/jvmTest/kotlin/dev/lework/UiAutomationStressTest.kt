@@ -629,14 +629,24 @@ class UiAutomationStressTest {
             onNodeWithTag("desktop_permanent_sidebar").assertIsDisplayed()
             onNodeWithTag("desktop_workspace_header").assertIsDisplayed()
             onNodeWithTag("topbar_btn_menu").assertDoesNotExist()
-            onNodeWithTag("drawer_btn_new_session").assertIsDisplayed()
-            onNodeWithTag("drawer_btn_filter").assertIsDisplayed()
 
-            // Verify bottom sidebar bar: left = [1. 设置, 2. 用量], far right = [刷新] (no PR / Issue entries)
+            // Verify pixel-perfect 30dp grid alignment across sidebar Row 1, Row 2 (Search + 3 icons), and Bottom Footer
             val sidebarBounds = onNodeWithTag("desktop_permanent_sidebar").fetchSemanticsNode().boundsInRoot
+            val collapseBounds = onNodeWithTag("drawer_btn_collapse_sidebar").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val searchBoxBounds = onNodeWithTag("desktop_sidebar_search_box").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val filterBounds = onNodeWithTag("drawer_btn_filter").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val archiveBounds = onNodeWithTag("drawer_tab_archived").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val newSessionBounds = onNodeWithTag("drawer_btn_new_session").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
             val settingsBounds = onNodeWithTag("drawer_btn_settings").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
             val usageBounds = onNodeWithTag("drawer_btn_usage").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
             val refreshBounds = onNodeWithTag("drawer_btn_refresh").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+
+            assertEquals(searchBoxBounds.top, filterBounds.top, 1.0f, "Search box top must align with Filter button")
+            assertEquals(searchBoxBounds.bottom, filterBounds.bottom, 1.0f, "Search box bottom must align with Filter button")
+            assertEquals(searchBoxBounds.top, archiveBounds.top, 1.0f, "Search box top must align with Archive button")
+            assertEquals(searchBoxBounds.top, newSessionBounds.top, 1.0f, "Search box top must align with New Session button")
+            assertEquals(collapseBounds.right, newSessionBounds.right, 1.0f, "Right-edge sidebar icons must align strictly")
+            assertEquals(newSessionBounds.right, refreshBounds.right, 1.0f, "Top and bottom right-edge icons must align strictly")
             assertTrue(settingsBounds.left < usageBounds.left, "Expected 1.设置 before 2.用量 in bottom-left")
             assertTrue(
                 refreshBounds.left > (sidebarBounds.left + sidebarBounds.right) / 2f,
@@ -649,6 +659,15 @@ class UiAutomationStressTest {
             onNodeWithTag("composer_model_picker_btn").assertIsDisplayed()
             onNodeWithTag("composer_mode_btn").assertIsDisplayed()
 
+            // Verify inline right-side session card buttons on Desktop: [置顶 Pin] [重命名] [归档]
+            onNodeWithTag("session_pin_$sid").assertIsDisplayed()
+            onNodeWithTag("session_rename_$sid").assertIsDisplayed()
+            onNodeWithTag("session_archive_$sid").assertIsDisplayed()
+            onNodeWithTag("session_pin_$sid").performClick()
+            waitForIdle()
+            assertTrue(sid in store.state.value.pinnedSessionIds, "Expected Pin button to pin session to top")
+            onNodeWithText("已置顶").assertIsDisplayed()
+
             val captureDir = (System.getProperty("lework.captureScreenshotsDir")
                 ?: System.getenv("LEWORK_CAPTURE_DIR"))?.takeIf { it.isNotBlank() }
             if (captureDir != null) {
@@ -659,10 +678,29 @@ class UiAutomationStressTest {
                 }
             }
 
-            // Verify T3 Code 3-Column Engine + Model + Reasoning Level Picker
+            // Unpin cleanly to verify toggle off
+            onNodeWithTag("session_pin_$sid").performClick()
+            waitForIdle()
+            assertTrue(sid !in store.state.value.pinnedSessionIds, "Expected second click to unpin session")
+
+            // Verify clicking Diff icon docks a side-by-side Desktop Right Inspector Pane (zero mobile bottom sheet!)
+            onNodeWithTag("topbar_btn_diff").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_right_inspector_pane").assertIsDisplayed()
+            onNodeWithTag("desktop_inspector_close_btn").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_right_inspector_pane").assertDoesNotExist()
+
+            // Verify T3 Code 3-Column Engine + Model + Reasoning Level Picker + aligned top header row
             onNodeWithTag("composer_model_picker_btn").performClick()
             waitForIdle()
             onNodeWithTag("desktop_model_picker_dialog").assertIsDisplayed()
+            val favSlotBounds = onNodeWithTag("picker_rail_favorites_slot", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val pickerSearchBounds = onNodeWithTag("model_picker_search_box", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val reasoningHdrBounds = onNodeWithTag("picker_reasoning_header", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertEquals(favSlotBounds.top, pickerSearchBounds.top, 1.0f, "Model picker rail & search headers must align")
+            assertEquals(pickerSearchBounds.top, reasoningHdrBounds.top, 1.0f, "Model picker search & reasoning headers must align")
+            assertEquals(pickerSearchBounds.bottom, reasoningHdrBounds.bottom, 1.0f, "Model picker header dividers must align")
             onNodeWithTag("picker_rail_claude").assertIsDisplayed()
             onNodeWithTag("picker_rail_codex").assertIsDisplayed()
             onNodeWithTag("picker_rail_agy").assertIsDisplayed()
@@ -678,8 +716,7 @@ class UiAutomationStressTest {
                     File(captureDir, "desktop_model_picker.png").writeBytes(pickerPng.bytes)
                 }
             }
-            // Close picker via Escape or re-opening composer flow
-            runOnIdle { store.selectEffort(ReasoningEffort.HIGH) }
+            // Close picker via Escape
             onNodeWithTag("model_picker_search_input").performClick()
             onNodeWithTag("model_picker_search_input").performKeyInput {
                 pressKey(Key.Escape)

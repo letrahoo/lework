@@ -44,6 +44,7 @@ class ConsoleStore(
             selectedEffort = parseEffort(initialPrefs.reasoningEffort),
             selectedMode = parseMode(initialPrefs.mode),
             favoriteModelKeys = initialPrefs.favoriteModelKeys,
+            pinnedSessionIds = initialPrefs.pinnedSessionIds,
             selectedWorkspacePath = initialPrefs.workspacePath,
             currentBrowsePath = initialPrefs.workspacePath,
         ),
@@ -358,6 +359,7 @@ class ConsoleStore(
                 mode = modeToWire(st.selectedMode),
                 workspacePath = st.selectedWorkspacePath,
                 favoriteModelKeys = st.favoriteModelKeys,
+                pinnedSessionIds = st.pinnedSessionIds,
             ),
         )
     }
@@ -1732,6 +1734,20 @@ class ConsoleStore(
                 (s.favoriteModelKeys + key).distinct()
             }
             s.copy(favoriteModelKeys = next)
+        }
+        persistCurrentPrefs()
+    }
+
+    fun togglePinSession(sessionId: String) {
+        val id = sessionId.trim()
+        if (id.isEmpty()) return
+        _state.update { s ->
+            val next = if (id in s.pinnedSessionIds) {
+                s.pinnedSessionIds - id
+            } else {
+                (listOf(id) + s.pinnedSessionIds).distinct()
+            }
+            s.copy(pinnedSessionIds = next)
         }
         persistCurrentPrefs()
     }

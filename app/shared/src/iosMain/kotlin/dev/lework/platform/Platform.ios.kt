@@ -530,6 +530,11 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         .split('|')
         .map { it.trim() }
         .filter { it.contains(':') }
+    val pinned = d.stringForKey("lework_pref_pinned_sessions")
+        .orEmpty()
+        .split('|')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
     return SavedSessionPrefs(
         engineId = d.stringForKey(KEY_PREF_ENGINE)?.ifBlank { null } ?: "claude",
         providerId = d.stringForKey(KEY_PREF_PROVIDER)?.ifBlank { null },
@@ -538,6 +543,7 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         mode = d.stringForKey(KEY_PREF_MODE)?.ifBlank { null } ?: "ask",
         workspacePath = d.stringForKey(KEY_PREF_WORKSPACE).orEmpty(),
         favoriteModelKeys = favs,
+        pinnedSessionIds = pinned,
     )
 }
 
@@ -555,6 +561,11 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
         d.setObject(prefs.favoriteModelKeys.joinToString("|"), forKey = "lework_pref_fav_models")
     } else {
         d.removeObjectForKey("lework_pref_fav_models")
+    }
+    if (prefs.pinnedSessionIds.isNotEmpty()) {
+        d.setObject(prefs.pinnedSessionIds.joinToString("|"), forKey = "lework_pref_pinned_sessions")
+    } else {
+        d.removeObjectForKey("lework_pref_pinned_sessions")
     }
     d.synchronize()
 }

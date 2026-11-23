@@ -13,6 +13,7 @@ data class SavedSessionPrefs(
     val mode: String = "auto",
     val workspacePath: String = "",
     val favoriteModelKeys: List<String> = emptyList(),
+    val pinnedSessionIds: List<String> = emptyList(),
 )
 
 @Serializable

@@ -2,46 +2,21 @@ package dev.lework.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CompareArrows
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.isMetaPressed
-import androidx.compose.ui.input.key.isShiftPressed
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -50,16 +25,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.lework.platform.appVersionLabel
-import dev.lework.platform.epochMillis
 import dev.lework.platform.isDesktopPlatform
-import dev.lework.platform.loadSavedRelayUrls
 import dev.lework.protocol.*
 import dev.lework.store.*
-import kotlinx.coroutines.delay
+import dev.lework.ui.desktop.DesktopConsoleApp
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Top-level UI router separating Mobile (iOS / Android touch shell) and Desktop (macOS keyboard/mouse shell)
+ * into two completely independent presentation systems sharing only [ConsoleStore] & domain renderers.
+ */
 @Composable
 fun ConsoleApp(
     externalStore: ConsoleStore? = null,
@@ -70,7 +45,43 @@ fun ConsoleApp(
     val scope = rememberCoroutineScope()
     val store = remember(externalStore) { externalStore ?: ConsoleStore(scope) }
     val state by store.state.collectAsState()
+    val isDesktop = remember { isDesktopPlatform() }
 
+    LaunchedEffect(store, autoBootstrap) {
+        if (autoBootstrap) {
+            store.bootstrapOrConnect()
+        }
+    }
+
+    MaterialTheme(colorScheme = EverforestColorScheme) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Everforest.Bg0,
+        ) {
+            if (isDesktop) {
+                DesktopConsoleApp(
+                    store = store,
+                    state = state,
+                    openSettingsSignal = openSettingsSignal,
+                    toggleSidebarSignal = toggleSidebarSignal,
+                )
+            } else {
+                MobileConsoleApp(
+                    store = store,
+                    state = state,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MobileConsoleApp(
+    store: ConsoleStore,
+    state: ConsoleUiState,
+) {
+    val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val dismissKeyboard = rememberKeyboardDismisser()
     var showModelSheet by remember { mutableStateOf(false) }
@@ -78,22 +89,8 @@ fun ConsoleApp(
     var showFilesSheet by remember { mutableStateOf(false) }
     var showUsageSheet by remember { mutableStateOf(false) }
     var showDiffSheet by remember { mutableStateOf(false) }
-    var showSettingsDialog by remember { mutableStateOf(false) }
-    var desktopSidebarExpanded by remember { mutableStateOf(true) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
     var promptText by remember { mutableStateOf("") }
-
-    LaunchedEffect(openSettingsSignal) {
-        if (openSettingsSignal > 0 && state.hasEnteredWorkspace) {
-            showSettingsDialog = true
-        }
-    }
-
-    LaunchedEffect(toggleSidebarSignal) {
-        if (toggleSidebarSignal > 0 && state.hasEnteredWorkspace) {
-            desktopSidebarExpanded = !desktopSidebarExpanded
-        }
-    }
 
     // Automatically resign software keyboard & focus whenever the navigation drawer opens or closes
     // (covers both tapping the top-left Menu button AND edge-swipe drawer gestures).
@@ -108,7 +105,7 @@ fun ConsoleApp(
     // Automatically resign software keyboard before any modal bottom sheet or pairing dialog appears
     val anyOverlaySheetOpen =
         showModelSheet || showWorkspaceSheet || showFilesSheet || showUsageSheet || showDiffSheet ||
-            showSettingsDialog || state.pendingDeepLinkPairing != null
+            state.pendingDeepLinkPairing != null
     LaunchedEffect(anyOverlaySheetOpen) {
         if (anyOverlaySheetOpen) {
             dismissKeyboard()
@@ -125,108 +122,56 @@ fun ConsoleApp(
         }
     }
 
-    LaunchedEffect(store, autoBootstrap) {
-        if (autoBootstrap) {
-            store.bootstrapOrConnect()
-        }
-    }
-
-    MaterialTheme(colorScheme = EverforestColorScheme) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Everforest.Bg0,
-        ) {
-            if (!state.hasEnteredWorkspace) {
-                AuthEntryView(
-                    state = state,
-                    onLaunchOAuth = store::launchOAuthApp,
-                    onOpenBrowser = store::openOAuthBrowserFallback,
-                    onManualConnect = store::connectManualEndpoint,
-                    onRetry = store::bootstrapOrConnect,
-                    onResetCredentials = store::resetCredentialsAndReconnect,
-                    onScanQr = store::scanQrAndPair,
-                    onPasteClipboardPairing = store::pastePairingFromClipboard,
-                    onPairViaSsh = store::pairViaSshHost,
-                    onStartTsnetLogin = store::startMobileTsnetLogin,
-                    onSearchTsnetPeers = store::searchAndConnectViaTsnet,
-                    onLogoutTsnet = store::logoutMobileTsnetAccount,
-                    onSelectPairedHost = store::switchPairedHost,
-                )
-            } else {
-                BoxWithConstraints(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .onPreviewKeyEvent { ev ->
-                            if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                            val cmdOrCtrl = ev.isMetaPressed || ev.isCtrlPressed
-                            if (!cmdOrCtrl) return@onPreviewKeyEvent false
-                            when {
-                                ev.key == Key.N && !ev.isShiftPressed -> {
-                                    store.startNewDraftSession()
-                                    true
-                                }
-                                ev.key == Key.B && !ev.isShiftPressed -> {
-                                    desktopSidebarExpanded = !desktopSidebarExpanded
-                                    true
-                                }
-                                ev.key == Key.R && !ev.isShiftPressed -> {
-                                    store.refreshHostSessions()
-                                    true
-                                }
-                                ev.key == Key.Comma && !ev.isShiftPressed -> {
-                                    showSettingsDialog = true
-                                    true
-                                }
-                                ev.key == Key.K && !ev.isShiftPressed -> {
-                                    showModelSheet = true
-                                    true
-                                }
-                                ev.key == Key.D && ev.isShiftPressed -> {
-                                    store.refreshDiffAndCheckpoints()
-                                    showDiffSheet = true
-                                    true
-                                }
-                                else -> false
-                            }
-                        },
+    if (!state.hasEnteredWorkspace) {
+        AuthEntryView(
+            state = state,
+            onLaunchOAuth = store::launchOAuthApp,
+            onOpenBrowser = store::openOAuthBrowserFallback,
+            onManualConnect = store::connectManualEndpoint,
+            onRetry = store::bootstrapOrConnect,
+            onResetCredentials = store::resetCredentialsAndReconnect,
+            onScanQr = store::scanQrAndPair,
+            onStartTsnetLogin = store::startMobileTsnetLogin,
+            onSearchTsnetPeers = store::searchAndConnectViaTsnet,
+            onLogoutTsnet = store::logoutMobileTsnetAccount,
+            onSelectPairedHost = store::switchPairedHost,
+        )
+    } else {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet(
+                    drawerContainerColor = Everforest.BgDim,
+                    drawerContentColor = Everforest.Fg,
+                    windowInsets = WindowInsets(0, 0, 0, 0),
+                    modifier = Modifier.width(316.dp),
                 ) {
-                    val isWideDesktop = maxWidth >= 860.dp
-
-                    @Composable
-                    fun renderSidebar(closeDrawerAfterAction: Boolean) {
+                    // Avoid recomposing 60+ off-screen drawer rows on every streaming event while closed
+                    if (drawerState.isOpen || drawerState.currentValue == DrawerValue.Open || drawerState.targetValue == DrawerValue.Open) {
                         TasksSidebarContent(
                             state = state,
                             onNewSession = {
                                 store.startNewDraftSession()
-                                if (closeDrawerAfterAction) scope.launch { drawerState.close() }
+                                scope.launch { drawerState.close() }
                             },
                             onOpenUsage = {
                                 store.refreshUsageDashboard()
                                 showUsageSheet = true
-                                if (closeDrawerAfterAction) scope.launch { drawerState.close() }
-                            },
-                            onOpenSettings = {
-                                showSettingsDialog = true
-                                if (closeDrawerAfterAction) scope.launch { drawerState.close() }
-                            },
-                            onToggleSidebar = if (isWideDesktop) {
-                                { desktopSidebarExpanded = false }
-                            } else {
-                                null
+                                scope.launch { drawerState.close() }
                             },
                             onSelectFilter = store::setDrawerEngineFilter,
                             onSelectSession = { sid ->
                                 store.selectSession(sid)
-                                if (closeDrawerAfterAction) scope.launch { drawerState.close() }
+                                scope.launch { drawerState.close() }
                             },
                             onRefresh = store::refreshHostSessions,
                             onLogout = store::logout,
                             onSwitchHost = { hubId ->
-                                if (closeDrawerAfterAction) scope.launch { drawerState.close() }
+                                scope.launch { drawerState.close() }
                                 store.switchPairedHost(hubId)
                             },
                             onPairAnotherHost = {
-                                if (closeDrawerAfterAction) scope.launch { drawerState.close() }
+                                scope.launch { drawerState.close() }
                                 store.preparePairAnotherHost()
                             },
                             onDismissSigningReminder = store::dismissSigningExpiryReminder,
@@ -235,804 +180,442 @@ fun ConsoleApp(
                             onRequestRenameSession = { sess -> renamingSessionId = sess.id },
                             onToggleArchiveSession = store::archiveSession,
                         )
-                    }
-
-                    @Composable
-                    fun renderMainConversationColumn(showMenuButton: Boolean, modifier: Modifier = Modifier) {
-                        val topActiveSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
-                        val useDesktopHeader = isWideDesktop && isDesktopPlatform()
-
-                        Column(
-                            modifier = modifier
-                                .fillMaxSize()
-                                .background(Everforest.Bg0)
-                                .windowInsetsPadding(WindowInsets.safeDrawing),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            if (useDesktopHeader) {
-                                DesktopWorkspaceHeader(
-                                    state = state,
-                                    activeSession = topActiveSess,
-                                    showExpandSidebarButton = !desktopSidebarExpanded,
-                                    onExpandSidebar = { desktopSidebarExpanded = true },
-                                    onOpenWorkspaceSheet = {
-                                        dismissKeyboard()
-                                        showWorkspaceSheet = true
-                                    },
-                                    onOpenModelSheet = {
-                                        dismissKeyboard()
-                                        showModelSheet = true
-                                    },
-                                    onOpenDiffSheet = {
-                                        dismissKeyboard()
-                                        store.refreshDiffAndCheckpoints()
-                                        showDiffSheet = true
-                                    },
-                                    onOpenFilesSheet = {
-                                        dismissKeyboard()
-                                        store.browseDirectory()
-                                        showFilesSheet = true
-                                    },
-                                    onRenameSession = {
-                                        if (topActiveSess != null) {
-                                            dismissKeyboard()
-                                            renamingSessionId = topActiveSess.id
-                                        }
-                                    },
-                                    onToggleArchiveSession = {
-                                        if (topActiveSess != null) {
-                                            dismissKeyboard()
-                                            store.archiveSession(topActiveSess.id, !topActiveSess.archived)
-                                        }
-                                    },
-                                )
-                            } else {
-                                MinimalTopBar(
-                                    state = state,
-                                    showMenuButton = showMenuButton,
-                                    onOpenDrawer = {
-                                        dismissKeyboard()
-                                        store.refreshHostSessions()
-                                        scope.launch { drawerState.open() }
-                                    },
-                                    onOpenModelSheet = {
-                                        dismissKeyboard()
-                                        showModelSheet = true
-                                    },
-                                    onOpenDiffSheet = {
-                                        dismissKeyboard()
-                                        store.refreshDiffAndCheckpoints()
-                                        showDiffSheet = true
-                                    },
-                                    onOpenFilesSheet = {
-                                        dismissKeyboard()
-                                        store.browseDirectory()
-                                        showFilesSheet = true
-                                    },
-                                )
-                            }
-
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .let { m -> if (isWideDesktop) m.widthIn(max = 980.dp) else m }
-                                    .fillMaxWidth(),
-                            ) {
-                                if (!useDesktopHeader && topActiveSess != null) {
-                                    ActiveSessionTitleStrip(
-                                        session = topActiveSess,
-                                        onRename = {
-                                            dismissKeyboard()
-                                            renamingSessionId = topActiveSess.id
-                                        },
-                                        onToggleArchive = {
-                                            dismissKeyboard()
-                                            store.archiveSession(topActiveSess.id, !topActiveSess.archived)
-                                        },
-                                    )
-                                }
-
-                                if (state.connectionStatus == ConnectionStatus.RECONNECTING) {
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = Everforest.Bg1,
-                                        border = BorderStroke(1.dp, Everforest.BoldGold.copy(alpha = 0.35f)),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 14.dp, vertical = 2.dp),
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        ) {
-                                            CircularProgressIndicator(
-                                                color = Everforest.BoldGold,
-                                                strokeWidth = 1.8.dp,
-                                                modifier = Modifier.size(12.dp),
-                                            )
-                                            Text(
-                                                text = "正在校验权限并续连当前会话上下文…",
-                                                fontSize = 12.sp,
-                                                color = Everforest.BoldGold,
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth()
-                                        .clickable(
-                                            indication = null,
-                                            interactionSource = remember { MutableInteractionSource() },
-                                        ) { dismissKeyboard() },
-                                ) {
-                                    val activeKey = state.activeSessionId ?: "draft"
-                                    val activeSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
-                                    val transcript = state.activeTranscript
-                                    if (state.activeSessionId == null && transcript.items.isEmpty()) {
-                                        CalmHomeEmptyState(
-                                            state = state,
-                                            onOpenRunningSession = { sid ->
-                                                dismissKeyboard()
-                                                store.selectSession(sid)
-                                            },
-                                        )
-                                    } else if (
-                                        state.activeSessionId != null &&
-                                        transcript.items.isEmpty() &&
-                                        state.loadingSessionId == state.activeSessionId
-                                    ) {
-                                        ConversationLoadingSkeleton(title = activeSess?.title)
-                                    } else {
-                                        val sessRunning = activeSess != null &&
-                                            (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
-                                        key(activeKey) {
-                                            ConversationStreamView(
-                                                sessionKey = activeKey,
-                                                activeSession = activeSess,
-                                                transcript = transcript,
-                                                isSessionRunning = sessRunning,
-                                                onLoadOlder = { store.loadOlderHistory(activeKey) },
-                                                onDismissKeyboard = dismissKeyboard,
-                                            )
-                                        }
-                                    }
-                                }
-
-                                val activeSessForPerm = state.activeSession?.takeIf { it.id == state.activeSessionId }
-                                val pendingPerm = state.activeTranscript.pendingPermissions
-                                    .lastOrNull { it.sessionId == state.activeSessionId }
-                                    ?: if (activeSessForPerm?.state == SessionState.WAITING_PERMISSION) {
-                                        AgentEvent.PermissionRequested(
-                                            seq = state.activeTranscript.lastSeq,
-                                            sessionId = activeSessForPerm.id,
-                                            ts = 0L,
-                                            requestId = "fallback_waiting_${activeSessForPerm.id}",
-                                            title = "Agent 正在等待确认\n正在同步终端选项，若未显示操作按钮请点击右侧刷新或回电脑窗口确认。",
-                                            options = emptyList(),
-                                        )
-                                    } else {
-                                        null
-                                    }
-                                if (pendingPerm != null) {
-                                    InlineApprovalBanner(
-                                        permission = pendingPerm,
-                                        isSubmitting = state.submittingApprovalRequestId == pendingPerm.requestId,
-                                        errorText = state.approvalErrorText,
-                                        onRefresh = {
-                                            pendingPerm.sessionId.takeIf { it.isNotBlank() }?.let { store.selectSession(it) }
-                                        },
-                                        onDecision = { reqId, optId, sessId ->
-                                            store.respondApproval(reqId, optId, sessId)
-                                        },
-                                    )
-                                }
-
-                                if (state.activeSessionId != null) {
-                                    SessionContextStatusStrip(
-                                        sessionUsage = state.activeSessionUsage?.takeIf { it.sessionId == state.activeSessionId },
-                                        fallbackInputTokens = state.activeTranscript.inputTokens,
-                                        fallbackOutputTokens = state.activeTranscript.outputTokens,
-                                        onClick = {
-                                            dismissKeyboard()
-                                            store.refreshUsageDashboard()
-                                            showUsageSheet = true
-                                        },
-                                    )
-                                }
-
-                                if (!state.promptErrorText.isNullOrBlank()) {
-                                    Surface(
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = Everforest.Red.copy(alpha = 0.12f),
-                                        border = BorderStroke(1.dp, Everforest.Red.copy(alpha = 0.4f)),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 2.dp),
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.ErrorOutline,
-                                                contentDescription = null,
-                                                tint = Everforest.Red,
-                                                modifier = Modifier.size(16.dp),
-                                            )
-                                            Text(
-                                                text = state.promptErrorText.orEmpty(),
-                                                fontSize = 12.5.sp,
-                                                lineHeight = 17.sp,
-                                                color = Everforest.Fg,
-                                                modifier = Modifier.weight(1f),
-                                            )
-                                            Icon(
-                                                imageVector = Icons.Rounded.Close,
-                                                contentDescription = "关闭提示",
-                                                tint = Everforest.CommentGrey,
-                                                modifier = Modifier
-                                                    .size(16.dp)
-                                                    .clickable { store.dismissPromptError() },
-                                            )
-                                        }
-                                    }
-                                }
-
-                                ClaudeStyleComposer(
-                                    state = state,
-                                    text = promptText,
-                                    onTextChange = { next ->
-                                        promptText = next
-                                        store.updateComposerTextForMentions(next)
-                                    },
-                                    onOpenWorkspaceSheet = {
-                                        dismissKeyboard()
-                                        showWorkspaceSheet = true
-                                    },
-                                    onOpenModelSheet = {
-                                        dismissKeyboard()
-                                        showModelSheet = true
-                                    },
-                                    onCycleMode = {
-                                        val modes = state.availableModes
-                                        val idx = modes.indexOf(state.selectedMode)
-                                        val next = modes.getOrElse((idx + 1) % modes.size) { SessionMode.AUTO }
-                                        store.selectMode(next)
-                                    },
-                                    onCycleEffort = {
-                                        val efforts = state.availableEfforts
-                                        val idx = efforts.indexOf(state.selectedEffort)
-                                        val next = efforts.getOrElse((idx + 1) % efforts.size) { ReasoningEffort.MEDIUM }
-                                        store.selectEffort(next)
-                                    },
-                                    onSend = {
-                                        dismissKeyboard()
-                                        val msg = promptText
-                                        promptText = ""
-                                        store.sendPrompt(msg)
-                                    },
-                                    onCancel = store::cancelActiveTurn,
-                                    onPickImage = {
-                                        dismissKeyboard()
-                                        store.pickAndAttachImage()
-                                    },
-                                    onCaptureCamera = {
-                                        dismissKeyboard()
-                                        store.captureAndAttachImage()
-                                    },
-                                    onRemoveImage = store::removeAttachedImage,
-                                    onSelectMentionFile = { relPath ->
-                                        promptText = replaceTrailingMention(promptText, relPath)
-                                        store.dismissMentionSuggestions()
-                                    },
-                                    onDismissMention = store::dismissMentionSuggestions,
-                                )
-                            }
-                        }
-                    }
-
-                    if (isWideDesktop) {
-                        Row(modifier = Modifier.fillMaxSize()) {
-                            if (desktopSidebarExpanded) {
-                                Surface(
-                                    color = Everforest.BgDim,
-                                    contentColor = Everforest.Fg,
-                                    modifier = Modifier
-                                        .width(292.dp)
-                                        .fillMaxHeight()
-                                        .testTag("desktop_permanent_sidebar"),
-                                ) {
-                                    renderSidebar(closeDrawerAfterAction = false)
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .width(1.dp)
-                                        .fillMaxHeight()
-                                        .background(Everforest.Bg2),
-                                )
-                            }
-                            renderMainConversationColumn(
-                                showMenuButton = false,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
                     } else {
-                        ModalNavigationDrawer(
-                            drawerState = drawerState,
-                            drawerContent = {
-                                ModalDrawerSheet(
-                                    drawerContainerColor = Everforest.BgDim,
-                                    drawerContentColor = Everforest.Fg,
-                                    windowInsets = WindowInsets(0, 0, 0, 0),
-                                    modifier = Modifier.width(316.dp),
-                                ) {
-                                    // Avoid recomposing 60+ off-screen drawer rows on every streaming event while closed
-                                    if (drawerState.isOpen || drawerState.currentValue == DrawerValue.Open || drawerState.targetValue == DrawerValue.Open) {
-                                        renderSidebar(closeDrawerAfterAction = true)
-                                    } else {
-                                        Box(modifier = Modifier.fillMaxSize().background(Everforest.BgDim))
-                                    }
-                                }
-                            },
-                        ) {
-                            renderMainConversationColumn(showMenuButton = true)
-                        }
+                        Box(modifier = Modifier.fillMaxSize().background(Everforest.BgDim))
                     }
                 }
-
-                if (showModelSheet) {
-                    if (isDesktopPlatform()) {
-                        DesktopModelPickerDialog(
-                            state = state,
-                            onSelectEngineAndModel = { engId, modelSpec, effort ->
-                                store.selectEngineAndModel(engId, modelSpec, effort)
-                            },
-                            onSelectEffort = store::selectEffort,
-                            onSelectMode = store::selectMode,
-                            onToggleFavoriteModel = store::toggleFavoriteModel,
-                            onDismiss = { showModelSheet = false },
-                        )
-                    } else {
-                        ModalBottomSheet(
-                            onDismissRequest = { showModelSheet = false },
-                            containerColor = Everforest.Bg1,
-                            contentColor = Everforest.Fg,
-                        ) {
-                            EngineModelPickerSheet(
-                                state = state,
-                                onSelectEngineAndModel = { engId, modelSpec, effort ->
-                                    store.selectEngineAndModel(engId, modelSpec, effort)
-                                },
-                                onSelectEffort = store::selectEffort,
-                                onDone = { showModelSheet = false },
-                            )
-                        }
-                    }
-                }
-
-                if (showWorkspaceSheet) {
-                    ModalBottomSheet(
-                        onDismissRequest = { showWorkspaceSheet = false },
-                        containerColor = Everforest.Bg1,
-                        contentColor = Everforest.Fg,
-                    ) {
-                        WorkspacePickerSheet(
-                            state = state,
-                            onSelectPrimary = { path ->
-                                store.selectWorkspace(path)
-                                if (state.selectedExtraWorkspaces.isEmpty() && !state.draftUseWorktree) {
-                                    showWorkspaceSheet = false
-                                }
-                            },
-                            onToggleExtra = store::toggleExtraWorkspace,
-                            onToggleUseWorktree = store::setDraftUseWorktree,
-                            onChangeWorktreeBranch = store::setDraftWorktreeBranch,
-                            onBrowseWorkspaceFiles = { path ->
-                                store.switchBrowseWorkspace(path)
-                                showWorkspaceSheet = false
-                                showFilesSheet = true
-                            },
-                            onStartNewInWorkspace = { path ->
-                                store.startNewDraftInWorkspace(path)
-                                showWorkspaceSheet = false
-                            },
-                            onDone = { showWorkspaceSheet = false },
-                        )
-                    }
-                }
-
-                if (showFilesSheet) {
-                    ModalBottomSheet(
-                        onDismissRequest = { showFilesSheet = false },
-                        containerColor = Everforest.Bg1,
-                        contentColor = Everforest.Fg,
-                    ) {
-                        WorkspaceFileTreeSheet(
-                            state = state,
-                            onNavigateUp = store::navigateUpDirectory,
-                            onOpenEntry = store::openEntry,
-                            onCloseFile = store::closeOpenedFile,
-                            onSelectActiveWorkspaceTab = store::switchBrowseWorkspace,
-                            onSwitchWorkspace = {
-                                showFilesSheet = false
-                                showWorkspaceSheet = true
-                            },
-                        )
-                    }
-                }
-
-                if (showUsageSheet) {
-                    ModalBottomSheet(
-                        onDismissRequest = { showUsageSheet = false },
-                        containerColor = Everforest.Bg1,
-                        contentColor = Everforest.Fg,
-                    ) {
-                        UsageDashboardSheet(
-                            state = state,
-                            onSelectDays = store::refreshUsageDashboard,
-                            onRefresh = { store.refreshUsageDashboard() },
-                        )
-                    }
-                }
-
-                if (showDiffSheet) {
-                    ModalBottomSheet(
-                        onDismissRequest = { showDiffSheet = false },
-                        containerColor = Everforest.Bg1,
-                        contentColor = Everforest.Fg,
-                    ) {
-                        DiffAndCheckpointsSheet(
-                            state = state,
-                            onSelectWorkspace = store::switchDiffWorkspace,
-                            onRefresh = { store.refreshDiffAndCheckpoints() },
-                            onOpenFileDiff = store::openGitDiff,
-                            onCloseDiff = store::closeGitDiff,
-                            onCreateCheckpoint = store::createManualCheckpoint,
-                            onRestoreCheckpoint = store::restoreCheckpoint,
-                        )
-                    }
-                }
-
-                if (showSettingsDialog) {
-                    DesktopSettingsDialog(
-                        state = state,
-                        onDismiss = { showSettingsDialog = false },
-                        onSwitchHost = store::switchPairedHost,
-                        onRemoveHost = store::removePairedHost,
-                        onPairAnotherHost = store::preparePairAnotherHost,
-                        onLogout = store::logout,
-                    )
-                }
-            }
-
-            val pendingPair = state.pendingDeepLinkPairing
-            if (pendingPair != null) {
-                AlertDialog(
-                    onDismissRequest = store::dismissPendingDeepLinkPairing,
-                    containerColor = Everforest.Bg1,
-                    titleContentColor = Everforest.Fg,
-                    textContentColor = Everforest.Grey2,
-                    title = {
-                        Text(
-                            text = "确认配对新主机？",
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
+            },
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Everforest.Bg0)
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
+            ) {
+                MinimalTopBar(
+                    state = state,
+                    onOpenDrawer = {
+                        dismissKeyboard()
+                        store.refreshHostSessions()
+                        scope.launch { drawerState.open() }
                     },
-                    text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = "外部链接请求将当前客户端配对至以下主机，请核对名称与证书指纹：",
-                                fontSize = 13.sp,
-                                color = Everforest.Grey2,
-                            )
-                            Text(
-                                text = "主机名称：${pendingPair.hostName}",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Everforest.Fg,
-                            )
-                            Text(
-                                text = "连接地址：${pendingPair.primaryUrl}",
-                                fontSize = 12.sp,
-                                color = Everforest.Grey1,
-                            )
-                            if (!pendingPair.shortFingerprint.isNullOrBlank()) {
-                                Text(
-                                    text = "证书指纹：${pendingPair.shortFingerprint}",
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = Everforest.Green,
-                                )
-                            }
-                        }
+                    onOpenModelSheet = {
+                        dismissKeyboard()
+                        showModelSheet = true
                     },
-                    confirmButton = {
-                        Button(
-                            onClick = store::confirmPendingDeepLinkPairing,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Everforest.Green,
-                                contentColor = Everforest.BgDim,
-                            ),
-                        ) {
-                            Text("确认配对", fontWeight = FontWeight.SemiBold)
-                        }
+                    onOpenDiffSheet = {
+                        dismissKeyboard()
+                        store.refreshDiffAndCheckpoints()
+                        showDiffSheet = true
                     },
-                    dismissButton = {
-                        TextButton(onClick = store::dismissPendingDeepLinkPairing) {
-                            Text("取消", color = Everforest.Grey1)
-                        }
+                    onOpenFilesSheet = {
+                        dismissKeyboard()
+                        store.browseDirectory()
+                        showFilesSheet = true
                     },
                 )
-            }
 
-            val renamingTarget = renamingSessionId?.let { targetId ->
-                state.sessions.firstOrNull { it.id == targetId }
+                val topActiveSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
+                if (topActiveSess != null) {
+                    ActiveSessionTitleStrip(
+                        session = topActiveSess,
+                        onRename = {
+                            dismissKeyboard()
+                            renamingSessionId = topActiveSess.id
+                        },
+                        onToggleArchive = {
+                            dismissKeyboard()
+                            store.archiveSession(topActiveSess.id, !topActiveSess.archived)
+                        },
+                    )
+                }
+
+                if (state.connectionStatus == ConnectionStatus.RECONNECTING) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Everforest.Bg1,
+                        border = BorderStroke(1.dp, Everforest.BoldGold.copy(alpha = 0.35f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 2.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                color = Everforest.BoldGold,
+                                strokeWidth = 1.8.dp,
+                                modifier = Modifier.size(12.dp),
+                            )
+                            Text(
+                                text = "正在校验权限并续连当前会话上下文…",
+                                fontSize = 12.sp,
+                                color = Everforest.BoldGold,
+                            )
+                        }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                        ) { dismissKeyboard() },
+                ) {
+                    val activeKey = state.activeSessionId ?: "draft"
+                    val activeSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
+                    val transcript = state.activeTranscript
+                    if (state.activeSessionId == null && transcript.items.isEmpty()) {
+                        CalmHomeEmptyState(
+                            state = state,
+                            onOpenRunningSession = { sid ->
+                                dismissKeyboard()
+                                store.selectSession(sid)
+                            },
+                        )
+                    } else if (
+                        state.activeSessionId != null &&
+                        transcript.items.isEmpty() &&
+                        state.loadingSessionId == state.activeSessionId
+                    ) {
+                        ConversationLoadingSkeleton(title = activeSess?.title)
+                    } else {
+                        val sessRunning = activeSess != null &&
+                            (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
+                        key(activeKey) {
+                            ConversationStreamView(
+                                sessionKey = activeKey,
+                                activeSession = activeSess,
+                                transcript = transcript,
+                                isSessionRunning = sessRunning,
+                                onLoadOlder = { store.loadOlderHistory(activeKey) },
+                                onDismissKeyboard = dismissKeyboard,
+                            )
+                        }
+                    }
+                }
+
+                val activeSessForPerm = state.activeSession?.takeIf { it.id == state.activeSessionId }
+                val pendingPerm = state.activeTranscript.pendingPermissions
+                    .lastOrNull { it.sessionId == state.activeSessionId }
+                    ?: if (activeSessForPerm?.state == SessionState.WAITING_PERMISSION) {
+                        AgentEvent.PermissionRequested(
+                            seq = state.activeTranscript.lastSeq,
+                            sessionId = activeSessForPerm.id,
+                            ts = 0L,
+                            requestId = "fallback_waiting_${activeSessForPerm.id}",
+                            title = "Agent 正在等待确认\n正在同步终端选项，若未显示操作按钮请点击右侧刷新或回电脑窗口确认。",
+                            options = emptyList(),
+                        )
+                    } else {
+                        null
+                    }
+                if (pendingPerm != null) {
+                    InlineApprovalBanner(
+                        permission = pendingPerm,
+                        isSubmitting = state.submittingApprovalRequestId == pendingPerm.requestId,
+                        errorText = state.approvalErrorText,
+                        onRefresh = {
+                            pendingPerm.sessionId.takeIf { it.isNotBlank() }?.let { store.selectSession(it) }
+                        },
+                        onDecision = { reqId, optId, sessId ->
+                            store.respondApproval(reqId, optId, sessId)
+                        },
+                    )
+                }
+
+                if (state.activeSessionId != null) {
+                    SessionContextStatusStrip(
+                        sessionUsage = state.activeSessionUsage?.takeIf { it.sessionId == state.activeSessionId },
+                        fallbackInputTokens = state.activeTranscript.inputTokens,
+                        fallbackOutputTokens = state.activeTranscript.outputTokens,
+                        onClick = {
+                            dismissKeyboard()
+                            store.refreshUsageDashboard()
+                            showUsageSheet = true
+                        },
+                    )
+                }
+
+                if (!state.promptErrorText.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Everforest.Red.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, Everforest.Red.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 2.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ErrorOutline,
+                                contentDescription = null,
+                                tint = Everforest.Red,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(
+                                text = state.promptErrorText.orEmpty(),
+                                fontSize = 12.5.sp,
+                                lineHeight = 17.sp,
+                                color = Everforest.Fg,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "关闭提示",
+                                tint = Everforest.CommentGrey,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clickable { store.dismissPromptError() },
+                            )
+                        }
+                    }
+                }
+
+                ClaudeStyleComposer(
+                    state = state,
+                    text = promptText,
+                    onTextChange = { next ->
+                        promptText = next
+                        store.updateComposerTextForMentions(next)
+                    },
+                    onOpenWorkspaceSheet = {
+                        dismissKeyboard()
+                        showWorkspaceSheet = true
+                    },
+                    onCycleMode = {
+                        val modes = state.availableModes
+                        val idx = modes.indexOf(state.selectedMode)
+                        val next = modes.getOrElse((idx + 1) % modes.size) { SessionMode.AUTO }
+                        store.selectMode(next)
+                    },
+                    onCycleEffort = {
+                        val efforts = state.availableEfforts
+                        val idx = efforts.indexOf(state.selectedEffort)
+                        val next = efforts.getOrElse((idx + 1) % efforts.size) { ReasoningEffort.MEDIUM }
+                        store.selectEffort(next)
+                    },
+                    onSend = {
+                        dismissKeyboard()
+                        val msg = promptText
+                        promptText = ""
+                        store.sendPrompt(msg)
+                    },
+                    onCancel = store::cancelActiveTurn,
+                    onPickImage = {
+                        dismissKeyboard()
+                        store.pickAndAttachImage()
+                    },
+                    onCaptureCamera = {
+                        dismissKeyboard()
+                        store.captureAndAttachImage()
+                    },
+                    onRemoveImage = store::removeAttachedImage,
+                    onSelectMentionFile = { relPath ->
+                        promptText = replaceTrailingMention(promptText, relPath)
+                        store.dismissMentionSuggestions()
+                    },
+                    onDismissMention = store::dismissMentionSuggestions,
+                )
             }
-            if (renamingTarget != null) {
-                RenameSessionDialog(
-                    session = renamingTarget,
-                    onDismiss = { renamingSessionId = null },
-                    onConfirm = { nextTitle ->
-                        renamingSessionId = null
-                        store.renameSession(renamingTarget.id, nextTitle)
+        }
+
+        if (showModelSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showModelSheet = false },
+                containerColor = Everforest.Bg1,
+                contentColor = Everforest.Fg,
+            ) {
+                EngineModelPickerSheet(
+                    state = state,
+                    onSelectEngineAndModel = { engId, modelSpec, effort ->
+                        store.selectEngineAndModel(engId, modelSpec, effort)
+                    },
+                    onDone = { showModelSheet = false },
+                )
+            }
+        }
+
+        if (showWorkspaceSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showWorkspaceSheet = false },
+                containerColor = Everforest.Bg1,
+                contentColor = Everforest.Fg,
+            ) {
+                WorkspacePickerSheet(
+                    state = state,
+                    onSelectPrimary = { path ->
+                        store.selectWorkspace(path)
+                        if (state.selectedExtraWorkspaces.isEmpty() && !state.draftUseWorktree) {
+                            showWorkspaceSheet = false
+                        }
+                    },
+                    onToggleExtra = store::toggleExtraWorkspace,
+                    onToggleUseWorktree = store::setDraftUseWorktree,
+                    onChangeWorktreeBranch = store::setDraftWorktreeBranch,
+                    onBrowseWorkspaceFiles = { path ->
+                        store.switchBrowseWorkspace(path)
+                        showWorkspaceSheet = false
+                        showFilesSheet = true
+                    },
+                    onStartNewInWorkspace = { path ->
+                        store.startNewDraftInWorkspace(path)
+                        showWorkspaceSheet = false
+                    },
+                    onDone = { showWorkspaceSheet = false },
+                )
+            }
+        }
+
+        if (showFilesSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showFilesSheet = false },
+                containerColor = Everforest.Bg1,
+                contentColor = Everforest.Fg,
+            ) {
+                WorkspaceFileTreeSheet(
+                    state = state,
+                    onNavigateUp = store::navigateUpDirectory,
+                    onOpenEntry = store::openEntry,
+                    onCloseFile = store::closeOpenedFile,
+                    onSelectActiveWorkspaceTab = store::switchBrowseWorkspace,
+                    onSwitchWorkspace = {
+                        showFilesSheet = false
+                        showWorkspaceSheet = true
                     },
                 )
             }
         }
+
+        if (showUsageSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showUsageSheet = false },
+                containerColor = Everforest.Bg1,
+                contentColor = Everforest.Fg,
+            ) {
+                UsageDashboardSheet(
+                    state = state,
+                    onSelectDays = store::refreshUsageDashboard,
+                    onRefresh = { store.refreshUsageDashboard() },
+                )
+            }
+        }
+
+        if (showDiffSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showDiffSheet = false },
+                containerColor = Everforest.Bg1,
+                contentColor = Everforest.Fg,
+            ) {
+                DiffAndCheckpointsSheet(
+                    state = state,
+                    onSelectWorkspace = store::switchDiffWorkspace,
+                    onRefresh = { store.refreshDiffAndCheckpoints() },
+                    onOpenFileDiff = store::openGitDiff,
+                    onCloseDiff = store::closeGitDiff,
+                    onCreateCheckpoint = store::createManualCheckpoint,
+                    onRestoreCheckpoint = store::restoreCheckpoint,
+                )
+            }
+        }
+    }
+
+    val pendingPair = state.pendingDeepLinkPairing
+    if (pendingPair != null) {
+        PendingDeepLinkPairingDialog(
+            pendingPair = pendingPair,
+            onConfirm = store::confirmPendingDeepLinkPairing,
+            onDismiss = store::dismissPendingDeepLinkPairing,
+        )
+    }
+
+    val renamingTarget = renamingSessionId?.let { targetId ->
+        state.sessions.firstOrNull { it.id == targetId }
+    }
+    if (renamingTarget != null) {
+        RenameSessionDialog(
+            session = renamingTarget,
+            onDismiss = { renamingSessionId = null },
+            onConfirm = { nextTitle ->
+                renamingSessionId = null
+                store.renameSession(renamingTarget.id, nextTitle)
+            },
+        )
     }
 }
 
 @Composable
-private fun DesktopWorkspaceHeader(
-    state: ConsoleUiState,
-    activeSession: SessionMeta?,
-    showExpandSidebarButton: Boolean,
-    onExpandSidebar: () -> Unit,
-    onOpenWorkspaceSheet: () -> Unit,
-    onOpenModelSheet: () -> Unit,
-    onOpenDiffSheet: () -> Unit,
-    onOpenFilesSheet: () -> Unit,
-    onRenameSession: () -> Unit,
-    onToggleArchiveSession: () -> Unit,
+internal fun PendingDeepLinkPairingDialog(
+    pendingPair: PendingDeepLinkPairing,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    val primaryPath = activeSession?.worktree?.baseRepoPath
-        ?: activeSession?.workspaces?.firstOrNull()
-        ?: activeSession?.cwd
-        ?: state.selectedWorkspacePath
-    val wsShort = primaryPath.trimEnd('/').substringAfterLast('/').ifBlank { "默认工作区" }
-    val wsHoverSource = remember { MutableInteractionSource() }
-    val wsHovered by wsHoverSource.collectIsHoveredAsState()
-    val titleHoverSource = remember { MutableInteractionSource() }
-    val titleHovered by titleHoverSource.collectIsHoveredAsState()
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("desktop_workspace_header"),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(44.dp)
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            // Left: T3 Code-style Workspace / Thread Breadcrumb
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (showExpandSidebarButton) {
-                    LeworkIconActionButton(
-                        icon = LeworkPanelLeftIcon,
-                        tooltip = "展开侧边栏",
-                        shortcut = "⌘B",
-                        showBadgeDot = state.runningSessions.isNotEmpty(),
-                        badgeColor = Everforest.Orange,
-                        size = 28.dp,
-                        iconSize = 15.5.dp,
-                        testTag = "desktop_btn_expand_sidebar",
-                        onClick = onExpandSidebar,
-                    )
-                }
-
-                LeworkTooltip(
-                    label = "切换工作区目录",
-                    subtitle = primaryPath.ifBlank { "默认工作区" },
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (wsHovered) Everforest.Bg2.copy(alpha = 0.7f) else Color.Transparent)
-                            .hoverable(wsHoverSource)
-                            .clickable(interactionSource = wsHoverSource, indication = null) {
-                                onOpenWorkspaceSheet()
-                            }
-                            .padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Folder,
-                            contentDescription = null,
-                            tint = Everforest.CommentGrey,
-                            modifier = Modifier.size(13.5.dp),
-                        )
-                        Text(
-                            text = wsShort,
-                            fontSize = 12.5.sp,
-                            color = if (wsHovered) Everforest.Fg else Everforest.Grey1,
-                            maxLines = 1,
-                        )
-                    }
-                }
-
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Everforest.Bg1,
+        titleContentColor = Everforest.Fg,
+        textContentColor = Everforest.Grey2,
+        title = {
+            Text(
+                text = "确认配对新主机？",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "/",
-                    fontSize = 12.5.sp,
-                    color = Everforest.Grey0,
+                    text = "外部链接请求将当前客户端配对至以下主机，请核对名称与证书指纹：",
+                    fontSize = 13.sp,
+                    color = Everforest.Grey2,
                 )
-
-                if (activeSession != null) {
-                    if (activeSession.archived) {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = Everforest.BgYellow,
-                        ) {
-                            Text(
-                                text = "已归档",
-                                fontSize = 10.sp,
-                                color = Everforest.BoldGold,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp),
-                            )
-                        }
-                    }
-
-                    activeSession.worktree?.let { wt ->
-                        LeworkTooltip(
-                            label = "独立分支工作区",
-                            subtitle = "${wt.branch} · ${wt.worktreePath}",
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(5.dp),
-                                color = Everforest.BgGreen,
-                                border = BorderStroke(0.8.dp, Everforest.Aqua.copy(alpha = 0.45f)),
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.5.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.AccountTree,
-                                        contentDescription = null,
-                                        tint = Everforest.Aqua,
-                                        modifier = Modifier.size(10.5.dp),
-                                    )
-                                    Text(
-                                        text = wt.branch.removePrefix("lework/"),
-                                        fontSize = 10.5.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = Everforest.Aqua,
-                                        maxLines = 1,
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    LeworkTooltip(
-                        label = "点击重命名会话",
-                        subtitle = activeSession.title,
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(if (titleHovered) Everforest.Bg2.copy(alpha = 0.7f) else Color.Transparent)
-                                .hoverable(titleHoverSource)
-                                .clickable(interactionSource = titleHoverSource, indication = null) {
-                                    onRenameSession()
-                                }
-                                .padding(horizontal = 6.dp, vertical = 4.dp)
-                                .testTag("active_session_rename_trigger"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            Text(
-                                text = activeSession.title,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Everforest.Fg,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false),
-                            )
-                            if (titleHovered) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Edit,
-                                    contentDescription = "重命名当前会话",
-                                    tint = Everforest.CommentGrey,
-                                    modifier = Modifier.size(12.5.dp),
-                                )
-                            }
-                        }
-                    }
-                } else {
+                Text(
+                    text = "主机名称：${pendingPair.hostName}",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Everforest.Fg,
+                )
+                Text(
+                    text = "连接地址：${pendingPair.primaryUrl}",
+                    fontSize = 12.sp,
+                    color = Everforest.Grey1,
+                )
+                if (!pendingPair.shortFingerprint.isNullOrBlank()) {
                     Text(
-                        text = "新会话",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Everforest.Grey2,
-                        modifier = Modifier.padding(horizontal = 4.dp),
+                        text = "证书指纹：${pendingPair.shortFingerprint}",
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Everforest.Green,
                     )
-                    if (state.draftUseWorktree) {
-                        Surface(
-                            shape = RoundedCornerShape(5.dp),
-                            color = Everforest.BgGreen,
-                            border = BorderStroke(0.8.dp, Everforest.Aqua.copy(alpha = 0.45f)),
-                        ) {
-                            Text(
-                                text = "独立分支",
-                                fontSize = 10.sp,
-                                color = Everforest.Aqua,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp),
-                            )
-                        }
-                    }
                 }
             }
-
-            Spacer(Modifier.width(12.dp))
-
-            // Right: Clean Iconified Workspace & Session Actions with Hover Tooltips
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Everforest.Green,
+                    contentColor = Everforest.BgDim,
+                ),
             ) {
-                if (activeSession != null) {
-                    LeworkIconActionButton(
-                        icon = if (activeSession.archived) Icons.Rounded.Unarchive else Icons.Rounded.Inventory2,
-                        tooltip = if (activeSession.archived) "移出归档" else "归档会话",
-                        active = activeSession.archived,
-                        activeTint = Everforest.Green,
-                        size = 30.dp,
-                        iconSize = 16.5.dp,
-                        testTag = "active_session_archive_btn",
-                        onClick = onToggleArchiveSession,
-                    )
-                }
-
-                LeworkIconActionButton(
-                    icon = Icons.AutoMirrored.Rounded.CompareArrows,
-                    tooltip = "查看代码变更与快照",
-                    shortcut = "⇧⌘D",
-                    size = 30.dp,
-                    iconSize = 17.5.dp,
-                    testTag = "topbar_btn_diff",
-                    onClick = onOpenDiffSheet,
-                )
-
-                LeworkIconActionButton(
-                    icon = Icons.Rounded.FolderOpen,
-                    tooltip = "浏览工作区文件",
-                    size = 30.dp,
-                    iconSize = 17.dp,
-                    testTag = "topbar_btn_files",
-                    onClick = onOpenFilesSheet,
-                )
+                Text("确认配对", fontWeight = FontWeight.SemiBold)
             }
-        }
-        HorizontalDivider(color = Everforest.Bg2.copy(alpha = 0.65f))
-    }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = Everforest.Grey1)
+            }
+        },
+    )
 }
 
 @Composable
@@ -1143,7 +726,6 @@ private fun ActiveSessionTitleStrip(
 @Composable
 private fun MinimalTopBar(
     state: ConsoleUiState,
-    showMenuButton: Boolean = true,
     onOpenDrawer: () -> Unit,
     onOpenModelSheet: () -> Unit,
     onOpenDiffSheet: () -> Unit,
@@ -1163,31 +745,27 @@ private fun MinimalTopBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        if (showMenuButton) {
-            Box {
-                IconButton(
-                    onClick = onOpenDrawer,
-                    modifier = Modifier.testTag("topbar_btn_menu"),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Menu,
-                        contentDescription = "菜单",
-                        tint = Everforest.Fg,
-                    )
-                }
-                if (hasActiveTasks) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(top = 10.dp, end = 10.dp)
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(Everforest.Orange),
-                    )
-                }
+        Box {
+            IconButton(
+                onClick = onOpenDrawer,
+                modifier = Modifier.testTag("topbar_btn_menu"),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Menu,
+                    contentDescription = "菜单",
+                    tint = Everforest.Fg,
+                )
             }
-        } else {
-            Spacer(modifier = Modifier.width(72.dp))
+            if (hasActiveTasks) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 10.dp, end = 10.dp)
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(Everforest.Orange),
+                )
+            }
         }
 
         Surface(
@@ -1258,7 +836,7 @@ private fun MinimalTopBar(
 }
 
 @Composable
-private fun CalmHomeEmptyState(
+internal fun CalmHomeEmptyState(
     state: ConsoleUiState,
     onOpenRunningSession: (String) -> Unit,
 ) {
@@ -1296,7 +874,11 @@ private fun CalmHomeEmptyState(
         Spacer(Modifier.height(6.dp))
 
         Text(
-            text = "在下方直接发起新对话，或从左上角接管本机会话",
+            text = if (isDesktopPlatform()) {
+                "在下方直接发起新对话，或从左侧切换本机与远程开发机会话"
+            } else {
+                "在下方直接发起新对话，或从左上角接管本机会话"
+            },
             fontSize = 12.5.sp,
             color = Everforest.CommentGrey,
             textAlign = TextAlign.Center,
@@ -1359,7 +941,7 @@ private fun CalmHomeEmptyState(
 }
 
 @Composable
-private fun ConversationLoadingSkeleton(title: String?) {
+internal fun ConversationLoadingSkeleton(title: String?) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1424,4 +1006,3 @@ private fun ConversationLoadingSkeleton(title: String?) {
         }
     }
 }
-
