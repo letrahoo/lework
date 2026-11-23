@@ -55,8 +55,16 @@ import org.jetbrains.skia.Image as SkiaImage
 import kotlin.coroutines.resume
 import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSBundle
+import platform.Foundation.NSCalendar
+import platform.Foundation.NSCalendarUnitDay
+import platform.Foundation.NSCalendarUnitHour
+import platform.Foundation.NSCalendarUnitMinute
+import platform.Foundation.NSCalendarUnitMonth
+import platform.Foundation.NSCalendarUnitSecond
+import platform.Foundation.NSCalendarUnitYear
 import platform.Foundation.NSData
 import platform.Foundation.NSDate
+import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSNetService
 import platform.Foundation.NSNetServiceBrowser
@@ -429,6 +437,25 @@ actual fun appVersionLabel(): String {
 actual fun epochMillis(): Long =
     (NSDate().timeIntervalSince1970 * 1000.0).toLong()
 
+actual fun localDateTimeParts(epochMs: Long): LocalDateTimeParts {
+    val date = NSDate.dateWithTimeIntervalSince1970(epochMs.toDouble() / 1000.0)
+    val units = NSCalendarUnitYear or
+        NSCalendarUnitMonth or
+        NSCalendarUnitDay or
+        NSCalendarUnitHour or
+        NSCalendarUnitMinute or
+        NSCalendarUnitSecond
+    val comps = NSCalendar.currentCalendar.components(units, fromDate = date)
+    return LocalDateTimeParts(
+        year = comps.year.toInt(),
+        month = comps.month.toInt(),
+        day = comps.day.toInt(),
+        hour = comps.hour.toInt(),
+        minute = comps.minute.toInt(),
+        second = comps.second.toInt(),
+    )
+}
+
 actual fun observeAppForeground(): StateFlow<Boolean> {
     IosAppLifecycle.ensureRegistered()
     return IosAppLifecycle.isForeground
@@ -525,6 +552,16 @@ actual fun savePinnedHubFingerprints(fingerprints: Set<String>) {
 
 actual fun loadSessionPrefs(): SavedSessionPrefs {
     val d = NSUserDefaults.standardUserDefaults
+    val favs = d.stringForKey("lework_pref_fav_models")
+        .orEmpty()
+        .split('|')
+        .map { it.trim() }
+        .filter { it.contains(':') }
+    val pinned = d.stringForKey("lework_pref_pinned_sessions")
+        .orEmpty()
+        .split('|')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
     return SavedSessionPrefs(
         engineId = d.stringForKey(KEY_PREF_ENGINE)?.ifBlank { null } ?: "claude",
         providerId = d.stringForKey(KEY_PREF_PROVIDER)?.ifBlank { null },
@@ -532,6 +569,8 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         reasoningEffort = d.stringForKey(KEY_PREF_EFFORT)?.ifBlank { null } ?: "medium",
         mode = d.stringForKey(KEY_PREF_MODE)?.ifBlank { null } ?: "ask",
         workspacePath = d.stringForKey(KEY_PREF_WORKSPACE).orEmpty(),
+        favoriteModelKeys = favs,
+        pinnedSessionIds = pinned,
     )
 }
 
@@ -545,6 +584,16 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
     d.setObject(prefs.reasoningEffort, forKey = KEY_PREF_EFFORT)
     d.setObject(prefs.mode, forKey = KEY_PREF_MODE)
     d.setObject(prefs.workspacePath, forKey = KEY_PREF_WORKSPACE)
+    if (prefs.favoriteModelKeys.isNotEmpty()) {
+        d.setObject(prefs.favoriteModelKeys.joinToString("|"), forKey = "lework_pref_fav_models")
+    } else {
+        d.removeObjectForKey("lework_pref_fav_models")
+    }
+    if (prefs.pinnedSessionIds.isNotEmpty()) {
+        d.setObject(prefs.pinnedSessionIds.joinToString("|"), forKey = "lework_pref_pinned_sessions")
+    } else {
+        d.removeObjectForKey("lework_pref_pinned_sessions")
+    }
     d.synchronize()
 }
 

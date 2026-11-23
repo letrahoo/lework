@@ -53,6 +53,7 @@ import dev.lework.platform.decodeImageBytes
 import dev.lework.platform.dismissNativeKeyboard
 import dev.lework.platform.epochMillis
 import dev.lework.platform.loadSavedRelayUrls
+import dev.lework.platform.localDateTimeParts
 import dev.lework.protocol.*
 import dev.lework.store.*
 import kotlin.io.encoding.Base64
@@ -115,12 +116,36 @@ internal fun modeDisplayLabel(mode: SessionMode): String = when (mode) {
     SessionMode.BYPASS_PERMISSIONS -> "免审批"
 }
 
+internal fun modeDescription(mode: SessionMode): String = when (mode) {
+    SessionMode.AUTO -> "自动执行常规命令与文件改动，高风险操作前确认"
+    SessionMode.ACCEPT_EDITS -> "自动写入代码编辑，执行终端命令前需你确认"
+    SessionMode.PLAN -> "仅输出分析与规划方案，不修改文件或执行命令"
+    SessionMode.DEFAULT -> "每次文件修改与终端命令执行前均需手动确认"
+    SessionMode.BYPASS_PERMISSIONS -> "跳过全部权限确认，全程自动连续执行"
+}
+
+internal fun modeIcon(mode: SessionMode): ImageVector = when (mode) {
+    SessionMode.AUTO -> Icons.Rounded.PlayCircle
+    SessionMode.ACCEPT_EDITS -> Icons.Rounded.Edit
+    SessionMode.PLAN -> Icons.Rounded.Description
+    SessionMode.DEFAULT -> Icons.Rounded.Shield
+    SessionMode.BYPASS_PERMISSIONS -> Icons.Rounded.Bolt
+}
+
 internal fun effortDisplayLabel(effort: ReasoningEffort): String = when (effort) {
     ReasoningEffort.LOW -> "轻量"
     ReasoningEffort.MEDIUM -> "标准"
     ReasoningEffort.HIGH -> "深度"
     ReasoningEffort.XHIGH -> "超高"
     ReasoningEffort.MAX -> "极限"
+}
+
+internal fun effortDescription(effort: ReasoningEffort): String = when (effort) {
+    ReasoningEffort.LOW -> "快速响应，适合轻量问答与小范围调整"
+    ReasoningEffort.MEDIUM -> "均衡响应速度与多步推理质量"
+    ReasoningEffort.HIGH -> "投入更多思考预算，适合复杂设计与排查"
+    ReasoningEffort.XHIGH -> "高强度推演边界条件与跨模块影响"
+    ReasoningEffort.MAX -> "最高推理规格，适合核心疑难攻坚"
 }
 
 internal fun fileMaterialIcon(entry: FsEntry): ImageVector {
@@ -159,6 +184,35 @@ internal fun formatBytes(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     else -> "${bytes / (1024 * 1024)} MB"
+}
+
+private const val MIN_VALID_EPOCH_SECONDS = 946_684_800L // 2000-01-01T00:00:00Z
+private const val MIN_VALID_EPOCH_MILLIS = 946_684_800_000L
+
+private fun pad2(value: Int): String = if (value < 10) "0$value" else value.toString()
+
+/**
+ * Formats message send / reply timestamps in device local time:
+ * - Same day: `HH:mm:ss`
+ * - Same year (earlier day): `MM-dd HH:mm:ss`
+ * - Earlier year: `yyyy-MM-dd HH:mm`
+ * Returns empty string for missing or synthetic sentinel timestamps before 2000-01-01.
+ */
+internal fun formatMessageTimestamp(epochMs: Long, nowMs: Long = epochMillis()): String {
+    val normalizedMs = when {
+        epochMs in MIN_VALID_EPOCH_SECONDS..9_999_999_999L -> epochMs * 1000L
+        epochMs >= MIN_VALID_EPOCH_MILLIS -> epochMs
+        else -> return ""
+    }
+    val normalizedNow = if (nowMs >= MIN_VALID_EPOCH_MILLIS) nowMs else epochMillis()
+    val msg = localDateTimeParts(normalizedMs)
+    val now = localDateTimeParts(normalizedNow)
+    val hhmmss = "${pad2(msg.hour)}:${pad2(msg.minute)}:${pad2(msg.second)}"
+    return when {
+        msg.year == now.year && msg.month == now.month && msg.day == now.day -> hhmmss
+        msg.year == now.year -> "${pad2(msg.month)}-${pad2(msg.day)} $hhmmss"
+        else -> "${msg.year}-${pad2(msg.month)}-${pad2(msg.day)} ${pad2(msg.hour)}:${pad2(msg.minute)}"
+    }
 }
 
 /**

@@ -232,4 +232,47 @@ class ThemeAndTraceTest {
         val secondParsed = parseCliTool(toolItem)
         assertTrue(firstParsed === secondParsed, "Expected parseCliTool to return memoized instance on identical tool state")
     }
+
+    @Test
+    fun `T7_6 transcript preserves send and reply timestamps and formats local time cleanly`() {
+        val sid = "host:agy:ts_verify"
+        val sendTs = 1_795_420_857_000L
+        val replyStartTs = 1_795_420_870_000L
+        val replyEndTs = 1_795_420_889_000L
+        val events = listOf(
+            dev.lework.protocol.AgentEvent.UserMessage(0, sid, sendTs, "u1", "查询发布状态"),
+            dev.lework.protocol.AgentEvent.AssistantDelta(1, sid, replyStartTs, "a1", "正在检查 "),
+            dev.lework.protocol.AgentEvent.AssistantDelta(2, sid, replyEndTs, "a1", "已完成校验。"),
+        )
+
+        val seqResult = events.fold(dev.lework.store.SessionTranscript()) { acc, ev ->
+            dev.lework.store.reduceTranscript(acc, ev)
+        }
+        val batchResult = dev.lework.store.reduceTranscriptBatch(dev.lework.store.SessionTranscript(), events)
+        assertEquals(seqResult, batchResult)
+
+        val userItem = batchResult.items.filterIsInstance<ChatTimelineItem.User>().single()
+        val assistantItem = batchResult.items.filterIsInstance<ChatTimelineItem.Assistant>().single()
+        assertEquals(sendTs, userItem.ts)
+        assertEquals(replyEndTs, assistantItem.ts)
+
+        // Same day -> HH:mm:ss (8 chars)
+        val sameDayLabel = dev.lework.ui.formatMessageTimestamp(sendTs, nowMs = replyEndTs)
+        assertTrue(Regex("^\\d{2}:\\d{2}:\\d{2}$").matches(sameDayLabel), "Expected HH:mm:ss for same day, got: $sameDayLabel")
+
+        // Same year earlier day -> MM-dd HH:mm:ss
+        val twoDaysEarlier = sendTs - 2L * 86_400_000L
+        val earlierDayLabel = dev.lework.ui.formatMessageTimestamp(twoDaysEarlier, nowMs = sendTs)
+        assertTrue(Regex("^\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$").matches(earlierDayLabel), "Expected MM-dd HH:mm:ss, got: $earlierDayLabel")
+
+        // Cross year -> yyyy-MM-dd HH:mm
+        val twoYearsEarlier = sendTs - 730L * 86_400_000L
+        val crossYearLabel = dev.lework.ui.formatMessageTimestamp(twoYearsEarlier, nowMs = sendTs)
+        assertTrue(Regex("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$").matches(crossYearLabel), "Expected yyyy-MM-dd HH:mm, got: $crossYearLabel")
+
+        // Epoch seconds normalization & sentinel guard
+        assertEquals(sameDayLabel, dev.lework.ui.formatMessageTimestamp(sendTs / 1000L, nowMs = replyEndTs))
+        assertEquals("", dev.lework.ui.formatMessageTimestamp(0L, nowMs = replyEndTs))
+        assertEquals("", dev.lework.ui.formatMessageTimestamp(1_000L, nowMs = replyEndTs))
+    }
 }

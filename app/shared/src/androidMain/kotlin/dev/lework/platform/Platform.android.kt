@@ -606,6 +606,19 @@ actual fun appVersionLabel(): String = "v0.6.9 (20261123.0845)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
+actual fun localDateTimeParts(epochMs: Long): LocalDateTimeParts {
+    val cal = java.util.Calendar.getInstance()
+    cal.timeInMillis = epochMs
+    return LocalDateTimeParts(
+        year = cal.get(java.util.Calendar.YEAR),
+        month = cal.get(java.util.Calendar.MONTH) + 1,
+        day = cal.get(java.util.Calendar.DAY_OF_MONTH),
+        hour = cal.get(java.util.Calendar.HOUR_OF_DAY),
+        minute = cal.get(java.util.Calendar.MINUTE),
+        second = cal.get(java.util.Calendar.SECOND),
+    )
+}
+
 actual fun observeAppForeground(): StateFlow<Boolean> = AndroidPlatformRuntime.foregroundFlow.asStateFlow()
 
 actual fun observeNetworkEpoch(): StateFlow<Long> = AndroidPlatformRuntime.networkEpochFlow.asStateFlow()
@@ -666,6 +679,16 @@ actual fun saveAuthSession(token: String?, userName: String?) {
 
 actual fun loadSessionPrefs(): SavedSessionPrefs {
     val p = prefs() ?: return memPrefs
+    val favs = p.getString("pref_fav_models", null)
+        ?.split('|')
+        ?.map { it.trim() }
+        ?.filter { it.contains(':') }
+        ?: memPrefs.favoriteModelKeys
+    val pinned = p.getString("pref_pinned_sessions", null)
+        ?.split('|')
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?: memPrefs.pinnedSessionIds
     return SavedSessionPrefs(
         engineId = p.getString("pref_engine", null)?.ifBlank { null } ?: memPrefs.engineId,
         providerId = p.getString("pref_provider", null)?.ifBlank { null },
@@ -673,6 +696,8 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         reasoningEffort = p.getString("pref_effort", null)?.ifBlank { null } ?: memPrefs.reasoningEffort,
         mode = p.getString("pref_mode", null)?.ifBlank { null } ?: memPrefs.mode,
         workspacePath = p.getString("pref_workspace", null) ?: memPrefs.workspacePath,
+        favoriteModelKeys = favs,
+        pinnedSessionIds = pinned,
     )
 }
 
@@ -685,6 +710,8 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
         ?.putString("pref_effort", prefs.reasoningEffort)
         ?.putString("pref_mode", prefs.mode)
         ?.putString("pref_workspace", prefs.workspacePath)
+        ?.putString("pref_fav_models", prefs.favoriteModelKeys.joinToString("|"))
+        ?.putString("pref_pinned_sessions", prefs.pinnedSessionIds.joinToString("|"))
         ?.apply()
 }
 

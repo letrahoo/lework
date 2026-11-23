@@ -452,7 +452,114 @@ class UiAutomationStressTest {
                 ),
             )
 
-            val transport = FakeHubTransport()
+            val transport = FakeHubTransport().apply {
+                customHubName = "MacBook Pro (本机)"
+                customEngines = listOf(
+                    EngineInfo(
+                        id = "claude",
+                        displayName = "Claude Code",
+                        kind = EngineKind.CLI,
+                        status = EngineStatus(installed = true, ready = true, version = "2.1.328"),
+                        capabilities = EngineCapabilities(
+                            permissions = true,
+                            images = true,
+                            modelSwitch = true,
+                            modes = true,
+                            history = true,
+                            cancel = true,
+                        ),
+                        models = listOf(
+                            EngineModelSpec(
+                                id = "claude-opus-4-6",
+                                name = "Claude Opus 4.6",
+                                efforts = listOf(
+                                    ReasoningEffort.LOW,
+                                    ReasoningEffort.MEDIUM,
+                                    ReasoningEffort.HIGH,
+                                    ReasoningEffort.XHIGH,
+                                    ReasoningEffort.MAX,
+                                ),
+                                defaultEffort = ReasoningEffort.HIGH,
+                            ),
+                            EngineModelSpec(
+                                id = "claude-sonnet-4-6",
+                                name = "Claude Sonnet 4.6",
+                                efforts = listOf(
+                                    ReasoningEffort.LOW,
+                                    ReasoningEffort.MEDIUM,
+                                    ReasoningEffort.HIGH,
+                                    ReasoningEffort.XHIGH,
+                                ),
+                                defaultEffort = ReasoningEffort.MEDIUM,
+                            ),
+                            EngineModelSpec(
+                                id = "claude-haiku-4-5",
+                                name = "Claude Haiku 4.5",
+                                efforts = listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH),
+                                defaultEffort = ReasoningEffort.LOW,
+                            ),
+                        ),
+                        defaultModel = "claude-opus-4-6",
+                        defaultMode = SessionMode.AUTO,
+                        defaultEffort = ReasoningEffort.MEDIUM,
+                        supportedModes = listOf(
+                            SessionMode.AUTO,
+                            SessionMode.ACCEPT_EDITS,
+                            SessionMode.PLAN,
+                            SessionMode.DEFAULT,
+                        ),
+                    ),
+                    EngineInfo(
+                        id = "codex",
+                        displayName = "Codex CLI",
+                        kind = EngineKind.CLI,
+                        status = EngineStatus(installed = true, ready = true, version = "0.28.0"),
+                        capabilities = EngineCapabilities(
+                            permissions = true,
+                            images = true,
+                            modelSwitch = true,
+                            modes = true,
+                            history = true,
+                            cancel = true,
+                        ),
+                        models = listOf(
+                            EngineModelSpec(
+                                id = "gpt-5.4",
+                                name = "GPT-5.4",
+                                efforts = listOf(
+                                    ReasoningEffort.LOW,
+                                    ReasoningEffort.MEDIUM,
+                                    ReasoningEffort.HIGH,
+                                    ReasoningEffort.XHIGH,
+                                ),
+                            ),
+                        ),
+                        defaultModel = "gpt-5.4",
+                    ),
+                    EngineInfo(
+                        id = "agy",
+                        displayName = "Antigravity",
+                        kind = EngineKind.CLI,
+                        status = EngineStatus(installed = true, ready = true, version = "2.0.0"),
+                        capabilities = EngineCapabilities(
+                            permissions = true,
+                            images = true,
+                            modelSwitch = true,
+                            modes = true,
+                            history = true,
+                            cancel = true,
+                        ),
+                        models = listOf(
+                            EngineModelSpec(
+                                id = "gemini-3.1-pro",
+                                name = "Gemini 3.1 Pro",
+                                efforts = listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH),
+                            ),
+                        ),
+                        defaultModel = "gemini-3.1-pro",
+                    ),
+                )
+            }
             val sid = "sess_wt_demo"
             transport.sessions.addAll(
                 listOf(
@@ -486,12 +593,15 @@ class UiAutomationStressTest {
                     ),
                 ),
             )
+            val sendTs = dev.lework.platform.epochMillis() - 90_000L
+            val replyTs = dev.lework.platform.epochMillis() - 62_000L
+            val longReplyTs = dev.lework.platform.epochMillis() - 18_000L
             transport.sessionEventsMap[sid] = mutableListOf(
-                AgentEvent.UserMessage(0, sid, 1_000L, "u_1", "开启独立分支工作区并构建 macOS 桌面端"),
+                AgentEvent.UserMessage(0, sid, sendTs, "u_1", "开启独立分支工作区并构建 macOS 桌面端"),
                 AgentEvent.ToolCall(
                     seq = 1,
                     sessionId = sid,
-                    ts = 1_500L,
+                    ts = sendTs + 12_000L,
                     toolCallId = "tc_wt",
                     title = "创建独立分支工作区 lework/feat-desktop",
                     kind = ToolKind.EXECUTE,
@@ -501,9 +611,27 @@ class UiAutomationStressTest {
                 AgentEvent.AssistantDelta(
                     seq = 2,
                     sessionId = sid,
-                    ts = 2_000L,
+                    ts = replyTs,
                     messageId = "a_1",
                     text = "已在独立分支 `lework/feat-desktop` 中完成桌面端双栏工作台构建，可随时在左侧切换本机 Mac 与远程 Linux Devbox。",
+                ),
+                AgentEvent.AssistantDelta(
+                    seq = 3,
+                    sessionId = sid,
+                    ts = longReplyTs,
+                    messageId = "a_2",
+                    text = buildString {
+                        appendLine("## 构建与联调清单")
+                        appendLine()
+                        appendLine("已完成以下验证步骤，确保双端体验一致、消息与状态同步及时可靠：")
+                        appendLine()
+                        appendLine("1. 独立 Git Worktree 隔离工作区创建与归档清理校验通过，所有分支变更与主仓库保持完全隔离；")
+                        appendLine("2. 桌面端 T3 Code 风格三栏模型选择器与侧边栏置顶、重命名、归档操作已全量接入并完成像素对齐验证；")
+                        appendLine("3. 会话时间轴现已支持精确展示每条消息的发送时间与回复时间，涵盖短消息以及超长多块虚拟化 Markdown 回复。")
+                        appendLine()
+                        appendLine("- 本机 Mac Hub：`https://127.0.0.1:64450` 已就绪")
+                        appendLine("- 远程 Linux Devbox：支持在设置弹窗中通过 SSH 一键配对接入")
+                    },
                 ),
             )
 
@@ -518,9 +646,52 @@ class UiAutomationStressTest {
             runOnIdle { store.selectSession(sid) }
             waitForIdle()
 
-            // 1. Wide desktop layout shows permanent sidebar and omits mobile hamburger button
+            // 1. Wide desktop layout shows T3 Code-style permanent sidebar, single-row header, and omits mobile hamburger button
             onNodeWithTag("desktop_permanent_sidebar").assertIsDisplayed()
+            onNodeWithTag("desktop_workspace_header").assertIsDisplayed()
             onNodeWithTag("topbar_btn_menu").assertDoesNotExist()
+            // Verify send & reply timestamps render for user bubble, normal assistant reply, and long virtualized assistant reply
+            onNodeWithTag("msg_time_user_u_1", useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithTag("msg_time_assistant_a_1", useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithTag("msg_time_assistant_a_2", useUnmergedTree = true).assertIsDisplayed()
+
+            // Verify pixel-perfect 30dp grid alignment across sidebar Row 1, Row 2 (Search + 3 icons), and Bottom Footer
+            val sidebarBounds = onNodeWithTag("desktop_permanent_sidebar").fetchSemanticsNode().boundsInRoot
+            val collapseBounds = onNodeWithTag("drawer_btn_collapse_sidebar").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val searchBoxBounds = onNodeWithTag("desktop_sidebar_search_box").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val filterBounds = onNodeWithTag("drawer_btn_filter").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val archiveBounds = onNodeWithTag("drawer_tab_archived").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val newSessionBounds = onNodeWithTag("drawer_btn_new_session").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val settingsBounds = onNodeWithTag("drawer_btn_settings").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val usageBounds = onNodeWithTag("drawer_btn_usage").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val refreshBounds = onNodeWithTag("drawer_btn_refresh").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+
+            assertEquals(searchBoxBounds.top, filterBounds.top, 1.0f, "Search box top must align with Filter button")
+            assertEquals(searchBoxBounds.bottom, filterBounds.bottom, 1.0f, "Search box bottom must align with Filter button")
+            assertEquals(searchBoxBounds.top, archiveBounds.top, 1.0f, "Search box top must align with Archive button")
+            assertEquals(searchBoxBounds.top, newSessionBounds.top, 1.0f, "Search box top must align with New Session button")
+            assertEquals(collapseBounds.right, newSessionBounds.right, 1.0f, "Right-edge sidebar icons must align strictly")
+            assertEquals(newSessionBounds.right, refreshBounds.right, 1.0f, "Top and bottom right-edge icons must align strictly")
+            assertTrue(settingsBounds.left < usageBounds.left, "Expected 1.设置 before 2.用量 in bottom-left")
+            assertTrue(
+                refreshBounds.left > (sidebarBounds.left + sidebarBounds.right) / 2f,
+                "Expected 刷新 button at far right of sidebar footer",
+            )
+
+            // Verify iconified composer controls + unified Engine/Model/Reasoning trigger on Desktop
+            onNodeWithTag("composer_add_image_btn").assertIsDisplayed()
+            onNodeWithTag("composer_mention_btn").assertIsDisplayed()
+            onNodeWithTag("composer_model_picker_btn").assertIsDisplayed()
+            onNodeWithTag("composer_mode_btn").assertIsDisplayed()
+
+            // Verify inline right-side session card buttons on Desktop: [置顶 Pin] [重命名] [归档]
+            onNodeWithTag("session_pin_$sid").assertIsDisplayed()
+            onNodeWithTag("session_rename_$sid").assertIsDisplayed()
+            onNodeWithTag("session_archive_$sid").assertIsDisplayed()
+            onNodeWithTag("session_pin_$sid").performClick()
+            waitForIdle()
+            assertTrue(sid in store.state.value.pinnedSessionIds, "Expected Pin button to pin session to top")
+            onNodeWithText("已置顶").assertIsDisplayed()
 
             val captureDir = (System.getProperty("lework.captureScreenshotsDir")
                 ?: System.getenv("LEWORK_CAPTURE_DIR"))?.takeIf { it.isNotBlank() }
@@ -531,6 +702,65 @@ class UiAutomationStressTest {
                     File(outDir, "desktop_widescreen_workspace.png").writeBytes(wsPng.bytes)
                 }
             }
+
+            // Unpin cleanly to verify toggle off
+            onNodeWithTag("session_pin_$sid").performClick()
+            waitForIdle()
+            assertTrue(sid !in store.state.value.pinnedSessionIds, "Expected second click to unpin session")
+
+            // Verify clicking Diff icon docks a side-by-side Desktop Right Inspector Pane (zero mobile bottom sheet!)
+            onNodeWithTag("topbar_btn_diff").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_right_inspector_pane").assertIsDisplayed()
+            onNodeWithTag("desktop_inspector_close_btn").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_right_inspector_pane").assertDoesNotExist()
+
+            // Verify T3 Code 3-Column Engine + Model + Reasoning Level Picker + aligned top header row
+            onNodeWithTag("composer_model_picker_btn").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_model_picker_dialog").assertIsDisplayed()
+            val favSlotBounds = onNodeWithTag("picker_rail_favorites_slot", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val pickerSearchBounds = onNodeWithTag("model_picker_search_box", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val reasoningHdrBounds = onNodeWithTag("picker_reasoning_header", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertEquals(favSlotBounds.top, pickerSearchBounds.top, 1.0f, "Model picker rail & search headers must align")
+            assertEquals(pickerSearchBounds.top, reasoningHdrBounds.top, 1.0f, "Model picker search & reasoning headers must align")
+            assertEquals(pickerSearchBounds.bottom, reasoningHdrBounds.bottom, 1.0f, "Model picker header dividers must align")
+            onNodeWithTag("picker_rail_claude").assertIsDisplayed()
+            onNodeWithTag("picker_rail_codex").assertIsDisplayed()
+            onNodeWithTag("picker_rail_agy").assertIsDisplayed()
+            onNodeWithTag("picker_model_claude_claude-sonnet-4-6").performClick()
+            waitForIdle()
+            onNodeWithTag("picker_effort_high").performClick()
+            waitForIdle()
+            assertEquals("claude-sonnet-4-6", store.state.value.selectedModelId)
+            assertEquals(ReasoningEffort.HIGH, store.state.value.selectedEffort)
+            if (captureDir != null) {
+                val pickerPng = SkiaImage.makeFromBitmap(captureToImage().asSkiaBitmap()).encodeToData(EncodedImageFormat.PNG)
+                if (pickerPng != null) {
+                    File(captureDir, "desktop_model_picker.png").writeBytes(pickerPng.bytes)
+                }
+            }
+            // Close picker via Escape
+            onNodeWithTag("model_picker_search_input").performClick()
+            onNodeWithTag("model_picker_search_input").performKeyInput {
+                pressKey(Key.Escape)
+            }
+            waitForIdle()
+
+            // Verify clicking bottom-left `1. 设置` opens Desktop Settings modal cleanly
+            onNodeWithTag("drawer_btn_settings").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_settings_dialog").assertIsDisplayed()
+            if (captureDir != null) {
+                val settingsPng = SkiaImage.makeFromBitmap(captureToImage().asSkiaBitmap()).encodeToData(EncodedImageFormat.PNG)
+                if (settingsPng != null) {
+                    File(captureDir, "desktop_settings_modal.png").writeBytes(settingsPng.bytes)
+                }
+            }
+            onNodeWithTag("desktop_settings_close_btn").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_settings_dialog").assertDoesNotExist()
 
             // 2. Typing in composer and pressing Enter (without Shift) sends prompt on Desktop
             onNodeWithTag("composer_input").performClick()

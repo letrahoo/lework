@@ -63,6 +63,8 @@ private sealed interface TimelineSegment {
 
     data class AssistantBlock(
         override val key: String,
+        val messageId: String,
+        val timestampMs: Long,
         val block: MdBlock,
         val isLastBlockOfMessage: Boolean,
     ) : TimelineSegment {
@@ -101,6 +103,8 @@ private fun groupTimelineSegments(items: List<ChatTimelineItem>): List<TimelineS
                     out.add(
                         TimelineSegment.AssistantBlock(
                             key = "${item.id}_b$idx",
+                            messageId = item.id,
+                            timestampMs = item.ts,
                             block = block,
                             isLastBlockOfMessage = idx == blocks.lastIndex,
                         ),
@@ -136,6 +140,7 @@ internal fun ConversationStreamView(
     }
     val segments = remember(transcript.items) { groupTimelineSegments(transcript.items) }
     val reversedSegments = remember(segments) { segments.asReversed() }
+    val nowMs = remember(sessionKey, transcript.lastSeq) { epochMillis() }
     val showLiveSpinner = activeSession != null &&
         activeSession.id == sessionKey &&
         activeSession.state == SessionState.RUNNING &&
@@ -236,8 +241,26 @@ internal fun ConversationStreamView(
                         steps = segment.steps,
                         isSessionRunning = isSessionRunning,
                     )
-                    is TimelineSegment.AssistantBlock -> MarkdownBlockItemView(segment.block)
-                    is TimelineSegment.Single -> MessageTimelineRow(segment.item)
+                    is TimelineSegment.AssistantBlock -> {
+                        if (segment.isLastBlockOfMessage) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                MarkdownBlockItemView(segment.block)
+                                MessageTimestampCaption(
+                                    prefix = "回复",
+                                    timestampMs = segment.timestampMs,
+                                    nowMs = nowMs,
+                                    alignEnd = false,
+                                    tag = "msg_time_assistant_${segment.messageId}",
+                                )
+                            }
+                        } else {
+                            MarkdownBlockItemView(segment.block)
+                        }
+                    }
+                    is TimelineSegment.Single -> MessageTimelineRow(
+                        item = segment.item,
+                        nowMs = nowMs,
+                    )
                 }
             }
         }
@@ -497,7 +520,43 @@ private fun PlanCard(entries: List<PlanEntry>) {
 }
 
 @Composable
-private fun MessageTimelineRow(item: ChatTimelineItem) {
+private fun MessageTimestampCaption(
+    prefix: String,
+    timestampMs: Long,
+    nowMs: Long,
+    alignEnd: Boolean,
+    tag: String,
+) {
+    val formatted = remember(timestampMs, nowMs) {
+        formatMessageTimestamp(epochMs = timestampMs, nowMs = nowMs)
+    }
+    if (formatted.isEmpty()) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                top = 3.dp,
+                start = if (alignEnd) 0.dp else 2.dp,
+                end = if (alignEnd) 4.dp else 0.dp,
+            ),
+        horizontalArrangement = if (alignEnd) Arrangement.End else Arrangement.Start,
+    ) {
+        Text(
+            text = "$prefix $formatted",
+            fontSize = 10.5.sp,
+            lineHeight = 14.sp,
+            fontFamily = FontFamily.Monospace,
+            color = Everforest.Grey0.copy(alpha = 0.85f),
+            modifier = Modifier.testTag(tag),
+        )
+    }
+}
+
+@Composable
+private fun MessageTimelineRow(
+    item: ChatTimelineItem,
+    nowMs: Long,
+) {
     when (item) {
         is ChatTimelineItem.User -> {
             var lightboxIdx by remember(item.id) { mutableStateOf<Int?>(null) }
@@ -505,9 +564,9 @@ private fun MessageTimelineRow(item: ChatTimelineItem) {
             val isAutoPlaceholderOnly =
                 hasPreviews && Regex("^（已发送\\s*\\d+\\s*张图片）$").matches(item.text.trim())
 
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalAlignment = Alignment.End,
             ) {
                 Surface(
                     color = Everforest.Bg2,
@@ -592,6 +651,13 @@ private fun MessageTimelineRow(item: ChatTimelineItem) {
                         }
                     }
                 }
+                MessageTimestampCaption(
+                    prefix = "发送",
+                    timestampMs = item.ts,
+                    nowMs = nowMs,
+                    alignEnd = true,
+                    tag = "msg_time_user_${item.id}",
+                )
             }
 
             if (lightboxIdx != null && hasPreviews) {
@@ -606,10 +672,19 @@ private fun MessageTimelineRow(item: ChatTimelineItem) {
             ClaudeProcessTraceView(steps = listOf(item))
         }
         is ChatTimelineItem.Assistant -> {
-            EverforestMarkdownContent(
-                markdown = item.text,
-                modifier = Modifier.padding(vertical = 2.dp),
-            )
+            Column(modifier = Modifier.fillMaxWidth()) {
+                EverforestMarkdownContent(
+                    markdown = item.text,
+                    modifier = Modifier.padding(vertical = 2.dp),
+                )
+                MessageTimestampCaption(
+                    prefix = "回复",
+                    timestampMs = item.ts,
+                    nowMs = nowMs,
+                    alignEnd = false,
+                    tag = "msg_time_assistant_${item.id}",
+                )
+            }
         }
         is ChatTimelineItem.Tool -> {
             ClaudeCliToolCallRow(item = item)
