@@ -21,6 +21,7 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509ExtendedTrustManager
+import okhttp3.Dispatcher
 
 /**
  * Authenticates raw TCP sockets bound for the embedded `lework-tsnet` localhost forwarder BEFORE
@@ -112,6 +113,14 @@ actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient {
         followRedirects = false
         engine {
             config {
+                // Embedded `tsnet` exposes every Tailscale peer on `127.0.0.1:<ephemeralPort>`.
+                // Raise OkHttp's default 5-per-host limit so >5 tailnet peers never starve Hub probes!
+                dispatcher(
+                    Dispatcher().apply {
+                        maxRequests = 64
+                        maxRequestsPerHost = 32
+                    },
+                )
                 proxy(Proxy.NO_PROXY)
                 pingInterval(20, TimeUnit.SECONDS)
                 socketFactory(PreTlsForwarderSocketFactory())

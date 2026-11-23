@@ -21,6 +21,7 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509ExtendedTrustManager
+import okhttp3.Dispatcher
 
 private class DesktopPreTlsForwarderSocketFactory : SocketFactory() {
     private class PreambleSocket : Socket() {
@@ -108,6 +109,12 @@ actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient {
         followRedirects = false
         engine {
             config {
+                dispatcher(
+                    Dispatcher().apply {
+                        maxRequests = 64
+                        maxRequestsPerHost = 32
+                    },
+                )
                 if (JvmDesktopRuntime.isEnabled) {
                     proxy(Proxy.NO_PROXY)
                     pingInterval(20, TimeUnit.SECONDS)

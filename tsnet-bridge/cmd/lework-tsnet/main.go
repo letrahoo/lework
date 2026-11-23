@@ -196,7 +196,7 @@ func installSafeInterfaceGetterIfNeeded(rawSpec string) {
 						Index: 2,
 						MTU:   1500,
 						Name:  primaryName,
-						Flags: net.FlagUp | net.FlagBroadcast | net.FlagMulticast,
+						Flags: net.FlagUp | net.FlagRunning | net.FlagBroadcast | net.FlagMulticast,
 					},
 					AltAddrs: []net.Addr{
 						&net.IPNet{IP: v4, Mask: net.CIDRMask(24, 32)},
@@ -212,7 +212,7 @@ func installSafeInterfaceGetterIfNeeded(rawSpec string) {
 					Index: idx + 2,
 					MTU:   1500,
 					Name:  item.name,
-					Flags: net.FlagUp | net.FlagBroadcast | net.FlagMulticast,
+					Flags: net.FlagUp | net.FlagRunning | net.FlagBroadcast | net.FlagMulticast,
 				},
 				AltAddrs: item.addrs,
 			})

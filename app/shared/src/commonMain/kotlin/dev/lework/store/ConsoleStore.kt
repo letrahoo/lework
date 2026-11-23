@@ -715,7 +715,11 @@ class ConsoleStore(
                 _state.update { it.copy(tsnetStatus = status) }
             }
 
-            val candidates = status.peers.filter { !it.localProxyUrl.isNullOrBlank() }
+            val candidates = prioritizeTsnetPeers(
+                status.peers.filter { !it.localProxyUrl.isNullOrBlank() },
+                loadPairedHosts(),
+                loadActiveHostId(),
+            )
             if (candidates.isEmpty()) {
                 val acct = status.loginName ?: "当前账号"
                 _state.update {
@@ -731,9 +735,11 @@ class ConsoleStore(
             var probed = emptyList<Pair<dev.lework.platform.MobileTsnetPeer, dev.lework.transport.DiscoveredEndpoint>>()
             // Newly authorized or freshly woken tsnet nodes can flip to "Running" 1–3s before
             // remote peers receive the new WireGuard public key via Tailscale NetMap or DERP warms up.
-            // Retry fast-failing probes up to 3 times before surfacing an error.
+            // Probe non-mobile desktop/server hosts first with a 12s window so cold 5G DERP handshakes
+            // aren't starved or cut off prematurely by offline/mobile peers.
             for (probeRound in 0 until 3) {
-                val peerSummary = currentCandidates.take(4).joinToString(", ") { it.hostName }
+                val primaryBatch = currentCandidates.filterNot { it.isMobileClientNode() }.ifEmpty { currentCandidates }
+                val peerSummary = primaryBatch.take(4).joinToString(", ") { it.hostName }
                 _state.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.CONNECTING,
@@ -742,13 +748,25 @@ class ConsoleStore(
                 }
 
                 probed = coroutineScope {
-                    currentCandidates.map { peer ->
+                    primaryBatch.map { peer ->
                         async {
                             val proxyUrl = peer.localProxyUrl ?: return@async null
-                            val ep = rpc.probeDirectEndpoint(proxyUrl, timeoutMs = 8_000L)
+                            val ep = rpc.probeDirectEndpoint(proxyUrl, timeoutMs = 12_000L)
                             if (ep != null) peer to ep else null
                         }
                     }.mapNotNull { it.await() }
+                }
+                if (probed.isEmpty() && primaryBatch.size < currentCandidates.size) {
+                    val fallbackBatch = currentCandidates.filter { it.isMobileClientNode() }
+                    probed = coroutineScope {
+                        fallbackBatch.map { peer ->
+                            async {
+                                val proxyUrl = peer.localProxyUrl ?: return@async null
+                                val ep = rpc.probeDirectEndpoint(proxyUrl, timeoutMs = 6_000L)
+                                if (ep != null) peer to ep else null
+                            }
+                        }.mapNotNull { it.await() }
+                    }
                 }
 
                 if (probed.any { it.second.discover.tailscaleSameUser } || (probed.isNotEmpty() && probeRound == 2)) {
@@ -758,7 +776,11 @@ class ConsoleStore(
                     delay(1_400L)
                     val refreshed = queryMobileTsnetStatus()
                     _state.update { it.copy(tsnetStatus = refreshed) }
-                    val nextCandidates = refreshed.peers.filter { !it.localProxyUrl.isNullOrBlank() }
+                    val nextCandidates = prioritizeTsnetPeers(
+                        refreshed.peers.filter { !it.localProxyUrl.isNullOrBlank() },
+                        loadPairedHosts(),
+                        loadActiveHostId(),
+                    )
                     if (nextCandidates.isNotEmpty()) {
                         currentCandidates = nextCandidates
                     }

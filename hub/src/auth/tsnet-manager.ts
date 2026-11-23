@@ -53,6 +53,12 @@ export interface TsnetManagerOptions {
   authKey?: string
   binaryPath?: string | null
   autoStart?: boolean
+  systemTailscaleCli?: string | null
+  execCli?: (
+    file: string,
+    args: string[],
+    opts: { timeout: number; encoding: 'utf8' },
+  ) => Promise<{ stdout: string; stderr?: string }>
 }
 
 export function isTailscaleIp(rawIp: string | undefined): boolean {
@@ -115,12 +121,19 @@ export class TsnetManager {
   private authKey: string | undefined
   private readonly binaryPath: string | null
   private readonly autoStart: boolean
+  private readonly customSystemCli: string | null | undefined
+  private readonly execCli: (
+    file: string,
+    args: string[],
+    opts: { timeout: number; encoding: 'utf8' },
+  ) => Promise<{ stdout: string; stderr?: string }>
 
   private proc: ChildProcess | null = null
   private controlPort = 0
   private secret = ''
   private starting: Promise<boolean> | null = null
   private stopped = false
+  private cachedSystemSelfUid: { uid: number; expiresAt: number } | null = null
 
   constructor(opts: TsnetManagerOptions = {}) {
     this.dataDir = opts.dataDir ?? defaultDataDir()
@@ -133,6 +146,8 @@ export class TsnetManager {
     // Auto-start embedded tsnet only when explicitly enabled, authKey set, or an authenticated profile exists
     this.autoStart =
       opts.autoStart ?? (hasAuthenticatedTsnetState(this.stateDir) || Boolean(this.authKey))
+    this.customSystemCli = opts.systemTailscaleCli
+    this.execCli = opts.execCli ?? ((file, args, execOpts) => execFileAsync(file, args, execOpts))
   }
 
   hasEmbeddedBinary(): boolean {
@@ -274,6 +289,19 @@ export class TsnetManager {
   }
 
   async getStatus(): Promise<TsnetStatusSnapshot> {
+    let pendingEmbeddedSnap: {
+      backendState: string
+      authUrl?: string
+      controlUrl?: string
+      selfHostName?: string
+      selfDnsName?: string
+      tailscaleIps?: string[]
+      loginName?: string
+      displayName?: string
+      peers?: TsnetPeerCandidate[]
+      error?: string
+    } | null = null
+
     if (this.binaryPath) {
       const hasAuthState = hasAuthenticatedTsnetState(this.stateDir)
       if (this.controlPort > 0 || hasAuthState) {
@@ -290,7 +318,7 @@ export class TsnetManager {
           peers?: TsnetPeerCandidate[]
           error?: string
         }>('/v1/status')
-        if (snap && (snap.backendState === 'Running' || Boolean(snap.authUrl))) {
+        if (snap && snap.backendState === 'Running') {
           return {
             available: true,
             mode: 'tsnet',
@@ -306,12 +334,32 @@ export class TsnetManager {
             error: snap.error,
           }
         }
+        if (snap && Boolean(snap.authUrl)) {
+          pendingEmbeddedSnap = snap
+        }
       }
     }
 
-    // Fallback: inspect system `tailscale` daemon if installed & Running
+    // Fallback: inspect system `tailscale` daemon if installed & Running (never masked by an abandoned NeedsLogin state)
     const sys = await this.querySystemTailscaleStatus()
     if (sys && sys.backendState === 'Running') return sys
+
+    if (pendingEmbeddedSnap) {
+      return {
+        available: true,
+        mode: 'tsnet',
+        backendState: pendingEmbeddedSnap.backendState,
+        authUrl: pendingEmbeddedSnap.authUrl,
+        controlUrl: pendingEmbeddedSnap.controlUrl,
+        selfHostName: pendingEmbeddedSnap.selfHostName,
+        selfDnsName: pendingEmbeddedSnap.selfDnsName,
+        tailscaleIps: pendingEmbeddedSnap.tailscaleIps ?? [],
+        loginName: pendingEmbeddedSnap.loginName,
+        displayName: pendingEmbeddedSnap.displayName,
+        peers: pendingEmbeddedSnap.peers ?? [],
+        error: pendingEmbeddedSnap.error,
+      }
+    }
 
     if (this.binaryPath) {
       return {
@@ -402,53 +450,68 @@ export class TsnetManager {
    * Cryptographically verifies whether an inbound socket to `hubd` belongs to an untagged Tailscale
    * node owned by the EXACT SAME Tailscale account as this Host:
    * - Path A: proxied by embedded `lework-tsnet` (`127.0.0.1:<localPort>` -> `/v1/whois?localPort=...`)
-   * - Path B: direct connection over system `tailscaled` (`100.64.0.0/10` -> `tailscale whois --json`)
+   * - Path B: proxied by system `Tailscale Serve --tcp` (`127.0.0.1:<localPort>` -> `tailscale whois --json 127.0.0.1:<localPort>`)
+   * - Path C: direct connection over system `tailscaled` (`100.64.0.0/10` / `fd7a:...` -> `tailscale whois --json <remoteIp>`)
    */
   async verifyInboundSocket(socket: net.Socket): Promise<VerifiedTailscalePeer | null> {
     const remoteIp = normalizeRemoteIp(socket.remoteAddress)
     const remotePort = socket.remotePort ?? 0
     if (!remoteIp || remotePort <= 0) return null
 
-    if ((remoteIp === '127.0.0.1' || remoteIp === '::1') && this.controlPort > 0) {
-      const res = await this.callBridge<{
-        found?: boolean
-        sameUser?: boolean
-        isTagged?: boolean
-        loginName?: string
-        displayName?: string
-        nodeName?: string
-        tailscaleIp?: string
-      }>(`/v1/whois?localPort=${remotePort}`)
-      if (res?.found && res.sameUser && !res.isTagged && res.loginName) {
-        return {
-          sameUser: true,
-          loginName: res.loginName,
-          displayName: res.displayName || res.loginName,
-          nodeName: res.nodeName || 'tailscale-peer',
-          tailscaleIp: res.tailscaleIp || '',
+    if (remoteIp === '127.0.0.1' || remoteIp === '::1') {
+      if (this.controlPort > 0) {
+        const res = await this.callBridge<{
+          found?: boolean
+          sameUser?: boolean
+          isTagged?: boolean
+          loginName?: string
+          displayName?: string
+          nodeName?: string
+          tailscaleIp?: string
+        }>(`/v1/whois?localPort=${remotePort}`)
+        if (res?.found && res.sameUser && !res.isTagged && res.loginName) {
+          return {
+            sameUser: true,
+            loginName: res.loginName,
+            displayName: res.displayName || res.loginName,
+            nodeName: res.nodeName || 'tailscale-peer',
+            tailscaleIp: res.tailscaleIp || '',
+          }
         }
       }
-      return null
+      // Support macOS Tailscale.app NetworkExtension & Linux `--tun=userspace-networking`, where
+      // `tailscaled`'s `netstack` dials `127.0.0.1:<hubPort>` from `127.0.0.1:<ephemeralPort>` and
+      // registers `backendLocalIPPort -> clientRemoteIP` in `proxyMapper` (`tailscale whois --json 127.0.0.1:<port>`).
+      // Ordinary non-Tailscale local sockets are absent from `proxyMapper`, fail `whois`, and return null.
+      return await this.verifyViaSystemTailscaleCli(remoteIp, remotePort, true)
     }
 
     if (isTailscaleIp(remoteIp)) {
-      return await this.verifyViaSystemTailscaleCli(remoteIp, remotePort)
+      return await this.verifyViaSystemTailscaleCli(remoteIp, remotePort, false)
     }
 
     return null
   }
 
+  private getSystemCli(): string | null {
+    if (this.customSystemCli !== undefined) return this.customSystemCli
+    return resolveSystemTailscaleCli()
+  }
+
   private async querySystemTailscaleStatus(): Promise<TsnetStatusSnapshot | null> {
-    const cli = resolveSystemTailscaleCli()
+    const cli = this.getSystemCli()
     if (!cli) return null
     try {
-      const { stdout } = await execFileAsync(cli, ['status', '--json'], { timeout: 2_500, encoding: 'utf8' })
+      const { stdout } = await this.execCli(cli, ['status', '--json'], { timeout: 6_000, encoding: 'utf8' })
       const parsed = JSON.parse(stdout) as {
         BackendState?: string
         Self?: { UserID?: number; HostName?: string; DNSName?: string; TailscaleIPs?: string[] }
         User?: Record<string, { LoginName?: string; DisplayName?: string }>
       }
       const selfUid = parsed.Self?.UserID
+      if (typeof selfUid === 'number' && selfUid > 0) {
+        this.cachedSystemSelfUid = { uid: selfUid, expiresAt: Date.now() + 60_000 }
+      }
       const prof = selfUid !== undefined ? parsed.User?.[String(selfUid)] : undefined
       return {
         available: true,
@@ -466,37 +529,64 @@ export class TsnetManager {
     }
   }
 
+  private async resolveSystemSelfUserId(cli: string): Promise<number | null> {
+    const now = Date.now()
+    if (this.cachedSystemSelfUid && this.cachedSystemSelfUid.expiresAt > now) {
+      return this.cachedSystemSelfUid.uid
+    }
+    const { stdout } = await this.execCli(cli, ['status', '--json'], { timeout: 6_000, encoding: 'utf8' })
+    const st = JSON.parse(stdout) as { Self?: { UserID?: number } }
+    const uid = st.Self?.UserID
+    if (typeof uid === 'number' && uid > 0) {
+      this.cachedSystemSelfUid = { uid, expiresAt: now + 60_000 }
+      return uid
+    }
+    return null
+  }
+
   private async verifyViaSystemTailscaleCli(
     remoteIp: string,
     remotePort: number,
+    requirePortMatch: boolean,
   ): Promise<VerifiedTailscalePeer | null> {
-    const cli = resolveSystemTailscaleCli()
+    const cli = this.getSystemCli()
     if (!cli) return null
     try {
-      const [{ stdout: statusOut }, { stdout: whoisOut }] = await Promise.all([
-        execFileAsync(cli, ['status', '--json'], { timeout: 2_500, encoding: 'utf8' }),
-        execFileAsync(cli, ['whois', '--json', `${remoteIp}:${remotePort}`], {
-          timeout: 2_500,
+      const whoisTarget = requirePortMatch
+        ? remoteIp.includes(':')
+          ? `[${remoteIp}]:${remotePort}`
+          : `${remoteIp}:${remotePort}`
+        : remoteIp
+      const [selfUid, { stdout: whoisOut }] = await Promise.all([
+        this.resolveSystemSelfUserId(cli),
+        this.execCli(cli, ['whois', '--json', whoisTarget], {
+          timeout: 6_000,
           encoding: 'utf8',
         }),
       ])
-      const st = JSON.parse(statusOut) as { Self?: { UserID?: number } }
       const who = JSON.parse(whoisOut) as {
-        Node?: { ComputedName?: string; Name?: string; Tags?: string[] }
+        Node?: { ComputedName?: string; Name?: string; Tags?: string[]; Addresses?: string[] }
         UserProfile?: { ID?: number; LoginName?: string; DisplayName?: string }
       }
-      const selfUid = st.Self?.UserID
       const peerUid = who.UserProfile?.ID
       const isTagged = Array.isArray(who.Node?.Tags) && who.Node!.Tags!.length > 0
       if (!selfUid || !peerUid || selfUid !== peerUid || isTagged || !who.UserProfile?.LoginName) {
+        return null
+      }
+      const resolvedPeerIp = isTailscaleIp(remoteIp)
+        ? remoteIp
+        : (who.Node?.Addresses ?? [])
+            .map(a => a.split('/')[0]?.trim() ?? '')
+            .find(a => isTailscaleIp(a)) || remoteIp
+      if (!isTailscaleIp(resolvedPeerIp)) {
         return null
       }
       return {
         sameUser: true,
         loginName: who.UserProfile.LoginName,
         displayName: who.UserProfile.DisplayName || who.UserProfile.LoginName,
-        nodeName: who.Node?.ComputedName || who.Node?.Name?.replace(/\.$/, '') || remoteIp,
-        tailscaleIp: remoteIp,
+        nodeName: who.Node?.ComputedName || who.Node?.Name?.replace(/\.$/, '') || resolvedPeerIp,
+        tailscaleIp: resolvedPeerIp,
       }
     } catch {
       return null
