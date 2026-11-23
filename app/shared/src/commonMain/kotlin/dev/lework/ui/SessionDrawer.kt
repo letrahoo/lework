@@ -458,6 +458,7 @@ internal fun TasksSidebarContent(
                 SidebarFilterPill(
                     label = shortEngineLabel(eng.id),
                     selected = state.drawerEngineFilter == eng.id,
+                    engineId = eng.id,
                     onClick = { onSelectFilter(eng.id) },
                 )
             }
@@ -728,6 +729,7 @@ internal fun TasksSidebarContent(
 internal fun SidebarFilterPill(
     label: String,
     selected: Boolean,
+    engineId: String? = null,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -738,13 +740,21 @@ internal fun SidebarFilterPill(
             .clip(RoundedCornerShape(999.dp))
             .clickable { onClick() },
     ) {
-        Text(
-            text = label,
+        Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-            fontSize = 11.sp,
-            color = if (selected) Everforest.CodeGreen else Everforest.Grey1,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-        )
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            if (engineId != null) {
+                EngineGlyphIcon(engineId = engineId, size = 12.dp)
+            }
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                color = if (selected) Everforest.CodeGreen else Everforest.Grey1,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            )
+        }
     }
 }
 

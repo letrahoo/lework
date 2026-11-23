@@ -172,6 +172,10 @@ interface HubTransport {
     ): SessionMeta
     suspend fun renameSession(sessionId: String, title: String): SessionMeta
     suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMeta
+    suspend fun listArtifacts(sessionId: String): List<ArtifactInfo> = emptyList()
+    suspend fun readArtifact(sessionId: String, artifactId: String): ArtifactContentResult {
+        throw UnsupportedOperationException("artifact.read not implemented in this transport")
+    }
 
     suspend fun subscribeSession(
         sessionId: String,
@@ -725,6 +729,18 @@ class HubRpcClient(
             "session.archive",
             encodeParams(SessionArchiveParams(sessionId = sessionId, archived = archived)),
         ).session
+
+    override suspend fun listArtifacts(sessionId: String): List<ArtifactInfo> =
+        call<ArtifactListResult>(
+            "artifact.list",
+            encodeParams(ArtifactListParams(sessionId = sessionId)),
+        ).artifacts
+
+    override suspend fun readArtifact(sessionId: String, artifactId: String): ArtifactContentResult =
+        call(
+            "artifact.read",
+            encodeParams(ArtifactReadParams(sessionId = sessionId, artifactId = artifactId)),
+        )
 
     override suspend fun subscribeSession(
         sessionId: String,

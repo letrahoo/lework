@@ -139,6 +139,10 @@ export class HostTaskInspector {
     this.metaStore = metaStore
   }
 
+  getHomeDir(): string {
+    return this.homeDir
+  }
+
   getEngineHostDefaults(engineId: string): {
     defaultModel?: string
     defaultMode: SessionMode

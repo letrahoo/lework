@@ -316,7 +316,7 @@ internal fun DesktopModelPickerDialog(
                                             EngineGlyphIcon(
                                                 engineId = eng.id,
                                                 size = 18.dp,
-                                                tintOverride = if (isReady) engineAccentColor(eng.id) else Everforest.Grey0.copy(alpha = 0.45f),
+                                                tintOverride = if (isReady) null else Everforest.Grey0.copy(alpha = 0.45f),
                                             )
                                         }
                                         if (isSelected) {
@@ -480,7 +480,7 @@ internal fun DesktopModelPickerDialog(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
-                                        EngineGlyphIcon(engineId = entry.engineId, size = 14.5.dp)
+                                        EngineGlyphIcon(engineId = entry.engineId, size = 15.dp)
 
                                         Row(
                                             modifier = Modifier.weight(1f),
@@ -738,7 +738,7 @@ internal fun DesktopModelPickerDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                             ) {
-                                EngineGlyphIcon(engineId = state.selectedEngineId, size = 12.5.dp)
+                                EngineGlyphIcon(engineId = state.selectedEngineId, size = 13.5.dp)
                                 Text(
                                     text = shortEngineLabel(state.selectedEngineId),
                                     fontSize = 11.5.sp,

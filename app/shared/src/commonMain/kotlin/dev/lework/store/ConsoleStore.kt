@@ -301,6 +301,7 @@ class ConsoleStore(
                     scope.launch {
                         runCatching { subscribeAndCatchUp(updated.id) }
                         refreshActiveSessionUsage(updated.id)
+                        refreshSessionArtifacts(updated.id)
                     }
                 }
             }
@@ -1853,6 +1854,9 @@ class ConsoleStore(
                 loadingSessionId = null,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
+                activeSessionArtifacts = emptyList(),
+                openedArtifact = null,
+                artifactError = null,
                 openedDiffContent = null,
                 openedDiffTitle = null,
                 checkpointNotice = null,
@@ -1949,6 +1953,9 @@ class ConsoleStore(
                 loadingSessionId = if (switchedDifferentEngine) null else s.loadingSessionId,
                 checkpoints = if (switchedDifferentEngine) emptyList() else s.checkpoints,
                 activeSessionUsage = if (switchedDifferentEngine) null else s.activeSessionUsage,
+                activeSessionArtifacts = if (switchedDifferentEngine) emptyList() else s.activeSessionArtifacts,
+                openedArtifact = if (switchedDifferentEngine) null else s.openedArtifact,
+                artifactError = if (switchedDifferentEngine) null else s.artifactError,
                 openedDiffContent = if (switchedDifferentEngine) null else s.openedDiffContent,
                 openedDiffTitle = if (switchedDifferentEngine) null else s.openedDiffTitle,
                 checkpointNotice = if (switchedDifferentEngine) null else s.checkpointNotice,
@@ -2112,6 +2119,9 @@ class ConsoleStore(
                 loadingSessionId = null,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
+                activeSessionArtifacts = emptyList(),
+                openedArtifact = null,
+                artifactError = null,
                 openedDiffContent = null,
                 openedDiffTitle = null,
                 checkpointNotice = null,
@@ -2149,6 +2159,9 @@ class ConsoleStore(
                 loadingSessionId = if (alreadyCached) null else sessionId,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
+                activeSessionArtifacts = emptyList(),
+                openedArtifact = null,
+                artifactError = null,
                 openedDiffContent = null,
                 openedDiffTitle = null,
                 checkpointNotice = null,
@@ -2189,6 +2202,7 @@ class ConsoleStore(
                     _state.update { it.copy(activeSessionUsage = usage) }
                 }
             }
+            refreshSessionArtifacts(sessionId)
         }
     }
 
@@ -3329,6 +3343,100 @@ class ConsoleStore(
         if (event is AgentEvent.Usage || event is AgentEvent.TurnDone) {
             refreshActiveSessionUsage(event.sessionId)
         }
+        if (event is AgentEvent.TurnDone || event is AgentEvent.PlanUpdated) {
+            refreshSessionArtifacts(event.sessionId)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Unified Per-Engine Artifacts & Proposed Plan Actions
+    // -----------------------------------------------------------------------
+
+    fun refreshSessionArtifacts(sessionId: String = _state.value.activeSessionId.orEmpty()) {
+        if (sessionId.isBlank()) return
+        if (_state.value.activeSessionId == sessionId) {
+            _state.update { it.copy(artifactsLoading = true, artifactError = null) }
+        }
+        scope.launch {
+            runCatching {
+                rpc.listArtifacts(sessionId)
+            }.onSuccess { list ->
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update { s ->
+                        val nextOpened = s.openedArtifact?.takeIf { opened ->
+                            list.any { it.id == opened.artifact.id }
+                        }
+                        s.copy(
+                            artifactsLoading = false,
+                            activeSessionArtifacts = list,
+                            openedArtifact = nextOpened,
+                            artifactError = null,
+                        )
+                    }
+                }
+            }.onFailure { err ->
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update {
+                        it.copy(
+                            artifactsLoading = false,
+                            artifactError = err.message ?: "无法获取会话产物",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun openArtifact(artifactId: String) {
+        val sid = _state.value.activeSessionId ?: return
+        if (artifactId.isBlank()) return
+        _state.update { it.copy(artifactsLoading = true, artifactError = null) }
+        scope.launch {
+            runCatching {
+                rpc.readArtifact(sid, artifactId)
+            }.onSuccess { content ->
+                if (_state.value.activeSessionId == sid) {
+                    _state.update {
+                        it.copy(
+                            artifactsLoading = false,
+                            openedArtifact = content,
+                            artifactError = null,
+                        )
+                    }
+                }
+            }.onFailure { err ->
+                if (_state.value.activeSessionId == sid) {
+                    _state.update {
+                        it.copy(
+                            artifactsLoading = false,
+                            artifactError = "无法读取产物内容：${err.message ?: "请稍后重试"}",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun closeOpenedArtifact() {
+        _state.update { it.copy(openedArtifact = null, artifactError = null) }
+    }
+
+    fun approveAndExecutePlan(artifactTitle: String? = null) {
+        val cur = _state.value
+        if (cur.selectedMode == SessionMode.PLAN) {
+            val nextMode = cur.availableModes.firstOrNull { it == SessionMode.AUTO }
+                ?: cur.availableModes.firstOrNull { it == SessionMode.ACCEPT_EDITS }
+                ?: cur.availableModes.firstOrNull { it != SessionMode.PLAN }
+                ?: SessionMode.AUTO
+            selectMode(nextMode)
+        }
+        val cleanTitle = artifactTitle?.trim()?.takeIf { it.isNotEmpty() }
+        val prompt = if (cleanTitle != null) {
+            "已确认执行方案《$cleanTitle》，请开始按方案实施。"
+        } else {
+            "已确认当前执行方案，请开始按方案实施。"
+        }
+        sendPrompt(prompt)
     }
 
     // -----------------------------------------------------------------------

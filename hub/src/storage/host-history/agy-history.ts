@@ -16,6 +16,7 @@ import {
   type ParsedHostTranscript,
 } from './common.ts'
 import { parseStagedImagePromptHeader } from '../attachment-store.ts'
+import { countQuickAgyArtifacts } from '../artifacts.ts'
 import { parseAgyModelString, readAgyLocalSettings } from './engine-settings.ts'
 
 export function extractLatestAgyModelSelection(rawContent: string): string | undefined {
@@ -205,6 +206,7 @@ export function scanAgySessions(
         }
       }
       const subagents = sortAndCapSubagents(subagentSummaries, 12)
+      const artifactCount = countQuickAgyArtifacts(homeDir, c.convId)
 
       out.set(sessionId, {
         nativeId: c.convId,
@@ -225,6 +227,7 @@ export function scanAgySessions(
           mode: agyDefaults.defaultMode,
           source: 'host',
           ...(subagents.length > 0 ? { subagents } : {}),
+          ...(artifactCount > 0 ? { artifactCount } : {}),
         },
       })
     } catch {

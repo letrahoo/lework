@@ -437,6 +437,40 @@ class CodexAppServerSession implements EngineSession {
       return
     }
 
+    if (method === 'turn/plan/updated' && Array.isArray(params.plan)) {
+      const entries = (params.plan as Array<Record<string, unknown>>)
+        .map(item => {
+          const content =
+            typeof item.step === 'string'
+              ? item.step.trim()
+              : typeof item.content === 'string'
+                ? item.content.trim()
+                : ''
+          const rawStatus = typeof item.status === 'string' ? item.status.toLowerCase() : 'pending'
+          const status =
+            rawStatus === 'completed' || rawStatus === 'done'
+              ? ('completed' as const)
+              : rawStatus === 'inprogress' || rawStatus === 'in_progress'
+                ? ('in_progress' as const)
+                : ('pending' as const)
+          return content ? { content, status } : null
+        })
+        .filter((e): e is { content: string; status: 'pending' | 'in_progress' | 'completed' } => e !== null)
+      if (entries.length > 0) {
+        this.init.emit({ type: 'plan.updated', entries })
+      }
+      return
+    }
+
+    if (method === 'item/plan/delta' && typeof params.delta === 'string') {
+      this.init.emit({
+        type: 'message.assistant.delta',
+        messageId: `${this.currentMsgId}_plan`,
+        text: params.delta,
+      })
+      return
+    }
+
     if (method === 'turn/completed') {
       const w = this.turnWaiter
       this.turnWaiter = null

@@ -5,6 +5,8 @@ import {
   ErrorCode,
   type AgentEvent,
   type AgentEventBody,
+  type ArtifactContentResult,
+  type ArtifactInfo,
   type CheckpointInfo,
   type EngineInfo,
   type ModelOption,
@@ -20,6 +22,11 @@ import { formatEngineTurnError } from './engines/network-error.ts'
 import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
+import {
+  listSessionArtifacts,
+  readSessionArtifact,
+  type ArtifactSessionContext,
+} from './storage/artifacts.ts'
 import {
   buildTerminalImagePrompt,
   linkSessionAttachmentAlias,
@@ -1111,6 +1118,47 @@ export class SessionManager {
   restoreCheckpoint(sessionId: string, checkpointId: string): void {
     const cwd = this.resolveSessionWorkspaceCwd(sessionId)
     this.checkpoints.restore(sessionId, cwd, checkpointId)
+  }
+
+  private buildArtifactContext(sessionId: string): ArtifactSessionContext {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      const nativeId =
+        managed.nativeId ??
+        (sessionId.startsWith('host:') ? sessionId.split(':').slice(2).join(':') : undefined)
+      return {
+        sessionId,
+        engineId: managed.meta.engineId,
+        nativeId,
+        homeDir: this.hostInspector.getHomeDir(),
+        events: managed.events,
+      }
+    }
+    if (sessionId.startsWith('host:')) {
+      const hostEntry = this.hostInspector.getHostSession(sessionId)
+      if (!hostEntry) {
+        throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+      }
+      const loaded = this.hostInspector.readHostSessionEvents(sessionId)
+      return {
+        sessionId,
+        engineId: hostEntry.meta.engineId,
+        nativeId: hostEntry.nativeId,
+        homeDir: this.hostInspector.getHomeDir(),
+        events: loaded?.events ?? [],
+      }
+    }
+    throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+  }
+
+  listArtifacts(sessionId: string): ArtifactInfo[] {
+    const ctx = this.buildArtifactContext(sessionId)
+    return listSessionArtifacts(ctx)
+  }
+
+  readArtifact(sessionId: string, artifactId: string): ArtifactContentResult {
+    const ctx = this.buildArtifactContext(sessionId)
+    return readSessionArtifact(ctx, artifactId)
   }
 
   subscribeSnapshot(

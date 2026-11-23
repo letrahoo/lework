@@ -135,6 +135,8 @@ internal fun ConversationStreamView(
     showInlineErrorRetry: Boolean = false,
     onRetryLastTurn: (() -> Unit)? = null,
     listTestTag: String = "conversation_lazy_list",
+    onOpenPlanArtifact: (() -> Unit)? = null,
+    onApprovePlan: (() -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     val isUserDragging by listState.interactionSource.collectIsDraggedAsState()
@@ -292,7 +294,11 @@ internal fun ConversationStreamView(
         if (transcript.planEntries.isNotEmpty()) {
             item(key = "plan_card", contentType = "plan_card") {
                 Box(modifier = Modifier.padding(bottom = 12.dp)) {
-                    PlanCard(entries = transcript.planEntries)
+                    PlanCard(
+                        entries = transcript.planEntries,
+                        onOpenPlanArtifact = onOpenPlanArtifact,
+                        onApprovePlan = onApprovePlan,
+                    )
                 }
             }
         }
@@ -569,7 +575,11 @@ private fun formatCliTokens(tokens: Int): String {
 }
 
 @Composable
-private fun PlanCard(entries: List<PlanEntry>) {
+private fun PlanCard(
+    entries: List<PlanEntry>,
+    onOpenPlanArtifact: (() -> Unit)? = null,
+    onApprovePlan: (() -> Unit)? = null,
+) {
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = Everforest.Bg1,
@@ -581,21 +591,67 @@ private fun PlanCard(entries: List<PlanEntry>) {
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Checklist,
-                    contentDescription = null,
-                    tint = Everforest.Aqua,
-                    modifier = Modifier.size(16.dp),
-                )
-                Text(
-                    text = "执行计划",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Everforest.Aqua,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Checklist,
+                        contentDescription = null,
+                        tint = Everforest.Aqua,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = "执行计划",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Everforest.Aqua,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (onOpenPlanArtifact != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Everforest.Bg2,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onOpenPlanArtifact() },
+                        ) {
+                            Text(
+                                text = "查看方案",
+                                fontSize = 10.5.sp,
+                                color = Everforest.BoldGold,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                    if (onApprovePlan != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Everforest.BgGreen,
+                            border = BorderStroke(0.8.dp, Everforest.Green.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onApprovePlan() }
+                                .testTag("plan_card_approve_btn"),
+                        ) {
+                            Text(
+                                text = "确认执行",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.Green,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                            )
+                        }
+                    }
+                }
             }
             for (e in entries) {
                 val (icon, tint) = when (e.status) {

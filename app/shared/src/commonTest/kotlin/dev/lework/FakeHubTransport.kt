@@ -43,6 +43,8 @@ class FakeHubTransport : HubTransport {
     var customEngines: List<EngineInfo>? = null
 
     var sessions: MutableList<SessionMeta> = mutableListOf()
+    val artifactsBySession: MutableMap<String, MutableList<ArtifactInfo>> = mutableMapOf()
+    val artifactContents: MutableMap<Pair<String, String>, ArtifactContentResult> = mutableMapOf()
     val sessionEventsMap: MutableMap<String, MutableList<AgentEvent>> = mutableMapOf()
     val subscribeDelayMsBySession: MutableMap<String, Long> = mutableMapOf()
 
@@ -433,6 +435,13 @@ class FakeHubTransport : HubTransport {
         sessions[idx] = updated
         return updated
     }
+
+    override suspend fun listArtifacts(sessionId: String): List<ArtifactInfo> =
+        artifactsBySession[sessionId]?.toList().orEmpty()
+
+    override suspend fun readArtifact(sessionId: String, artifactId: String): ArtifactContentResult =
+        artifactContents[sessionId to artifactId]
+            ?: throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Artifact not found: $artifactId")
 
     override suspend fun subscribeSession(
         sessionId: String,
