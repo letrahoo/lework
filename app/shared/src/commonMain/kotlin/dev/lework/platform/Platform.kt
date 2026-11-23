@@ -64,10 +64,20 @@ data class PickedImagePayload(
     val thumbnailBase64: String? = null,
 )
 
+data class LocalDateTimeParts(
+    val year: Int,
+    val month: Int,
+    val day: Int,
+    val hour: Int,
+    val minute: Int,
+    val second: Int,
+)
+
 expect fun platformName(): String
 expect fun isDesktopPlatform(): Boolean
 expect fun appVersionLabel(): String
 expect fun epochMillis(): Long
+expect fun localDateTimeParts(epochMs: Long): LocalDateTimeParts
 expect fun observeAppForeground(): StateFlow<Boolean>
 expect fun observeNetworkEpoch(): StateFlow<Long>
 expect fun candidateHubHttpUrls(): List<String>

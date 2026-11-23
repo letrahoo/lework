@@ -53,6 +53,7 @@ import dev.lework.platform.decodeImageBytes
 import dev.lework.platform.dismissNativeKeyboard
 import dev.lework.platform.epochMillis
 import dev.lework.platform.loadSavedRelayUrls
+import dev.lework.platform.localDateTimeParts
 import dev.lework.protocol.*
 import dev.lework.store.*
 import kotlin.io.encoding.Base64
@@ -183,6 +184,35 @@ internal fun formatBytes(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     else -> "${bytes / (1024 * 1024)} MB"
+}
+
+private const val MIN_VALID_EPOCH_SECONDS = 946_684_800L // 2000-01-01T00:00:00Z
+private const val MIN_VALID_EPOCH_MILLIS = 946_684_800_000L
+
+private fun pad2(value: Int): String = if (value < 10) "0$value" else value.toString()
+
+/**
+ * Formats message send / reply timestamps in device local time:
+ * - Same day: `HH:mm:ss`
+ * - Same year (earlier day): `MM-dd HH:mm:ss`
+ * - Earlier year: `yyyy-MM-dd HH:mm`
+ * Returns empty string for missing or synthetic sentinel timestamps before 2000-01-01.
+ */
+internal fun formatMessageTimestamp(epochMs: Long, nowMs: Long = epochMillis()): String {
+    val normalizedMs = when {
+        epochMs in MIN_VALID_EPOCH_SECONDS..9_999_999_999L -> epochMs * 1000L
+        epochMs >= MIN_VALID_EPOCH_MILLIS -> epochMs
+        else -> return ""
+    }
+    val normalizedNow = if (nowMs >= MIN_VALID_EPOCH_MILLIS) nowMs else epochMillis()
+    val msg = localDateTimeParts(normalizedMs)
+    val now = localDateTimeParts(normalizedNow)
+    val hhmmss = "${pad2(msg.hour)}:${pad2(msg.minute)}:${pad2(msg.second)}"
+    return when {
+        msg.year == now.year && msg.month == now.month && msg.day == now.day -> hhmmss
+        msg.year == now.year -> "${pad2(msg.month)}-${pad2(msg.day)} $hhmmss"
+        else -> "${msg.year}-${pad2(msg.month)}-${pad2(msg.day)} ${pad2(msg.hour)}:${pad2(msg.minute)}"
+    }
 }
 
 /**

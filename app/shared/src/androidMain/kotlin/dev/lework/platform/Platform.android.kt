@@ -606,6 +606,19 @@ actual fun appVersionLabel(): String = "v0.6.9 (20261123.0845)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
+actual fun localDateTimeParts(epochMs: Long): LocalDateTimeParts {
+    val cal = java.util.Calendar.getInstance()
+    cal.timeInMillis = epochMs
+    return LocalDateTimeParts(
+        year = cal.get(java.util.Calendar.YEAR),
+        month = cal.get(java.util.Calendar.MONTH) + 1,
+        day = cal.get(java.util.Calendar.DAY_OF_MONTH),
+        hour = cal.get(java.util.Calendar.HOUR_OF_DAY),
+        minute = cal.get(java.util.Calendar.MINUTE),
+        second = cal.get(java.util.Calendar.SECOND),
+    )
+}
+
 actual fun observeAppForeground(): StateFlow<Boolean> = AndroidPlatformRuntime.foregroundFlow.asStateFlow()
 
 actual fun observeNetworkEpoch(): StateFlow<Long> = AndroidPlatformRuntime.networkEpochFlow.asStateFlow()

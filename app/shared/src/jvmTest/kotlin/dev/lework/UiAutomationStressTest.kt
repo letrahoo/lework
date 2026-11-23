@@ -593,12 +593,15 @@ class UiAutomationStressTest {
                     ),
                 ),
             )
+            val sendTs = dev.lework.platform.epochMillis() - 90_000L
+            val replyTs = dev.lework.platform.epochMillis() - 62_000L
+            val longReplyTs = dev.lework.platform.epochMillis() - 18_000L
             transport.sessionEventsMap[sid] = mutableListOf(
-                AgentEvent.UserMessage(0, sid, 1_000L, "u_1", "开启独立分支工作区并构建 macOS 桌面端"),
+                AgentEvent.UserMessage(0, sid, sendTs, "u_1", "开启独立分支工作区并构建 macOS 桌面端"),
                 AgentEvent.ToolCall(
                     seq = 1,
                     sessionId = sid,
-                    ts = 1_500L,
+                    ts = sendTs + 12_000L,
                     toolCallId = "tc_wt",
                     title = "创建独立分支工作区 lework/feat-desktop",
                     kind = ToolKind.EXECUTE,
@@ -608,9 +611,27 @@ class UiAutomationStressTest {
                 AgentEvent.AssistantDelta(
                     seq = 2,
                     sessionId = sid,
-                    ts = 2_000L,
+                    ts = replyTs,
                     messageId = "a_1",
                     text = "已在独立分支 `lework/feat-desktop` 中完成桌面端双栏工作台构建，可随时在左侧切换本机 Mac 与远程 Linux Devbox。",
+                ),
+                AgentEvent.AssistantDelta(
+                    seq = 3,
+                    sessionId = sid,
+                    ts = longReplyTs,
+                    messageId = "a_2",
+                    text = buildString {
+                        appendLine("## 构建与联调清单")
+                        appendLine()
+                        appendLine("已完成以下验证步骤，确保双端体验一致、消息与状态同步及时可靠：")
+                        appendLine()
+                        appendLine("1. 独立 Git Worktree 隔离工作区创建与归档清理校验通过，所有分支变更与主仓库保持完全隔离；")
+                        appendLine("2. 桌面端 T3 Code 风格三栏模型选择器与侧边栏置顶、重命名、归档操作已全量接入并完成像素对齐验证；")
+                        appendLine("3. 会话时间轴现已支持精确展示每条消息的发送时间与回复时间，涵盖短消息以及超长多块虚拟化 Markdown 回复。")
+                        appendLine()
+                        appendLine("- 本机 Mac Hub：`https://127.0.0.1:64450` 已就绪")
+                        appendLine("- 远程 Linux Devbox：支持在设置弹窗中通过 SSH 一键配对接入")
+                    },
                 ),
             )
 
@@ -629,6 +650,10 @@ class UiAutomationStressTest {
             onNodeWithTag("desktop_permanent_sidebar").assertIsDisplayed()
             onNodeWithTag("desktop_workspace_header").assertIsDisplayed()
             onNodeWithTag("topbar_btn_menu").assertDoesNotExist()
+            // Verify send & reply timestamps render for user bubble, normal assistant reply, and long virtualized assistant reply
+            onNodeWithTag("msg_time_user_u_1", useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithTag("msg_time_assistant_a_1", useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithTag("msg_time_assistant_a_2", useUnmergedTree = true).assertIsDisplayed()
 
             // Verify pixel-perfect 30dp grid alignment across sidebar Row 1, Row 2 (Search + 3 icons), and Bottom Footer
             val sidebarBounds = onNodeWithTag("desktop_permanent_sidebar").fetchSemanticsNode().boundsInRoot

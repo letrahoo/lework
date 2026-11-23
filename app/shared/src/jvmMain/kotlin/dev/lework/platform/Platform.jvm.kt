@@ -120,6 +120,18 @@ actual fun appVersionLabel(): String =
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
+actual fun localDateTimeParts(epochMs: Long): LocalDateTimeParts {
+    val zdt = java.time.Instant.ofEpochMilli(epochMs).atZone(java.time.ZoneId.systemDefault())
+    return LocalDateTimeParts(
+        year = zdt.year,
+        month = zdt.monthValue,
+        day = zdt.dayOfMonth,
+        hour = zdt.hour,
+        minute = zdt.minute,
+        second = zdt.second,
+    )
+}
+
 actual fun observeAppForeground(): StateFlow<Boolean> =
     if (JvmDesktopRuntime.isEnabled) JvmDesktopRuntime.foreground else JvmPlatformTestHooks.foreground
 

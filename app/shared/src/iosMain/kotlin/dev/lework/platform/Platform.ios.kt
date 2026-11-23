@@ -55,8 +55,16 @@ import org.jetbrains.skia.Image as SkiaImage
 import kotlin.coroutines.resume
 import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSBundle
+import platform.Foundation.NSCalendar
+import platform.Foundation.NSCalendarUnitDay
+import platform.Foundation.NSCalendarUnitHour
+import platform.Foundation.NSCalendarUnitMinute
+import platform.Foundation.NSCalendarUnitMonth
+import platform.Foundation.NSCalendarUnitSecond
+import platform.Foundation.NSCalendarUnitYear
 import platform.Foundation.NSData
 import platform.Foundation.NSDate
+import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSNetService
 import platform.Foundation.NSNetServiceBrowser
@@ -428,6 +436,25 @@ actual fun appVersionLabel(): String {
 
 actual fun epochMillis(): Long =
     (NSDate().timeIntervalSince1970 * 1000.0).toLong()
+
+actual fun localDateTimeParts(epochMs: Long): LocalDateTimeParts {
+    val date = NSDate.dateWithTimeIntervalSince1970(epochMs.toDouble() / 1000.0)
+    val units = NSCalendarUnitYear or
+        NSCalendarUnitMonth or
+        NSCalendarUnitDay or
+        NSCalendarUnitHour or
+        NSCalendarUnitMinute or
+        NSCalendarUnitSecond
+    val comps = NSCalendar.currentCalendar.components(units, fromDate = date)
+    return LocalDateTimeParts(
+        year = comps.year.toInt(),
+        month = comps.month.toInt(),
+        day = comps.day.toInt(),
+        hour = comps.hour.toInt(),
+        minute = comps.minute.toInt(),
+        second = comps.second.toInt(),
+    )
+}
 
 actual fun observeAppForeground(): StateFlow<Boolean> {
     IosAppLifecycle.ensureRegistered()
