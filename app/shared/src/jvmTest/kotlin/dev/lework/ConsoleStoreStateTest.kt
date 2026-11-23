@@ -1164,4 +1164,25 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T12_4 replaceMentionAtCursor and insertAtTriggerAtCursor compute exact post-insertion caret index mid-sentence`() {
+        // 1. Replacing @query in the middle of existing Chinese text places caret right after trailing space
+        val (midText, midCaret) = dev.lework.store.replaceMentionAtCursor(
+            text = "请对比 @serv 和客户端逻辑",
+            relativeFilePath = "hub/src/server.ts",
+            cursorIndex = "请对比 @serv".length,
+        )
+        assertEquals("请对比 @hub/src/server.ts 和客户端逻辑", midText)
+        assertEquals("请对比 @hub/src/server.ts ".length, midCaret)
+
+        // 2. Tapping `@ 引用文件` chip inserts `@` with smart leading space and places caret right after `@`
+        val (atText, atCaret) = dev.lework.store.insertAtTriggerAtCursor(
+            text = "检查一下",
+            cursorIndex = 4,
+        )
+        assertEquals("检查一下 @", atText)
+        assertEquals(6, atCaret)
+        assertEquals("", dev.lework.store.extractMentionQueryAtCursor(atText, atCaret))
+    }
 }
