@@ -6,7 +6,7 @@
 
 <p align="center">
   跨平台多引擎 Coding Agent 控制台（支持 Claude Code、Codex、AGY、Pi、ACP）。<br/>
-  <a href="./README.md">English</a> | <strong>简体中文</strong>
+  <a href="./README.md">English</a> | <strong>简体中文</strong> | <a href="./CHANGELOG.zh-CN.md">更新日志</a>
 </p>
 
 ---
