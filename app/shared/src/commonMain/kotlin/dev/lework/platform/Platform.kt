@@ -103,6 +103,7 @@ expect fun saveSessionPrefs(prefs: SavedSessionPrefs)
 expect fun openExternalUrl(url: String)
 expect fun copyTextToClipboard(text: String)
 expect fun readTextFromClipboard(): String?
+expect fun readImagesFromClipboard(maxCount: Int = 4): List<PickedImagePayload>
 
 // Desktop SSH direct-pairing helpers for remote Linux Devboxes
 expect fun canConnectViaSsh(): Boolean

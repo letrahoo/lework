@@ -23,6 +23,15 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -52,6 +61,7 @@ internal fun ClaudeStyleComposer(
     onCancel: () -> Unit,
     onPickImage: () -> Unit = {},
     onCaptureCamera: () -> Unit = {},
+    onPasteClipboardImages: () -> Boolean = { false },
     onRemoveImage: (Int) -> Unit = {},
     onSelectMentionFile: (String) -> Unit = {},
     onInsertAtMention: () -> Unit = {},
@@ -275,6 +285,18 @@ internal fun ClaudeStyleComposer(
                         modifier = Modifier
                             .fillMaxWidth()
                             .focusRequester(focusRequester)
+                            .onPreviewKeyEvent { keyEvent ->
+                                if (keyEvent.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                val isPasteShortcut =
+                                    keyEvent.key == Key.V &&
+                                        (keyEvent.isMetaPressed || keyEvent.isCtrlPressed) &&
+                                        !keyEvent.isShiftPressed &&
+                                        !keyEvent.isAltPressed
+                                if (isPasteShortcut) {
+                                    return@onPreviewKeyEvent onPasteClipboardImages()
+                                }
+                                false
+                            }
                             .testTag("composer_input"),
                     )
                 }

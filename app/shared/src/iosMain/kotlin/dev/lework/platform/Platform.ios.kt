@@ -1,4 +1,8 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
+@file:OptIn(
+    kotlinx.cinterop.ExperimentalForeignApi::class,
+    kotlinx.cinterop.BetaInteropApi::class,
+    kotlin.io.encoding.ExperimentalEncodingApi::class,
+)
 
 package dev.lework.platform
 
@@ -51,8 +55,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.builtins.ListSerializer
+import org.jetbrains.skia.EncodedImageFormat
 import org.jetbrains.skia.Image as SkiaImage
+import org.jetbrains.skia.ImageInfo
+import org.jetbrains.skia.Rect
+import org.jetbrains.skia.Surface as SkiaSurface
 import kotlin.coroutines.resume
+import kotlin.io.encoding.Base64
 import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSBundle
 import platform.Foundation.NSCalendar
@@ -86,6 +95,9 @@ import platform.UIKit.UIApplication
 import platform.UIKit.UIApplicationDidBecomeActiveNotification
 import platform.UIKit.UIApplicationDidEnterBackgroundNotification
 import platform.UIKit.UIDevice
+import platform.UIKit.UIImage
+import platform.UIKit.UIImageJPEGRepresentation
+import platform.UIKit.UIImagePNGRepresentation
 import platform.UIKit.UIPasteboard
 import platform.UIKit.endEditing
 import platform.darwin.NSObject
@@ -885,6 +897,90 @@ actual fun isDesktopPlatform(): Boolean = false
 
 actual fun readTextFromClipboard(): String? =
     UIPasteboard.generalPasteboard.string?.takeIf { it.isNotBlank() }
+
+actual fun readImagesFromClipboard(maxCount: Int): List<PickedImagePayload> = runCatching {
+    val pb = UIPasteboard.generalPasteboard
+    if (!pb.hasImages) return@runCatching emptyList()
+    val limit = maxCount.coerceIn(1, 4)
+    val uiImages = pb.images?.mapNotNull { it as? UIImage }?.takeIf { it.isNotEmpty() }
+        ?: listOfNotNull(pb.image)
+    if (uiImages.isEmpty()) return@runCatching emptyList()
+
+    val ts = epochMillis()
+    uiImages.take(limit).mapIndexedNotNull { idx, img ->
+        encodeIosClipboardImage(img, ts, idx + 1)
+    }
+}.getOrDefault(emptyList())
+
+private fun encodeIosClipboardImage(
+    image: UIImage,
+    ts: Long,
+    index: Int,
+): PickedImagePayload? = runCatching {
+    val jpegData = UIImageJPEGRepresentation(image, 0.85)
+    val pngData = if (jpegData == null) UIImagePNGRepresentation(image) else null
+    val data = jpegData ?: pngData ?: return@runCatching null
+    val rawMime = if (jpegData != null) "image/jpeg" else "image/png"
+    val ext = if (jpegData != null) "jpg" else "png"
+
+    val len = data.length.toInt()
+    if (len <= 0 || len > 15 * 1024 * 1024) return@runCatching null
+    val rawBytes = data.bytes?.reinterpret<ByteVar>()?.readBytes(len) ?: return@runCatching null
+
+    val skiaImg = SkiaImage.makeFromEncoded(rawBytes)
+    val thumbB64 = runCatching {
+        val maxThumb = 220
+        val scale = minOf(maxThumb.toFloat() / skiaImg.width.toFloat(), maxThumb.toFloat() / skiaImg.height.toFloat(), 1f)
+        val tw = (skiaImg.width * scale).toInt().coerceAtLeast(1)
+        val th = (skiaImg.height * scale).toInt().coerceAtLeast(1)
+        val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(tw, th))
+        surface.canvas.drawImageRect(
+            skiaImg,
+            Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
+            Rect.makeWH(tw.toFloat(), th.toFloat()),
+        )
+        val snapshot = surface.makeImageSnapshot()
+        val encoded = snapshot.encodeToData(EncodedImageFormat.JPEG, 72) ?: snapshot.encodeToData(EncodedImageFormat.PNG)
+        encoded?.bytes?.let { Base64.encode(it) }
+    }.getOrNull()
+
+    val (finalMime, finalBytes) = if (rawBytes.size <= 700_000) {
+        rawMime to rawBytes
+    } else {
+        var encodedBytes: ByteArray? = null
+        var lastDim = -1
+        var cachedSnapshot: SkiaImage? = null
+        for ((dim, quality) in listOf(1600 to 82, 1600 to 65, 1280 to 58, 1024 to 48)) {
+            val snap = if (dim == lastDim && cachedSnapshot != null) {
+                cachedSnapshot
+            } else {
+                lastDim = dim
+                val scale = minOf(dim.toFloat() / skiaImg.width.toFloat(), dim.toFloat() / skiaImg.height.toFloat(), 1f)
+                val w = (skiaImg.width * scale).toInt().coerceAtLeast(1)
+                val h = (skiaImg.height * scale).toInt().coerceAtLeast(1)
+                val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(w, h))
+                surface.canvas.drawImageRect(
+                    skiaImg,
+                    Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
+                    Rect.makeWH(w.toFloat(), h.toFloat()),
+                )
+                surface.makeImageSnapshot().also { cachedSnapshot = it }
+            }
+            val candidate = snap.encodeToData(EncodedImageFormat.JPEG, quality)?.bytes ?: continue
+            encodedBytes = candidate
+            if (candidate.size <= 700_000) break
+        }
+        val finalJpg = encodedBytes ?: return@runCatching null
+        "image/jpeg" to finalJpg
+    }
+
+    PickedImagePayload(
+        fileName = "clipboard_${ts}_$index.$ext",
+        mimeType = finalMime,
+        dataBase64 = Base64.encode(finalBytes),
+        thumbnailBase64 = thumbB64,
+    )
+}.getOrNull()
 
 actual fun canConnectViaSsh(): Boolean = false
 

@@ -7,13 +7,21 @@ import dev.lework.security.toHex
 import java.awt.Desktop
 import java.awt.FileDialog
 import java.awt.Frame
+import java.awt.Image as AwtImage
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
+import java.awt.datatransfer.Transferable
+import java.awt.image.BufferedImage
+import java.awt.image.MultiResolutionImage
 import java.io.BufferedReader
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 import java.io.InputStreamReader
+import javax.imageio.ImageIO
+import javax.swing.ImageIcon
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -529,6 +537,205 @@ object JvmDesktopRuntime {
         }
     }.getOrNull()
 
+    private const val MAX_RAW_IMAGE_BYTES = 15 * 1024 * 1024
+    private val CLIPBOARD_IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "tiff", "tif")
+    private val WEB_SAFE_IMAGE_MIMES = setOf("image/png", "image/jpeg", "image/webp", "image/gif")
+    private val PREFERRED_CLIPBOARD_IMAGE_MIMES = listOf(
+        "image/png",
+        "image/webp",
+        "image/jpeg",
+        "image/gif",
+        "image/tiff",
+    )
+
+    fun readImagesFromClipboard(maxCount: Int = 4): List<PickedImagePayload> = runCatching {
+        val limit = maxCount.coerceIn(1, 4)
+        val transferable = Toolkit.getDefaultToolkit().systemClipboard.getContents(null) ?: return emptyList()
+        extractImagesFromTransferable(transferable, limit)
+    }.getOrDefault(emptyList())
+
+    internal fun extractImagesFromTransferable(
+        transferable: Transferable,
+        maxCount: Int = 4,
+    ): List<PickedImagePayload> {
+        val limit = maxCount.coerceIn(1, 4)
+
+        // Priority 1: Copied image file(s) from Finder / file manager
+        if (transferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+            val rawFiles = runCatching {
+                transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
+            }.getOrNull().orEmpty()
+            val imageFiles = rawFiles
+                .filterIsInstance<File>()
+                .filter { file -> file.isFile && file.extension.lowercase() in CLIPBOARD_IMAGE_EXTENSIONS }
+            if (imageFiles.isNotEmpty()) {
+                val encoded = mutableListOf<PickedImagePayload>()
+                for (file in imageFiles) {
+                    if (encoded.size >= limit) break
+                    encodePickedImageFile(file)?.let { encoded.add(it) }
+                }
+                if (encoded.isNotEmpty()) return encoded
+            }
+        }
+
+        // Priority 2: In-memory bitmap / macOS screenshot / browser "Copy Image"
+        if (transferable.isDataFlavorSupported(DataFlavor.imageFlavor)) {
+            val awtImg = runCatching {
+                transferable.getTransferData(DataFlavor.imageFlavor) as? AwtImage
+            }.getOrNull()
+            if (awtImg != null) {
+                val pngBytes = awtImageToPngBytes(awtImg)
+                if (pngBytes != null) {
+                    val payload = encodePickedImageBytes(
+                        rawBytes = pngBytes,
+                        fileName = "clipboard-${System.currentTimeMillis()}.png",
+                        rawMime = "image/png",
+                    )
+                    if (payload != null) return listOf(payload)
+                }
+            }
+        }
+
+        // Priority 3: Direct image/* MIME stream / byte-array flavors (Electron, Chromium, native apps)
+        val imageFlavors = runCatching { transferable.transferDataFlavors.toList() }
+            .getOrDefault(emptyList())
+            .filter { flavor ->
+                val primary = runCatching { flavor.primaryType }.getOrNull()
+                primary.equals("image", ignoreCase = true) &&
+                    (InputStream::class.java.isAssignableFrom(flavor.representationClass) ||
+                        flavor.representationClass == ByteArray::class.java)
+            }
+            .sortedBy { flavor ->
+                val mime = "${flavor.primaryType}/${flavor.subType}".lowercase()
+                val idx = PREFERRED_CLIPBOARD_IMAGE_MIMES.indexOf(mime)
+                if (idx >= 0) idx else PREFERRED_CLIPBOARD_IMAGE_MIMES.size
+            }
+
+        for (flavor in imageFlavors) {
+            val mime = "${flavor.primaryType}/${flavor.subType}".lowercase()
+            val rawBytes = readTransferFlavorBytes(transferable, flavor, MAX_RAW_IMAGE_BYTES) ?: continue
+            val ext = when (mime) {
+                "image/png" -> "png"
+                "image/webp" -> "webp"
+                "image/gif" -> "gif"
+                "image/jpeg", "image/jpg" -> "jpg"
+                else -> "png"
+            }
+            val payload = encodePickedImageBytes(
+                rawBytes = rawBytes,
+                fileName = "clipboard-${System.currentTimeMillis()}.$ext",
+                rawMime = mime,
+            )
+            if (payload != null) return listOf(payload)
+        }
+
+        return emptyList()
+    }
+
+    private fun resolveAwtImageDimensions(img: AwtImage): Pair<Int, Int>? {
+        if (img is BufferedImage) {
+            return if (img.width > 0 && img.height > 0) img.width to img.height else null
+        }
+        var w = img.getWidth(null)
+        var h = img.getHeight(null)
+        if (w <= 0 || h <= 0) {
+            val icon = runCatching { ImageIcon(img) }.getOrNull()
+            if (icon != null) {
+                w = icon.iconWidth
+                h = icon.iconHeight
+            }
+        }
+        return if (w > 0 && h > 0) w to h else null
+    }
+
+    private fun awtImageToPngBytes(image: AwtImage): ByteArray? = runCatching {
+        val resolved: AwtImage = if (image is MultiResolutionImage) {
+            val variants = runCatching { image.resolutionVariants }.getOrNull().orEmpty()
+            variants.maxByOrNull { variant ->
+                val dims = resolveAwtImageDimensions(variant)
+                if (dims != null) dims.first.toLong() * dims.second.toLong() else 0L
+            } ?: image
+        } else {
+            image
+        }
+
+        val (w, h) = resolveAwtImageDimensions(resolved) ?: return@runCatching null
+        if (w > 16_384 || h > 16_384) return@runCatching null
+
+        val buffered = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+        val graphics = buffered.createGraphics()
+        try {
+            graphics.drawImage(resolved, 0, 0, w, h, null)
+        } finally {
+            graphics.dispose()
+        }
+
+        val baos = ByteArrayOutputStream()
+        if (!ImageIO.write(buffered, "png", baos)) return@runCatching null
+        baos.toByteArray().takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    private fun readTransferFlavorBytes(
+        transferable: Transferable,
+        flavor: DataFlavor,
+        maxBytes: Int,
+    ): ByteArray? = runCatching {
+        when (val data = transferable.getTransferData(flavor)) {
+            is ByteArray -> data.takeIf { it.isNotEmpty() && it.size <= maxBytes }
+            is InputStream -> data.use { input ->
+                val out = ByteArrayOutputStream()
+                val buf = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    total += n
+                    if (total > maxBytes) return@runCatching null
+                    out.write(buf, 0, n)
+                }
+                out.toByteArray().takeIf { it.isNotEmpty() }
+            }
+            else -> null
+        }
+    }.getOrNull()
+
+    private fun convertToPngWithImageIo(rawBytes: ByteArray): ByteArray? = runCatching {
+        val buffered = ImageIO.read(ByteArrayInputStream(rawBytes)) ?: return@runCatching null
+        val baos = ByteArrayOutputStream()
+        if (!ImageIO.write(buffered, "png", baos)) return@runCatching null
+        baos.toByteArray().takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    private fun convertHeicViaSips(file: File): ByteArray? {
+        val sips = File("/usr/bin/sips")
+        if (!sips.canExecute()) return null
+        val tmpOut = runCatching { File.createTempFile("lework-clip-", ".png") }.getOrNull() ?: return null
+        return try {
+            val proc = ProcessBuilder(
+                sips.absolutePath,
+                "-s",
+                "format",
+                "png",
+                file.absolutePath,
+                "--out",
+                tmpOut.absolutePath,
+            ).redirectErrorStream(true).start()
+            val finished = proc.waitFor(4, TimeUnit.SECONDS)
+            if (!finished) {
+                runCatching { proc.destroyForcibly() }
+                return null
+            }
+            if (proc.exitValue() != 0 || !tmpOut.isFile || tmpOut.length() <= 0 || tmpOut.length() > MAX_RAW_IMAGE_BYTES) {
+                return null
+            }
+            tmpOut.readBytes().takeIf { it.isNotEmpty() }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            runCatching { tmpOut.delete() }
+        }
+    }
+
     // --- Native Image File Picker ---
     fun pickImages(maxCount: Int, onResult: (List<PickedImagePayload>) -> Unit) {
         Thread {
@@ -556,17 +763,44 @@ object JvmDesktopRuntime {
     }
 
     private fun encodePickedImageFile(file: File): PickedImagePayload? = runCatching {
-        if (!file.isFile || file.length() <= 0 || file.length() > 15 * 1024 * 1024) return null
+        if (!file.isFile || file.length() <= 0 || file.length() > MAX_RAW_IMAGE_BYTES) return null
         val rawBytes = file.readBytes()
         val ext = file.extension.lowercase()
         val rawMime = when (ext) {
             "png" -> "image/png"
             "webp" -> "image/webp"
             "gif" -> "image/gif"
+            "bmp" -> "image/bmp"
+            "tiff", "tif" -> "image/tiff"
+            "heic" -> "image/heic"
             else -> "image/jpeg"
         }
+        encodePickedImageBytes(rawBytes, file.name, rawMime) ?: if (ext == "heic") {
+            val pngBytes = convertHeicViaSips(file) ?: return null
+            encodePickedImageBytes(pngBytes, "${file.nameWithoutExtension}.png", "image/png")
+        } else {
+            null
+        }
+    }.getOrNull()
 
-        val skiaImg = SkiaImage.makeFromEncoded(rawBytes)
+    internal fun encodePickedImageBytes(
+        rawBytes: ByteArray,
+        fileName: String,
+        rawMime: String,
+    ): PickedImagePayload? = runCatching {
+        if (rawBytes.isEmpty() || rawBytes.size > MAX_RAW_IMAGE_BYTES) return null
+
+        var effectiveBytes = rawBytes
+        var effectiveMime = rawMime.lowercase().trim().let {
+            if (it == "image/jpg") "image/jpeg" else it
+        }
+        val skiaImg = runCatching { SkiaImage.makeFromEncoded(effectiveBytes) }.getOrNull() ?: run {
+            val pngFallback = convertToPngWithImageIo(effectiveBytes) ?: return null
+            effectiveBytes = pngFallback
+            effectiveMime = "image/png"
+            SkiaImage.makeFromEncoded(effectiveBytes)
+        }
+
         val thumbB64 = runCatching {
             val maxThumb = 220
             val scale = minOf(maxThumb.toFloat() / skiaImg.width.toFloat(), maxThumb.toFloat() / skiaImg.height.toFloat(), 1f)
@@ -583,11 +817,9 @@ object JvmDesktopRuntime {
             encoded?.bytes?.let { Base64.encode(it) }
         }.getOrNull()
 
-        // Downscale oversized images so base64 stays comfortably within protocol 1MB limit
-        val (finalMime, finalBytes) = if (rawBytes.size <= 700_000) {
-            rawMime to rawBytes
-        } else {
-            val maxDim = 1600
+        // Downscale oversized images (or normalize non-web MIME formats) so base64 stays comfortably within protocol 1MB limit
+        val isWebMime = effectiveMime in WEB_SAFE_IMAGE_MIMES
+        fun renderScaledSnapshot(maxDim: Int): SkiaImage {
             val scale = minOf(maxDim.toFloat() / skiaImg.width.toFloat(), maxDim.toFloat() / skiaImg.height.toFloat(), 1f)
             val w = (skiaImg.width * scale).toInt().coerceAtLeast(1)
             val h = (skiaImg.height * scale).toInt().coerceAtLeast(1)
@@ -597,13 +829,42 @@ object JvmDesktopRuntime {
                 Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
                 Rect.makeWH(w.toFloat(), h.toFloat()),
             )
-            val encoded = surface.makeImageSnapshot().encodeToData(EncodedImageFormat.JPEG, 82)
-                ?: return null
-            "image/jpeg" to encoded.bytes
+            return surface.makeImageSnapshot()
         }
 
+        val (finalMime, finalBytes) = if (isWebMime && effectiveBytes.size <= 700_000) {
+            effectiveMime to effectiveBytes
+        } else if (!isWebMime && effectiveBytes.size <= 700_000) {
+            val snapshot = renderScaledSnapshot(1600)
+            val pngData = snapshot.encodeToData(EncodedImageFormat.PNG)
+            if (pngData != null && pngData.bytes.size <= 700_000) {
+                "image/png" to pngData.bytes
+            } else {
+                val jpgData = snapshot.encodeToData(EncodedImageFormat.JPEG, 82) ?: return null
+                "image/jpeg" to jpgData.bytes
+            }
+        } else {
+            var encodedBytes: ByteArray? = null
+            var lastDim = -1
+            var cachedSnapshot: SkiaImage? = null
+            for ((dim, quality) in listOf(1600 to 82, 1600 to 65, 1280 to 58, 1024 to 48)) {
+                val snap = if (dim == lastDim && cachedSnapshot != null) {
+                    cachedSnapshot
+                } else {
+                    lastDim = dim
+                    renderScaledSnapshot(dim).also { cachedSnapshot = it }
+                }
+                val candidate = snap.encodeToData(EncodedImageFormat.JPEG, quality)?.bytes ?: continue
+                encodedBytes = candidate
+                if (candidate.size <= 700_000) break
+            }
+            val finalJpg = encodedBytes ?: return null
+            "image/jpeg" to finalJpg
+        }
+
+        val cleanName = fileName.trim().ifEmpty { "clipboard.png" }.take(120)
         PickedImagePayload(
-            fileName = file.name.take(120),
+            fileName = cleanName,
             mimeType = finalMime,
             dataBase64 = Base64.encode(finalBytes),
             thumbnailBase64 = thumbB64,

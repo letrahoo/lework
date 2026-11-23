@@ -2340,6 +2340,58 @@ class ConsoleStore(
         }
     }
 
+    fun attachClipboardImages(images: List<PickedImagePayload>): Boolean {
+        val valid = images
+            .filter { it.dataBase64.isNotBlank() }
+            .map { picked ->
+                PromptImageAttachment(
+                    mimeType = picked.mimeType,
+                    dataBase64 = picked.dataBase64,
+                    thumbnailBase64 = picked.thumbnailBase64?.takeIf { it.isNotBlank() },
+                    fileName = picked.fileName.take(120),
+                )
+            }
+        if (valid.isEmpty()) return false
+
+        val cur = _state.value
+        if (cur.selectedEngine?.capabilities?.images == false) {
+            _state.update { it.copy(promptErrorText = "当前引擎暂不支持附带图片") }
+            return true
+        }
+
+        val remaining = (4 - cur.composerAttachedImages.size).coerceAtLeast(0)
+        if (remaining == 0) {
+            _state.update { it.copy(promptErrorText = "单条消息最多附带 4 张图片") }
+            return true
+        }
+
+        val toAdd = valid.take(remaining)
+        val overflow = valid.size > remaining
+        _state.update { s ->
+            val slots = (4 - s.composerAttachedImages.size).coerceAtLeast(0)
+            if (slots == 0) {
+                s.copy(promptErrorText = "单条消息最多附带 4 张图片")
+            } else {
+                val added = valid.take(slots)
+                s.copy(
+                    composerAttachedImages = s.composerAttachedImages + added,
+                    promptErrorText = if (overflow) "单条消息最多附带 4 张图片，已附加前 ${toAdd.size} 张" else null,
+                )
+            }
+        }
+        return true
+    }
+
+    fun pasteImagesFromClipboard(): Boolean {
+        val cur = _state.value
+        val engineSupportsImages = cur.selectedEngine?.capabilities?.images != false
+        val remaining = (4 - cur.composerAttachedImages.size).coerceAtLeast(0)
+        val readLimit = if (engineSupportsImages && remaining > 0) 4 else 1
+        val clipboardImages = readImagesFromClipboard(maxCount = readLimit)
+        if (clipboardImages.isEmpty()) return false
+        return attachClipboardImages(clipboardImages)
+    }
+
     fun removeAttachedImage(index: Int) {
         _state.update { s ->
             if (index !in s.composerAttachedImages.indices) s

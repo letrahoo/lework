@@ -1575,4 +1575,105 @@ class ConsoleStoreStateTest {
             storeScope.cancel()
         }
     }
+
+    @Test
+    fun `T14_4 pasteImagesFromClipboard attaches clipboard images, enforces 4-image cap, checks engine capability, and ignores text-only clipboard`() = runTest {
+        val tinyPngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        val transport = FakeHubTransport().apply {
+            enginesOverride = listOf(
+                EngineInfo(
+                    id = "claude",
+                    displayName = "Claude Code",
+                    kind = EngineKind.CLI,
+                    status = EngineStatus(installed = true, ready = true),
+                    capabilities = EngineCapabilities(
+                        permissions = true,
+                        images = true,
+                        modelSwitch = true,
+                        modes = true,
+                        history = true,
+                        cancel = true,
+                    ),
+                    models = listOf(EngineModelSpec(id = "claude-sonnet-4-6", name = "Claude Sonnet 4.6")),
+                    defaultModel = "claude-sonnet-4-6",
+                ),
+                EngineInfo(
+                    id = "textonly",
+                    displayName = "Text Only Engine",
+                    kind = EngineKind.CLI,
+                    status = EngineStatus(installed = true, ready = true),
+                    capabilities = EngineCapabilities(
+                        permissions = true,
+                        images = false,
+                        modelSwitch = true,
+                        modes = true,
+                        history = true,
+                        cancel = true,
+                    ),
+                    models = listOf(EngineModelSpec(id = "text-1", name = "Text 1")),
+                    defaultModel = "text-1",
+                ),
+            )
+        }
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+
+            // 1. Empty / text-only clipboard returns false and never alters attachments or errors
+            JvmPlatformTestHooks.nextClipboardImages = emptyList()
+            assertFalse(store.pasteImagesFromClipboard())
+            assertTrue(store.state.value.composerAttachedImages.isEmpty())
+            assertNull(store.state.value.promptErrorText)
+
+            // 2. Pasting 2 images attaches both cleanly
+            JvmPlatformTestHooks.nextClipboardImages = listOf(
+                dev.lework.platform.PickedImagePayload("clip_1.png", "image/png", tinyPngB64, tinyPngB64),
+                dev.lework.platform.PickedImagePayload("clip_2.png", "image/png", tinyPngB64, tinyPngB64),
+            )
+            assertTrue(store.pasteImagesFromClipboard())
+            assertEquals(2, store.state.value.composerAttachedImages.size)
+            assertNull(store.state.value.promptErrorText)
+
+            // 3. Pasting 3 more images when 2 are attached caps at 4 and sets overflow hint
+            JvmPlatformTestHooks.nextClipboardImages = listOf(
+                dev.lework.platform.PickedImagePayload("clip_3.png", "image/png", tinyPngB64, tinyPngB64),
+                dev.lework.platform.PickedImagePayload("clip_4.png", "image/png", tinyPngB64, tinyPngB64),
+                dev.lework.platform.PickedImagePayload("clip_5.png", "image/png", tinyPngB64, tinyPngB64),
+            )
+            assertTrue(store.pasteImagesFromClipboard())
+            assertEquals(4, store.state.value.composerAttachedImages.size)
+            assertEquals(
+                listOf("clip_1.png", "clip_2.png", "clip_3.png", "clip_4.png"),
+                store.state.value.composerAttachedImages.map { it.fileName },
+            )
+            assertTrue(store.state.value.promptErrorText.orEmpty().contains("最多附带 4 张图片"))
+
+            // 4. Pasting another image at 4/4 keeps 4 images and shows limit error
+            JvmPlatformTestHooks.nextClipboardImages = listOf(
+                dev.lework.platform.PickedImagePayload("clip_6.png", "image/png", tinyPngB64, tinyPngB64),
+            )
+            assertTrue(store.pasteImagesFromClipboard())
+            assertEquals(4, store.state.value.composerAttachedImages.size)
+            assertEquals("单条消息最多附带 4 张图片", store.state.value.promptErrorText)
+
+            // 5. Even at 4/4, text-only clipboard still returns false so native text paste keeps working
+            JvmPlatformTestHooks.nextClipboardImages = emptyList()
+            assertFalse(store.pasteImagesFromClipboard())
+
+            // 6. Engine without image support reports friendly Chinese error when pasting an image
+            store.selectEngineAndModel("textonly")
+            runCurrent()
+            JvmPlatformTestHooks.nextClipboardImages = listOf(
+                dev.lework.platform.PickedImagePayload("clip_7.png", "image/png", tinyPngB64, tinyPngB64),
+            )
+            assertTrue(store.pasteImagesFromClipboard())
+            assertEquals("当前引擎暂不支持附带图片", store.state.value.promptErrorText)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

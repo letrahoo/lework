@@ -47,6 +47,7 @@ object JvmPlatformTestHooks {
     var cameraCaptureSupported: Boolean = true
     var nextPickedImage: PickedImagePayload? = null
     var nextPickedImages: List<PickedImagePayload> = emptyList()
+    var nextClipboardImages: List<PickedImagePayload> = emptyList()
     var lastImagePickSource: ImagePickSource? = null
     var signingExpiryHours: Int? = null
     var keyboardDismissCount: Int = 0
@@ -99,6 +100,7 @@ object JvmPlatformTestHooks {
         cameraCaptureSupported = true
         nextPickedImage = null
         nextPickedImages = emptyList()
+        nextClipboardImages = emptyList()
         lastImagePickSource = null
         signingExpiryHours = null
         keyboardDismissCount = 0
@@ -235,6 +237,13 @@ actual fun readTextFromClipboard(): String? =
         JvmDesktopRuntime.readFromClipboard()
     } else {
         JvmPlatformTestHooks.clipboardText.takeIf { it.isNotBlank() }
+    }
+
+actual fun readImagesFromClipboard(maxCount: Int): List<PickedImagePayload> =
+    if (JvmDesktopRuntime.isEnabled) {
+        JvmDesktopRuntime.readImagesFromClipboard(maxCount.coerceIn(1, 4))
+    } else {
+        JvmPlatformTestHooks.nextClipboardImages.take(maxCount.coerceIn(1, 4))
     }
 
 actual fun canConnectViaSsh(): Boolean =

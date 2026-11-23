@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
@@ -59,6 +60,7 @@ internal fun DesktopComposer(
     onSend: () -> Unit,
     onCancel: () -> Unit,
     onPickImage: () -> Unit,
+    onPasteClipboardImages: () -> Boolean = { false },
     onRemoveImage: (Int) -> Unit,
     onSelectMentionFile: (String) -> Unit,
     onDismissMention: () -> Unit,
@@ -251,7 +253,7 @@ internal fun DesktopComposer(
                 ) {
                     if (text.isEmpty()) {
                         Text(
-                            text = "发消息给 ${shortEngineLabel(state.selectedEngineId)}（Enter 发送 · Shift+Enter 换行 · @ 引用文件）…",
+                            text = "发消息给 ${shortEngineLabel(state.selectedEngineId)}（Enter 发送 · Shift+Enter 换行 · ⌘V 粘贴图片 · @ 引用文件）…",
                             color = Everforest.CommentGrey,
                             fontSize = 14.5.sp,
                             lineHeight = 20.sp,
@@ -271,6 +273,14 @@ internal fun DesktopComposer(
                             .fillMaxWidth()
                             .onPreviewKeyEvent { keyEvent ->
                                 if (keyEvent.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                val isPasteShortcut =
+                                    keyEvent.key == Key.V &&
+                                        (keyEvent.isMetaPressed || keyEvent.isCtrlPressed) &&
+                                        !keyEvent.isShiftPressed &&
+                                        !keyEvent.isAltPressed
+                                if (isPasteShortcut) {
+                                    return@onPreviewKeyEvent onPasteClipboardImages()
+                                }
                                 val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
                                 if (!isEnter) return@onPreviewKeyEvent false
                                 if (keyEvent.isMetaPressed || keyEvent.isCtrlPressed) {
@@ -310,7 +320,7 @@ internal fun DesktopComposer(
                                 LeworkIconActionButton(
                                     icon = Icons.Rounded.AddPhotoAlternate,
                                     tooltip = "添加图片",
-                                    subtitle = "支持多选 PNG / JPG / WebP（最多 4 张）",
+                                    subtitle = "支持多选或 ⌘V 粘贴 PNG / JPG / WebP（最多 4 张）",
                                     idleTint = Everforest.Green,
                                     hoverTint = Everforest.Green,
                                     size = 28.dp,
@@ -321,6 +331,7 @@ internal fun DesktopComposer(
                             } else {
                                 LeworkTooltip(
                                     label = if (remainingSlots > 0) "继续添加图片" else "已达图片上限 (4/4)",
+                                    subtitle = if (remainingSlots > 0) "点击选择或直接 ⌘V 粘贴（还可添加 $remainingSlots 张）" else null,
                                 ) {
                                     DesktopComposerPill(
                                         icon = Icons.Rounded.AddPhotoAlternate,

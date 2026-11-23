@@ -403,6 +403,7 @@ internal fun DesktopConsoleApp(
                             },
                             onCancel = store::cancelActiveTurn,
                             onPickImage = { store.pickAndAttachImage() },
+                            onPasteClipboardImages = store::pasteImagesFromClipboard,
                             onRemoveImage = store::removeAttachedImage,
                             onSelectMentionFile = { relPath ->
                                 promptText = replaceTrailingMention(promptText, relPath)

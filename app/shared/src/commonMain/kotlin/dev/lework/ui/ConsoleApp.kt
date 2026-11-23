@@ -494,6 +494,7 @@ private fun MobileConsoleApp(
                         dismissKeyboard()
                         store.captureAndAttachImage()
                     },
+                    onPasteClipboardImages = store::pasteImagesFromClipboard,
                     onRemoveImage = store::removeAttachedImage,
                     onSelectMentionFile = { relPath ->
                         val (nextText, nextCursor) = replaceMentionAtCursor(
