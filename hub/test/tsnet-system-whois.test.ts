@@ -16,7 +16,7 @@ function mockSocket(remoteAddress: string, remotePort: number): net.Socket {
 }
 
 describe('TsnetManager macOS/userspace netstack proxyMapper & WhoIs verification', () => {
-  it('verifies macOS Tailscale.app netstack loopback proxy sockets (127.0.0.1:<port>) while rejecting normal local sockets', async () => {
+  it('verifies macOS Tailscale.app netstack loopback proxy sockets (127.0.0.1:<port>) while rejecting UDP-only mappings and normal local sockets', async () => {
     const mgr = new TsnetManager({
       dataDir: tempDir,
       binaryPath: null,
@@ -33,7 +33,11 @@ describe('TsnetManager macOS/userspace netstack proxyMapper & WhoIs verification
             }),
           }
         }
-        if (args[0] === 'whois' && args[2] === '127.0.0.1:54321') {
+        const target = args.at(-1)
+        // Unscoped WhoIs searches both protocols; only port 54321 has a TCP mapping.
+        const tcpMatch = target === '127.0.0.1:54321'
+        const udpMatch = target === '127.0.0.1:54322' && !args.includes('--proto=tcp')
+        if (args[0] === 'whois' && (tcpMatch || udpMatch)) {
           return {
             stdout: JSON.stringify({
               Node: {
@@ -48,7 +52,7 @@ describe('TsnetManager macOS/userspace netstack proxyMapper & WhoIs verification
             }),
           }
         }
-        throw new Error(`no match for ${args[2] ?? ''}`)
+        throw new Error(`no match for ${target ?? ''}`)
       },
     })
 
@@ -62,13 +66,15 @@ describe('TsnetManager macOS/userspace netstack proxyMapper & WhoIs verification
       tailscaleIp: '100.64.0.21',
     })
 
-    // 2. Ordinary non-Tailscale local process on 127.0.0.1:59999 -> rejected (null)
+    const udpOnly = await mgr.verifyInboundSocket(mockSocket('127.0.0.1', 54322))
+    expect(udpOnly).toBeNull()
+
+    // Ordinary non-Tailscale local process on 127.0.0.1:59999 -> rejected (null)
     const plainLocal = await mgr.verifyInboundSocket(mockSocket('127.0.0.1', 59999))
     expect(plainLocal).toBeNull()
   })
 
-  it('caches Self.UserID across burst handshakes and handles IPv6 Tailscale ULA without port parse errors', async () => {
-    let statusCalls = 0
+  it('handles IPv6 Tailscale ULA without port parse errors and rejects tagged peers', async () => {
     const whoisTargets: string[] = []
     const mgr = new TsnetManager({
       dataDir: tempDir,
@@ -77,7 +83,6 @@ describe('TsnetManager macOS/userspace netstack proxyMapper & WhoIs verification
       systemTailscaleCli: '/mock/tailscale',
       execCli: async (_file, args) => {
         if (args[0] === 'status') {
-          statusCalls++
           return {
             stdout: JSON.stringify({
               BackendState: 'Running',
@@ -116,9 +121,42 @@ describe('TsnetManager macOS/userspace netstack proxyMapper & WhoIs verification
 
     const v4Peer = await mgr.verifyInboundSocket(mockSocket('100.64.0.22', 61001))
     expect(v4Peer?.sameUser).toBe(true)
-    expect(statusCalls).toBe(1)
 
     const tagged = await mgr.verifyInboundSocket(mockSocket('100.99.1.2', 61002))
     expect(tagged).toBeNull()
+  })
+
+  it('uses the current local account on every handshake and fails closed without a live identity', async () => {
+    const peerA = mockSocket('100.64.0.21', 61000)
+    const peerB = mockSocket('100.64.0.22', 61000)
+    let status: { BackendState: string; Self?: { UserID: number } } | null = {
+      BackendState: 'Running', Self: { UserID: 1001 },
+    }
+    const mgr = new TsnetManager({
+      dataDir: tempDir,
+      binaryPath: null,
+      autoStart: false,
+      systemTailscaleCli: '/mock/tailscale',
+      execCli: async (_file, args) => {
+        if (args[0] === 'status' && status) return { stdout: JSON.stringify(status) }
+        if (args[0] === 'whois') {
+          const uid = args.at(-1) === peerA.remoteAddress ? 1001 : 1002
+          return { stdout: JSON.stringify({ UserProfile: { ID: uid, LoginName: `${uid}@example.com` } }) }
+        }
+        throw new Error('status unavailable')
+      },
+    })
+
+    expect((await mgr.verifyInboundSocket(peerA))?.sameUser).toBe(true)
+    status = { BackendState: 'Running', Self: { UserID: 1002 } }
+    expect(await mgr.verifyInboundSocket(peerA)).toBeNull()
+    expect((await mgr.verifyInboundSocket(peerB))?.sameUser).toBe(true)
+
+    status = { BackendState: 'Stopped', Self: { UserID: 1002 } }
+    expect(await mgr.verifyInboundSocket(peerB)).toBeNull()
+    status = { BackendState: 'Running' }
+    expect(await mgr.verifyInboundSocket(peerB)).toBeNull()
+    status = null
+    expect(await mgr.verifyInboundSocket(peerB)).toBeNull()
   })
 })

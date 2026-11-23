@@ -133,7 +133,6 @@ export class TsnetManager {
   private secret = ''
   private starting: Promise<boolean> | null = null
   private stopped = false
-  private cachedSystemSelfUid: { uid: number; expiresAt: number } | null = null
 
   constructor(opts: TsnetManagerOptions = {}) {
     this.dataDir = opts.dataDir ?? defaultDataDir()
@@ -450,7 +449,7 @@ export class TsnetManager {
    * Cryptographically verifies whether an inbound socket to `hubd` belongs to an untagged Tailscale
    * node owned by the EXACT SAME Tailscale account as this Host:
    * - Path A: proxied by embedded `lework-tsnet` (`127.0.0.1:<localPort>` -> `/v1/whois?localPort=...`)
-   * - Path B: proxied by system `Tailscale Serve --tcp` (`127.0.0.1:<localPort>` -> `tailscale whois --json 127.0.0.1:<localPort>`)
+   * - Path B: system tailscaled's userspace netstack registered the loopback TCP socket with WhoIs.
    * - Path C: direct connection over system `tailscaled` (`100.64.0.0/10` / `fd7a:...` -> `tailscale whois --json <remoteIp>`)
    */
   async verifyInboundSocket(socket: net.Socket): Promise<VerifiedTailscalePeer | null> {
@@ -481,7 +480,7 @@ export class TsnetManager {
       }
       // Support macOS Tailscale.app NetworkExtension & Linux `--tun=userspace-networking`, where
       // `tailscaled`'s `netstack` dials `127.0.0.1:<hubPort>` from `127.0.0.1:<ephemeralPort>` and
-      // registers `backendLocalIPPort -> clientRemoteIP` in `proxyMapper` (`tailscale whois --json 127.0.0.1:<port>`).
+      // registers `backendLocalIPPort -> clientRemoteIP` in `proxyMapper` (`tailscale whois --json --proto=tcp 127.0.0.1:<port>`).
       // Ordinary non-Tailscale local sockets are absent from `proxyMapper`, fail `whois`, and return null.
       return await this.verifyViaSystemTailscaleCli(remoteIp, remotePort, true)
     }
@@ -509,9 +508,6 @@ export class TsnetManager {
         User?: Record<string, { LoginName?: string; DisplayName?: string }>
       }
       const selfUid = parsed.Self?.UserID
-      if (typeof selfUid === 'number' && selfUid > 0) {
-        this.cachedSystemSelfUid = { uid: selfUid, expiresAt: Date.now() + 60_000 }
-      }
       const prof = selfUid !== undefined ? parsed.User?.[String(selfUid)] : undefined
       return {
         available: true,
@@ -530,18 +526,11 @@ export class TsnetManager {
   }
 
   private async resolveSystemSelfUserId(cli: string): Promise<number | null> {
-    const now = Date.now()
-    if (this.cachedSystemSelfUid && this.cachedSystemSelfUid.expiresAt > now) {
-      return this.cachedSystemSelfUid.uid
-    }
+    // System Tailscale can switch profiles between handshakes. Always read the current identity.
     const { stdout } = await this.execCli(cli, ['status', '--json'], { timeout: 6_000, encoding: 'utf8' })
-    const st = JSON.parse(stdout) as { Self?: { UserID?: number } }
+    const st = JSON.parse(stdout) as { BackendState?: string; Self?: { UserID?: number } }
     const uid = st.Self?.UserID
-    if (typeof uid === 'number' && uid > 0) {
-      this.cachedSystemSelfUid = { uid, expiresAt: now + 60_000 }
-      return uid
-    }
-    return null
+    return st.BackendState === 'Running' && typeof uid === 'number' && Number.isSafeInteger(uid) && uid > 0 ? uid : null
   }
 
   private async verifyViaSystemTailscaleCli(
@@ -557,9 +546,10 @@ export class TsnetManager {
           ? `[${remoteIp}]:${remotePort}`
           : `${remoteIp}:${remotePort}`
         : remoteIp
+      const whoisArgs = requirePortMatch ? ['whois', '--json', '--proto=tcp', whoisTarget] : ['whois', '--json', whoisTarget]
       const [selfUid, { stdout: whoisOut }] = await Promise.all([
         this.resolveSystemSelfUserId(cli),
-        this.execCli(cli, ['whois', '--json', whoisTarget], {
+        this.execCli(cli, whoisArgs, {
           timeout: 6_000,
           encoding: 'utf8',
         }),
