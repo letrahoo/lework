@@ -831,3 +831,15 @@ actual fun dismissNativeKeyboard() {
         UIApplication.sharedApplication.keyWindow?.endEditing(true)
     }
 }
+
+actual fun isDesktopPlatform(): Boolean = false
+
+actual fun readTextFromClipboard(): String? =
+    UIPasteboard.generalPasteboard.string?.takeIf { it.isNotBlank() }
+
+actual fun canConnectViaSsh(): Boolean = false
+
+actual fun listSshConfigHosts(): List<String> = emptyList()
+
+actual suspend fun requestSshHostPairingLink(sshTarget: String): Result<String> =
+    Result.failure(UnsupportedOperationException("仅桌面端支持通过本机 SSH 直连远程开发机"))

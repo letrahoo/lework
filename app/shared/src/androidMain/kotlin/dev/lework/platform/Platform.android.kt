@@ -830,3 +830,19 @@ actual fun decodeImageBytes(bytes: ByteArray): ImageBitmap? =
 actual fun signingExpiryRemainingHours(): Int? = null
 
 actual fun dismissNativeKeyboard() = Unit
+
+actual fun isDesktopPlatform(): Boolean = false
+
+actual fun readTextFromClipboard(): String? = runCatching {
+    val ctx = AndroidPlatformRuntime.appContext ?: return@runCatching null
+    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return@runCatching null
+    val item = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
+    item?.coerceToText(ctx)?.toString()?.takeIf { it.isNotBlank() }
+}.getOrNull()
+
+actual fun canConnectViaSsh(): Boolean = false
+
+actual fun listSshConfigHosts(): List<String> = emptyList()
+
+actual suspend fun requestSshHostPairingLink(sshTarget: String): Result<String> =
+    Result.failure(UnsupportedOperationException("仅桌面端支持通过本机 SSH 直连远程开发机"))

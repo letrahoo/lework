@@ -57,6 +57,7 @@ class ConsoleStore(
     private var reconnectRetryJob: Job? = null
     private var lastRealtimeActivityMs: Long = 0L
     private var subscribedSessionId: String? = null
+    private val warmSubscribedSessionIds = mutableSetOf<String>()
     private var subscribeSeqToken: Long = 0L
     private var userManuallyPickedMode: Boolean = false
     private var manualPairingMode: Boolean = false
@@ -69,8 +70,68 @@ class ConsoleStore(
         subscribedSessionId = nextSessionId
         subscribeSeqToken++
         if (prev != null && prev != nextSessionId) {
+            val prevMeta = _state.value.sessions.firstOrNull { it.id == prev }
+            val keepWarmOnDesktop =
+                isDesktopPlatform() &&
+                    prevMeta != null &&
+                    !prevMeta.archived &&
+                    (prevMeta.state == SessionState.RUNNING || prevMeta.state == SessionState.WAITING_PERMISSION)
+            if (keepWarmOnDesktop) {
+                warmSubscribedSessionIds.add(prev)
+            } else {
+                warmSubscribedSessionIds.remove(prev)
+                scope.launch {
+                    runCatching { rpc.unsubscribeSession(prev) }
+                }
+            }
+        }
+    }
+
+    private fun reconcileDesktopRunningWarmSubscriptions(sessions: List<SessionMeta> = _state.value.sessions) {
+        if (!isDesktopPlatform()) return
+        val desiredRunningIds = sessions
+            .filter {
+                !it.archived &&
+                    (it.state == SessionState.RUNNING || it.state == SessionState.WAITING_PERMISSION)
+            }
+            .take(6)
+            .map { it.id }
+            .toSet()
+
+        val staleWarm = warmSubscribedSessionIds.filterNot { it in desiredRunningIds || it == subscribedSessionId }
+        for (sid in staleWarm) {
+            warmSubscribedSessionIds.remove(sid)
             scope.launch {
-                runCatching { rpc.unsubscribeSession(prev) }
+                runCatching { rpc.unsubscribeSession(sid) }
+            }
+        }
+
+        for (sid in desiredRunningIds) {
+            if (sid == subscribedSessionId || sid in warmSubscribedSessionIds) continue
+            warmSubscribedSessionIds.add(sid)
+            scope.launch {
+                runCatching {
+                    val existing = _state.value.transcripts[sid]
+                    val isInitial = existing == null || existing.lastSeq < 0
+                    val snap = rpc.subscribeSession(
+                        sessionId = sid,
+                        afterSeq = if (isInitial) -1 else existing!!.lastSeq,
+                        limit = if (isInitial) 120 else null,
+                    )
+                    _state.update { s ->
+                        val nextTranscript = if (isInitial) {
+                            reduceTranscriptBatch(SessionTranscript(), snap.events).copy(
+                                earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                                hasMoreBefore = snap.hasMoreBefore == true,
+                            )
+                        } else {
+                            reduceTranscriptBatch(s.transcripts[sid] ?: SessionTranscript(), snap.events)
+                        }
+                        s.copy(transcripts = s.transcripts + (sid to nextTranscript))
+                    }
+                }.onFailure {
+                    warmSubscribedSessionIds.remove(sid)
+                }
             }
         }
     }
@@ -173,6 +234,7 @@ class ConsoleStore(
                         selectedEffort = syncEffort,
                     )
                 }
+                reconcileDesktopRunningWarmSubscriptions(_state.value.sessions)
                 if (transitionedToIdle && _state.value.activeSessionId == updated.id) {
                     scope.launch {
                         runCatching { subscribeAndCatchUp(updated.id) }
@@ -304,9 +366,10 @@ class ConsoleStore(
         endpoints: List<String>,
         userName: String,
     ) {
+        val allowLoopback = isDesktopPlatform()
         val cleanEndpoints = endpoints
             .map { normalizeHubBaseUrl(it) }
-            .filter { it.isNotBlank() && !it.contains("127.0.0.1") }
+            .filter { it.isNotBlank() && (allowLoopback || !it.contains("127.0.0.1")) }
             .distinct()
             .take(8)
         val existing = loadPairedHosts()
@@ -722,6 +785,53 @@ class ConsoleStore(
         }
     }
 
+    fun pastePairingFromClipboard() {
+        val clip = readTextFromClipboard()?.trim().orEmpty()
+        if (clip.startsWith("lework://", ignoreCase = true) || clip.startsWith("{")) {
+            redeemPairingInput(clip)
+        } else {
+            _state.update {
+                it.copy(
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = "剪贴板中未检测到配对链接：请在开发机运行 lework pair 并复制 lework://pair?... 链接",
+                )
+            }
+        }
+    }
+
+    fun pairViaSshHost(sshTarget: String) {
+        val clean = sshTarget.trim()
+        if (clean.isEmpty() || _state.value.sshPairingInProgress) return
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        resumeJob?.cancel()
+        _state.update {
+            it.copy(
+                sshPairingInProgress = true,
+                connectionStatus = ConnectionStatus.CONNECTING,
+                connectionError = null,
+                authStatusText = "正在通过 SSH 连接 $clean 自动获取一次性配对凭证…",
+            )
+        }
+        scope.launch {
+            val res = requestSshHostPairingLink(clean)
+            _state.update { it.copy(sshPairingInProgress = false) }
+            res.fold(
+                onSuccess = { deepLink ->
+                    redeemPairingInput(deepLink)
+                },
+                onFailure = { err ->
+                    _state.update {
+                        it.copy(
+                            connectionStatus = ConnectionStatus.ERROR,
+                            connectionError = err.message ?: "通过 SSH 连接 $clean 失败",
+                        )
+                    }
+                },
+            )
+        }
+    }
+
     private fun promptDeepLinkPairingConfirmation(rawInput: String) {
         val payload = parsePairingPayload(rawInput)
         if (payload == null) {
@@ -919,6 +1029,7 @@ class ConsoleStore(
                 discoveredBaseUrl = "",
                 discoveredWsUrl = "",
                 pairedHosts = loadPairedHosts(),
+                sshConfigHosts = listSshConfigHosts(),
                 tsnetLoggingIn = false,
                 tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
                 authStatusText = "可扫码配对新主机、使用 Tailscale 同账号发现，或点击已配对主机切换",
@@ -1387,6 +1498,7 @@ class ConsoleStore(
                 )
             }
             persistCurrentPrefs()
+            reconcileDesktopRunningWarmSubscriptions(sessions)
 
             if (resolvedActiveId != null) {
                 subscribedSessionId = resolvedActiveId
@@ -2259,13 +2371,19 @@ class ConsoleStore(
     }
 
     private fun applyIncomingEvent(event: AgentEvent) {
-        // Strict active-session isolation: never apply stream events from another conversation
-        if (event.sessionId != _state.value.activeSessionId) return
+        // Active session + Desktop warm running sessions receive live stream deltas
+        val activeId = _state.value.activeSessionId
+        val keepWarm = isDesktopPlatform() && event.sessionId in warmSubscribedSessionIds
+        if (event.sessionId != activeId && !keepWarm) return
         _state.update { s ->
-            if (event.sessionId != s.activeSessionId) return@update s
+            if (event.sessionId != s.activeSessionId && !(isDesktopPlatform() && event.sessionId in warmSubscribedSessionIds)) {
+                return@update s
+            }
             val prev = s.transcripts[event.sessionId] ?: SessionTranscript()
             val next = reduceTranscript(prev, event)
-            val clearErr = if (event is AgentEvent.PermissionRequested || event is AgentEvent.PermissionResolved) {
+            val clearErr = if (event.sessionId == s.activeSessionId &&
+                (event is AgentEvent.PermissionRequested || event is AgentEvent.PermissionResolved)
+            ) {
                 null
             } else {
                 s.approvalErrorText

@@ -1,19 +1,65 @@
 package dev.lework.transport
 
+import dev.lework.platform.JvmDesktopRuntime
 import dev.lework.security.HubTrust
 import dev.lework.security.toHex
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.websocket.WebSockets
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.Socket
+import java.net.SocketAddress
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
+import java.util.concurrent.TimeUnit
+import javax.net.SocketFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.X509ExtendedTrustManager
+
+private class DesktopPreTlsForwarderSocketFactory : SocketFactory() {
+    private class PreambleSocket : Socket() {
+        override fun connect(endpoint: SocketAddress?, timeout: Int) {
+            super.connect(endpoint, timeout)
+            if (!JvmDesktopRuntime.isEnabled) return
+            val inet = endpoint as? InetSocketAddress ?: return
+            val host = inet.address?.hostAddress ?: inet.hostString
+            if ((host == "127.0.0.1" || host.equals("localhost", ignoreCase = true)) &&
+                inet.port in JvmDesktopRuntime.tsnetProxyPorts
+            ) {
+                val secret = JvmDesktopRuntime.tsnetForwarderSecret
+                if (secret.isNotEmpty()) {
+                    val out = getOutputStream()
+                    out.write("LEWORK-FWD $secret\n".encodeToByteArray())
+                    out.flush()
+                }
+            }
+        }
+    }
+
+    override fun createSocket(): Socket = PreambleSocket()
+    override fun createSocket(host: String?, port: Int): Socket = PreambleSocket().apply {
+        connect(InetSocketAddress(host, port))
+    }
+    override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket =
+        PreambleSocket().apply {
+            bind(InetSocketAddress(localHost, localPort))
+            connect(InetSocketAddress(host, port))
+        }
+    override fun createSocket(host: InetAddress?, port: Int): Socket = PreambleSocket().apply {
+        connect(InetSocketAddress(host, port))
+    }
+    override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket =
+        PreambleSocket().apply {
+            bind(InetSocketAddress(localAddress, localPort))
+            connect(InetSocketAddress(address, port))
+        }
+}
 
 /** Fingerprint-pinning trust manager shared by JVM tests & Android (OkHttp engine). */
 class HubPinningTrustManager(private val pinnedOnly: Boolean) : X509ExtendedTrustManager() {
@@ -62,6 +108,11 @@ actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient {
         followRedirects = false
         engine {
             config {
+                if (JvmDesktopRuntime.isEnabled) {
+                    proxy(Proxy.NO_PROXY)
+                    pingInterval(20, TimeUnit.SECONDS)
+                    socketFactory(DesktopPreTlsForwarderSocketFactory())
+                }
                 sslSocketFactory(ctx.socketFactory, tm)
                 hostnameVerifier { _, _ -> true }
                 followRedirects(false)

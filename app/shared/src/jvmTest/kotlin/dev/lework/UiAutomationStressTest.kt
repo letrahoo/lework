@@ -4,6 +4,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.test.*
 import androidx.compose.ui.unit.dp
 import dev.lework.platform.JvmPlatformTestHooks
@@ -11,7 +13,10 @@ import dev.lework.protocol.*
 import dev.lework.store.ConsoleStore
 import dev.lework.ui.ConsoleApp
 import dev.lework.ui.EverforestMarkdownContent
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
+import org.jetbrains.skia.EncodedImageFormat
+import org.jetbrains.skia.Image as SkiaImage
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -424,5 +429,130 @@ class UiAutomationStressTest {
                 JvmPlatformTestHooks.keyboardDismissCount > beforeDismissCount,
                 "Expected dismissNativeKeyboard() to fire when opening drawer",
             )
+        }
+
+    @Test
+    fun `T14_2 renders permanent desktop sidebar on widescreen, hides mobile menu button, and sends on Enter key`() =
+        runDesktopComposeUiTest(width = 1320, height = 840) {
+            JvmPlatformTestHooks.simulateDesktopLayout = true
+            JvmPlatformTestHooks.sshConnectSupported = true
+            JvmPlatformTestHooks.sshConfigHosts = listOf("devbox", "devbox-01")
+            JvmPlatformTestHooks.pairedHosts = listOf(
+                dev.lework.platform.PairedHost(
+                    hubId = "hub_fake_1",
+                    name = "MacBook Pro (本机)",
+                    fingerprint = "a".repeat(64),
+                    endpoints = listOf("https://127.0.0.1:64450"),
+                ),
+                dev.lework.platform.PairedHost(
+                    hubId = "hub_devbox_1",
+                    name = "Remote Devbox (Linux)",
+                    fingerprint = "b".repeat(64),
+                    endpoints = listOf("https://192.168.10.20:64450"),
+                ),
+            )
+
+            val transport = FakeHubTransport()
+            val sid = "sess_wt_demo"
+            transport.sessions.addAll(
+                listOf(
+                    SessionMeta(
+                        id = sid,
+                        engineId = "claude",
+                        cwd = "/Users/dev/.lework-worktrees/lework-a1b2c3/lework-feat-desktop",
+                        worktree = SessionWorktreeInfo(
+                            baseRepoPath = "/Users/dev/projects/lework",
+                            worktreePath = "/Users/dev/.lework-worktrees/lework-a1b2c3/lework-feat-desktop",
+                            branch = "lework/feat-desktop",
+                            baseBranch = "main",
+                            cleanedUp = false,
+                        ),
+                        title = "构建 macOS 原生桌面端与 Worktree 隔离",
+                        state = SessionState.IDLE,
+                        createdAt = 1_000L,
+                        updatedAt = 3_000L,
+                        lastSeq = 2,
+                    ),
+                    SessionMeta(
+                        id = "sess_devbox_bg",
+                        engineId = "codex",
+                        cwd = "/home/dev/demo-service",
+                        title = "Devbox 远程压测与资源包同步",
+                        state = SessionState.RUNNING,
+                        liveStatusText = "正在执行 go test ./...",
+                        createdAt = 1_000L,
+                        updatedAt = 2_800L,
+                        lastSeq = 0,
+                    ),
+                ),
+            )
+            transport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 1_000L, "u_1", "开启独立分支工作区并构建 macOS 桌面端"),
+                AgentEvent.ToolCall(
+                    seq = 1,
+                    sessionId = sid,
+                    ts = 1_500L,
+                    toolCallId = "tc_wt",
+                    title = "创建独立分支工作区 lework/feat-desktop",
+                    kind = ToolKind.EXECUTE,
+                    status = ToolStatus.COMPLETED,
+                    output = "Branch lework/feat-desktop checked out in ~/.lework-worktrees/",
+                ),
+                AgentEvent.AssistantDelta(
+                    seq = 2,
+                    sessionId = sid,
+                    ts = 2_000L,
+                    messageId = "a_1",
+                    text = "已在独立分支 `lework/feat-desktop` 中完成桌面端双栏工作台构建，可随时在左侧切换本机 Mac 与远程 Linux Devbox。",
+                ),
+            )
+
+            lateinit var store: ConsoleStore
+            setContent {
+                val scope = rememberCoroutineScope()
+                val created = androidx.compose.runtime.remember { ConsoleStore(scope, transport) }
+                store = created
+                ConsoleApp(externalStore = created, autoBootstrap = true)
+            }
+            waitForIdle()
+            runOnIdle { store.selectSession(sid) }
+            waitForIdle()
+
+            // 1. Wide desktop layout shows permanent sidebar and omits mobile hamburger button
+            onNodeWithTag("desktop_permanent_sidebar").assertIsDisplayed()
+            onNodeWithTag("topbar_btn_menu").assertDoesNotExist()
+
+            val captureDir = (System.getProperty("lework.captureScreenshotsDir")
+                ?: System.getenv("LEWORK_CAPTURE_DIR"))?.takeIf { it.isNotBlank() }
+            if (captureDir != null) {
+                val outDir = File(captureDir).apply { mkdirs() }
+                val wsPng = SkiaImage.makeFromBitmap(captureToImage().asSkiaBitmap()).encodeToData(EncodedImageFormat.PNG)
+                if (wsPng != null) {
+                    File(outDir, "desktop_widescreen_workspace.png").writeBytes(wsPng.bytes)
+                }
+            }
+
+            // 2. Typing in composer and pressing Enter (without Shift) sends prompt on Desktop
+            onNodeWithTag("composer_input").performClick()
+            onNodeWithTag("composer_input").performTextInput("继续验证 SSH 一键连接远程开发机")
+            waitForIdle()
+            onNodeWithTag("composer_input").performKeyInput {
+                pressKey(Key.Enter)
+            }
+            waitForIdle()
+            assertTrue(
+                transport.sentPrompts.any { it.first == sid && it.second == "继续验证 SSH 一键连接远程开发机" },
+                "Expected Enter key on Desktop to submit prompt",
+            )
+
+            // 3. Switch to Pair Another Host view -> renders SSH quick-connect pills (`devbox`, `devbox-01`)
+            if (captureDir != null) {
+                runOnIdle { store.preparePairAnotherHost() }
+                waitForIdle()
+                val pairPng = SkiaImage.makeFromBitmap(captureToImage().asSkiaBitmap()).encodeToData(EncodedImageFormat.PNG)
+                if (pairPng != null) {
+                    File(captureDir, "desktop_ssh_pairing_view.png").writeBytes(pairPng.bytes)
+                }
+            }
         }
 }

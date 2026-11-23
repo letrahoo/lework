@@ -4,12 +4,13 @@ import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.Serializable
 
+@Serializable
 data class SavedSessionPrefs(
     val engineId: String = "claude",
     val providerId: String? = null,
     val modelId: String? = null,
     val reasoningEffort: String = "medium",
-    val mode: String = "ask",
+    val mode: String = "auto",
     val workspacePath: String = "",
 )
 
@@ -62,6 +63,7 @@ data class PickedImagePayload(
 )
 
 expect fun platformName(): String
+expect fun isDesktopPlatform(): Boolean
 expect fun appVersionLabel(): String
 expect fun epochMillis(): Long
 expect fun observeAppForeground(): StateFlow<Boolean>
@@ -84,6 +86,12 @@ expect fun loadSessionPrefs(): SavedSessionPrefs
 expect fun saveSessionPrefs(prefs: SavedSessionPrefs)
 expect fun openExternalUrl(url: String)
 expect fun copyTextToClipboard(text: String)
+expect fun readTextFromClipboard(): String?
+
+// Desktop SSH direct-pairing helpers for remote Linux Devboxes
+expect fun canConnectViaSsh(): Boolean
+expect fun listSshConfigHosts(): List<String>
+expect suspend fun requestSshHostPairingLink(sshTarget: String): Result<String>
 
 // Embedded Tailscale `tsnet` client & same-account discovery
 expect fun isMobileTsnetAvailable(): Boolean

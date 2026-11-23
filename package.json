@@ -13,6 +13,8 @@
     "verify": "pnpm --filter @lework/protocol gen && pnpm -r check && pnpm -r test && ./app/gradlew -p ./app :shared:jvmTest",
     "check": "pnpm -r check",
     "hub": "pnpm --filter @lework/hub start",
+    "desktop": "./app/gradlew -p ./app :desktopApp:run",
+    "desktop:dmg": "./app/gradlew -p ./app :desktopApp:packageDmg",
     "install:cli": "node ./hub/bin/hub.js install-cli"
   },
   "engines": {
