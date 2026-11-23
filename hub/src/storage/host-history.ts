@@ -6,15 +6,21 @@ import type {
   ReasoningEffort,
   SessionMeta,
   SessionMode,
+  SubagentSummary,
 } from '@lework/protocol'
 import {
   extractAgyUserRequests,
   filterAgyQueuedFromHistory,
   parseAgyTranscript,
   resolveAgyQueuedPrompts,
+  resolveAgySubagentEntry,
   scanAgySessions,
 } from './host-history/agy-history.ts'
-import { parseClaudeTranscript, scanClaudeSessions } from './host-history/claude-history.ts'
+import {
+  parseClaudeTranscript,
+  resolveClaudeSubagentEntry,
+  scanClaudeSessions,
+} from './host-history/claude-history.ts'
 import { parseCodexTranscript, scanCodexSessions } from './host-history/codex-history.ts'
 import {
   classifyRawToolCall,
@@ -49,6 +55,7 @@ interface WatchedHostSession {
   lastState: string
   lastLiveStatus?: string
   lastQueuedKey: string
+  lastSubagentsKey: string
   lastTerminalPollAt: number
   terminalPolling: Promise<void> | null
   activePermRequestId: string | null
@@ -56,6 +63,13 @@ interface WatchedHostSession {
   pendingPromptUntil: number
   pendingPromptSeqBaseline: number
   watcher: fs.FSWatcher | null
+}
+
+function buildSubagentsKey(subagents?: SubagentSummary[]): string {
+  if (!subagents || subagents.length === 0) return ''
+  return subagents
+    .map(sa => `${sa.id}:${sa.state}:${sa.statusText ?? ''}:${sa.updatedAt}`)
+    .join('\u0000')
 }
 
 export interface HostLiveCallbacks {
@@ -73,6 +87,7 @@ export class HostTaskInspector {
   private agyModelsCache: EngineModelSpec[] | null = null
   private agyLoading: Promise<EngineModelSpec[]> | null = null
   private hostIndex = new Map<string, HostTranscriptEntry>()
+  private subagentIndex = new Map<string, HostTranscriptEntry>()
   private transcriptCache = new Map<string, CachedTranscript>()
   private watched = new Map<string, WatchedHostSession>()
   private watchPollTimer: ReturnType<typeof setInterval> | null = null
@@ -254,10 +269,11 @@ export class HostTaskInspector {
     }
 
     const next = new Map<string, HostTranscriptEntry>()
+    const nextSubagents = new Map<string, HostTranscriptEntry>()
     scanCodexSessions(this.homeDir, next)
     this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
-    scanClaudeSessions(this.homeDir, this.claudeRuntimeMap, next)
-    scanAgySessions(this.homeDir, this.transcriptCache, next, this.agyModelsCache ?? undefined)
+    scanClaudeSessions(this.homeDir, this.claudeRuntimeMap, next, nextSubagents)
+    scanAgySessions(this.homeDir, this.transcriptCache, next, this.agyModelsCache ?? undefined, nextSubagents)
     scanDshSessions(this.homeDir, next)
 
     // Retain any archived or custom-renamed host sessions even if newer tasks pushed them
@@ -301,6 +317,7 @@ export class HostTaskInspector {
     }
 
     this.hostIndex = next
+    this.subagentIndex = nextSubagents
     this.lastScanAt = now
 
     return [...next.values()]
@@ -308,11 +325,31 @@ export class HostTaskInspector {
       .sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
+  isSubagentSession(sessionId: string): boolean {
+    if (this.hostIndex.has(sessionId)) return false
+    return this.subagentIndex.has(sessionId) || sessionId.startsWith('host:claude-subagent:')
+  }
+
+  getDiscoveredSubagents(sessionId: string): SubagentSummary[] | undefined {
+    return this.hostIndex.get(sessionId)?.meta.subagents
+  }
+
   getHostSession(sessionId: string): HostTranscriptEntry | undefined {
-    if (!this.hostIndex.has(sessionId)) {
-      this.discoverHostSessions(true)
+    const direct = this.hostIndex.get(sessionId) ?? this.subagentIndex.get(sessionId)
+    if (direct) return direct
+
+    this.discoverHostSessions(true)
+    const afterScan = this.hostIndex.get(sessionId) ?? this.subagentIndex.get(sessionId)
+    if (afterScan) return afterScan
+
+    const fallback =
+      resolveClaudeSubagentEntry(this.homeDir, sessionId) ??
+      resolveAgySubagentEntry(this.homeDir, sessionId)
+    if (fallback) {
+      this.subagentIndex.set(sessionId, fallback)
+      return fallback
     }
-    return this.hostIndex.get(sessionId)
+    return undefined
   }
 
   readHostSessionEvents(sessionId: string): { session: SessionMeta; events: AgentEvent[] } | null {
@@ -383,8 +420,16 @@ export class HostTaskInspector {
       })
     }
 
+    const isSubagent = this.isSubagentSession(sessionId)
     let liveState: SessionMeta['state'] = 'idle'
-    if (entry.meta.engineId === 'claude') {
+    if (isSubagent) {
+      liveState =
+        Date.now() - st.mtimeMs < 90_000 && parsedRunning
+          ? 'running'
+          : entry.meta.state === 'error'
+            ? 'error'
+            : 'idle'
+    } else if (entry.meta.engineId === 'claude') {
       this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
       const rt = this.claudeRuntimeMap.get(entry.nativeId)
       if (rt) {
@@ -730,7 +775,7 @@ export class HostTaskInspector {
   }
 
   async syncTerminalNow(sessionId: string): Promise<void> {
-    if (!this.watched.has(sessionId)) return
+    if (!this.watched.has(sessionId) || this.isSubagentSession(sessionId)) return
     await this.pollTerminalForWatched(sessionId, true)
   }
 
@@ -748,9 +793,10 @@ export class HostTaskInspector {
       return
     }
     const snap = this.readHostSessionEvents(sessionId)
-    const entry = this.hostIndex.get(sessionId)
+    const entry = this.hostIndex.get(sessionId) ?? this.subagentIndex.get(sessionId)
     if (!snap || !entry) return
 
+    const isSubagent = this.isSubagentSession(sessionId)
     const record: WatchedHostSession = {
       sessionId,
       filePath: entry.filePath,
@@ -759,6 +805,7 @@ export class HostTaskInspector {
       lastState: snap.session.state,
       lastLiveStatus: snap.session.liveStatusText,
       lastQueuedKey: (snap.session.queuedPrompts ?? []).join('\u0000'),
+      lastSubagentsKey: buildSubagentsKey(snap.session.subagents),
       lastTerminalPollAt: 0,
       terminalPolling: null,
       activePermRequestId: null,
@@ -780,7 +827,9 @@ export class HostTaskInspector {
     this.watched.set(sessionId, record)
     this.ensureWatchTimer()
     // Immediately inspect live terminal (e.g. `· Sketching…` or pending permission dialog)
-    setTimeout(() => void this.pollTerminalForWatched(sessionId, true), 30)
+    if (!isSubagent) {
+      setTimeout(() => void this.pollTerminalForWatched(sessionId, true), 30)
+    }
   }
 
   releaseWatch(sessionId: string): void {
@@ -807,7 +856,8 @@ export class HostTaskInspector {
       const sessions = this.discoverHostSessions(true)
       for (const s of sessions) {
         const qKey = (s.queuedPrompts ?? []).join('|')
-        const key = `${s.state}:${s.updatedAt}:${s.title}:${qKey}`
+        const subKey = buildSubagentsKey(s.subagents)
+        const key = `${s.state}:${s.updatedAt}:${s.title}:${qKey}:${subKey}`
         const prev = this.lastKnownStates.get(s.id)
         // Watched sessions are already polled every 350ms with full transcript + terminal state;
         // do not let header/tail global scans clobber their rich SessionMeta broadcasts.
@@ -863,10 +913,20 @@ export class HostTaskInspector {
         this.liveCallbacks?.onEvents(delta)
       }
     }
+    if (this.isSubagentSession(sessionId)) {
+      w.lastState = session.state
+      return
+    }
     const nextQueuedKey = (session.queuedPrompts ?? []).join('\u0000')
-    if (session.state !== w.lastState || nextQueuedKey !== w.lastQueuedKey) {
+    const nextSubagentsKey = buildSubagentsKey(session.subagents)
+    if (
+      session.state !== w.lastState ||
+      nextQueuedKey !== w.lastQueuedKey ||
+      nextSubagentsKey !== w.lastSubagentsKey
+    ) {
       w.lastState = session.state
       w.lastQueuedKey = nextQueuedKey
+      w.lastSubagentsKey = nextSubagentsKey
       this.liveCallbacks?.onSessionUpdated(session)
     }
 

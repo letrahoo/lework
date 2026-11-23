@@ -211,6 +211,18 @@ export const SessionWorktreeInfo = z.object({
 })
 export type SessionWorktreeInfo = z.infer<typeof SessionWorktreeInfo>
 
+export const SubagentSummary = z.object({
+  id: z.string(),
+  title: z.string(),
+  role: z.string().optional(),
+  state: SessionState,
+  statusText: z.string().optional(),
+  createdAt: z.number().int().optional(),
+  updatedAt: z.number().int(),
+  workspace: z.string().optional(),
+})
+export type SubagentSummary = z.infer<typeof SubagentSummary>
+
 export const SessionMeta = z.object({
   id: z.string(),
   engineId: z.string(),
@@ -233,6 +245,7 @@ export const SessionMeta = z.object({
   turnStartedAt: z.number().int().optional(),
   queuedPrompts: z.array(z.string()).optional(),
   models: z.array(ModelOption).optional(),
+  subagents: z.array(SubagentSummary).optional(),
 })
 export type SessionMeta = z.infer<typeof SessionMeta>
 

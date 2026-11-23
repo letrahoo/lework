@@ -132,6 +132,7 @@ internal fun ConversationStreamView(
     onDismissKeyboard: () -> Unit = {},
     showInlineErrorRetry: Boolean = false,
     onRetryLastTurn: (() -> Unit)? = null,
+    listTestTag: String = "conversation_lazy_list",
 ) {
     val listState = rememberLazyListState()
     val isUserDragging by listState.interactionSource.collectIsDraggedAsState()
@@ -209,7 +210,7 @@ internal fun ConversationStreamView(
                 interactionSource = remember { MutableInteractionSource() },
             ) { onDismissKeyboard() }
             .padding(horizontal = 16.dp)
-            .testTag("conversation_lazy_list"),
+            .testTag(listTestTag),
         contentPadding = PaddingValues(vertical = 12.dp),
         verticalArrangement = Arrangement.Bottom,
     ) {

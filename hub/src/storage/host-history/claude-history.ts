@@ -1,16 +1,18 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { AgentEvent, SessionMeta } from '@lework/protocol'
+import type { AgentEvent, SessionMeta, SubagentSummary } from '@lework/protocol'
 import type { ClaudeLiveSessionMeta } from '../terminal-bridge.ts'
 import { parseStagedImagePromptHeader } from '../attachment-store.ts'
 import {
   classifyRawToolCall,
   collectRecentFiles,
+  describeToolActivity,
   extractProjectRootFromToolInput,
   mergeUniqueWorkspaces,
   readFirstAndLastLines,
   readFullSessionLines,
+  sortAndCapSubagents,
   type HostTranscriptEntry,
   type ParsedHostTranscript,
 } from './common.ts'
@@ -20,12 +22,17 @@ export function scanClaudeSessions(
   homeDir: string,
   claudeRuntimeMap: Map<string, ClaudeLiveSessionMeta>,
   out: Map<string, HostTranscriptEntry>,
+  subagentOut?: Map<string, HostTranscriptEntry>,
 ): void {
   const projectsDir = path.join(homeDir, '.claude', 'projects')
   if (!fs.existsSync(projectsDir)) return
   const claudeDefaults = readClaudeLocalSettings(homeDir)
 
-  const files = collectRecentFiles(projectsDir, f => f.endsWith('.jsonl'), 24)
+  const files = collectRecentFiles(
+    projectsDir,
+    f => f.endsWith('.jsonl') && path.basename(path.dirname(f)) !== 'subagents',
+    24,
+  )
   for (const f of files) {
     try {
       const nativeId = path.basename(f.path, '.jsonl')
@@ -84,6 +91,13 @@ export function scanClaudeSessions(
         state = 'running'
       }
 
+      const subagents = scanClaudeSubagentsForParent(
+        f.path,
+        nativeId,
+        primaryCwd,
+        subagentOut,
+      )
+
       out.set(sessionId, {
         nativeId,
         filePath: f.path,
@@ -102,12 +116,262 @@ export function scanClaudeSessions(
           reasoningEffort: claudeDefaults.effort,
           mode: claudeDefaults.defaultMode,
           source: 'host',
+          ...(subagents.length > 0 ? { subagents } : {}),
         },
       })
     } catch {
       // ignore
     }
   }
+}
+
+function scanClaudeSubagentsForParent(
+  parentFilePath: string,
+  parentUuid: string,
+  fallbackCwd: string,
+  subagentOut?: Map<string, HostTranscriptEntry>,
+): SubagentSummary[] {
+  const subagentsDir = path.join(path.dirname(parentFilePath), parentUuid, 'subagents')
+  if (!fs.existsSync(subagentsDir)) return []
+  let dirEntries: fs.Dirent[]
+  try {
+    dirEntries = fs.readdirSync(subagentsDir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  const files: Array<{ stem: string; filePath: string; mtimeMs: number; birthtimeMs: number }> = []
+  for (const e of dirEntries) {
+    if (!e.isFile() || !e.name.startsWith('agent-') || !e.name.endsWith('.jsonl')) continue
+    const full = path.join(subagentsDir, e.name)
+    try {
+      const st = fs.statSync(full)
+      files.push({
+        stem: path.basename(e.name, '.jsonl'),
+        filePath: full,
+        mtimeMs: st.mtimeMs,
+        birthtimeMs: st.birthtimeMs,
+      })
+    } catch {
+      // ignore unreadable file
+    }
+  }
+  if (files.length === 0) return []
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs)
+
+  const summaries: SubagentSummary[] = []
+  for (const f of files.slice(0, 24)) {
+    try {
+      const built = buildClaudeSubagentSummary(
+        parentUuid,
+        f.stem,
+        f.filePath,
+        f.mtimeMs,
+        f.birthtimeMs,
+        fallbackCwd,
+      )
+      summaries.push(built.summary)
+      subagentOut?.set(built.summary.id, built.entry)
+    } catch {
+      // ignore unreadable subagent file
+    }
+  }
+  return sortAndCapSubagents(summaries, 12)
+}
+
+function readClaudeSubagentSidecarMeta(
+  subFilePath: string,
+): { description?: string; agentType?: string } | undefined {
+  const metaPath = subFilePath.replace(/\.jsonl$/, '.meta.json')
+  if (!fs.existsSync(metaPath)) return undefined
+  try {
+    const raw = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as {
+      description?: unknown
+      agentType?: unknown
+      role?: unknown
+      name?: unknown
+    }
+    const description =
+      typeof raw.description === 'string' && raw.description.trim()
+        ? raw.description.trim()
+        : typeof raw.name === 'string' && raw.name.trim()
+          ? raw.name.trim()
+          : undefined
+    const agentType =
+      typeof raw.agentType === 'string' && raw.agentType.trim()
+        ? raw.agentType.trim()
+        : typeof raw.role === 'string' && raw.role.trim()
+          ? raw.role.trim()
+          : undefined
+    return { description, agentType }
+  } catch {
+    return undefined
+  }
+}
+
+function buildClaudeSubagentSummary(
+  parentUuid: string,
+  agentStem: string,
+  filePath: string,
+  mtimeMs: number,
+  birthtimeMs: number,
+  fallbackCwd: string,
+): { summary: SubagentSummary; entry: HostTranscriptEntry } {
+  const sidecar = readClaudeSubagentSidecarMeta(filePath)
+  const { first, last } = readFirstAndLastLines(filePath, 15, 20)
+  let promptTitle = ''
+  let slugTitle = ''
+  let cwd: string | undefined
+  for (const l of [...first, ...last]) {
+    try {
+      const o = JSON.parse(l) as {
+        type?: string
+        slug?: string
+        cwd?: string
+        message?: { role?: string; content?: unknown }
+      }
+      if (!cwd && typeof o.cwd === 'string' && o.cwd.trim()) {
+        cwd = o.cwd.trim()
+      }
+      if (!slugTitle && typeof o.slug === 'string' && o.slug.trim()) {
+        slugTitle = o.slug.trim()
+      }
+      if (!promptTitle && o.type === 'user' && o.message?.content) {
+        const txt = extractClaudeText(o.message.content)
+        if (txt && !txt.startsWith('<') && !txt.startsWith('Base directory for this skill:')) {
+          promptTitle = txt.replace(/\s+/g, ' ').trim().slice(0, 48)
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const title = (sidecar?.description || promptTitle || slugTitle || agentStem).slice(0, 64)
+  const role = sidecar?.agentType && sidecar.agentType !== title ? sidecar.agentType : undefined
+  const workspace = cwd ?? fallbackCwd
+  const activity = inferClaudeSubagentActivity(last, mtimeMs)
+  const subId = `host:claude-subagent:${parentUuid}:${agentStem}`
+  const createdAt = Math.floor(birthtimeMs || mtimeMs)
+  const updatedAt = Math.floor(mtimeMs)
+
+  const summary: SubagentSummary = {
+    id: subId,
+    title,
+    ...(role ? { role } : {}),
+    state: activity.state,
+    statusText: activity.statusText,
+    createdAt,
+    updatedAt,
+    ...(workspace ? { workspace } : {}),
+  }
+
+  const entry: HostTranscriptEntry = {
+    nativeId: agentStem,
+    filePath,
+    meta: {
+      id: subId,
+      engineId: 'claude',
+      cwd: workspace,
+      workspaces: [workspace],
+      title,
+      state: activity.state,
+      liveStatusText: activity.state === 'running' ? activity.statusText : undefined,
+      createdAt,
+      updatedAt,
+      lastSeq: 0,
+      source: 'host',
+    },
+  }
+  return { summary, entry }
+}
+
+export function resolveClaudeSubagentEntry(
+  homeDir: string,
+  sessionId: string,
+): HostTranscriptEntry | undefined {
+  const prefix = 'host:claude-subagent:'
+  if (!sessionId.startsWith(prefix)) return undefined
+  const rest = sessionId.slice(prefix.length)
+  const sepIdx = rest.lastIndexOf(':')
+  if (sepIdx <= 0 || sepIdx >= rest.length - 1) return undefined
+  const parentUuid = rest.slice(0, sepIdx)
+  const agentStem = rest.slice(sepIdx + 1)
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(parentUuid) || !/^[A-Za-z0-9._-]{1,128}$/.test(agentStem)) {
+    return undefined
+  }
+  const projectsDir = path.join(homeDir, '.claude', 'projects')
+  if (!fs.existsSync(projectsDir)) return undefined
+  let slugs: fs.Dirent[]
+  try {
+    slugs = fs.readdirSync(projectsDir, { withFileTypes: true })
+  } catch {
+    return undefined
+  }
+  for (const s of slugs) {
+    if (!s.isDirectory()) continue
+    const candidate = path.join(projectsDir, s.name, parentUuid, 'subagents', `${agentStem}.jsonl`)
+    try {
+      const st = fs.statSync(candidate)
+      if (!st.isFile()) continue
+      const fallbackCwd = decodeClaudeProjectSlug(s.name)
+      return buildClaudeSubagentSummary(
+        parentUuid,
+        agentStem,
+        candidate,
+        st.mtimeMs,
+        st.birthtimeMs,
+        fallbackCwd,
+      ).entry
+    } catch {
+      // keep checking next project slug
+    }
+  }
+  return undefined
+}
+
+export function inferClaudeSubagentActivity(
+  tailLines: string[],
+  mtimeMs: number,
+): { state: SessionMeta['state']; statusText: string } {
+  let sawError = false
+  let lastToolActivity: string | undefined
+
+  for (let i = tailLines.length - 1; i >= 0; i--) {
+    try {
+      const o = JSON.parse(tailLines[i]!) as {
+        type?: string
+        isApiErrorMessage?: boolean
+        message?: { role?: string; content?: unknown }
+      }
+      if (o.isApiErrorMessage || o.type === 'error') {
+        sawError = true
+      }
+      if (!lastToolActivity && o.message?.role === 'assistant' && Array.isArray(o.message.content)) {
+        const blocks = o.message.content as Array<Record<string, unknown>>
+        for (let b = blocks.length - 1; b >= 0; b--) {
+          const part = blocks[b]
+          if (part?.type === 'tool_use' && typeof part.name === 'string') {
+            const rawInput = part.input ? JSON.stringify(part.input) : undefined
+            lastToolActivity = describeToolActivity(part.name, rawInput)
+            break
+          }
+        }
+      }
+      if (lastToolActivity || sawError) break
+    } catch {
+      // ignore
+    }
+  }
+
+  const activelyRunning = Date.now() - mtimeMs < 90_000 && isClaudeTailActivelyRunning(tailLines)
+  if (activelyRunning) {
+    return { state: 'running', statusText: lastToolActivity ?? '思考中…' }
+  }
+  if (sawError) {
+    return { state: 'error', statusText: '执行出错' }
+  }
+  return { state: 'idle', statusText: '已完成' }
 }
 
 export function parseClaudeTranscript(

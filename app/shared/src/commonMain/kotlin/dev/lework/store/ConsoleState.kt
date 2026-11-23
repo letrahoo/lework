@@ -244,6 +244,11 @@ data class ConsoleUiState(
     val pendingDeepLinkPairing: PendingDeepLinkPairing? = null,
     val sshPairingInProgress: Boolean = false,
     val sshConfigHosts: List<String> = listSshConfigHosts(),
+    // Live SubAgents Drill-Down Inspector
+    val inspectedSubagent: SubagentSummary? = null,
+    val inspectedSubagentTranscript: SessionTranscript = SessionTranscript(),
+    val inspectedSubagentLoading: Boolean = false,
+    val inspectedSubagentError: String? = null,
 ) {
     val activeHostDisplayName: String
         get() = pairedHosts.firstOrNull { it.hubId == hub?.id }?.displayName
@@ -252,6 +257,12 @@ data class ConsoleUiState(
 
     val activeSession: SessionMeta?
         get() = sessions.firstOrNull { it.id == activeSessionId }
+
+    val activeSubagents: List<SubagentSummary>
+        get() = activeSession?.subagents.orEmpty()
+
+    val inspectedSubagentEvents: List<ChatTimelineItem>
+        get() = inspectedSubagentTranscript.items
 
     val activeTranscript: SessionTranscript
         get() = activeSessionId?.let { transcripts[it] } ?: SessionTranscript()

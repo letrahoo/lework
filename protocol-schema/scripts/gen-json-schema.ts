@@ -12,6 +12,7 @@ import {
   ProfileInfo,
   Workspace,
   SessionWorktreeInfo,
+  SubagentSummary,
   SessionMeta,
   UsageTotals,
   UsageSummaryResult,
@@ -46,6 +47,7 @@ const bundle = {
     ProfileInfo: z.toJSONSchema(ProfileInfo),
     Workspace: z.toJSONSchema(Workspace),
     SessionWorktreeInfo: z.toJSONSchema(SessionWorktreeInfo),
+    SubagentSummary: z.toJSONSchema(SubagentSummary),
     SessionMeta: z.toJSONSchema(SessionMeta),
     UsageTotals: z.toJSONSchema(UsageTotals),
     UsageSummaryResult: z.toJSONSchema(UsageSummaryResult),
@@ -352,6 +354,18 @@ data class SessionWorktreeInfo(
 )
 
 @Serializable
+data class SubagentSummary(
+    val id: String,
+    val title: String,
+    val role: String? = null,
+    val state: SessionState,
+    val statusText: String? = null,
+    val createdAt: Long? = null,
+    val updatedAt: Long,
+    val workspace: String? = null,
+)
+
+@Serializable
 data class SessionMeta(
     val id: String,
     val engineId: String,
@@ -374,6 +388,7 @@ data class SessionMeta(
     val turnStartedAt: Long? = null,
     val queuedPrompts: List<String>? = null,
     val models: List<ModelOption>? = null,
+    val subagents: List<SubagentSummary>? = null,
 )
 
 @Serializable

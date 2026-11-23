@@ -291,7 +291,7 @@ internal fun condenseTraceSteps(steps: List<ChatTimelineItem>): List<CondensedSt
     return out
 }
 
-private fun buildProcessHeadline(
+internal fun buildProcessHeadline(
     steps: List<ChatTimelineItem>,
     tools: List<Pair<ChatTimelineItem.Tool, ParsedCliTool>>,
     activeTool: Pair<ChatTimelineItem.Tool, ParsedCliTool>?,
@@ -305,6 +305,7 @@ private fun buildProcessHeadline(
                 CliToolCategory.SKILL -> append("正在加载技能 ${p.conciseLabel}")
                 CliToolCategory.BASH -> append("正在执行 · ${p.conciseLabel}")
                 CliToolCategory.EDIT -> append("正在修改 ${p.conciseLabel}")
+                CliToolCategory.TASK -> append("正在调度子任务 · ${p.conciseLabel}")
                 else -> append("正在处理 · ${p.conciseLabel}")
             }
         }
@@ -341,7 +342,7 @@ private fun buildProcessHeadline(
     val edits = tools.filter { it.second.category == CliToolCategory.EDIT }.map { it.second.microTag }.distinct()
     val bashes = tools.filter { it.second.category == CliToolCategory.BASH }.map { it.second }
     val readsCount = tools.count { it.second.category == CliToolCategory.READ || it.second.category == CliToolCategory.SEARCH }
-    val tasksCount = tools.count { it.second.category == CliToolCategory.TASK }
+    val tasks = tools.filter { it.second.category == CliToolCategory.TASK }.map { it.second }
 
     var hasPart = false
     fun sep() {
@@ -392,10 +393,19 @@ private fun buildProcessHeadline(
     }
 
     // 4. Subagent tasks or quiet file reads
-    if (tasksCount > 0) {
+    if (tasks.isNotEmpty()) {
         sep()
         withStyle(SpanStyle(color = Everforest.CommentGrey)) {
-            append("子任务×$tasksCount")
+            append(if (tasks.size == 1) "子任务" else "子任务×${tasks.size}")
+        }
+        val roles = tasks
+            .map { it.microTag }
+            .filter { it.isNotBlank() && it != "子任务" }
+            .distinct()
+        if (roles.isNotEmpty()) {
+            withStyle(SpanStyle(color = Everforest.FaintGrey)) {
+                append(" (${roles.take(2).joinToString(", ")}${if (roles.size > 2) "…" else ""})")
+            }
         }
     }
     if (readsCount > 0 && (skills.isEmpty() || edits.isEmpty())) {
@@ -950,13 +960,17 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
 
     // 6. Task / Subagent
     if (lowerTitle in setOf("task", "agent", "invoke_subagent")) {
-        val role = jsonObj?.str("description") ?: jsonObj?.str("Role") ?: jsonObj?.str("subagent_type") ?: "子任务"
+        val role = jsonObj?.str("Role")
+            ?: jsonObj?.str("description")
+            ?: jsonObj?.str("name")
+            ?: jsonObj?.str("subagent_type")
+            ?: "子任务"
         return ParsedCliTool(
             category = CliToolCategory.TASK,
             badge = "Task",
             badgeColor = Everforest.Orange,
             conciseLabel = oneLine(role, 42),
-            microTag = oneLine(role, 16),
+            microTag = oneLine(role, 22),
             description = role,
             fullCommandOrDetail = jsonObj?.str("prompt") ?: jsonObj?.str("Prompt") ?: item.input,
             outputLineCount = outLines,

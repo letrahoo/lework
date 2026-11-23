@@ -126,7 +126,7 @@ private fun MobileConsoleApp(
     // Automatically resign software keyboard before any modal bottom sheet or pairing dialog appears
     val anyOverlaySheetOpen =
         showModelSheet || showWorkspaceSheet || showFilesSheet || showUsageSheet || showDiffSheet ||
-            state.pendingDeepLinkPairing != null
+            state.pendingDeepLinkPairing != null || state.inspectedSubagent != null
     LaunchedEffect(anyOverlaySheetOpen) {
         if (anyOverlaySheetOpen) {
             dismissKeyboard()
@@ -281,6 +281,18 @@ private fun MobileConsoleApp(
                             )
                         }
                     }
+                }
+
+                val activeSubagents = topActiveSess?.subagents.orEmpty()
+                if (activeSubagents.isNotEmpty()) {
+                    SubagentStatusStrip(
+                        subagents = activeSubagents,
+                        onSelectSubagent = { sub ->
+                            dismissKeyboard()
+                            store.openSubagentInspector(sub)
+                        },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 3.dp),
+                    )
                 }
 
                 Box(
@@ -612,6 +624,18 @@ private fun MobileConsoleApp(
                     onRestoreCheckpoint = store::restoreCheckpoint,
                 )
             }
+        }
+
+        val inspectedSub = state.inspectedSubagent
+        if (inspectedSub != null) {
+            SubagentInspectorDialog(
+                subagent = inspectedSub,
+                transcript = state.inspectedSubagentTranscript,
+                loading = state.inspectedSubagentLoading,
+                error = state.inspectedSubagentError,
+                onRefresh = store::refreshInspectedSubagent,
+                onClose = store::closeSubagentInspector,
+            )
         }
     }
 

@@ -695,7 +695,257 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
     const leviSess = listed.find(s => s.id === 'host:agy:conv-levi-1')
     expect(leviSess?.cwd).toBe(fs.realpathSync(leviWs))
 
-    // 3. Subagent `conv-sub-1` is excluded from session list!
+    // 3. Subagent `conv-sub-1` is excluded from top-level session list, attached to parent `meta.subagents`,
+    //    and readable on demand via `readHostSessionEvents`!
     expect(listed.some(s => s.id === 'host:agy:conv-sub-1')).toBe(false)
+    expect(leviSess?.subagents).toHaveLength(1)
+    expect(leviSess?.subagents?.[0]).toMatchObject({
+      id: 'host:agy:conv-sub-1',
+      title: 'Subagent Auditor',
+      state: 'idle',
+      statusText: '已完成',
+      workspace: fs.realpathSync(leviWs),
+    })
+
+    const subTranscript = inspector.readHostSessionEvents('host:agy:conv-sub-1')
+    expect(subTranscript).not.toBeNull()
+    expect(subTranscript?.session.id).toBe('host:agy:conv-sub-1')
+    expect(subTranscript?.events.some(e => e.type === 'message.user' && e.text === 'Audit security')).toBe(true)
+    expect(subTranscript?.events.some(e => e.type === 'message.assistant.delta' && e.text === '已完成。')).toBe(true)
+  })
+
+  it('[T7.5] discovers live/errored/idle AGY subagents and Claude Code subagents with accurate statusText and on-demand subscribeSnapshot', async () => {
+    const home = makeFakeHome()
+    const agyRoot = path.join(home, '.gemini', 'antigravity-cli')
+    const repoWs = path.join(home, 'work', 'lework-demo')
+    fs.mkdirSync(repoWs, { recursive: true })
+    fs.mkdirSync(agyRoot, { recursive: true })
+
+    const req = createRequire(import.meta.url)
+    const { DatabaseSync } = req('node:sqlite') as any
+    const db = new DatabaseSync(path.join(agyRoot, 'conversation_summaries.db'))
+    db.exec(`
+      CREATE TABLE conversation_summaries (
+        conversation_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        workspace_uris TEXT NOT NULL DEFAULT '',
+        parent_conversation_id TEXT NOT NULL DEFAULT '',
+        nesting_depth INTEGER NOT NULL DEFAULT 0
+      );
+    `)
+    const ins = db.prepare(
+      'INSERT INTO conversation_summaries (conversation_id, title, workspace_uris, parent_conversation_id, nesting_depth) VALUES (?, ?, ?, ?, ?)',
+    )
+    ins.run('parent-agy-1', '并行研发总控', JSON.stringify([pathToFileURL(repoWs).href]), '', 0)
+    ins.run('sub-agy-run', 'Mermaid 渲染器', JSON.stringify([pathToFileURL(repoWs).href]), 'parent-agy-1', 1)
+    ins.run('sub-agy-err', '异常回退检查', JSON.stringify([pathToFileURL(repoWs).href]), 'parent-agy-1', 1)
+    ins.run('sub-agy-done', '文档校验助手', JSON.stringify([pathToFileURL(repoWs).href]), 'sub-agy-run', 2)
+    db.close()
+
+    const writeAgyTranscript = (cid: string, lines: unknown[], ageMs = 0) => {
+      const dir = path.join(agyRoot, 'brain', cid, '.system_generated', 'logs')
+      fs.mkdirSync(dir, { recursive: true })
+      const tp = path.join(dir, 'transcript.jsonl')
+      fs.writeFileSync(tp, lines.map(l => JSON.stringify(l)).join('\n') + '\n')
+      if (ageMs > 0) {
+        const t = new Date(Date.now() - ageMs)
+        fs.utimesSync(tp, t, t)
+      }
+    }
+
+    const nowIso = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+    writeAgyTranscript('parent-agy-1', [
+      { step_index: 0, type: 'USER_INPUT', created_at: nowIso, content: '<USER_REQUEST>\n并发执行子任务\n</USER_REQUEST>' },
+      {
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: nowIso,
+        tool_calls: [{ id: 'tc_sub_1', name: 'invoke_subagent', args: { Role: 'Mermaid Renderer', Prompt: 'Implement Mermaid' } }],
+        content: '',
+      },
+    ])
+    writeAgyTranscript('sub-agy-run', [
+      {
+        step_index: 0,
+        type: 'USER_INPUT',
+        created_at: nowIso,
+        content: '<SYSTEM_MESSAGE>\n[Message] sender=parent content=请实现 Mermaid 图表渲染模块\n</SYSTEM_MESSAGE>',
+      },
+      {
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: nowIso,
+        tool_calls: [{ id: 'tc_cmd_1', name: 'run_command', args: { CommandLine: 'pnpm test', toolSummary: 'Unit test run' } }],
+        content: '正在跑单测验证。',
+      },
+    ])
+    writeAgyTranscript(
+      'sub-agy-err',
+      [
+        { step_index: 0, type: 'USER_INPUT', created_at: nowIso, content: '<USER_REQUEST>\n检查失败分支\n</USER_REQUEST>' },
+        { step_index: 1, type: 'PLANNER_RESPONSE', status: 'ERROR', created_at: nowIso, content: '构建失败' },
+      ],
+      10_000,
+    )
+    writeAgyTranscript(
+      'sub-agy-done',
+      [
+        { step_index: 0, type: 'USER_INPUT', created_at: nowIso, content: '<USER_REQUEST>\n校验 README\n</USER_REQUEST>' },
+        { step_index: 1, type: 'PLANNER_RESPONSE', status: 'DONE', created_at: nowIso, content: '校验通过。' },
+      ],
+      20_000,
+    )
+
+    // Claude Code parent session + `<parentUuid>/subagents/agent-*.jsonl` + `.meta.json`
+    const claudeProjDir = path.join(home, '.claude', 'projects', '-tmp-sub-demo')
+    const claudeParentId = 'aaaa1111-2222-3333-4444-555566667777'
+    const claudeSubDir = path.join(claudeProjDir, claudeParentId, 'subagents')
+    fs.mkdirSync(claudeSubDir, { recursive: true })
+
+    fs.writeFileSync(
+      path.join(claudeProjDir, `${claudeParentId}.jsonl`),
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: repoWs,
+          timestamp: nowIso,
+          message: { role: 'user', content: '用子代理并行重构测试' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          cwd: repoWs,
+          timestamp: nowIso,
+          message: { id: 'a_parent', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: '已启动子代理。' }] },
+        }),
+      ].join('\n') + '\n',
+    )
+
+    const claudeSubFileRun = path.join(claudeSubDir, 'agent-a1b2c3.jsonl')
+    fs.writeFileSync(
+      claudeSubFileRun.replace(/\.jsonl$/, '.meta.json'),
+      JSON.stringify({ description: 'Fix Terminal Sync', agentType: 'code-worker' }),
+    )
+    fs.writeFileSync(
+      claudeSubFileRun,
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: repoWs,
+          timestamp: nowIso,
+          message: { role: 'user', content: '修复 launchd lsof 同步路径' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          cwd: repoWs,
+          timestamp: nowIso,
+          message: {
+            id: 'a_sub_1',
+            role: 'assistant',
+            stop_reason: 'tool_use',
+            content: [
+              { type: 'text', text: '正在修改 terminal-bridge.ts' },
+              { type: 'tool_use', id: 'tu_1', name: 'Edit', input: { file_path: path.join(repoWs, 'terminal-bridge.ts') } },
+            ],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+
+    const claudeSubFileDone = path.join(claudeSubDir, 'agent-d4e5f6.jsonl')
+    fs.writeFileSync(
+      claudeSubFileDone,
+      [
+        JSON.stringify({
+          type: 'user',
+          cwd: repoWs,
+          timestamp: nowIso,
+          message: { role: 'user', content: '整理架构文档' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          cwd: repoWs,
+          timestamp: nowIso,
+          message: {
+            id: 'a_sub_2',
+            role: 'assistant',
+            stop_reason: 'end_turn',
+            content: [{ type: 'text', text: '架构文档整理完毕。' }],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    const older = new Date(Date.now() - 120_000)
+    fs.utimesSync(claudeSubFileDone, older, older)
+
+    const inspector = new HostTaskInspector({ homeDir: home })
+    const sm = new SessionManager([home], [], { onEvent: () => {}, onSessionUpdated: () => {} }, undefined, inspector)
+    const discovered = sm.listSessions()
+
+    // Subagents MUST NEVER pollute top-level session list!
+    expect(discovered.map(s => s.id)).not.toContain('host:agy:sub-agy-run')
+    expect(discovered.map(s => s.id)).not.toContain('host:agy:sub-agy-err')
+    expect(discovered.map(s => s.id)).not.toContain('host:agy:sub-agy-done')
+    expect(discovered.some(s => s.id.startsWith('host:claude-subagent:'))).toBe(false)
+
+    // AGY parent carries all 3 children (including depth=2 rolled up to root) with running sorted first!
+    const agyParent = discovered.find(s => s.id === 'host:agy:parent-agy-1')
+    expect(agyParent?.subagents?.map(s => s.id)).toEqual([
+      'host:agy:sub-agy-run',
+      'host:agy:sub-agy-err',
+      'host:agy:sub-agy-done',
+    ])
+    expect(agyParent?.subagents?.[0]).toMatchObject({
+      title: 'Mermaid 渲染器',
+      state: 'running',
+      statusText: '执行 · Unit test run',
+    })
+    expect(agyParent?.subagents?.[1]).toMatchObject({
+      title: '异常回退检查',
+      state: 'error',
+      statusText: '执行出错',
+    })
+    expect(agyParent?.subagents?.[2]).toMatchObject({
+      title: '文档校验助手',
+      state: 'idle',
+      statusText: '已完成',
+    })
+
+    // On-demand `subscribeSnapshot` works for AGY subagent (including `<SYSTEM_MESSAGE>` brief extraction!)
+    const agySubSnap = sm.subscribeSnapshot('host:agy:sub-agy-run', -1, { limit: 120 })
+    expect(agySubSnap.session.state).toBe('running')
+    expect(agySubSnap.events.some(e => e.type === 'message.user' && e.text.includes('Mermaid'))).toBe(true)
+    expect(agySubSnap.events.some(e => e.type === 'tool.call' && e.kind === 'execute')).toBe(true)
+
+    // Claude parent carries both subagents with running sorted first & sidecar metadata resolved
+    const claudeParent = discovered.find(s => s.id === `host:claude:${claudeParentId}`)
+    expect(claudeParent?.subagents?.map(s => s.id)).toEqual([
+      `host:claude-subagent:${claudeParentId}:agent-a1b2c3`,
+      `host:claude-subagent:${claudeParentId}:agent-d4e5f6`,
+    ])
+    expect(claudeParent?.subagents?.[0]).toMatchObject({
+      title: 'Fix Terminal Sync',
+      role: 'code-worker',
+      state: 'running',
+      statusText: '修改 terminal-bridge.ts',
+    })
+    expect(claudeParent?.subagents?.[1]).toMatchObject({
+      title: '整理架构文档',
+      state: 'idle',
+      statusText: '已完成',
+    })
+
+    // On-demand `subscribeSnapshot` works for Claude subagent seamlessly
+    const claudeSubSnap = sm.subscribeSnapshot(
+      `host:claude-subagent:${claudeParentId}:agent-a1b2c3`,
+      -1,
+      { limit: 120 },
+    )
+    expect(claudeSubSnap.session.state).toBe('running')
+    expect(claudeSubSnap.events.some(e => e.type === 'message.user' && e.text === '修复 launchd lsof 同步路径')).toBe(true)
+    expect(claudeSubSnap.events.some(e => e.type === 'tool.call' && e.kind === 'edit')).toBe(true)
+
+    await sm.closeAll()
   })
 })
