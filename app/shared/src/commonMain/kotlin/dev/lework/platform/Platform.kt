@@ -1,5 +1,6 @@
 package dev.lework.platform
 
+import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.Serializable
 
@@ -47,10 +48,17 @@ data class PairedHost(
     val lastConnectedAt: Long = 0L,
 )
 
+enum class ImagePickSource {
+    LIBRARY,
+    CAMERA,
+}
+
+@Serializable
 data class PickedImagePayload(
     val fileName: String,
     val mimeType: String,
     val dataBase64: String,
+    val thumbnailBase64: String? = null,
 )
 
 expect fun platformName(): String
@@ -101,8 +109,15 @@ expect fun saveActiveHostId(hubId: String?)
 expect fun loadHostAccessToken(hubId: String): String?
 expect fun saveHostAccessToken(hubId: String, token: String?)
 
-// Native image picker & iOS provisioning profile expiration inspector
+// Native image picker, camera capture, bitmap decoding & iOS provisioning profile expiration inspector
 expect fun canPickImages(): Boolean
+expect fun canCaptureCameraImage(): Boolean
 expect fun requestImagePick(onResult: (PickedImagePayload?) -> Unit)
+expect fun requestMultiImagePick(
+    source: ImagePickSource = ImagePickSource.LIBRARY,
+    maxCount: Int = 4,
+    onResult: (List<PickedImagePayload>) -> Unit,
+)
+expect fun decodeImageBytes(bytes: ByteArray): ImageBitmap?
 expect fun signingExpiryRemainingHours(): Int?
 expect fun dismissNativeKeyboard()

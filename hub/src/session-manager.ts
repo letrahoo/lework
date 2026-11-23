@@ -1,6 +1,4 @@
 import crypto from 'node:crypto'
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import {
   ErrorCode,
@@ -15,9 +13,16 @@ import {
   type SessionMode,
 } from '@lework/protocol'
 import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/types.ts'
-import { defaultDataDir, SleepInhibitor } from './platform/index.ts'
+import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
+import {
+  buildTerminalImagePrompt,
+  linkSessionAttachmentAlias,
+  removeSessionAttachments,
+  stagePromptImagesForSession,
+  sweepExpiredArchivedAttachments,
+} from './storage/attachment-store.ts'
 import { HostTaskInspector, TerminalApprovalError } from './storage/host-history.ts'
 import { SessionMetadataStore } from './storage/session-metadata.ts'
 import { CheckpointManager } from './storage/workspace-fs.ts'
@@ -54,6 +59,7 @@ export class SessionManager {
   private readonly checkpoints = new CheckpointManager()
   private readonly metaStore = new SessionMetadataStore()
   private readonly hostInspector: HostTaskInspector
+  private archivedAttachmentSweepTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
     private readonly workspaceRoots: string[],
@@ -276,7 +282,9 @@ export class SessionManager {
           const clean = nativeId.trim()
           if (clean) {
             managed.nativeId = clean
-            this.metaStore.linkAlias(sessionId, `host:${adapter.id}:${clean}`)
+            const aliasId = `host:${adapter.id}:${clean}`
+            this.metaStore.linkAlias(sessionId, aliasId)
+            linkSessionAttachmentAlias(sessionId, aliasId)
           }
         },
       })
@@ -310,7 +318,7 @@ export class SessionManager {
     }
 
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`
-    const stagedImages = this.stagePromptImages(sessionId, turnId, rawImages)
+    const stagedImages = stagePromptImagesForSession(sessionId, turnId, rawImages)
     const displayUserText = text.trim() || `（已发送 ${stagedImages.length} 张图片）`
 
     let managed = this.sessions.get(sessionId)
@@ -328,11 +336,7 @@ export class SessionManager {
       if (hostLoaded && hostEntry) {
         // First: if this `host:*` conversation is actively open in a reachable local `tmux` / `iTerm2`
         // terminal, deliver the prompt directly into that live terminal so computer & phone stay in sync!
-        const imgPrefix =
-          stagedImages.length > 0
-            ? `[用户附加了本地图片文件，请使用读取文件工具查看：${stagedImages.map(i => i.stagedPath).join(', ')}]\n\n`
-            : ''
-        const terminalPromptText = `${imgPrefix}${text.trim() || '请结合所附图片进行分析。'}`
+        const terminalPromptText = buildTerminalImagePrompt(stagedImages, text)
         let deliveredToTerminal = false
         try {
           deliveredToTerminal = await this.hostInspector.tryPromptLiveHostSession(
@@ -452,11 +456,16 @@ export class SessionManager {
     const { turnId, rawText, displayUserText, stagedImages } = item
     const sessionId = managed.meta.id
 
+    const previews = stagedImages
+      .map(i => i.previewBase64)
+      .filter((v): v is string => Boolean(v && v.length > 0))
+
     this.appendEvent(managed, {
       type: 'message.user',
       messageId: `u_${turnId}`,
       text: displayUserText,
       ...(stagedImages.length > 0 ? { imageCount: stagedImages.length } : {}),
+      ...(previews.length > 0 ? { imagePreviews: previews } : {}),
     })
     if (managed.meta.lastSeq <= 2 && managed.autoTitle.includes(' · ')) {
       managed.autoTitle =
@@ -523,43 +532,12 @@ export class SessionManager {
     return undefined
   }
 
-  private attachmentStageDir(sessionId: string): string {
-    const safeSid = sessionId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
-    return path.join(defaultDataDir(), 'attachments', safeSid)
-  }
-
-  private stagePromptImages(
-    sessionId: string,
-    turnId: string,
-    images: PromptImageAttachment[],
-  ): StagedPromptImage[] {
-    if (images.length === 0) return []
-    const rootAttachments = path.join(defaultDataDir(), 'attachments')
-    fs.mkdirSync(rootAttachments, { recursive: true, mode: 0o700 })
-    try {
-      fs.chmodSync(rootAttachments, 0o700)
-    } catch {
-      // best effort
-    }
-    const stageDir = this.attachmentStageDir(sessionId)
-    fs.mkdirSync(stageDir, { recursive: true, mode: 0o700 })
-    const out: StagedPromptImage[] = []
-    for (let i = 0; i < images.length; i++) {
-      const img = images[i]!
-      const ext =
-        img.mimeType === 'image/png'
-          ? 'png'
-          : img.mimeType === 'image/webp'
-            ? 'webp'
-            : img.mimeType === 'image/gif'
-              ? 'gif'
-              : 'jpg'
-      const filePath = path.join(stageDir, `${turnId}_${i + 1}.${ext}`)
-      const bytes = Buffer.from(img.dataBase64, 'base64')
-      fs.writeFileSync(filePath, bytes, { mode: 0o600 })
-      out.push({ ...img, stagedPath: filePath })
-    }
-    return out
+  /**
+   * Sweeps attachment files ONLY for archived sessions (`archived === true`) whose archive age
+   * exceeds 7 days (default). Active conversations are NEVER cleaned!
+   */
+  sweepArchivedAttachments(now = Date.now(), retentionMs?: number): number {
+    return sweepExpiredArchivedAttachments(this.metaStore, retentionMs, now)
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -681,6 +659,7 @@ export class SessionManager {
       nativeId: hostEntry?.nativeId ?? managed?.nativeId,
       baseMeta,
     })
+    this.sweepArchivedAttachments()
 
     if (managed) {
       managed.meta = this.decorateManagedMeta(managed)
@@ -702,11 +681,11 @@ export class SessionManager {
     managed.meta.updatedAt = Date.now()
     this.callbacks.onSessionUpdated(managed.meta)
     this.sessions.delete(sessionId)
-    try {
-      fs.rmSync(this.attachmentStageDir(sessionId), { recursive: true, force: true })
-    } catch {
-      // ignore cleanup error
-    }
+    const aliasId =
+      managed.nativeId && !sessionId.startsWith('host:')
+        ? `host:${managed.meta.engineId}:${managed.nativeId}`
+        : undefined
+    removeSessionAttachments(sessionId, aliasId)
   }
 
   private resolveSessionWorkspaceCwd(sessionId: string): string {
@@ -803,14 +782,28 @@ export class SessionManager {
 
   startGlobalHostMonitor(): void {
     this.hostInspector.startGlobalMonitor()
+    this.sweepArchivedAttachments()
+    if (!this.archivedAttachmentSweepTimer) {
+      this.archivedAttachmentSweepTimer = setInterval(
+        () => {
+          this.sweepArchivedAttachments()
+        },
+        6 * 60 * 60 * 1_000,
+      )
+      this.archivedAttachmentSweepTimer.unref?.()
+    }
   }
 
   stopGlobalHostMonitor(): void {
     this.hostInspector.stopAllWatches()
+    if (this.archivedAttachmentSweepTimer) {
+      clearInterval(this.archivedAttachmentSweepTimer)
+      this.archivedAttachmentSweepTimer = null
+    }
   }
 
   async closeAll(): Promise<void> {
-    this.hostInspector.stopAllWatches()
+    this.stopGlobalHostMonitor()
     this.sleepInhibitor.dispose()
     const all = [...this.sessions.values()]
     this.sessions.clear()

@@ -1842,26 +1842,42 @@ class ConsoleStore(
         _state.update { it.copy(mentionQuery = null, workspaceFileSuggestions = emptyList()) }
     }
 
-    fun pickAndAttachImage() {
+    fun pickAndAttachImage(source: ImagePickSource = ImagePickSource.LIBRARY) {
         if (!canPickImages()) return
-        if (_state.value.composerAttachedImages.size >= 4) return
-        requestImagePick { picked ->
-            if (picked != null && picked.dataBase64.isNotBlank()) {
-                attachImage(
+        val remaining = 4 - _state.value.composerAttachedImages.size
+        if (remaining <= 0) return
+        val limit = if (source == ImagePickSource.CAMERA) 1 else remaining.coerceIn(1, 4)
+        requestMultiImagePick(source = source, maxCount = limit) { pickedList ->
+            val valid = pickedList
+                .filter { it.dataBase64.isNotBlank() }
+                .map { picked ->
                     PromptImageAttachment(
                         mimeType = picked.mimeType,
                         dataBase64 = picked.dataBase64,
+                        thumbnailBase64 = picked.thumbnailBase64?.takeIf { it.isNotBlank() },
                         fileName = picked.fileName.take(120),
-                    ),
-                )
+                    )
+                }
+            if (valid.isNotEmpty()) {
+                attachImages(valid)
             }
         }
     }
 
+    fun captureAndAttachImage() {
+        pickAndAttachImage(source = ImagePickSource.CAMERA)
+    }
+
     fun attachImage(attachment: PromptImageAttachment) {
+        attachImages(listOf(attachment))
+    }
+
+    fun attachImages(attachments: List<PromptImageAttachment>) {
+        if (attachments.isEmpty()) return
         _state.update { s ->
-            if (s.composerAttachedImages.size >= 4) s
-            else s.copy(composerAttachedImages = s.composerAttachedImages + attachment)
+            val slots = (4 - s.composerAttachedImages.size).coerceAtLeast(0)
+            if (slots == 0) s
+            else s.copy(composerAttachedImages = s.composerAttachedImages + attachments.take(slots))
         }
     }
 

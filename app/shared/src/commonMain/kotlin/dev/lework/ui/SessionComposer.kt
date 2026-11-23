@@ -1,6 +1,8 @@
 package dev.lework.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -19,6 +21,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -26,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lework.platform.canCaptureCameraImage
 import dev.lework.platform.canPickImages
 import dev.lework.protocol.*
 import dev.lework.store.*
@@ -42,6 +46,7 @@ internal fun ClaudeStyleComposer(
     onSend: () -> Unit,
     onCancel: () -> Unit,
     onPickImage: () -> Unit = {},
+    onCaptureCamera: () -> Unit = {},
     onRemoveImage: (Int) -> Unit = {},
     onSelectMentionFile: (String) -> Unit = {},
     onDismissMention: () -> Unit = {},
@@ -51,6 +56,9 @@ internal fun ClaudeStyleComposer(
         (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
     val queuedCount = activeSess?.queuedPrompts?.size ?: 0
     val imageSupported = remember { canPickImages() } && (state.selectedEngine?.capabilities?.images != false)
+    val cameraSupported = remember { canCaptureCameraImage() }
+    var showImageSourceMenu by remember { mutableStateOf(false) }
+    var lightboxIndex by remember { mutableStateOf<Int?>(null) }
 
     Column(
         modifier = Modifier
@@ -151,42 +159,76 @@ internal fun ClaudeStyleComposer(
                         modifier = Modifier
                             .fillMaxWidth()
                             .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         state.composerAttachedImages.forEachIndexed { idx, img ->
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = Everforest.Bg2,
-                                border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.35f)),
+                            val bmp = rememberBase64ImageBitmap(img.thumbnailBase64 ?: img.dataBase64)
+                            Box(
+                                modifier = Modifier
+                                    .size(62.dp)
+                                    .testTag("composer_thumb_$idx"),
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Everforest.Bg2,
+                                    border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.45f)),
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { lightboxIndex = idx },
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Image,
-                                        contentDescription = null,
-                                        tint = Everforest.Green,
-                                        modifier = Modifier.size(13.dp),
-                                    )
-                                    Text(
-                                        text = img.fileName?.ifBlank { null } ?: "图片 ${idx + 1}",
-                                        fontSize = 11.5.sp,
-                                        color = Everforest.Fg,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.widthIn(max = 120.dp),
-                                    )
-                                    Icon(
-                                        imageVector = Icons.Rounded.Close,
-                                        contentDescription = "移除图片",
-                                        tint = Everforest.Grey1,
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .clickable { onRemoveImage(idx) },
-                                    )
+                                    if (bmp != null) {
+                                        Image(
+                                            bitmap = bmp,
+                                            contentDescription = img.fileName ?: "图片 ${idx + 1}",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                    } else {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(4.dp),
+                                            verticalArrangement = Arrangement.Center,
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Image,
+                                                contentDescription = null,
+                                                tint = Everforest.Green,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                            Text(
+                                                text = img.fileName?.ifBlank { null } ?: "图${idx + 1}",
+                                                fontSize = 9.5.sp,
+                                                color = Everforest.Grey2,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                }
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Everforest.BgDim.copy(alpha = 0.88f),
+                                    border = BorderStroke(0.8.dp, Everforest.Bg3),
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(3.dp)
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .clickable { onRemoveImage(idx) }
+                                        .testTag("composer_remove_img_$idx"),
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Close,
+                                            contentDescription = "移除图片",
+                                            tint = Everforest.Fg,
+                                            modifier = Modifier.size(11.dp),
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -235,13 +277,74 @@ internal fun ClaudeStyleComposer(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (imageSupported) {
-                            ComposerMetaChip(
-                                icon = Icons.Rounded.AddPhotoAlternate,
-                                label = "添加图片",
-                                tint = Everforest.Green,
-                                labelColor = Everforest.Fg,
-                                onClick = onPickImage,
-                            )
+                            val remainingSlots = (4 - state.composerAttachedImages.size).coerceAtLeast(0)
+                            Box {
+                                ComposerMetaChip(
+                                    icon = Icons.Rounded.AddPhotoAlternate,
+                                    label = if (state.composerAttachedImages.isEmpty()) {
+                                        "添加图片"
+                                    } else {
+                                        "图片 ${state.composerAttachedImages.size}/4"
+                                    },
+                                    tint = if (remainingSlots > 0) Everforest.Green else Everforest.CommentGrey,
+                                    labelColor = if (remainingSlots > 0) Everforest.Fg else Everforest.CommentGrey,
+                                    testTag = "composer_add_image_btn",
+                                    onClick = {
+                                        if (remainingSlots <= 0) return@ComposerMetaChip
+                                        if (cameraSupported) {
+                                            showImageSourceMenu = true
+                                        } else {
+                                            onPickImage()
+                                        }
+                                    },
+                                )
+                                DropdownMenu(
+                                    expanded = showImageSourceMenu,
+                                    onDismissRequest = { showImageSourceMenu = false },
+                                    modifier = Modifier.background(Everforest.Bg1),
+                                ) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text("直接拍照识别", color = Everforest.Fg, fontSize = 13.5.sp)
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Rounded.PhotoCamera,
+                                                contentDescription = null,
+                                                tint = Everforest.Aqua,
+                                                modifier = Modifier.size(17.dp),
+                                            )
+                                        },
+                                        onClick = {
+                                            showImageSourceMenu = false
+                                            onCaptureCamera()
+                                        },
+                                        modifier = Modifier.testTag("composer_pick_camera"),
+                                    )
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "从相册选择（最多 $remainingSlots 张）",
+                                                color = Everforest.Fg,
+                                                fontSize = 13.5.sp,
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Rounded.PhotoLibrary,
+                                                contentDescription = null,
+                                                tint = Everforest.Green,
+                                                modifier = Modifier.size(17.dp),
+                                            )
+                                        },
+                                        onClick = {
+                                            showImageSourceMenu = false
+                                            onPickImage()
+                                        },
+                                        modifier = Modifier.testTag("composer_pick_library"),
+                                    )
+                                }
+                            }
                         }
                         ComposerMetaChip(
                             icon = Icons.Rounded.AlternateEmail,
@@ -337,6 +440,13 @@ internal fun ClaudeStyleComposer(
                 }
             }
         }
+        if (lightboxIndex != null && state.composerAttachedImages.isNotEmpty()) {
+            ImageLightboxDialog(
+                imagesBase64 = state.composerAttachedImages.map { it.dataBase64 },
+                initialIndex = lightboxIndex ?: 0,
+                onDismiss = { lightboxIndex = null },
+            )
+        }
     }
 }
 
@@ -346,12 +456,14 @@ private fun ComposerMetaChip(
     label: String,
     tint: Color,
     labelColor: Color = Everforest.Fg,
+    testTag: String? = null,
     onClick: () -> Unit,
 ) {
     Surface(
         shape = RoundedCornerShape(999.dp),
         color = Everforest.Bg2,
         modifier = Modifier
+            .let { mod -> if (testTag != null) mod.testTag(testTag) else mod }
             .clip(RoundedCornerShape(999.dp))
             .clickable { onClick() },
     ) {

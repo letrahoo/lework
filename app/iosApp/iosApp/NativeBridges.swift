@@ -9,6 +9,8 @@ import UIKit
 final class NativeBridgeCoordinator: NSObject, ObservableObject, IosNativeDelegate {
     @Published var isShowingScanner: Bool = false
     @Published var isShowingPhotoPicker: Bool = false
+    @Published var isShowingCameraCapture: Bool = false
+    @Published var photoSelectionLimit: Int = 4
     private var activeQrReqId: Int64?
     private var activeImageReqId: Int64?
     private let tsnetQueue = DispatchQueue(label: "dev.lework.tsnet", qos: .userInitiated)
@@ -136,36 +138,141 @@ final class NativeBridgeCoordinator: NSObject, ObservableObject, IosNativeDelega
         }
     }
 
-    func presentImagePicker(reqId: Int64) {
+    func presentImagePicker(reqId: Int64, useCamera: Bool, maxCount: Int32) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if let prev = self.activeImageReqId {
-                IosNativeBridge.shared.completeImagePick(reqId: prev, fileName: nil, mimeType: nil, dataBase64: nil)
+                IosNativeBridge.shared.completeMultiImagePick(reqId: prev, payloadsJson: nil)
             }
             self.activeImageReqId = reqId
-            self.isShowingPhotoPicker = true
+            let clamped = max(1, min(4, Int(maxCount)))
+            self.photoSelectionLimit = clamped
+
+            if useCamera && UIImagePickerController.isSourceTypeAvailable(.camera) {
+                let auth = AVCaptureDevice.authorizationStatus(for: .video)
+                switch auth {
+                case .authorized:
+                    self.isShowingCameraCapture = true
+                case .notDetermined:
+                    AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                        DispatchQueue.main.async {
+                            guard let self else { return }
+                            if granted {
+                                self.isShowingCameraCapture = true
+                            } else {
+                                self.finishMultiImagePick(nil)
+                            }
+                        }
+                    }
+                default:
+                    self.finishMultiImagePick(nil)
+                }
+            } else {
+                self.isShowingPhotoPicker = true
+            }
         }
     }
 
-    func finishImagePick(fileName: String?, mimeType: String?, dataBase64: String?) {
+    func finishMultiImagePick(_ payloadsJson: String?) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.isShowingPhotoPicker = false
+            self.isShowingCameraCapture = false
             if let reqId = self.activeImageReqId {
                 self.activeImageReqId = nil
-                IosNativeBridge.shared.completeImagePick(
-                    reqId: reqId,
-                    fileName: fileName,
-                    mimeType: mimeType,
-                    dataBase64: dataBase64
-                )
+                IosNativeBridge.shared.completeMultiImagePick(reqId: reqId, payloadsJson: payloadsJson)
             }
         }
     }
 }
 
+private enum IosImageEncoder {
+    struct EncodedItem: Codable {
+        let fileName: String
+        let mimeType: String
+        let dataBase64: String
+        let thumbnailBase64: String?
+    }
+
+    static func encodeBatchToJson(_ items: [(UIImage, String)]) -> String? {
+        var encoded: [EncodedItem] = []
+        for (idx, pair) in items.enumerated() {
+            if let item = encodeSingle(image: pair.0, rawName: pair.1, index: idx + 1) {
+                encoded.append(item)
+            }
+        }
+        guard !encoded.isEmpty,
+              let data = try? JSONEncoder().encode(encoded),
+              let json = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+        return json
+    }
+
+    static func encodeSingle(image: UIImage, rawName: String, index: Int) -> EncodedItem? {
+        let normalized = normalizeAndScale(image: image, maxDimension: 1280)
+        var mainB64 = ""
+        let attempts: [(CGFloat, CGFloat)] = [
+            (1280, 0.78),
+            (1280, 0.62),
+            (1024, 0.52),
+            (800, 0.44),
+        ]
+        for (dim, quality) in attempts {
+            let candidate = dim < 1280 ? normalizeAndScale(image: normalized, maxDimension: dim) : normalized
+            if let jpeg = candidate.jpegData(compressionQuality: quality) {
+                let b64 = jpeg.base64EncodedString()
+                mainB64 = b64
+                if b64.count <= 900_000 {
+                    break
+                }
+            }
+        }
+        guard !mainB64.isEmpty, mainB64.count <= 980_000 else { return nil }
+
+        let thumbImg = normalizeAndScale(image: normalized, maxDimension: 520)
+        let thumbB64 = thumbImg.jpegData(compressionQuality: 0.68)?.base64EncodedString()
+        let cleanThumb = (thumbB64 != nil && thumbB64!.count <= 240_000) ? thumbB64 : nil
+
+        let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? "photo_\(index)" : trimmed
+        let finalName = base.lowercased().hasSuffix(".jpg") || base.lowercased().hasSuffix(".jpeg")
+            ? base
+            : "\(base).jpg"
+
+        return EncodedItem(
+            fileName: String(finalName.prefix(100)),
+            mimeType: "image/jpeg",
+            dataBase64: mainB64,
+            thumbnailBase64: cleanThumb
+        )
+    }
+
+    private static func normalizeAndScale(image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let size = image.size
+        let longest = max(size.width, size.height)
+        guard longest > 0 else { return image }
+        let ratio = longest > maxDimension ? (maxDimension / longest) : 1.0
+        if ratio == 1.0 && image.imageOrientation == .up {
+            return image
+        }
+        let newSize = CGSize(
+            width: max(1, floor(size.width * ratio)),
+            height: max(1, floor(size.height * ratio))
+        )
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1.0
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+    }
+}
+
 struct PhotoPickerSheet: UIViewControllerRepresentable {
-    let onComplete: (String?, String?, String?) -> Void
+    let selectionLimit: Int
+    let onComplete: (String?) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onComplete: onComplete)
@@ -174,7 +281,10 @@ struct PhotoPickerSheet: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration()
         config.filter = .images
-        config.selectionLimit = 1
+        config.selectionLimit = max(1, min(4, selectionLimit))
+        if #available(iOS 15.0, *) {
+            config.selection = .ordered
+        }
         let picker = PHPickerViewController(configuration: config)
         picker.delegate = context.coordinator
         return picker
@@ -183,47 +293,97 @@ struct PhotoPickerSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
 
     final class Coordinator: NSObject, PHPickerViewControllerDelegate {
-        let onComplete: (String?, String?, String?) -> Void
+        let onComplete: (String?) -> Void
+        private var didFinish = false
 
-        init(onComplete: @escaping (String?, String?, String?) -> Void) {
+        init(onComplete: @escaping (String?) -> Void) {
             self.onComplete = onComplete
         }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            guard let first = results.first,
-                  first.itemProvider.canLoadObject(ofClass: UIImage.self)
-            else {
-                onComplete(nil, nil, nil)
+            guard !didFinish else { return }
+            didFinish = true
+            let valid = results.filter { $0.itemProvider.canLoadObject(ofClass: UIImage.self) }
+            guard !valid.isEmpty else {
+                onComplete(nil)
                 return
             }
-            let suggested = first.itemProvider.suggestedName ?? "photo"
-            first.itemProvider.loadObject(ofClass: UIImage.self) { [onComplete] obj, _ in
-                guard let uiImage = obj as? UIImage else {
-                    DispatchQueue.main.async { onComplete(nil, nil, nil) }
-                    return
+
+            let group = DispatchGroup()
+            let lock = NSLock()
+            var loadedByIdx: [Int: (UIImage, String)] = [:]
+
+            for (idx, item) in valid.prefix(4).enumerated() {
+                let suggested = item.itemProvider.suggestedName ?? "photo_\(idx + 1)"
+                group.enter()
+                item.itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
+                    if let img = obj as? UIImage {
+                        lock.lock()
+                        loadedByIdx[idx] = (img, suggested)
+                        lock.unlock()
+                    }
+                    group.leave()
                 }
-                let scaled = Self.downscale(image: uiImage, maxDimension: 1280)
-                guard let jpegData = scaled.jpegData(compressionQuality: 0.78) else {
-                    DispatchQueue.main.async { onComplete(nil, nil, nil) }
-                    return
-                }
-                let b64 = jpegData.base64EncodedString()
+            }
+
+            group.notify(queue: DispatchQueue.global(qos: .userInitiated)) { [onComplete] in
+                let ordered = (0..<valid.count).compactMap { loadedByIdx[$0] }
+                let json = IosImageEncoder.encodeBatchToJson(ordered)
                 DispatchQueue.main.async {
-                    onComplete("\(suggested).jpg", "image/jpeg", b64)
+                    onComplete(json)
                 }
             }
         }
+    }
+}
 
-        private static func downscale(image: UIImage, maxDimension: CGFloat) -> UIImage {
-            let size = image.size
-            let longest = max(size.width, size.height)
-            guard longest > maxDimension, longest > 0 else { return image }
-            let ratio = maxDimension / longest
-            let newSize = CGSize(width: floor(size.width * ratio), height: floor(size.height * ratio))
-            let format = UIGraphicsImageRendererFormat.default()
-            format.scale = 1.0
-            return UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
-                image.draw(in: CGRect(origin: .zero, size: newSize))
+struct CameraPhotoCaptureSheet: UIViewControllerRepresentable {
+    let onComplete: (String?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete)
+    }
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.cameraCaptureMode = .photo
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let onComplete: (String?) -> Void
+        private var didFinish = false
+
+        init(onComplete: @escaping (String?) -> Void) {
+            self.onComplete = onComplete
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            guard !didFinish else { return }
+            didFinish = true
+            onComplete(nil)
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            guard !didFinish else { return }
+            didFinish = true
+            guard let uiImage = (info[.editedImage] ?? info[.originalImage]) as? UIImage else {
+                onComplete(nil)
+                return
+            }
+            let ts = Int(Date().timeIntervalSince1970)
+            DispatchQueue.global(qos: .userInitiated).async { [onComplete] in
+                let json = IosImageEncoder.encodeBatchToJson([(uiImage, "camera_\(ts)")])
+                DispatchQueue.main.async {
+                    onComplete(json)
+                }
             }
         }
     }

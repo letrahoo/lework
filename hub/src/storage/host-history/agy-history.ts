@@ -13,6 +13,7 @@ import {
   type HostTranscriptEntry,
   type ParsedHostTranscript,
 } from './common.ts'
+import { parseStagedImagePromptHeader } from '../attachment-store.ts'
 import { parseAgyModelString, readAgyLocalSettings } from './engine-settings.ts'
 
 export function extractLatestAgyModelSelection(rawContent: string): string | undefined {
@@ -79,7 +80,8 @@ export function scanAgySessions(
             if (!firstPromptTitle) {
               const reqs = extractAgyUserRequests(o.content)
               if (reqs.length > 0) {
-                firstPromptTitle = reqs[0]!.replace(/\s+/g, ' ').trim().slice(0, 48)
+                const cleaned = parseStagedImagePromptHeader(reqs[0]!, false).cleanText
+                firstPromptTitle = cleaned.replace(/\s+/g, ' ').trim().slice(0, 48)
               }
             }
           }
@@ -200,13 +202,16 @@ export function parseAgyTranscript(
           reqs.forEach((txt, idx) => {
             recentUserTexts.push(txt)
             if (recentUserTexts.length > 16) recentUserTexts.shift()
+            const imgInfo = parseStagedImagePromptHeader(txt, true)
             events.push({
               seq: seq++,
               sessionId,
               ts,
               type: 'message.user',
               messageId: idx === 0 ? `u_${o.step_index ?? seq}` : `u_${o.step_index ?? seq}_${idx}`,
-              text: txt,
+              text: imgInfo.cleanText,
+              ...(imgInfo.imageCount > 0 ? { imageCount: imgInfo.imageCount } : {}),
+              ...(imgInfo.imagePreviews ? { imagePreviews: imgInfo.imagePreviews } : {}),
             })
           })
         } else if (!o.content.trim().startsWith('<SYSTEM_MESSAGE>') && !o.content.trim().startsWith('<CONTEXT_SUMMARY>')) {

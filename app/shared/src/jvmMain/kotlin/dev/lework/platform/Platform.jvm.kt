@@ -1,8 +1,11 @@
 package dev.lework.platform
 
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.jetbrains.skia.Image as SkiaImage
 
 /**
  * Controllable JVM host platform hooks used by headless unit & Compose UI stress tests.
@@ -41,7 +44,10 @@ object JvmPlatformTestHooks {
     var activeHostId: String? = null
     val hostTokens = mutableMapOf<String, String>()
     var imagePickSupported: Boolean = true
+    var cameraCaptureSupported: Boolean = true
     var nextPickedImage: PickedImagePayload? = null
+    var nextPickedImages: List<PickedImagePayload> = emptyList()
+    var lastImagePickSource: ImagePickSource? = null
     var signingExpiryHours: Int? = null
     var keyboardDismissCount: Int = 0
 
@@ -86,7 +92,10 @@ object JvmPlatformTestHooks {
         activeHostId = null
         hostTokens.clear()
         imagePickSupported = true
+        cameraCaptureSupported = true
         nextPickedImage = null
+        nextPickedImages = emptyList()
+        lastImagePickSource = null
         signingExpiryHours = null
         keyboardDismissCount = 0
     }
@@ -220,9 +229,29 @@ actual fun saveHostAccessToken(hubId: String, token: String?) {
 
 actual fun canPickImages(): Boolean = JvmPlatformTestHooks.imagePickSupported
 
+actual fun canCaptureCameraImage(): Boolean = JvmPlatformTestHooks.cameraCaptureSupported
+
 actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
-    onResult(JvmPlatformTestHooks.nextPickedImage)
+    JvmPlatformTestHooks.lastImagePickSource = ImagePickSource.LIBRARY
+    onResult(JvmPlatformTestHooks.nextPickedImage ?: JvmPlatformTestHooks.nextPickedImages.firstOrNull())
 }
+
+actual fun requestMultiImagePick(
+    source: ImagePickSource,
+    maxCount: Int,
+    onResult: (List<PickedImagePayload>) -> Unit,
+) {
+    JvmPlatformTestHooks.lastImagePickSource = source
+    val items = if (JvmPlatformTestHooks.nextPickedImages.isNotEmpty()) {
+        JvmPlatformTestHooks.nextPickedImages
+    } else {
+        listOfNotNull(JvmPlatformTestHooks.nextPickedImage)
+    }
+    onResult(items.take(maxCount.coerceIn(1, 4)))
+}
+
+actual fun decodeImageBytes(bytes: ByteArray): ImageBitmap? =
+    runCatching { SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
 
 actual fun signingExpiryRemainingHours(): Int? = JvmPlatformTestHooks.signingExpiryHours
 

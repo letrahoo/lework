@@ -1,6 +1,7 @@
 package dev.lework.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +30,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -498,6 +500,11 @@ private fun PlanCard(entries: List<PlanEntry>) {
 private fun MessageTimelineRow(item: ChatTimelineItem) {
     when (item) {
         is ChatTimelineItem.User -> {
+            var lightboxIdx by remember(item.id) { mutableStateOf<Int?>(null) }
+            val hasPreviews = item.imagePreviews.isNotEmpty()
+            val isAutoPlaceholderOnly =
+                hasPreviews && Regex("^（已发送\\s*\\d+\\s*张图片）$").matches(item.text.trim())
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
@@ -508,12 +515,56 @@ private fun MessageTimelineRow(item: ChatTimelineItem) {
                     border = BorderStroke(1.dp, Everforest.Bg3),
                     modifier = Modifier.widthIn(max = 316.dp),
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                        if (item.imageCount > 0) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (hasPreviews) {
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                item.imagePreviews.forEachIndexed { idx, b64 ->
+                                    val bmp = rememberBase64ImageBitmap(b64)
+                                    val thumbModifier = if (item.imagePreviews.size == 1) {
+                                        Modifier.size(width = 172.dp, height = 124.dp)
+                                    } else {
+                                        Modifier.size(82.dp)
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = Everforest.Bg1,
+                                        border = BorderStroke(1.dp, Everforest.Bg3),
+                                        modifier = thumbModifier
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable { lightboxIdx = idx }
+                                            .testTag("user_bubble_img_${item.id}_$idx"),
+                                    ) {
+                                        if (bmp != null) {
+                                            Image(
+                                                bitmap = bmp,
+                                                contentDescription = "用户发送图片 ${idx + 1}",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize(),
+                                            )
+                                        } else {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Image,
+                                                    contentDescription = null,
+                                                    tint = Everforest.Green,
+                                                    modifier = Modifier.size(22.dp),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (item.imageCount > 0) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.padding(bottom = 4.dp),
                             ) {
                                 Icon(
                                     imageVector = Icons.Rounded.Image,
@@ -528,16 +579,27 @@ private fun MessageTimelineRow(item: ChatTimelineItem) {
                                 )
                             }
                         }
-                        SelectionContainer {
-                            Text(
-                                text = item.text,
-                                fontSize = 15.sp,
-                                lineHeight = 22.sp,
-                                color = Everforest.Fg,
-                            )
+
+                        if (!isAutoPlaceholderOnly && item.text.isNotBlank()) {
+                            SelectionContainer {
+                                Text(
+                                    text = item.text,
+                                    fontSize = 15.sp,
+                                    lineHeight = 22.sp,
+                                    color = Everforest.Fg,
+                                )
+                            }
                         }
                     }
                 }
+            }
+
+            if (lightboxIdx != null && hasPreviews) {
+                ImageLightboxDialog(
+                    imagesBase64 = item.imagePreviews,
+                    initialIndex = lightboxIdx ?: 0,
+                    onDismiss = { lightboxIdx = null },
+                )
             }
         }
         is ChatTimelineItem.Reasoning -> {

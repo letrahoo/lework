@@ -13,6 +13,7 @@ export type EmitAgentEvent = (body: AgentEventBody) => void
 
 export interface StagedPromptImage extends PromptImageAttachment {
   stagedPath: string
+  previewBase64?: string
 }
 
 export interface EngineSessionInit {

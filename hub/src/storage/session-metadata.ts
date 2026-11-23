@@ -205,6 +205,23 @@ export class SessionMetadataStore {
     }
     return out
   }
+
+  /**
+   * Returns all session IDs that are currently archived (`archived === true`) AND whose
+   * `archivedAt` timestamp is at or before `cutoffMs`. Active (`!archived`) sessions are NEVER returned.
+   */
+  expiredArchivedSessionIds(cutoffMs: number): string[] {
+    this.ensureLoaded()
+    const out: string[] = []
+    for (const [sessionId, record] of this.records.entries()) {
+      if (record.archived !== true) continue
+      const archivedTs = record.archivedAt ?? record.updatedAt
+      if (typeof archivedTs === 'number' && archivedTs > 0 && archivedTs <= cutoffMs) {
+        out.push(sessionId)
+      }
+    }
+    return out
+  }
 }
 
 function stripOverrides(meta: SessionMeta, overrideId: string): SessionMeta {

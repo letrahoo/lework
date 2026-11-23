@@ -820,4 +820,80 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T12_1 supports multi-image album pick, camera capture, and user bubble imagePreviews decoding`() = runTest {
+        val tinyPngB64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        val transport = FakeHubTransport()
+        val sid = "host:agy:vision_test"
+        transport.sessions.add(
+            SessionMeta(
+                id = sid,
+                engineId = "agy",
+                cwd = "/workspace/lework",
+                title = "照片直传识别验证",
+                state = SessionState.IDLE,
+                createdAt = 1_000L,
+                updatedAt = 2_000L,
+                lastSeq = 0,
+            ),
+        )
+        transport.sessionEventsMap[sid] = mutableListOf()
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sid)
+            runCurrent()
+
+            // 1. Multi-select 2 photos from album
+            JvmPlatformTestHooks.nextPickedImages = listOf(
+                dev.lework.platform.PickedImagePayload("p1.jpg", "image/jpeg", tinyPngB64, tinyPngB64),
+                dev.lework.platform.PickedImagePayload("p2.jpg", "image/jpeg", tinyPngB64, tinyPngB64),
+            )
+            store.pickAndAttachImage()
+            assertEquals(dev.lework.platform.ImagePickSource.LIBRARY, JvmPlatformTestHooks.lastImagePickSource)
+            assertEquals(2, store.state.value.composerAttachedImages.size)
+
+            // 2. Capture 1 photo directly via camera -> total 3 attached images
+            JvmPlatformTestHooks.nextPickedImages = listOf(
+                dev.lework.platform.PickedImagePayload("cam.jpg", "image/jpeg", tinyPngB64, tinyPngB64),
+            )
+            store.captureAndAttachImage()
+            assertEquals(dev.lework.platform.ImagePickSource.CAMERA, JvmPlatformTestHooks.lastImagePickSource)
+            assertEquals(3, store.state.value.composerAttachedImages.size)
+
+            // 3. Send prompt -> dispatches all 3 images with thumbnailBase64 over direct RPC
+            store.sendPrompt("帮我识别这三张图")
+            runCurrent()
+            assertEquals(0, store.state.value.composerAttachedImages.size)
+            assertEquals(1, transport.sentPromptImages.size)
+            assertEquals(3, transport.sentPromptImages.first().second.size)
+            assertEquals(tinyPngB64, transport.sentPromptImages.first().second.first().thumbnailBase64)
+
+            // 4. Hub emits `message.user` with `imagePreviews` -> timeline item carries all 3 previews & decodes bitmap!
+            transport.emitEvent(
+                AgentEvent.UserMessage(
+                    seq = 1,
+                    sessionId = sid,
+                    ts = 3_000L,
+                    messageId = "u_img_1",
+                    text = "帮我识别这三张图",
+                    imageCount = 3,
+                    imagePreviews = listOf(tinyPngB64, tinyPngB64, tinyPngB64),
+                ),
+            )
+            runCurrent()
+            val userItem = store.state.value.activeTranscript.items.last() as ChatTimelineItem.User
+            assertEquals(3, userItem.imageCount)
+            assertEquals(3, userItem.imagePreviews.size)
+            val decodedBmp = dev.lework.ui.decodeCachedBase64Bitmap(tinyPngB64)
+            assertTrue(decodedBmp != null && decodedBmp.width == 1 && decodedBmp.height == 1)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

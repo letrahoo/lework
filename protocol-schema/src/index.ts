@@ -386,6 +386,7 @@ export const AgentEvent = z.discriminatedUnion('type', [
     messageId: z.string(),
     text: z.string(),
     imageCount: z.number().int().nonnegative().optional(),
+    imagePreviews: z.array(z.string().min(4).max(300_000)).max(4).optional(),
   }),
   z.object({ ...base, type: z.literal('message.assistant.delta'), messageId: z.string(), text: z.string() }),
   z.object({ ...base, type: z.literal('reasoning.delta'), messageId: z.string(), text: z.string() }),
@@ -438,6 +439,7 @@ export const ClientInfo = z.object({
 export const PromptImageAttachment = z.object({
   mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
   dataBase64: z.string().min(4).max(1_000_000),
+  thumbnailBase64: z.string().min(4).max(260_000).optional(),
   fileName: z.string().max(120).optional(),
 })
 export type PromptImageAttachment = z.infer<typeof PromptImageAttachment>

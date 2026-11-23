@@ -43,12 +43,15 @@ import platform.Security.kSecMatchLimit
 import platform.Security.kSecMatchLimitOne
 import platform.Security.kSecReturnData
 import platform.Security.kSecValueData
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import dev.lework.protocol.ProtocolJson
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.builtins.ListSerializer
+import org.jetbrains.skia.Image as SkiaImage
 import kotlin.coroutines.resume
 import platform.Foundation.NSApplicationSupportDirectory
 import platform.Foundation.NSBundle
@@ -105,14 +108,14 @@ interface IosNativeDelegate {
     fun tsnetLogin(controlUrl: String, authKey: String, reqId: Long)
     fun tsnetLogout(reqId: Long)
     fun presentQrScanner(reqId: Long)
-    fun presentImagePicker(reqId: Long)
+    fun presentImagePicker(reqId: Long, useCamera: Boolean, maxCount: Int)
 }
 
 /**
  * Bridge registered by Swift (`NativeBridges.swift`) at app launch to connect:
  * 1. Embedded Go `libtsnetbridge.a` (`LeworkTsnet*` C functions)
  * 2. `AVCaptureSession` QR code scanner sheet
- * 3. `PHPickerViewController` image attachment sheet
+ * 3. `PHPickerViewController` multi-image picker & `UIImagePickerController` camera capture
  * 4. `.onOpenURL` (`lework://pair` & `lework://session`) deep-link forwarding
  */
 object IosNativeBridge {
@@ -120,7 +123,7 @@ object IosNativeBridge {
     private var nextReqId: Long = 1L
     private val pendingTsnet = mutableMapOf<Long, (String) -> Unit>()
     private val pendingQr = mutableMapOf<Long, (String?) -> Unit>()
-    private val pendingImage = mutableMapOf<Long, (PickedImagePayload?) -> Unit>()
+    private val pendingImages = mutableMapOf<Long, (List<PickedImagePayload>) -> Unit>()
 
     internal val incomingUriFlow = MutableStateFlow<String?>(null)
     internal val networkEpochFlow = MutableStateFlow(0L)
@@ -154,9 +157,9 @@ object IosNativeBridge {
         return id
     }
 
-    internal fun allocImageCallback(cb: (PickedImagePayload?) -> Unit): Long {
+    internal fun allocImagesCallback(cb: (List<PickedImagePayload>) -> Unit): Long {
         val id = nextReqId++
-        pendingImage[id] = cb
+        pendingImages[id] = cb
         return id
     }
 
@@ -168,16 +171,30 @@ object IosNativeBridge {
         pendingQr.remove(reqId)?.invoke(scannedText)
     }
 
+    fun completeMultiImagePick(reqId: Long, payloadsJson: String?) {
+        val cb = pendingImages.remove(reqId) ?: return
+        if (payloadsJson.isNullOrBlank()) {
+            cb.invoke(emptyList())
+            return
+        }
+        val parsed = runCatching {
+            ProtocolJson.decodeFromString(ListSerializer(PickedImagePayload.serializer()), payloadsJson)
+        }.getOrDefault(emptyList())
+        cb.invoke(parsed.filter { it.dataBase64.isNotBlank() })
+    }
+
     fun completeImagePick(reqId: Long, fileName: String?, mimeType: String?, dataBase64: String?) {
-        val cb = pendingImage.remove(reqId) ?: return
+        val cb = pendingImages.remove(reqId) ?: return
         if (dataBase64.isNullOrBlank()) {
-            cb.invoke(null)
+            cb.invoke(emptyList())
         } else {
             cb.invoke(
-                PickedImagePayload(
-                    fileName = fileName?.ifBlank { null } ?: "image.jpg",
-                    mimeType = mimeType?.ifBlank { null } ?: "image/jpeg",
-                    dataBase64 = dataBase64,
+                listOf(
+                    PickedImagePayload(
+                        fileName = fileName?.ifBlank { null } ?: "image.jpg",
+                        mimeType = mimeType?.ifBlank { null } ?: "image/jpeg",
+                        dataBase64 = dataBase64,
+                    ),
                 ),
             )
         }
@@ -731,17 +748,34 @@ actual fun saveHostAccessToken(hubId: String, token: String?) {
 
 actual fun canPickImages(): Boolean = IosNativeBridge.delegate != null
 
+actual fun canCaptureCameraImage(): Boolean = IosNativeBridge.delegate != null
+
 actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
+    requestMultiImagePick(source = ImagePickSource.LIBRARY, maxCount = 1) { list ->
+        onResult(list.firstOrNull())
+    }
+}
+
+actual fun requestMultiImagePick(
+    source: ImagePickSource,
+    maxCount: Int,
+    onResult: (List<PickedImagePayload>) -> Unit,
+) {
     val d = IosNativeBridge.delegate
     if (d == null) {
-        onResult(null)
+        onResult(emptyList())
     } else {
+        val clamped = maxCount.coerceIn(1, 4)
+        val useCamera = source == ImagePickSource.CAMERA
         dispatch_async(dispatch_get_main_queue()) {
-            val id = IosNativeBridge.allocImageCallback(onResult)
-            d.presentImagePicker(id)
+            val id = IosNativeBridge.allocImagesCallback(onResult)
+            d.presentImagePicker(id, useCamera, clamped)
         }
     }
 }
+
+actual fun decodeImageBytes(bytes: ByteArray): ImageBitmap? =
+    runCatching { SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
 
 actual fun signingExpiryRemainingHours(): Int? {
     val path = NSBundle.mainBundle.pathForResource("embedded", ofType = "mobileprovision") ?: return null

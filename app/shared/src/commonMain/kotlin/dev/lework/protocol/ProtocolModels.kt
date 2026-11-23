@@ -303,6 +303,7 @@ sealed interface AgentEvent {
         val messageId: String,
         val text: String,
         val imageCount: Int? = null,
+        val imagePreviews: List<String>? = null,
     ) : AgentEvent
 
     @Serializable
@@ -475,6 +476,7 @@ data class WorkspaceFilesResult(
 data class PromptImageAttachment(
     val mimeType: String,
     val dataBase64: String,
+    val thumbnailBase64: String? = null,
     val fileName: String? = null,
 )
 

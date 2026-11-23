@@ -34,12 +34,24 @@ struct ContentView: View {
             .sheet(
                 isPresented: $bridge.isShowingPhotoPicker,
                 onDismiss: {
-                    bridge.finishImagePick(fileName: nil, mimeType: nil, dataBase64: nil)
+                    bridge.finishMultiImagePick(nil)
                 },
                 content: {
-                    PhotoPickerSheet { fileName, mimeType, b64 in
-                        bridge.finishImagePick(fileName: fileName, mimeType: mimeType, dataBase64: b64)
+                    PhotoPickerSheet(selectionLimit: bridge.photoSelectionLimit) { payloadsJson in
+                        bridge.finishMultiImagePick(payloadsJson)
                     }
+                }
+            )
+            .fullScreenCover(
+                isPresented: $bridge.isShowingCameraCapture,
+                onDismiss: {
+                    bridge.finishMultiImagePick(nil)
+                },
+                content: {
+                    CameraPhotoCaptureSheet { payloadsJson in
+                        bridge.finishMultiImagePick(payloadsJson)
+                    }
+                    .ignoresSafeArea()
                 }
             )
             .onOpenURL { url in

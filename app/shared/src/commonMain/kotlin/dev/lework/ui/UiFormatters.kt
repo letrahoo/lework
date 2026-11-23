@@ -1,6 +1,9 @@
+@file:OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+
 package dev.lework.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,8 +28,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -40,13 +45,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import dev.lework.platform.MobileTsnetStatus
 import dev.lework.platform.appVersionLabel
+import dev.lework.platform.decodeImageBytes
 import dev.lework.platform.dismissNativeKeyboard
 import dev.lework.platform.epochMillis
 import dev.lework.platform.loadSavedRelayUrls
 import dev.lework.protocol.*
 import dev.lework.store.*
+import kotlin.io.encoding.Base64
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -165,6 +174,169 @@ internal fun rememberKeyboardDismisser(): () -> Unit {
             focusManager.clearFocus(force = true)
             keyboardController?.hide()
             dismissNativeKeyboard()
+        }
+    }
+}
+
+private val decodedBitmapCache = LinkedHashMap<String, ImageBitmap>(48)
+
+internal fun decodeCachedBase64Bitmap(rawBase64: String?): ImageBitmap? {
+    if (rawBase64.isNullOrBlank()) return null
+    val clean = rawBase64.substringAfter("base64,", rawBase64).trim()
+    if (clean.length < 8) return null
+    val key = "${clean.length}_${clean.hashCode()}_${clean.take(20)}_${clean.takeLast(20)}"
+    decodedBitmapCache[key]?.let { return it }
+    val bmp = runCatching {
+        val normalized = clean
+            .replace("\n", "")
+            .replace("\r", "")
+            .replace(" ", "")
+        val bytes = Base64.decode(normalized)
+        decodeImageBytes(bytes)
+    }.getOrNull() ?: return null
+    if (decodedBitmapCache.size >= 48) {
+        val eldestKey = decodedBitmapCache.keys.firstOrNull()
+        if (eldestKey != null) decodedBitmapCache.remove(eldestKey)
+    }
+    decodedBitmapCache[key] = bmp
+    return bmp
+}
+
+@Composable
+internal fun rememberBase64ImageBitmap(rawBase64: String?): ImageBitmap? {
+    val cacheKey = remember(rawBase64) {
+        if (rawBase64.isNullOrBlank()) "" else "${rawBase64.length}_${rawBase64.hashCode()}_${rawBase64.take(24)}"
+    }
+    return remember(cacheKey) { decodeCachedBase64Bitmap(rawBase64) }
+}
+
+@Composable
+internal fun ImageLightboxDialog(
+    imagesBase64: List<String>,
+    initialIndex: Int = 0,
+    onDismiss: () -> Unit,
+) {
+    if (imagesBase64.isEmpty()) return
+    var currentIdx by remember(imagesBase64, initialIndex) {
+        mutableStateOf(initialIndex.coerceIn(0, imagesBase64.lastIndex))
+    }
+    val currentBmp = rememberBase64ImageBitmap(imagesBase64.getOrNull(currentIdx))
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Everforest.BgDim.copy(alpha = 0.95f))
+                .clickable { onDismiss() }
+                .windowInsetsPadding(WindowInsets.safeDrawing),
+        ) {
+            if (currentBmp != null) {
+                Image(
+                    bitmap = currentBmp,
+                    contentDescription = "图片预览",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp, vertical = 56.dp),
+                )
+            } else {
+                Text(
+                    text = "无法解析图片内容",
+                    color = Everforest.Grey1,
+                    fontSize = 14.sp,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = Everforest.Bg1.copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, Everforest.Bg3),
+                ) {
+                    Text(
+                        text = "${currentIdx + 1} / ${imagesBase64.size}",
+                        color = Everforest.Fg,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    )
+                }
+
+                Surface(
+                    shape = CircleShape,
+                    color = Everforest.Bg1.copy(alpha = 0.85f),
+                    border = BorderStroke(1.dp, Everforest.Bg3),
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .clickable { onDismiss() },
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "关闭预览",
+                            tint = Everforest.Fg,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+
+            if (imagesBase64.size > 1) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.Bg1.copy(alpha = 0.9f),
+                        border = BorderStroke(1.dp, Everforest.Bg3),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable(enabled = currentIdx > 0) {
+                                if (currentIdx > 0) currentIdx--
+                            },
+                    ) {
+                        Text(
+                            text = "上一张",
+                            fontSize = 12.5.sp,
+                            color = if (currentIdx > 0) Everforest.Fg else Everforest.Grey0,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.Bg1.copy(alpha = 0.9f),
+                        border = BorderStroke(1.dp, Everforest.Bg3),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable(enabled = currentIdx < imagesBase64.lastIndex) {
+                                if (currentIdx < imagesBase64.lastIndex) currentIdx++
+                            },
+                    ) {
+                        Text(
+                            text = "下一张",
+                            fontSize = 12.5.sp,
+                            color = if (currentIdx < imagesBase64.lastIndex) Everforest.Fg else Everforest.Grey0,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                        )
+                    }
+                }
+            }
         }
     }
 }

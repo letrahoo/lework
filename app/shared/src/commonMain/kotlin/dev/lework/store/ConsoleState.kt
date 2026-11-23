@@ -31,6 +31,7 @@ sealed interface ChatTimelineItem {
         override val id: String,
         val text: String,
         val imageCount: Int = 0,
+        val imagePreviews: List<String> = emptyList(),
     ) : ChatTimelineItem
 
     data class Reasoning(
@@ -327,7 +328,8 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
                 ChatTimelineItem.User(
                     id = event.messageId,
                     text = event.text,
-                    imageCount = event.imageCount ?: 0,
+                    imageCount = event.imageCount ?: event.imagePreviews?.size ?: 0,
+                    imagePreviews = event.imagePreviews.orEmpty(),
                 ),
             )
         }
@@ -468,7 +470,8 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
                     ChatTimelineItem.User(
                         id = event.messageId,
                         text = event.text,
-                        imageCount = event.imageCount ?: 0,
+                        imageCount = event.imageCount ?: event.imagePreviews?.size ?: 0,
+                        imagePreviews = event.imagePreviews.orEmpty(),
                     ),
                 )
             }

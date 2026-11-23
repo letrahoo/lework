@@ -24,20 +24,26 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import dev.lework.platform.AndroidNativeDelegate
 import dev.lework.platform.AndroidPlatformRuntime
+import dev.lework.platform.ImagePickSource
 import dev.lework.platform.PickedImagePayload
 import dev.lework.ui.ConsoleApp
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.concurrent.Executors
 
 class MainActivity : ComponentActivity(), AndroidNativeDelegate {
     private var showQrScanner by mutableStateOf(false)
     private var qrCallback: ((String?) -> Unit)? = null
-    private var imageCallback: ((PickedImagePayload?) -> Unit)? = null
+    private var multiImageCallback: ((List<PickedImagePayload>) -> Unit)? = null
+    private var pendingMaxImages: Int = 4
+    private var pendingCameraFile: File? = null
+    private var pendingCameraUri: Uri? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
 
-    private val cameraPermissionLauncher = registerForActivityResult(
+    private val qrCameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (granted) {
@@ -49,18 +55,52 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
         }
     }
 
-    private val imagePickerLauncher = registerForActivityResult(
-        ActivityResultContracts.GetContent(),
-    ) { uri: Uri? ->
-        val cb = imageCallback
-        imageCallback = null
-        if (uri == null || cb == null) {
-            cb?.invoke(null)
+    private val photoCameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            launchSystemCameraCapture()
+        } else {
+            val cb = multiImageCallback
+            multiImageCallback = null
+            cb?.invoke(emptyList())
+        }
+    }
+
+    private val multiImagePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetMultipleContents(),
+    ) { uris: List<Uri> ->
+        val cb = multiImageCallback
+        multiImageCallback = null
+        val limit = pendingMaxImages.coerceIn(1, 4)
+        if (uris.isEmpty() || cb == null) {
+            cb?.invoke(emptyList())
             return@registerForActivityResult
         }
         ioExecutor.execute {
-            val payload = decodeAndDownscaleImage(uri)
-            runOnUiThread { cb.invoke(payload) }
+            val payloads = uris.take(limit).mapNotNull { decodeAndDownscaleImage(it) }
+            runOnUiThread { cb.invoke(payloads) }
+        }
+    }
+
+    private val takePictureLauncher = registerForActivityResult(
+        ActivityResultContracts.TakePicture(),
+    ) { success: Boolean ->
+        val cb = multiImageCallback
+        multiImageCallback = null
+        val uri = pendingCameraUri
+        val file = pendingCameraFile
+        pendingCameraUri = null
+        pendingCameraFile = null
+        if (!success || uri == null || cb == null) {
+            runCatching { file?.delete() }
+            cb?.invoke(emptyList())
+            return@registerForActivityResult
+        }
+        ioExecutor.execute {
+            val payload = decodeAndDownscaleImage(uri, defaultName = file?.name ?: "camera.jpg")
+            runCatching { file?.delete() }
+            runOnUiThread { cb.invoke(listOfNotNull(payload)) }
         }
     }
 
@@ -141,26 +181,68 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
             if (hasPerm) {
                 showQrScanner = true
             } else {
-                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                qrCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
         }
     }
 
     override fun presentImagePicker(onResult: (PickedImagePayload?) -> Unit) {
+        presentMultiImagePicker(ImagePickSource.LIBRARY, 1) { list ->
+            onResult(list.firstOrNull())
+        }
+    }
+
+    override fun presentMultiImagePicker(
+        source: ImagePickSource,
+        maxCount: Int,
+        onResult: (List<PickedImagePayload>) -> Unit,
+    ) {
         runOnUiThread {
-            imageCallback?.invoke(null)
-            imageCallback = onResult
-            runCatching {
-                imagePickerLauncher.launch("image/*")
-            }.onFailure {
-                imageCallback = null
-                onResult(null)
+            multiImageCallback?.invoke(emptyList())
+            multiImageCallback = onResult
+            pendingMaxImages = maxCount.coerceIn(1, 4)
+            if (source == ImagePickSource.CAMERA) {
+                val hasPerm = ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.CAMERA,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (hasPerm) {
+                    launchSystemCameraCapture()
+                } else {
+                    photoCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
+            } else {
+                runCatching {
+                    multiImagePickerLauncher.launch("image/*")
+                }.onFailure {
+                    multiImageCallback = null
+                    onResult(emptyList())
+                }
             }
         }
     }
 
-    private fun decodeAndDownscaleImage(uri: Uri): PickedImagePayload? = runCatching {
-        val fileName = resolveDisplayName(uri) ?: "photo.jpg"
+    private fun launchSystemCameraCapture() {
+        runCatching {
+            val dir = File(cacheDir, "camera_captures").apply { mkdirs() }
+            val photoFile = File(dir, "camera_${System.currentTimeMillis()}.jpg")
+            val uri = FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                photoFile,
+            )
+            pendingCameraFile = photoFile
+            pendingCameraUri = uri
+            takePictureLauncher.launch(uri)
+        }.onFailure {
+            val cb = multiImageCallback
+            multiImageCallback = null
+            cb?.invoke(emptyList())
+        }
+    }
+
+    private fun decodeAndDownscaleImage(uri: Uri, defaultName: String = "photo.jpg"): PickedImagePayload? = runCatching {
+        val fileName = resolveDisplayName(uri) ?: defaultName
         val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boundsOpts) }
         if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return null
@@ -200,8 +282,9 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
         var b64 = ""
         for ((dim, q) in listOf(1280 to 78, 1280 to 60, 1024 to 52, 800 to 45)) {
             b64 = encodeWithinLimit(decoded, dim, q)
-            if (b64.length <= 920_000) break
+            if (b64.length <= 900_000) break
         }
+        val thumbB64 = encodeWithinLimit(decoded, 520, 68).takeIf { it.length <= 240_000 }
         decoded.recycle()
         if (b64.isEmpty() || b64.length > 990_000) return null
 
@@ -209,6 +292,7 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
             fileName = if (fileName.contains('.')) fileName else "$fileName.jpg",
             mimeType = "image/jpeg",
             dataBase64 = b64,
+            thumbnailBase64 = thumbB64,
         )
     }.getOrNull()
 

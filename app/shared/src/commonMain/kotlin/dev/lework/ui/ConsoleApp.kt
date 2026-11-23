@@ -402,6 +402,10 @@ fun ConsoleApp(
                                 dismissKeyboard()
                                 store.pickAndAttachImage()
                             },
+                            onCaptureCamera = {
+                                dismissKeyboard()
+                                store.captureAndAttachImage()
+                            },
                             onRemoveImage = store::removeAttachedImage,
                             onSelectMentionFile = { relPath ->
                                 promptText = replaceTrailingMention(promptText, relPath)

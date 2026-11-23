@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { AgentEvent, SessionMeta } from '@lework/protocol'
 import type { ClaudeLiveSessionMeta } from '../terminal-bridge.ts'
+import { parseStagedImagePromptHeader } from '../attachment-store.ts'
 import {
   classifyRawToolCall,
   collectRecentFiles,
@@ -229,8 +230,9 @@ export function parseClaudeTranscript(
           }
         }
         const txt = extractClaudeText(o.message.content)
+        const inlineImages = extractClaudeInlineImagePreviews(o.message.content)
         if (
-          txt &&
+          (txt || inlineImages.count > 0) &&
           !o.isMeta &&
           !txt.startsWith('<') &&
           !txt.startsWith('Base directory for this skill:') &&
@@ -239,13 +241,21 @@ export function parseClaudeTranscript(
           const qIdx = queued.indexOf(txt.trim())
           if (qIdx >= 0) queued.splice(qIdx, 1)
           turnStartedAt = ts
+          const stagedParsed = parseStagedImagePromptHeader(txt, true)
+          const totalImgs = Math.max(inlineImages.count, stagedParsed.imageCount)
+          const mergedPreviews = (inlineImages.previews.length > 0
+            ? inlineImages.previews
+            : stagedParsed.imagePreviews ?? []
+          ).slice(0, 4)
           events.push({
             seq: seq++,
             sessionId,
             ts,
             type: 'message.user',
             messageId: o.uuid ?? `u_${seq}`,
-            text: txt,
+            text: stagedParsed.cleanText || `（已发送 ${totalImgs} 张图片）`,
+            ...(totalImgs > 0 ? { imageCount: totalImgs } : {}),
+            ...(mergedPreviews.length > 0 ? { imagePreviews: mergedPreviews } : {}),
           })
         }
       } else if (
@@ -374,6 +384,33 @@ export function extractClaudeText(content: unknown): string {
       .join('\n')
   }
   return ''
+}
+
+function extractClaudeInlineImagePreviews(content: unknown): { count: number; previews: string[] } {
+  if (!Array.isArray(content)) return { count: 0, previews: [] }
+  let count = 0
+  const previews: string[] = []
+  for (const item of content) {
+    if (!item || typeof item !== 'object') continue
+    const obj = item as {
+      type?: unknown
+      data?: unknown
+      source?: { type?: unknown; data?: unknown }
+    }
+    if (obj.type === 'image') {
+      count++
+      const rawData =
+        typeof obj.data === 'string'
+          ? obj.data
+          : typeof obj.source?.data === 'string'
+            ? obj.source.data
+            : null
+      if (rawData && rawData.length <= 260_000 && previews.length < 4) {
+        previews.push(rawData)
+      }
+    }
+  }
+  return { count, previews }
 }
 
 export function extractClaudeToolResultText(content: unknown): string {

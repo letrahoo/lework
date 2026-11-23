@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.6.8</string>
+	<string>0.6.9</string>
 	<key>CFBundleVersion</key>
-	<string>20261123.0125</string>
+	<string>20261123.0845</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -44,7 +44,9 @@
 		<string>_lework._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>用于扫描 Hub 配对二维码。</string>
+	<string>用于扫描主机配对二维码，或拍摄照片发送给 AI 进行视觉识别分析。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于从相册选择图片发送给 AI 进行视觉识别分析。</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>用于高危审批操作的二次身份确认。</string>
 	<key>NSAppTransportSecurity</key>

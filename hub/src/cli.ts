@@ -488,7 +488,7 @@ async function main(): Promise<void> {
             name: cfg.name,
             role: cfg.role,
             platform: 'darwin',
-            version: '0.6.8',
+            version: '0.6.9',
           }),
           getSessionMeta: () => undefined,
           getActiveSubscriberCount: () => 0,

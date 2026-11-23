@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
@@ -15,6 +16,8 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import dev.lework.protocol.ProtocolJson
 import java.io.BufferedReader
 import java.io.File
@@ -49,6 +52,13 @@ import kotlinx.serialization.json.jsonPrimitive
 interface AndroidNativeDelegate {
     fun presentQrScanner(onResult: (String?) -> Unit)
     fun presentImagePicker(onResult: (PickedImagePayload?) -> Unit)
+    fun presentMultiImagePicker(
+        source: ImagePickSource,
+        maxCount: Int,
+        onResult: (List<PickedImagePayload>) -> Unit,
+    ) {
+        presentImagePicker { single -> onResult(listOfNotNull(single)) }
+    }
 }
 
 object AndroidPlatformRuntime {
@@ -592,7 +602,7 @@ private fun prefs() =
 
 actual fun platformName(): String = "Android ${Build.VERSION.RELEASE}"
 
-actual fun appVersionLabel(): String = "v0.6.8 (20261123.0125)"
+actual fun appVersionLabel(): String = "v0.6.9 (20261123.0845)"
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
@@ -794,10 +804,28 @@ actual fun saveHostAccessToken(hubId: String, token: String?) {
 
 actual fun canPickImages(): Boolean = AndroidPlatformRuntime.nativeDelegate != null
 
+actual fun canCaptureCameraImage(): Boolean = AndroidPlatformRuntime.nativeDelegate != null
+
 actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
     val d = AndroidPlatformRuntime.nativeDelegate
     if (d == null) onResult(null) else d.presentImagePicker(onResult)
 }
+
+actual fun requestMultiImagePick(
+    source: ImagePickSource,
+    maxCount: Int,
+    onResult: (List<PickedImagePayload>) -> Unit,
+) {
+    val d = AndroidPlatformRuntime.nativeDelegate
+    if (d == null) {
+        onResult(emptyList())
+    } else {
+        d.presentMultiImagePicker(source, maxCount.coerceIn(1, 4), onResult)
+    }
+}
+
+actual fun decodeImageBytes(bytes: ByteArray): ImageBitmap? =
+    runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }.getOrNull()
 
 actual fun signingExpiryRemainingHours(): Int? = null
 
