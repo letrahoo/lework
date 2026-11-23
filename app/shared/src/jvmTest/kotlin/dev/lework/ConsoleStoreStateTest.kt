@@ -1676,4 +1676,71 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T14_6 cancels single queued prompt, clears all, surfaces host notice, and rolls back on RPC failure`() = runTest {
+        val transport = FakeHubTransport()
+        val sid = "sess_queue_cancel_demo"
+        val baseSession = SessionMeta(
+            id = sid,
+            engineId = "claude",
+            cwd = "/workspace/lework",
+            title = "队列取消测试",
+            state = SessionState.RUNNING,
+            createdAt = 1_000L,
+            updatedAt = 2_000L,
+            lastSeq = 0,
+            queuedPrompts = listOf("排队一", "排队二", "排队三"),
+        )
+        transport.sessions.add(baseSession)
+        transport.sessionEventsMap[sid] = mutableListOf(
+            AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "当前运行任务"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sid)
+            runCurrent()
+
+            assertEquals(listOf("排队一", "排队二", "排队三"), store.state.value.activeSession?.queuedPrompts)
+
+            // 1. Single-item cancel updates optimistically before RPC resolves
+            transport.cancelQueuedDelayMs = 200L
+            store.cancelQueuedPrompt(1)
+            assertEquals(listOf("排队一", "排队三"), store.state.value.activeSession?.queuedPrompts)
+            advanceTimeBy(200L)
+            runCurrent()
+            assertEquals(listOf(Triple<String, Int?, Boolean>(sid, 1, false)), transport.cancelQueuedCalls.toList())
+            assertEquals(listOf("排队一", "排队三"), store.state.value.activeSession?.queuedPrompts)
+
+            // 2. Clear all reconciles state and surfaces non-blank host notice
+            transport.cancelQueuedDelayMs = 0L
+            transport.cancelQueuedNotice = "已从 Lework 排队列表移除；若消息已写入电脑终端待执行区，请在终端内按需撤销"
+            store.clearQueuedPrompts()
+            runCurrent()
+            assertEquals(Triple<String, Int?, Boolean>(sid, null, true), transport.cancelQueuedCalls.last())
+            assertNull(store.state.value.activeSession?.queuedPrompts)
+            assertEquals(transport.cancelQueuedNotice, store.state.value.promptNoticeText)
+
+            store.dismissPromptNotice()
+            assertNull(store.state.value.promptNoticeText)
+
+            // 3. RPC failure rolls back optimistic removal and surfaces error banner
+            transport.emitSessionUpdate(baseSession.copy(queuedPrompts = listOf("保留消息A", "保留消息B")))
+            runCurrent()
+            assertEquals(listOf("保留消息A", "保留消息B"), store.state.value.activeSession?.queuedPrompts)
+
+            transport.cancelQueuedNotice = null
+            transport.cancelQueuedException = RpcCallException(ErrorCode.INTERNAL, "网络超时")
+            store.cancelQueuedPrompt(0)
+            runCurrent()
+            assertEquals(listOf("保留消息A", "保留消息B"), store.state.value.activeSession?.queuedPrompts)
+            assertTrue(store.state.value.promptErrorText.orEmpty().contains("网络超时"))
+        } finally {
+            storeScope.cancel()
+        }
+    }
 }

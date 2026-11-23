@@ -159,6 +159,11 @@ interface HubTransport {
     ): String
 
     suspend fun cancelSession(sessionId: String)
+    suspend fun cancelQueuedPrompt(
+        sessionId: String,
+        index: Int? = null,
+        all: Boolean = false,
+    ): SessionCancelQueuedResult
     suspend fun setSessionModel(
         sessionId: String,
         modelId: String,
@@ -674,6 +679,22 @@ class HubRpcClient(
     override suspend fun cancelSession(sessionId: String) {
         call<OkResult>("session.cancel", encodeParams(SessionCancelParams(sessionId = sessionId)))
     }
+
+    override suspend fun cancelQueuedPrompt(
+        sessionId: String,
+        index: Int?,
+        all: Boolean,
+    ): SessionCancelQueuedResult =
+        call(
+            "session.cancelQueued",
+            encodeParams(
+                SessionCancelQueuedParams(
+                    sessionId = sessionId,
+                    index = if (all) null else index,
+                    all = if (all) true else null,
+                ),
+            ),
+        )
 
     override suspend fun setSessionModel(
         sessionId: String,

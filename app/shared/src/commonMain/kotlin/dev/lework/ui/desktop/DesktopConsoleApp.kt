@@ -10,6 +10,7 @@ import androidx.compose.material.icons.automirrored.rounded.CompareArrows
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -284,6 +285,8 @@ internal fun DesktopConsoleApp(
                                         transcript = transcript,
                                         isSessionRunning = sessRunning,
                                         onLoadOlder = { store.loadOlderHistory(activeKey) },
+                                        onCancelQueuedPrompt = store::cancelQueuedPrompt,
+                                        onClearQueuedPrompts = store::clearQueuedPrompts,
                                         onDismissKeyboard = {},
                                         showInlineErrorRetry = state.turnRecoveryBanner == null,
                                         onRetryLastTurn = store::retryLastTurn,
@@ -330,6 +333,47 @@ internal fun DesktopConsoleApp(
                                     showUsageDialog = true
                                 },
                             )
+                        }
+
+                        if (!state.promptNoticeText.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Everforest.BoldGold.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, Everforest.BoldGold.copy(alpha = 0.4f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 2.dp)
+                                    .testTag("prompt_notice_banner"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Info,
+                                        contentDescription = null,
+                                        tint = Everforest.BoldGold,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Text(
+                                        text = state.promptNoticeText.orEmpty(),
+                                        fontSize = 12.5.sp,
+                                        lineHeight = 17.sp,
+                                        color = Everforest.Fg,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "关闭提示",
+                                        tint = Everforest.CommentGrey,
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .clickable { store.dismissPromptNotice() }
+                                            .testTag("prompt_notice_dismiss_btn"),
+                                    )
+                                }
+                            }
                         }
 
                         val recoveryBanner = state.turnRecoveryBanner
@@ -402,6 +446,7 @@ internal fun DesktopConsoleApp(
                                 store.sendPrompt(msg)
                             },
                             onCancel = store::cancelActiveTurn,
+                            onClearQueuedPrompts = store::clearQueuedPrompts,
                             onPickImage = { store.pickAndAttachImage() },
                             onPasteClipboardImages = store::pasteImagesFromClipboard,
                             onRemoveImage = store::removeAttachedImage,

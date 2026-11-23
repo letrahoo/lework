@@ -948,4 +948,96 @@ describe('HostTaskInspector sandboxed replay & regression suite (M1, M2, M5, M6)
 
     await sm.closeAll()
   })
+
+  it('[T7.5] cancels queued prompts on busy host:* sessions without sending Ctrl-C/Escape and suppresses stale re-appearance during the same turn', () => {
+    const home = makeFakeHome()
+    const convId = 'd8841234-0000-4000-8000-000000000009'
+    const logsDir = path.join(home, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs')
+    fs.mkdirSync(logsDir, { recursive: true })
+    const wsPath = path.join(home, 'work', 'demo-host-queue')
+    fs.mkdirSync(wsPath, { recursive: true })
+
+    const baseSec = Math.floor(Date.now() / 1000) - 10
+    const iso = new Date(baseSec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+    const tpFile = path.join(logsDir, 'transcript.jsonl')
+    fs.writeFileSync(
+      tpFile,
+      [
+        JSON.stringify({
+          step_index: 0,
+          type: 'USER_INPUT',
+          created_at: iso,
+          content: '<USER_REQUEST>\n正在执行的主任务\n</USER_REQUEST>',
+        }),
+        JSON.stringify({
+          step_index: 1,
+          type: 'PLANNER_RESPONSE',
+          status: 'DONE',
+          created_at: iso,
+          tool_calls: [{ name: 'run_command', args: { CommandLine: 'npm test', toolSummary: 'Run test' } }],
+          content: '',
+        }),
+      ].join('\n') + '\n',
+    )
+    fs.writeFileSync(
+      path.join(home, '.gemini', 'antigravity-cli', 'history.jsonl'),
+      [
+        JSON.stringify({ conversationId: convId, workspace: wsPath, display: '正在执行的主任务', timestamp: baseSec * 1000 + 100 }),
+        JSON.stringify({ conversationId: convId, workspace: wsPath, display: '主机排队项 1', timestamp: (baseSec + 4) * 1000 }),
+        JSON.stringify({ conversationId: convId, workspace: wsPath, display: '主机排队项 2', timestamp: (baseSec + 6) * 1000 }),
+      ].join('\n') + '\n',
+    )
+
+    const terminalCalls: string[][] = []
+    const mockBridge = new TerminalBridge({
+      homeDir: home,
+      tmuxBin: '/opt/homebrew/bin/tmux',
+      it2Bin: null,
+      tmuxSocketPaths: [],
+      runCommand: async (bin, args) => {
+        terminalCalls.push([bin, ...args])
+        return ''
+      },
+    })
+    const updates: SessionMeta[] = []
+    const inspector = new HostTaskInspector({
+      homeDir: home,
+      terminalBridge: mockBridge,
+      callbacks: {
+        onEvents: () => {},
+        onSessionUpdated: m => updates.push({ ...m }),
+      },
+    })
+
+    const sid = `host:agy:${convId}`
+    const initial = inspector.readHostSessionEvents(sid)
+    expect(initial?.session.state).toBe('running')
+    expect(initial?.session.queuedPrompts).toEqual(['主机排队项 1', '主机排队项 2'])
+
+    // 1. Cancel first queued item -> removed & suppressed without touching terminal
+    const res1 = inspector.cancelQueuedHostPrompt(sid, { index: 0 })
+    expect(res1?.ok).toBe(true)
+    expect(res1?.removedCount).toBe(1)
+    expect(res1?.queuedPrompts).toEqual(['主机排队项 2'])
+    expect(res1?.notice).toContain('已从 Lework 排队列表移除')
+    expect(terminalCalls).toHaveLength(0)
+    expect(updates.at(-1)?.queuedPrompts).toEqual(['主机排队项 2'])
+
+    // Re-reading transcript & re-discovering during same running turn keeps item 1 suppressed
+    expect(inspector.readHostSessionEvents(sid)?.session.queuedPrompts).toEqual(['主机排队项 2'])
+    expect(inspector.discoverHostSessions(true).find(s => s.id === sid)?.queuedPrompts).toEqual(['主机排队项 2'])
+
+    // 2. Clear remaining queued prompts
+    const res2 = inspector.cancelQueuedHostPrompt(sid, { all: true })
+    expect(res2?.ok).toBe(true)
+    expect(res2?.removedCount).toBe(1)
+    expect(res2?.queuedPrompts).toEqual([])
+    expect(res2?.notice).toContain('已从 Lework 排队列表移除')
+    expect(inspector.readHostSessionEvents(sid)?.session.queuedPrompts).toBeUndefined()
+
+    // 3. Idempotent when already empty
+    const res3 = inspector.cancelQueuedHostPrompt(sid, { index: 0 })
+    expect(res3).toEqual({ ok: true, queuedPrompts: [], removedCount: 0 })
+    expect(terminalCalls).toHaveLength(0)
+  })
 })

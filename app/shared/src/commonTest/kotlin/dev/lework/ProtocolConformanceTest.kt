@@ -143,4 +143,23 @@ class ProtocolConformanceTest {
         )
         assertEquals(13, transcript.lastSeq)
     }
+
+    @Test
+    fun encodesAndDecodesSessionCancelQueuedModels() {
+        val paramsJson = ProtocolJson.encodeToString(
+            SessionCancelQueuedParams.serializer(),
+            SessionCancelQueuedParams(sessionId = "sess_1", index = 1),
+        )
+        val decodedParams = ProtocolJson.decodeFromString(SessionCancelQueuedParams.serializer(), paramsJson)
+        assertEquals("sess_1", decodedParams.sessionId)
+        assertEquals(1, decodedParams.index)
+        assertEquals(null, decodedParams.all)
+
+        val rawResult = """{"ok":true,"queuedPrompts":["剩余消息"],"removedCount":1,"notice":"提示文案"}"""
+        val decodedResult = ProtocolJson.decodeFromString(SessionCancelQueuedResult.serializer(), rawResult)
+        assertTrue(decodedResult.ok)
+        assertEquals(listOf("剩余消息"), decodedResult.queuedPrompts)
+        assertEquals(1, decodedResult.removedCount)
+        assertEquals("提示文案", decodedResult.notice)
+    }
 }

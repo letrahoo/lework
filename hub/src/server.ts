@@ -959,6 +959,13 @@ export class HubServer {
         await this.sessionManager.cancel(p.sessionId)
         return { ok: true as const }
       }
+      case 'session.cancelQueued': {
+        const p = params as { sessionId: string; index?: number; all?: boolean }
+        return this.sessionManager.cancelQueuedPrompt(p.sessionId, {
+          index: p.index,
+          all: p.all,
+        })
+      }
       case 'session.setModel': {
         const p = params as {
           sessionId: string

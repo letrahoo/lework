@@ -66,6 +66,10 @@ class FakeHubTransport : HubTransport {
     var lastCreateUseWorktree: Boolean? = null
     var lastCreateWorktreeBranch: String? = null
     val setModelCalls = mutableListOf<SessionSetModelParams>()
+    val cancelQueuedCalls = mutableListOf<Triple<String, Int?, Boolean>>()
+    var cancelQueuedException: Throwable? = null
+    var cancelQueuedNotice: String? = null
+    var cancelQueuedDelayMs: Long = 0L
     var enginesOverride: List<EngineInfo>? = null
     var workspaceFilesList: List<String> = listOf(
         "README.md",
@@ -332,6 +336,38 @@ class FakeHubTransport : HubTransport {
     }
 
     override suspend fun cancelSession(sessionId: String) = Unit
+
+    override suspend fun cancelQueuedPrompt(
+        sessionId: String,
+        index: Int?,
+        all: Boolean,
+    ): SessionCancelQueuedResult {
+        cancelQueuedCalls.add(Triple(sessionId, index, all))
+        if (cancelQueuedDelayMs > 0L) delay(cancelQueuedDelayMs)
+        cancelQueuedException?.let { throw it }
+        val idx = sessions.indexOfFirst { it.id == sessionId }
+        if (idx < 0) {
+            throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Session not found")
+        }
+        val prev = sessions[idx]
+        val current = prev.queuedPrompts.orEmpty()
+        val (remaining, removedCount) = when {
+            all || index == null -> emptyList<String>() to current.size
+            index in current.indices -> current.filterIndexed { i, _ -> i != index } to 1
+            else -> current to 0
+        }
+        val updated = prev.copy(queuedPrompts = remaining.takeIf { it.isNotEmpty() })
+        sessions[idx] = updated
+        if (removedCount > 0) {
+            _sessionUpdates.tryEmit(updated)
+        }
+        return SessionCancelQueuedResult(
+            ok = true,
+            queuedPrompts = remaining,
+            removedCount = removedCount,
+            notice = cancelQueuedNotice?.takeIf { removedCount > 0 },
+        )
+    }
 
     override suspend fun setSessionModel(
         sessionId: String,

@@ -10,6 +10,7 @@ import {
   type ModelOption,
   type PromptImageAttachment,
   type ReasoningEffort,
+  type SessionCancelQueuedResult,
   type SessionMeta,
   type SessionMode,
   type SessionWorktreeInfo,
@@ -790,6 +791,45 @@ export class SessionManager {
     req.meta.turnStartedAt = undefined
     req.meta = this.decorateManagedMeta(req)
     this.callbacks.onSessionUpdated(req.meta)
+  }
+
+  cancelQueuedPrompt(
+    sessionId: string,
+    opts?: { index?: number; all?: boolean },
+  ): SessionCancelQueuedResult {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      let removedCount = 0
+      if (opts?.all === true || opts?.index === undefined) {
+        removedCount = managed.queuedTurns.length
+        managed.queuedTurns = []
+      } else if (opts.index >= 0 && opts.index < managed.queuedTurns.length) {
+        managed.queuedTurns.splice(opts.index, 1)
+        removedCount = 1
+      }
+      managed.meta.queuedPrompts =
+        managed.queuedTurns.length > 0 ? managed.queuedTurns.map(q => q.displayUserText) : undefined
+      if (removedCount > 0) {
+        managed.meta.updatedAt = Date.now()
+        managed.meta = this.decorateManagedMeta(managed)
+        this.callbacks.onSessionUpdated(managed.meta)
+      }
+      return {
+        ok: true,
+        queuedPrompts: managed.meta.queuedPrompts ?? [],
+        removedCount,
+      }
+    }
+
+    if (sessionId.startsWith('host:')) {
+      const hostRes = this.hostInspector.cancelQueuedHostPrompt(sessionId, opts)
+      if (!hostRes) {
+        throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+      }
+      return hostRes
+    }
+
+    throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
   }
 
   async respondPermission(
