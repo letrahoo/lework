@@ -525,6 +525,11 @@ actual fun savePinnedHubFingerprints(fingerprints: Set<String>) {
 
 actual fun loadSessionPrefs(): SavedSessionPrefs {
     val d = NSUserDefaults.standardUserDefaults
+    val favs = d.stringForKey("lework_pref_fav_models")
+        .orEmpty()
+        .split('|')
+        .map { it.trim() }
+        .filter { it.contains(':') }
     return SavedSessionPrefs(
         engineId = d.stringForKey(KEY_PREF_ENGINE)?.ifBlank { null } ?: "claude",
         providerId = d.stringForKey(KEY_PREF_PROVIDER)?.ifBlank { null },
@@ -532,6 +537,7 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         reasoningEffort = d.stringForKey(KEY_PREF_EFFORT)?.ifBlank { null } ?: "medium",
         mode = d.stringForKey(KEY_PREF_MODE)?.ifBlank { null } ?: "ask",
         workspacePath = d.stringForKey(KEY_PREF_WORKSPACE).orEmpty(),
+        favoriteModelKeys = favs,
     )
 }
 
@@ -545,6 +551,11 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
     d.setObject(prefs.reasoningEffort, forKey = KEY_PREF_EFFORT)
     d.setObject(prefs.mode, forKey = KEY_PREF_MODE)
     d.setObject(prefs.workspacePath, forKey = KEY_PREF_WORKSPACE)
+    if (prefs.favoriteModelKeys.isNotEmpty()) {
+        d.setObject(prefs.favoriteModelKeys.joinToString("|"), forKey = "lework_pref_fav_models")
+    } else {
+        d.removeObjectForKey("lework_pref_fav_models")
+    }
     d.synchronize()
 }
 

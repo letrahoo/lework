@@ -4,8 +4,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -43,6 +45,8 @@ fun main(args: Array<String>) {
         val appScope = rememberCoroutineScope()
         val store = remember { ConsoleStore(appScope) }
         val uiState by store.state.collectAsState()
+        var openSettingsSignal by remember { mutableIntStateOf(0) }
+        var toggleSidebarSignal by remember { mutableIntStateOf(0) }
         val hostTitle = uiState.hub?.name?.takeIf { it.isNotBlank() }?.let { "Lework — $it" } ?: "Lework"
 
         val windowState = rememberWindowState(
@@ -89,6 +93,17 @@ fun main(args: Array<String>) {
                         shortcut = KeyShortcut(Key.R, meta = true),
                         onClick = store::refreshHostSessions,
                     )
+                    Item(
+                        text = "收起 / 展开侧边栏",
+                        shortcut = KeyShortcut(Key.B, meta = true),
+                        onClick = { toggleSidebarSignal++ },
+                    )
+                    Separator()
+                    Item(
+                        text = "设置…",
+                        shortcut = KeyShortcut(Key.Comma, meta = true),
+                        onClick = { openSettingsSignal++ },
+                    )
                     Separator()
                     Item(
                         text = "连接其他开发机…",
@@ -115,7 +130,11 @@ fun main(args: Array<String>) {
                 }
             }
 
-            ConsoleApp(externalStore = store)
+            ConsoleApp(
+                externalStore = store,
+                openSettingsSignal = openSettingsSignal,
+                toggleSidebarSignal = toggleSidebarSignal,
+            )
         }
     }
 }

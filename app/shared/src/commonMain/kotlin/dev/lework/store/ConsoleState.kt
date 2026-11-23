@@ -131,6 +131,7 @@ data class ConsoleUiState(
     val selectedModelId: String? = null,
     val selectedEffort: ReasoningEffort = ReasoningEffort.MEDIUM,
     val selectedMode: SessionMode = SessionMode.AUTO,
+    val favoriteModelKeys: List<String> = emptyList(),
     val selectedWorkspacePath: String = "",
     val selectedExtraWorkspaces: List<String> = emptyList(),
     val draftUseWorktree: Boolean = false,

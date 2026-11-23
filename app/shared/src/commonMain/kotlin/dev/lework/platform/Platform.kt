@@ -12,6 +12,7 @@ data class SavedSessionPrefs(
     val reasoningEffort: String = "medium",
     val mode: String = "auto",
     val workspacePath: String = "",
+    val favoriteModelKeys: List<String> = emptyList(),
 )
 
 @Serializable

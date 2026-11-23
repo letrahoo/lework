@@ -43,6 +43,7 @@ class ConsoleStore(
             selectedModelId = initialPrefs.modelId,
             selectedEffort = parseEffort(initialPrefs.reasoningEffort),
             selectedMode = parseMode(initialPrefs.mode),
+            favoriteModelKeys = initialPrefs.favoriteModelKeys,
             selectedWorkspacePath = initialPrefs.workspacePath,
             currentBrowsePath = initialPrefs.workspacePath,
         ),
@@ -356,6 +357,7 @@ class ConsoleStore(
                 reasoningEffort = effortToWire(st.selectedEffort),
                 mode = modeToWire(st.selectedMode),
                 workspacePath = st.selectedWorkspacePath,
+                favoriteModelKeys = st.favoriteModelKeys,
             ),
         )
     }
@@ -1717,6 +1719,20 @@ class ConsoleStore(
 
     fun selectEffort(effort: ReasoningEffort) {
         _state.update { it.copy(selectedEffort = effort) }
+        persistCurrentPrefs()
+    }
+
+    fun toggleFavoriteModel(engineId: String, modelId: String) {
+        val key = "${engineId.trim()}:${modelId.trim()}"
+        if (key.length < 3) return
+        _state.update { s ->
+            val next = if (key in s.favoriteModelKeys) {
+                s.favoriteModelKeys - key
+            } else {
+                (s.favoriteModelKeys + key).distinct()
+            }
+            s.copy(favoriteModelKeys = next)
+        }
         persistCurrentPrefs()
     }
 

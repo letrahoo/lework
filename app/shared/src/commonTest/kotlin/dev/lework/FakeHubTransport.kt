@@ -39,6 +39,8 @@ class FakeHubTransport : HubTransport {
         platform = PlatformType.DARWIN,
         version = "0.3.9",
     )
+    var customHubName: String? = null
+    var customEngines: List<EngineInfo>? = null
 
     var sessions: MutableList<SessionMeta> = mutableListOf()
     val sessionEventsMap: MutableMap<String, MutableList<AgentEvent>> = mutableMapOf()
@@ -170,9 +172,9 @@ class FakeHubTransport : HubTransport {
 
     override suspend fun fetchStatus(): HubStatusResult =
         HubStatusResult(
-            hub = hubInfo,
+            hub = customHubName?.let { hubInfo.copy(name = it) } ?: hubInfo,
             slaves = emptyList(),
-            engines = listOf(
+            engines = customEngines ?: listOf(
                 EngineInfo(
                     id = "claude",
                     displayName = "Claude Code",

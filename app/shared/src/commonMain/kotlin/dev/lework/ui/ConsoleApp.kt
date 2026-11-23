@@ -5,7 +5,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -50,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.epochMillis
+import dev.lework.platform.isDesktopPlatform
 import dev.lework.platform.loadSavedRelayUrls
 import dev.lework.protocol.*
 import dev.lework.store.*
@@ -61,6 +64,8 @@ import kotlinx.coroutines.launch
 fun ConsoleApp(
     externalStore: ConsoleStore? = null,
     autoBootstrap: Boolean = true,
+    openSettingsSignal: Int = 0,
+    toggleSidebarSignal: Int = 0,
 ) {
     val scope = rememberCoroutineScope()
     val store = remember(externalStore) { externalStore ?: ConsoleStore(scope) }
@@ -73,8 +78,22 @@ fun ConsoleApp(
     var showFilesSheet by remember { mutableStateOf(false) }
     var showUsageSheet by remember { mutableStateOf(false) }
     var showDiffSheet by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
+    var desktopSidebarExpanded by remember { mutableStateOf(true) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
     var promptText by remember { mutableStateOf("") }
+
+    LaunchedEffect(openSettingsSignal) {
+        if (openSettingsSignal > 0 && state.hasEnteredWorkspace) {
+            showSettingsDialog = true
+        }
+    }
+
+    LaunchedEffect(toggleSidebarSignal) {
+        if (toggleSidebarSignal > 0 && state.hasEnteredWorkspace) {
+            desktopSidebarExpanded = !desktopSidebarExpanded
+        }
+    }
 
     // Automatically resign software keyboard & focus whenever the navigation drawer opens or closes
     // (covers both tapping the top-left Menu button AND edge-swipe drawer gestures).
@@ -89,7 +108,7 @@ fun ConsoleApp(
     // Automatically resign software keyboard before any modal bottom sheet or pairing dialog appears
     val anyOverlaySheetOpen =
         showModelSheet || showWorkspaceSheet || showFilesSheet || showUsageSheet || showDiffSheet ||
-            state.pendingDeepLinkPairing != null
+            showSettingsDialog || state.pendingDeepLinkPairing != null
     LaunchedEffect(anyOverlaySheetOpen) {
         if (anyOverlaySheetOpen) {
             dismissKeyboard()
@@ -146,6 +165,18 @@ fun ConsoleApp(
                                     store.startNewDraftSession()
                                     true
                                 }
+                                ev.key == Key.B && !ev.isShiftPressed -> {
+                                    desktopSidebarExpanded = !desktopSidebarExpanded
+                                    true
+                                }
+                                ev.key == Key.R && !ev.isShiftPressed -> {
+                                    store.refreshHostSessions()
+                                    true
+                                }
+                                ev.key == Key.Comma && !ev.isShiftPressed -> {
+                                    showSettingsDialog = true
+                                    true
+                                }
                                 ev.key == Key.K && !ev.isShiftPressed -> {
                                     showModelSheet = true
                                     true
@@ -174,6 +205,15 @@ fun ConsoleApp(
                                 showUsageSheet = true
                                 if (closeDrawerAfterAction) scope.launch { drawerState.close() }
                             },
+                            onOpenSettings = {
+                                showSettingsDialog = true
+                                if (closeDrawerAfterAction) scope.launch { drawerState.close() }
+                            },
+                            onToggleSidebar = if (isWideDesktop) {
+                                { desktopSidebarExpanded = false }
+                            } else {
+                                null
+                            },
                             onSelectFilter = store::setDrawerEngineFilter,
                             onSelectSession = { sid ->
                                 store.selectSession(sid)
@@ -199,6 +239,9 @@ fun ConsoleApp(
 
                     @Composable
                     fun renderMainConversationColumn(showMenuButton: Boolean, modifier: Modifier = Modifier) {
+                        val topActiveSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
+                        val useDesktopHeader = isWideDesktop && isDesktopPlatform()
+
                         Column(
                             modifier = modifier
                                 .fillMaxSize()
@@ -206,29 +249,68 @@ fun ConsoleApp(
                                 .windowInsetsPadding(WindowInsets.safeDrawing),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            MinimalTopBar(
-                                state = state,
-                                showMenuButton = showMenuButton,
-                                onOpenDrawer = {
-                                    dismissKeyboard()
-                                    store.refreshHostSessions()
-                                    scope.launch { drawerState.open() }
-                                },
-                                onOpenModelSheet = {
-                                    dismissKeyboard()
-                                    showModelSheet = true
-                                },
-                                onOpenDiffSheet = {
-                                    dismissKeyboard()
-                                    store.refreshDiffAndCheckpoints()
-                                    showDiffSheet = true
-                                },
-                                onOpenFilesSheet = {
-                                    dismissKeyboard()
-                                    store.browseDirectory()
-                                    showFilesSheet = true
-                                },
-                            )
+                            if (useDesktopHeader) {
+                                DesktopWorkspaceHeader(
+                                    state = state,
+                                    activeSession = topActiveSess,
+                                    showExpandSidebarButton = !desktopSidebarExpanded,
+                                    onExpandSidebar = { desktopSidebarExpanded = true },
+                                    onOpenWorkspaceSheet = {
+                                        dismissKeyboard()
+                                        showWorkspaceSheet = true
+                                    },
+                                    onOpenModelSheet = {
+                                        dismissKeyboard()
+                                        showModelSheet = true
+                                    },
+                                    onOpenDiffSheet = {
+                                        dismissKeyboard()
+                                        store.refreshDiffAndCheckpoints()
+                                        showDiffSheet = true
+                                    },
+                                    onOpenFilesSheet = {
+                                        dismissKeyboard()
+                                        store.browseDirectory()
+                                        showFilesSheet = true
+                                    },
+                                    onRenameSession = {
+                                        if (topActiveSess != null) {
+                                            dismissKeyboard()
+                                            renamingSessionId = topActiveSess.id
+                                        }
+                                    },
+                                    onToggleArchiveSession = {
+                                        if (topActiveSess != null) {
+                                            dismissKeyboard()
+                                            store.archiveSession(topActiveSess.id, !topActiveSess.archived)
+                                        }
+                                    },
+                                )
+                            } else {
+                                MinimalTopBar(
+                                    state = state,
+                                    showMenuButton = showMenuButton,
+                                    onOpenDrawer = {
+                                        dismissKeyboard()
+                                        store.refreshHostSessions()
+                                        scope.launch { drawerState.open() }
+                                    },
+                                    onOpenModelSheet = {
+                                        dismissKeyboard()
+                                        showModelSheet = true
+                                    },
+                                    onOpenDiffSheet = {
+                                        dismissKeyboard()
+                                        store.refreshDiffAndCheckpoints()
+                                        showDiffSheet = true
+                                    },
+                                    onOpenFilesSheet = {
+                                        dismissKeyboard()
+                                        store.browseDirectory()
+                                        showFilesSheet = true
+                                    },
+                                )
+                            }
 
                             Column(
                                 modifier = Modifier
@@ -236,8 +318,7 @@ fun ConsoleApp(
                                     .let { m -> if (isWideDesktop) m.widthIn(max = 980.dp) else m }
                                     .fillMaxWidth(),
                             ) {
-                                val topActiveSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
-                                if (topActiveSess != null) {
+                                if (!useDesktopHeader && topActiveSess != null) {
                                     ActiveSessionTitleStrip(
                                         session = topActiveSess,
                                         onRename = {
@@ -413,6 +494,10 @@ fun ConsoleApp(
                                         dismissKeyboard()
                                         showWorkspaceSheet = true
                                     },
+                                    onOpenModelSheet = {
+                                        dismissKeyboard()
+                                        showModelSheet = true
+                                    },
                                     onCycleMode = {
                                         val modes = state.availableModes
                                         val idx = modes.indexOf(state.selectedMode)
@@ -453,22 +538,24 @@ fun ConsoleApp(
 
                     if (isWideDesktop) {
                         Row(modifier = Modifier.fillMaxSize()) {
-                            Surface(
-                                color = Everforest.BgDim,
-                                contentColor = Everforest.Fg,
-                                modifier = Modifier
-                                    .width(304.dp)
-                                    .fillMaxHeight()
-                                    .testTag("desktop_permanent_sidebar"),
-                            ) {
-                                renderSidebar(closeDrawerAfterAction = false)
+                            if (desktopSidebarExpanded) {
+                                Surface(
+                                    color = Everforest.BgDim,
+                                    contentColor = Everforest.Fg,
+                                    modifier = Modifier
+                                        .width(292.dp)
+                                        .fillMaxHeight()
+                                        .testTag("desktop_permanent_sidebar"),
+                                ) {
+                                    renderSidebar(closeDrawerAfterAction = false)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .width(1.dp)
+                                        .fillMaxHeight()
+                                        .background(Everforest.Bg2),
+                                )
                             }
-                            Box(
-                                modifier = Modifier
-                                    .width(1.dp)
-                                    .fillMaxHeight()
-                                    .background(Everforest.Bg2),
-                            )
                             renderMainConversationColumn(
                                 showMenuButton = false,
                                 modifier = Modifier.weight(1f),
@@ -499,18 +586,32 @@ fun ConsoleApp(
                 }
 
                 if (showModelSheet) {
-                    ModalBottomSheet(
-                        onDismissRequest = { showModelSheet = false },
-                        containerColor = Everforest.Bg1,
-                        contentColor = Everforest.Fg,
-                    ) {
-                        EngineModelPickerSheet(
+                    if (isDesktopPlatform()) {
+                        DesktopModelPickerDialog(
                             state = state,
                             onSelectEngineAndModel = { engId, modelSpec, effort ->
                                 store.selectEngineAndModel(engId, modelSpec, effort)
                             },
-                            onDone = { showModelSheet = false },
+                            onSelectEffort = store::selectEffort,
+                            onSelectMode = store::selectMode,
+                            onToggleFavoriteModel = store::toggleFavoriteModel,
+                            onDismiss = { showModelSheet = false },
                         )
+                    } else {
+                        ModalBottomSheet(
+                            onDismissRequest = { showModelSheet = false },
+                            containerColor = Everforest.Bg1,
+                            contentColor = Everforest.Fg,
+                        ) {
+                            EngineModelPickerSheet(
+                                state = state,
+                                onSelectEngineAndModel = { engId, modelSpec, effort ->
+                                    store.selectEngineAndModel(engId, modelSpec, effort)
+                                },
+                                onSelectEffort = store::selectEffort,
+                                onDone = { showModelSheet = false },
+                            )
+                        }
                     }
                 }
 
@@ -596,6 +697,17 @@ fun ConsoleApp(
                         )
                     }
                 }
+
+                if (showSettingsDialog) {
+                    DesktopSettingsDialog(
+                        state = state,
+                        onDismiss = { showSettingsDialog = false },
+                        onSwitchHost = store::switchPairedHost,
+                        onRemoveHost = store::removePairedHost,
+                        onPairAnotherHost = store::preparePairAnotherHost,
+                        onLogout = store::logout,
+                    )
+                }
             }
 
             val pendingPair = state.pendingDeepLinkPairing
@@ -673,6 +785,253 @@ fun ConsoleApp(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DesktopWorkspaceHeader(
+    state: ConsoleUiState,
+    activeSession: SessionMeta?,
+    showExpandSidebarButton: Boolean,
+    onExpandSidebar: () -> Unit,
+    onOpenWorkspaceSheet: () -> Unit,
+    onOpenModelSheet: () -> Unit,
+    onOpenDiffSheet: () -> Unit,
+    onOpenFilesSheet: () -> Unit,
+    onRenameSession: () -> Unit,
+    onToggleArchiveSession: () -> Unit,
+) {
+    val primaryPath = activeSession?.worktree?.baseRepoPath
+        ?: activeSession?.workspaces?.firstOrNull()
+        ?: activeSession?.cwd
+        ?: state.selectedWorkspacePath
+    val wsShort = primaryPath.trimEnd('/').substringAfterLast('/').ifBlank { "默认工作区" }
+    val wsHoverSource = remember { MutableInteractionSource() }
+    val wsHovered by wsHoverSource.collectIsHoveredAsState()
+    val titleHoverSource = remember { MutableInteractionSource() }
+    val titleHovered by titleHoverSource.collectIsHoveredAsState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("desktop_workspace_header"),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            // Left: T3 Code-style Workspace / Thread Breadcrumb
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (showExpandSidebarButton) {
+                    LeworkIconActionButton(
+                        icon = LeworkPanelLeftIcon,
+                        tooltip = "展开侧边栏",
+                        shortcut = "⌘B",
+                        showBadgeDot = state.runningSessions.isNotEmpty(),
+                        badgeColor = Everforest.Orange,
+                        size = 28.dp,
+                        iconSize = 15.5.dp,
+                        testTag = "desktop_btn_expand_sidebar",
+                        onClick = onExpandSidebar,
+                    )
+                }
+
+                LeworkTooltip(
+                    label = "切换工作区目录",
+                    subtitle = primaryPath.ifBlank { "默认工作区" },
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (wsHovered) Everforest.Bg2.copy(alpha = 0.7f) else Color.Transparent)
+                            .hoverable(wsHoverSource)
+                            .clickable(interactionSource = wsHoverSource, indication = null) {
+                                onOpenWorkspaceSheet()
+                            }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Folder,
+                            contentDescription = null,
+                            tint = Everforest.CommentGrey,
+                            modifier = Modifier.size(13.5.dp),
+                        )
+                        Text(
+                            text = wsShort,
+                            fontSize = 12.5.sp,
+                            color = if (wsHovered) Everforest.Fg else Everforest.Grey1,
+                            maxLines = 1,
+                        )
+                    }
+                }
+
+                Text(
+                    text = "/",
+                    fontSize = 12.5.sp,
+                    color = Everforest.Grey0,
+                )
+
+                if (activeSession != null) {
+                    if (activeSession.archived) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = Everforest.BgYellow,
+                        ) {
+                            Text(
+                                text = "已归档",
+                                fontSize = 10.sp,
+                                color = Everforest.BoldGold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp),
+                            )
+                        }
+                    }
+
+                    activeSession.worktree?.let { wt ->
+                        LeworkTooltip(
+                            label = "独立分支工作区",
+                            subtitle = "${wt.branch} · ${wt.worktreePath}",
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(5.dp),
+                                color = Everforest.BgGreen,
+                                border = BorderStroke(0.8.dp, Everforest.Aqua.copy(alpha = 0.45f)),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.5.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.AccountTree,
+                                        contentDescription = null,
+                                        tint = Everforest.Aqua,
+                                        modifier = Modifier.size(10.5.dp),
+                                    )
+                                    Text(
+                                        text = wt.branch.removePrefix("lework/"),
+                                        fontSize = 10.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Everforest.Aqua,
+                                        maxLines = 1,
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    LeworkTooltip(
+                        label = "点击重命名会话",
+                        subtitle = activeSession.title,
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (titleHovered) Everforest.Bg2.copy(alpha = 0.7f) else Color.Transparent)
+                                .hoverable(titleHoverSource)
+                                .clickable(interactionSource = titleHoverSource, indication = null) {
+                                    onRenameSession()
+                                }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                .testTag("active_session_rename_trigger"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                text = activeSession.title,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.Fg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            if (titleHovered) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Edit,
+                                    contentDescription = "重命名当前会话",
+                                    tint = Everforest.CommentGrey,
+                                    modifier = Modifier.size(12.5.dp),
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "新会话",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Everforest.Grey2,
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                    )
+                    if (state.draftUseWorktree) {
+                        Surface(
+                            shape = RoundedCornerShape(5.dp),
+                            color = Everforest.BgGreen,
+                            border = BorderStroke(0.8.dp, Everforest.Aqua.copy(alpha = 0.45f)),
+                        ) {
+                            Text(
+                                text = "独立分支",
+                                fontSize = 10.sp,
+                                color = Everforest.Aqua,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.width(12.dp))
+
+            // Right: Clean Iconified Workspace & Session Actions with Hover Tooltips
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                if (activeSession != null) {
+                    LeworkIconActionButton(
+                        icon = if (activeSession.archived) Icons.Rounded.Unarchive else Icons.Rounded.Inventory2,
+                        tooltip = if (activeSession.archived) "移出归档" else "归档会话",
+                        active = activeSession.archived,
+                        activeTint = Everforest.Green,
+                        size = 30.dp,
+                        iconSize = 16.5.dp,
+                        testTag = "active_session_archive_btn",
+                        onClick = onToggleArchiveSession,
+                    )
+                }
+
+                LeworkIconActionButton(
+                    icon = Icons.AutoMirrored.Rounded.CompareArrows,
+                    tooltip = "查看代码变更与快照",
+                    shortcut = "⇧⌘D",
+                    size = 30.dp,
+                    iconSize = 17.5.dp,
+                    testTag = "topbar_btn_diff",
+                    onClick = onOpenDiffSheet,
+                )
+
+                LeworkIconActionButton(
+                    icon = Icons.Rounded.FolderOpen,
+                    tooltip = "浏览工作区文件",
+                    size = 30.dp,
+                    iconSize = 17.dp,
+                    testTag = "topbar_btn_files",
+                    onClick = onOpenFilesSheet,
+                )
+            }
+        }
+        HorizontalDivider(color = Everforest.Bg2.copy(alpha = 0.65f))
     }
 }
 

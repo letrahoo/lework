@@ -452,7 +452,114 @@ class UiAutomationStressTest {
                 ),
             )
 
-            val transport = FakeHubTransport()
+            val transport = FakeHubTransport().apply {
+                customHubName = "MacBook Pro (本机)"
+                customEngines = listOf(
+                    EngineInfo(
+                        id = "claude",
+                        displayName = "Claude Code",
+                        kind = EngineKind.CLI,
+                        status = EngineStatus(installed = true, ready = true, version = "2.1.328"),
+                        capabilities = EngineCapabilities(
+                            permissions = true,
+                            images = true,
+                            modelSwitch = true,
+                            modes = true,
+                            history = true,
+                            cancel = true,
+                        ),
+                        models = listOf(
+                            EngineModelSpec(
+                                id = "claude-opus-4-6",
+                                name = "Claude Opus 4.6",
+                                efforts = listOf(
+                                    ReasoningEffort.LOW,
+                                    ReasoningEffort.MEDIUM,
+                                    ReasoningEffort.HIGH,
+                                    ReasoningEffort.XHIGH,
+                                    ReasoningEffort.MAX,
+                                ),
+                                defaultEffort = ReasoningEffort.HIGH,
+                            ),
+                            EngineModelSpec(
+                                id = "claude-sonnet-4-6",
+                                name = "Claude Sonnet 4.6",
+                                efforts = listOf(
+                                    ReasoningEffort.LOW,
+                                    ReasoningEffort.MEDIUM,
+                                    ReasoningEffort.HIGH,
+                                    ReasoningEffort.XHIGH,
+                                ),
+                                defaultEffort = ReasoningEffort.MEDIUM,
+                            ),
+                            EngineModelSpec(
+                                id = "claude-haiku-4-5",
+                                name = "Claude Haiku 4.5",
+                                efforts = listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH),
+                                defaultEffort = ReasoningEffort.LOW,
+                            ),
+                        ),
+                        defaultModel = "claude-opus-4-6",
+                        defaultMode = SessionMode.AUTO,
+                        defaultEffort = ReasoningEffort.MEDIUM,
+                        supportedModes = listOf(
+                            SessionMode.AUTO,
+                            SessionMode.ACCEPT_EDITS,
+                            SessionMode.PLAN,
+                            SessionMode.DEFAULT,
+                        ),
+                    ),
+                    EngineInfo(
+                        id = "codex",
+                        displayName = "Codex CLI",
+                        kind = EngineKind.CLI,
+                        status = EngineStatus(installed = true, ready = true, version = "0.28.0"),
+                        capabilities = EngineCapabilities(
+                            permissions = true,
+                            images = true,
+                            modelSwitch = true,
+                            modes = true,
+                            history = true,
+                            cancel = true,
+                        ),
+                        models = listOf(
+                            EngineModelSpec(
+                                id = "gpt-5.4",
+                                name = "GPT-5.4",
+                                efforts = listOf(
+                                    ReasoningEffort.LOW,
+                                    ReasoningEffort.MEDIUM,
+                                    ReasoningEffort.HIGH,
+                                    ReasoningEffort.XHIGH,
+                                ),
+                            ),
+                        ),
+                        defaultModel = "gpt-5.4",
+                    ),
+                    EngineInfo(
+                        id = "agy",
+                        displayName = "Antigravity",
+                        kind = EngineKind.CLI,
+                        status = EngineStatus(installed = true, ready = true, version = "2.0.0"),
+                        capabilities = EngineCapabilities(
+                            permissions = true,
+                            images = true,
+                            modelSwitch = true,
+                            modes = true,
+                            history = true,
+                            cancel = true,
+                        ),
+                        models = listOf(
+                            EngineModelSpec(
+                                id = "gemini-3.1-pro",
+                                name = "Gemini 3.1 Pro",
+                                efforts = listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH),
+                            ),
+                        ),
+                        defaultModel = "gemini-3.1-pro",
+                    ),
+                )
+            }
             val sid = "sess_wt_demo"
             transport.sessions.addAll(
                 listOf(
@@ -518,9 +625,29 @@ class UiAutomationStressTest {
             runOnIdle { store.selectSession(sid) }
             waitForIdle()
 
-            // 1. Wide desktop layout shows permanent sidebar and omits mobile hamburger button
+            // 1. Wide desktop layout shows T3 Code-style permanent sidebar, single-row header, and omits mobile hamburger button
             onNodeWithTag("desktop_permanent_sidebar").assertIsDisplayed()
+            onNodeWithTag("desktop_workspace_header").assertIsDisplayed()
             onNodeWithTag("topbar_btn_menu").assertDoesNotExist()
+            onNodeWithTag("drawer_btn_new_session").assertIsDisplayed()
+            onNodeWithTag("drawer_btn_filter").assertIsDisplayed()
+
+            // Verify bottom sidebar bar: left = [1. 设置, 2. 用量], far right = [刷新] (no PR / Issue entries)
+            val sidebarBounds = onNodeWithTag("desktop_permanent_sidebar").fetchSemanticsNode().boundsInRoot
+            val settingsBounds = onNodeWithTag("drawer_btn_settings").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val usageBounds = onNodeWithTag("drawer_btn_usage").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val refreshBounds = onNodeWithTag("drawer_btn_refresh").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertTrue(settingsBounds.left < usageBounds.left, "Expected 1.设置 before 2.用量 in bottom-left")
+            assertTrue(
+                refreshBounds.left > (sidebarBounds.left + sidebarBounds.right) / 2f,
+                "Expected 刷新 button at far right of sidebar footer",
+            )
+
+            // Verify iconified composer controls + unified Engine/Model/Reasoning trigger on Desktop
+            onNodeWithTag("composer_add_image_btn").assertIsDisplayed()
+            onNodeWithTag("composer_mention_btn").assertIsDisplayed()
+            onNodeWithTag("composer_model_picker_btn").assertIsDisplayed()
+            onNodeWithTag("composer_mode_btn").assertIsDisplayed()
 
             val captureDir = (System.getProperty("lework.captureScreenshotsDir")
                 ?: System.getenv("LEWORK_CAPTURE_DIR"))?.takeIf { it.isNotBlank() }
@@ -531,6 +658,47 @@ class UiAutomationStressTest {
                     File(outDir, "desktop_widescreen_workspace.png").writeBytes(wsPng.bytes)
                 }
             }
+
+            // Verify T3 Code 3-Column Engine + Model + Reasoning Level Picker
+            onNodeWithTag("composer_model_picker_btn").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_model_picker_dialog").assertIsDisplayed()
+            onNodeWithTag("picker_rail_claude").assertIsDisplayed()
+            onNodeWithTag("picker_rail_codex").assertIsDisplayed()
+            onNodeWithTag("picker_rail_agy").assertIsDisplayed()
+            onNodeWithTag("picker_model_claude_claude-sonnet-4-6").performClick()
+            waitForIdle()
+            onNodeWithTag("picker_effort_high").performClick()
+            waitForIdle()
+            assertEquals("claude-sonnet-4-6", store.state.value.selectedModelId)
+            assertEquals(ReasoningEffort.HIGH, store.state.value.selectedEffort)
+            if (captureDir != null) {
+                val pickerPng = SkiaImage.makeFromBitmap(captureToImage().asSkiaBitmap()).encodeToData(EncodedImageFormat.PNG)
+                if (pickerPng != null) {
+                    File(captureDir, "desktop_model_picker.png").writeBytes(pickerPng.bytes)
+                }
+            }
+            // Close picker via Escape or re-opening composer flow
+            runOnIdle { store.selectEffort(ReasoningEffort.HIGH) }
+            onNodeWithTag("model_picker_search_input").performClick()
+            onNodeWithTag("model_picker_search_input").performKeyInput {
+                pressKey(Key.Escape)
+            }
+            waitForIdle()
+
+            // Verify clicking bottom-left `1. 设置` opens Desktop Settings modal cleanly
+            onNodeWithTag("drawer_btn_settings").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_settings_dialog").assertIsDisplayed()
+            if (captureDir != null) {
+                val settingsPng = SkiaImage.makeFromBitmap(captureToImage().asSkiaBitmap()).encodeToData(EncodedImageFormat.PNG)
+                if (settingsPng != null) {
+                    File(captureDir, "desktop_settings_modal.png").writeBytes(settingsPng.bytes)
+                }
+            }
+            onNodeWithTag("desktop_settings_close_btn").performClick()
+            waitForIdle()
+            onNodeWithTag("desktop_settings_dialog").assertDoesNotExist()
 
             // 2. Typing in composer and pressing Enter (without Shift) sends prompt on Desktop
             onNodeWithTag("composer_input").performClick()

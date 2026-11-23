@@ -666,6 +666,11 @@ actual fun saveAuthSession(token: String?, userName: String?) {
 
 actual fun loadSessionPrefs(): SavedSessionPrefs {
     val p = prefs() ?: return memPrefs
+    val favs = p.getString("pref_fav_models", null)
+        ?.split('|')
+        ?.map { it.trim() }
+        ?.filter { it.contains(':') }
+        ?: memPrefs.favoriteModelKeys
     return SavedSessionPrefs(
         engineId = p.getString("pref_engine", null)?.ifBlank { null } ?: memPrefs.engineId,
         providerId = p.getString("pref_provider", null)?.ifBlank { null },
@@ -673,6 +678,7 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         reasoningEffort = p.getString("pref_effort", null)?.ifBlank { null } ?: memPrefs.reasoningEffort,
         mode = p.getString("pref_mode", null)?.ifBlank { null } ?: memPrefs.mode,
         workspacePath = p.getString("pref_workspace", null) ?: memPrefs.workspacePath,
+        favoriteModelKeys = favs,
     )
 }
 
@@ -685,6 +691,7 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
         ?.putString("pref_effort", prefs.reasoningEffort)
         ?.putString("pref_mode", prefs.mode)
         ?.putString("pref_workspace", prefs.workspacePath)
+        ?.putString("pref_fav_models", prefs.favoriteModelKeys.joinToString("|"))
         ?.apply()
 }
 

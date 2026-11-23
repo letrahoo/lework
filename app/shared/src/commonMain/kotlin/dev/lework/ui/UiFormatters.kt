@@ -115,12 +115,36 @@ internal fun modeDisplayLabel(mode: SessionMode): String = when (mode) {
     SessionMode.BYPASS_PERMISSIONS -> "免审批"
 }
 
+internal fun modeDescription(mode: SessionMode): String = when (mode) {
+    SessionMode.AUTO -> "自动执行常规命令与文件改动，高风险操作前确认"
+    SessionMode.ACCEPT_EDITS -> "自动写入代码编辑，执行终端命令前需你确认"
+    SessionMode.PLAN -> "仅输出分析与规划方案，不修改文件或执行命令"
+    SessionMode.DEFAULT -> "每次文件修改与终端命令执行前均需手动确认"
+    SessionMode.BYPASS_PERMISSIONS -> "跳过全部权限确认，全程自动连续执行"
+}
+
+internal fun modeIcon(mode: SessionMode): ImageVector = when (mode) {
+    SessionMode.AUTO -> Icons.Rounded.PlayCircle
+    SessionMode.ACCEPT_EDITS -> Icons.Rounded.Edit
+    SessionMode.PLAN -> Icons.Rounded.Description
+    SessionMode.DEFAULT -> Icons.Rounded.Shield
+    SessionMode.BYPASS_PERMISSIONS -> Icons.Rounded.Bolt
+}
+
 internal fun effortDisplayLabel(effort: ReasoningEffort): String = when (effort) {
     ReasoningEffort.LOW -> "轻量"
     ReasoningEffort.MEDIUM -> "标准"
     ReasoningEffort.HIGH -> "深度"
     ReasoningEffort.XHIGH -> "超高"
     ReasoningEffort.MAX -> "极限"
+}
+
+internal fun effortDescription(effort: ReasoningEffort): String = when (effort) {
+    ReasoningEffort.LOW -> "快速响应，适合轻量问答与小范围调整"
+    ReasoningEffort.MEDIUM -> "均衡响应速度与多步推理质量"
+    ReasoningEffort.HIGH -> "投入更多思考预算，适合复杂设计与排查"
+    ReasoningEffort.XHIGH -> "高强度推演边界条件与跨模块影响"
+    ReasoningEffort.MAX -> "最高推理规格，适合核心疑难攻坚"
 }
 
 internal fun fileMaterialIcon(entry: FsEntry): ImageVector {
