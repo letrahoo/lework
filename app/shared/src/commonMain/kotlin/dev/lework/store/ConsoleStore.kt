@@ -756,9 +756,10 @@ class ConsoleStore(
                         }
                     }.mapNotNull { it.await() }
                 }
-                if (probed.isEmpty() && primaryBatch.size < currentCandidates.size) {
+                if (primaryBatch.size < currentCandidates.size && probed.none { it.second.discover.tailscaleSameUser }) {
                     val fallbackBatch = currentCandidates.filter { it.isMobileClientNode() }
-                    probed = coroutineScope {
+                    // Keep primary responders first for the saved-token path if neither batch supports the handshake.
+                    probed += coroutineScope {
                         fallbackBatch.map { peer ->
                             async {
                                 val proxyUrl = peer.localProxyUrl ?: return@async null
