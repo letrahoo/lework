@@ -57,7 +57,7 @@ class SubagentInspectorTest {
             val subDone = SubagentSummary(
                 id = subDoneId,
                 title = "终端同步修复",
-                state = SessionState.IDLE,
+                state = SessionState.CLOSED,
                 statusText = "已完成",
                 createdAt = 900L,
                 updatedAt = 1_500L,
@@ -228,7 +228,7 @@ class SubagentInspectorTest {
             val subB = SubagentSummary(
                 id = subBId,
                 title = "单测补齐",
-                state = SessionState.IDLE,
+                state = SessionState.CLOSED,
                 statusText = "已完成",
                 createdAt = 1_000L,
                 updatedAt = 2_000L,
@@ -245,7 +245,7 @@ class SubagentInspectorTest {
                     createdAt = 1_000L,
                     updatedAt = 3_000L,
                     lastSeq = 0,
-                    subagents = listOf(subA, subB),
+                    subagents = listOf(subA, subB, subB.copy(id = "uncertain", state = SessionState.IDLE, statusText = null)),
                 ),
             )
             transport.sessionEventsMap[parentId] = mutableListOf(
@@ -273,13 +273,19 @@ class SubagentInspectorTest {
 
             // Strip is displayed with live running ratio pill and quick chips
             onNodeWithTag("subagent_status_strip").assertIsDisplayed()
-            onNodeWithText("1/2 运行中", substring = true).assertIsDisplayed()
+            onNodeWithText("2 项待跟进", substring = true).assertIsDisplayed()
             onNodeWithTag("subagent_chip_$subAId").assertIsDisplayed()
+
+            onNodeWithTag("subagent_chip_$subBId").assertDoesNotExist()
+            onNodeWithTag("subagent_chip_uncertain").assertExists()
 
             // Expand strip to view full cards with role badge & statusText
             onNodeWithTag("subagent_strip_toggle").performClick()
             waitForIdle()
             onNodeWithTag("subagent_item_$subAId").assertIsDisplayed()
+            onNodeWithTag("subagent_item_$subBId").assertDoesNotExist()
+            onNodeWithText("尚未确认结束").assertIsDisplayed()
+            onNodeWithText("查看历史子任务（1）").performClick()
             onNodeWithTag("subagent_item_$subBId").assertIsDisplayed()
             onNodeWithText("查阅 ConsoleStore.kt", substring = true).assertIsDisplayed()
 
@@ -308,7 +314,7 @@ class SubagentInspectorTest {
         }
 
     @Test
-    fun `renders subagent status strip and opens inspector via quick chip on desktop layout`() =
+    fun `renders subagent status strip and opens inspector via history on desktop layout`() =
         runComposeUiTest {
             JvmPlatformTestHooks.simulateDesktopLayout = true
             val transport = FakeHubTransport()
@@ -319,7 +325,7 @@ class SubagentInspectorTest {
                 id = subId,
                 title = "Claude 子任务代码审查",
                 role = "Reviewer",
-                state = SessionState.IDLE,
+                state = SessionState.CLOSED,
                 statusText = "已完成",
                 createdAt = 1_000L,
                 updatedAt = 2_000L,
@@ -361,10 +367,11 @@ class SubagentInspectorTest {
             waitForIdle()
 
             onNodeWithTag("subagent_status_strip").assertIsDisplayed()
-            onNodeWithText("1 已完成", substring = true).assertIsDisplayed()
+            onNodeWithText("子任务历史 · 1", substring = true).assertIsDisplayed()
 
-            // Quick 1-click access directly from mini chip in collapsed bar
-            onNodeWithTag("subagent_chip_$subId").performClick()
+            onNodeWithTag("subagent_chip_$subId").assertDoesNotExist()
+            onNodeWithTag("subagent_strip_toggle").performClick()
+            onNodeWithTag("subagent_item_$subId").performClick()
             waitForIdle()
 
             onNodeWithTag("subagent_inspector_dialog").assertIsDisplayed()

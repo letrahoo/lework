@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -50,16 +51,18 @@ private fun SubagentSummary.isActive(): Boolean =
 private fun SubagentSummary.accentColor(): Color = when (state) {
     SessionState.RUNNING, SessionState.WAITING_PERMISSION -> Everforest.Orange
     SessionState.ERROR -> Everforest.Red
+    SessionState.IDLE -> Everforest.CommentGrey
     else -> Everforest.Green
 }
 
 private fun SubagentSummary.displayStatusLabel(): String =
-    statusText?.trim()?.takeIf { it.isNotEmpty() } ?: when (state) {
+    // Older Hubs also used idle for stale tasks and labeled them completed.
+    statusText?.trim()?.takeIf { state != SessionState.IDLE && it.isNotEmpty() } ?: when (state) {
         SessionState.RUNNING -> "运行中…"
         SessionState.WAITING_PERMISSION -> "等待审批…"
         SessionState.ERROR -> "执行出错"
         SessionState.CLOSED -> "已结束"
-        SessionState.IDLE -> "已完成"
+        SessionState.IDLE -> "尚未确认结束"
     }
 
 @Composable
@@ -78,6 +81,7 @@ private fun SubagentStatusDot(
     }
     val color = when (state) {
         SessionState.RUNNING, SessionState.WAITING_PERMISSION -> Everforest.Orange
+        SessionState.IDLE -> Everforest.CommentGrey
         SessionState.ERROR -> Everforest.Red
         else -> Everforest.Green
     }
@@ -91,49 +95,32 @@ private fun SubagentStatusDot(
     )
 }
 
-/**
- * Compact, Everforest Dark live strip surfacing parallel SubAgents attached to the active parent session.
- * Shows a single-row header with live running/completed count, 1-click mini chips, and an expandable detail list.
- */
 @Composable
 internal fun SubagentStatusStrip(
+    sessionId: String,
     subagents: List<SubagentSummary>,
     onSelectSubagent: (SubagentSummary) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (subagents.isEmpty()) return
 
-    var expanded by remember { mutableStateOf(false) }
-    val runningCount = subagents.count { it.isActive() }
-    val errorCount = subagents.count { it.state == SessionState.ERROR }
-    val pillBg = when {
-        runningCount > 0 -> Everforest.Orange.copy(alpha = 0.16f)
-        errorCount > 0 -> Everforest.BgRed
-        else -> Everforest.BgGreen
-    }
-    val pillBorder = when {
-        runningCount > 0 -> Everforest.Orange.copy(alpha = 0.48f)
-        errorCount > 0 -> Everforest.Red.copy(alpha = 0.45f)
-        else -> Everforest.Green.copy(alpha = 0.4f)
-    }
-    val pillFg = when {
-        runningCount > 0 -> Everforest.Orange
-        errorCount > 0 -> Everforest.SoftRed
-        else -> Everforest.Green
-    }
+    val (current, history) = subagents.partition { it.state != SessionState.CLOSED && it.state != SessionState.ERROR }
+    val historyOnly = current.isEmpty()
+    var expanded by remember(sessionId, historyOnly) { mutableStateOf(false) }
+    var showHistory by remember(sessionId, expanded, historyOnly) { mutableStateOf(false) }
     val countLabel = when {
-        runningCount > 0 && runningCount < subagents.size -> "$runningCount/${subagents.size} 运行中"
-        runningCount > 0 -> "$runningCount 运行中"
-        errorCount > 0 -> "$errorCount 出错 · 共 ${subagents.size}"
-        else -> "${subagents.size} 已完成"
+        historyOnly -> "子任务历史 · ${history.size}"
+        current.all { it.state == SessionState.RUNNING } -> "${current.size} 运行中"
+        else -> "${current.size} 项待跟进"
     }
+    val pillFg = if (historyOnly) Everforest.CommentGrey else Everforest.Orange
 
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = Everforest.Bg1,
         border = BorderStroke(
             width = 1.dp,
-            color = if (runningCount > 0) Everforest.Orange.copy(alpha = 0.32f) else Everforest.Bg3,
+            color = if (historyOnly) Everforest.Bg2 else Everforest.Orange.copy(alpha = 0.32f),
         ),
         modifier = modifier
             .fillMaxWidth()
@@ -175,8 +162,8 @@ internal fun SubagentStatusStrip(
                     )
                     Surface(
                         shape = RoundedCornerShape(999.dp),
-                        color = pillBg,
-                        border = BorderStroke(0.8.dp, pillBorder),
+                        color = pillFg.copy(alpha = 0.10f),
+                        border = BorderStroke(0.8.dp, pillFg.copy(alpha = 0.32f)),
                     ) {
                         Text(
                             text = countLabel,
@@ -198,7 +185,7 @@ internal fun SubagentStatusStrip(
                     )
                 }
 
-                if (!expanded) {
+                if (!expanded && !historyOnly) {
                     Row(
                         modifier = Modifier
                             .weight(1f)
@@ -206,7 +193,7 @@ internal fun SubagentStatusStrip(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        for (sub in subagents) {
+                        for (sub in current) {
                             key(sub.id) {
                                 SubagentMiniChip(
                                     subagent = sub,
@@ -215,7 +202,7 @@ internal fun SubagentStatusStrip(
                             }
                         }
                     }
-                } else {
+                } else if (expanded) {
                     Spacer(Modifier.weight(1f))
                     Text(
                         text = "点击查看执行详情",
@@ -228,16 +215,26 @@ internal fun SubagentStatusStrip(
             // Expanded detailed list
             AnimatedVisibility(visible = expanded) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
                     HorizontalDivider(color = Everforest.Bg2, thickness = 1.dp)
-                    for (sub in subagents) {
+                    for (sub in current) {
                         key(sub.id) {
                             SubagentDetailRow(
                                 subagent = sub,
                                 onClick = { onSelectSubagent(sub) },
                             )
+                        }
+                    }
+                    if (!historyOnly && history.isNotEmpty()) {
+                        TextButton(onClick = { showHistory = !showHistory }) {
+                            Text(if (showHistory) "收起历史" else "查看历史子任务（${history.size}）", color = Everforest.CommentGrey)
+                        }
+                    }
+                    if (historyOnly || showHistory) {
+                        for (sub in history) key(sub.id) {
+                            SubagentDetailRow(sub, onClick = { onSelectSubagent(sub) })
                         }
                     }
                 }
@@ -278,9 +275,9 @@ private fun SubagentMiniChip(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.widthIn(max = 148.dp),
             )
-            if (active && !subagent.statusText.isNullOrBlank()) {
+            if (!subagent.statusText.isNullOrBlank() || subagent.state != SessionState.RUNNING) {
                 Text(
-                    text = "· ${subagent.statusText}",
+                    text = "· ${subagent.displayStatusLabel()}",
                     fontSize = 10.5.sp,
                     color = Everforest.SoftSand,
                     maxLines = 1,

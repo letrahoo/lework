@@ -276,8 +276,9 @@ internal fun DesktopConsoleApp(
                         )
 
                         val activeSubagents = topActiveSess?.subagents.orEmpty()
-                        if (activeSubagents.isNotEmpty()) {
+                        if (topActiveSess != null && activeSubagents.isNotEmpty()) {
                             SubagentStatusStrip(
+                                sessionId = topActiveSess.id,
                                 subagents = activeSubagents,
                                 onSelectSubagent = store::openSubagentInspector,
                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
