@@ -9,6 +9,7 @@ import {
   readAgyLocalSettings,
   resolveAgyWireModel,
 } from '../storage/host-history/engine-settings.ts'
+import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 export interface AgyAdapterOptions {
@@ -294,19 +295,18 @@ class AgyStreamSession implements EngineSession {
     })
   }
 
-  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
-    const desiredKey = this.resolveCurrentSpec().key
-    if (
-      !this.proc ||
-      this.proc.exitCode !== null ||
-      this.proc.killed ||
-      this.spawnedSpecKey !== desiredKey
-    ) {
-      await this.stopWorkerAndWait()
-      await this.spawnWorker()
-    }
-    if (!this.proc) throw new Error('AGY stream session is not running')
+  isAlive(): boolean {
+    return Boolean(
+      !this.closed &&
+        this.proc &&
+        this.proc.exitCode === null &&
+        !this.proc.killed &&
+        !this.proc.stdin.destroyed &&
+        this.proc.stdin.writable,
+    )
+  }
 
+  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
     this.currentMsgId = `msg_${turnId}`
     this.emittedDeltaInTurn = false
     this.init.emit({ type: 'session.state', state: 'running' })
@@ -318,6 +318,14 @@ class AgyStreamSession implements EngineSession {
     const effectiveContent = `${imgHeader}${text.trim() || '请结合所附图片进行分析。'}`
 
     try {
+      const desiredKey = this.resolveCurrentSpec().key
+      if (!this.isAlive() || this.spawnedSpecKey !== desiredKey) {
+        await this.stopWorkerAndWait()
+        await this.spawnWorker()
+      }
+      if (!this.proc) throw new Error('AGY stream session is not running')
+      this.stderrTail = ''
+
       await new Promise<void>((resolve, reject) => {
         // Guard against presence-lock deadlocks where `agy --conversation <id>` blocks before emitting `init`.
         // Cleared immediately upon the first `init` / `step_update` / `result` event so long coding turns never time out!
@@ -371,7 +379,8 @@ class AgyStreamSession implements EngineSession {
       this.init.emit({ type: 'turn.done', turnId, stopReason: 'end_turn' })
       this.init.emit({ type: 'session.state', state: 'idle' })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      this.pendingTurn = null
+      const msg = formatEngineTurnError(err, this.stderrTail)
       this.init.emit({ type: 'error', message: msg })
       this.init.emit({ type: 'turn.done', turnId, stopReason: 'error', error: msg })
       this.init.emit({ type: 'session.state', state: 'idle' })

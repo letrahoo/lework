@@ -15,6 +15,7 @@ import {
   type SessionWorktreeInfo,
 } from '@lework/protocol'
 import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/types.ts'
+import { formatEngineTurnError } from './engines/network-error.ts'
 import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
@@ -56,6 +57,8 @@ interface ManagedSession {
   queuedTurns: QueuedTurnItem[]
   closed?: boolean
   nativeId?: string
+  providerId?: string
+  extraEnv?: NodeJS.ProcessEnv
 }
 
 export interface SessionManagerCallbacks {
@@ -296,6 +299,8 @@ export class SessionManager {
       baseSeq: seed[0]?.seq ?? 0,
       queuedTurns: [],
       ...(params.resumeNativeId ? { nativeId: params.resumeNativeId } : {}),
+      ...(params.providerId ? { providerId: params.providerId } : {}),
+      extraEnv,
     }
     this.sessions.set(sessionId, managed)
 
@@ -572,6 +577,10 @@ export class SessionManager {
       return { turnId }
     }
 
+    if (managed.handle.isAlive && !managed.handle.isAlive()) {
+      await this.reopenManagedHandle(managed)
+    }
+
     await this.applyTurnOverrides(managed, {
       modelId: overrides?.modelId,
       reasoningEffort: overrides?.reasoningEffort,
@@ -586,6 +595,47 @@ export class SessionManager {
     })
 
     return { turnId }
+  }
+
+  private async reopenManagedHandle(managed: ManagedSession): Promise<void> {
+    const adapter = this.adapters.get(managed.meta.engineId)
+    if (!adapter) return
+    const sessionId = managed.meta.id
+    const prevHandle = managed.handle
+    await prevHandle?.close().catch(() => undefined)
+    try {
+      const freshHandle = await adapter.openSession({
+        sessionId,
+        cwd: managed.meta.cwd,
+        providerId: managed.providerId,
+        modelId: managed.meta.model,
+        reasoningEffort: managed.meta.reasoningEffort,
+        mode: managed.meta.mode,
+        resumeNativeId: managed.nativeId,
+        env: managed.extraEnv,
+        emit: body => this.appendEvent(managed, body),
+        onModelsChanged: (currentModel, models) => {
+          this.updateModels(managed, currentModel, models)
+        },
+        onNativeSessionLinked: nativeId => {
+          const clean = nativeId.trim()
+          if (clean) {
+            managed.nativeId = clean
+            const aliasId = `host:${adapter.id}:${clean}`
+            this.metaStore.linkAlias(sessionId, aliasId)
+            linkSessionAttachmentAlias(sessionId, aliasId)
+          }
+        },
+      })
+      managed.handle = freshHandle
+    } catch (err) {
+      const msg = formatEngineTurnError(err)
+      managed.meta.state = 'error'
+      managed.meta.turnStartedAt = undefined
+      managed.meta = this.decorateManagedMeta(managed)
+      this.callbacks.onSessionUpdated(managed.meta)
+      throw new HubRpcError(ErrorCode.EngineError, msg)
+    }
   }
 
   private async applyTurnOverrides(
@@ -657,11 +707,14 @@ export class SessionManager {
     this.callbacks.onSessionUpdated(managed.meta)
 
     this.sleepInhibitor.acquire()
+    let turnHadError = false
     void managed.handle
       .prompt(turnId, rawText, stagedImages.length > 0 ? stagedImages : undefined)
       .catch(err => {
-        const msg = err instanceof Error ? err.message : String(err)
+        turnHadError = true
+        const msg = formatEngineTurnError(err)
         this.appendEvent(managed, { type: 'error', message: msg })
+        this.appendEvent(managed, { type: 'turn.done', turnId, stopReason: 'error', error: msg })
         this.appendEvent(managed, { type: 'session.state', state: 'idle', detail: msg })
       })
       .finally(() => {
@@ -669,7 +722,7 @@ export class SessionManager {
         if (managed.closed || !this.sessions.has(sessionId)) {
           return
         }
-        const nextQueued = managed.queuedTurns.shift()
+        const nextQueued = !turnHadError ? managed.queuedTurns.shift() : undefined
         managed.meta.queuedPrompts =
           managed.queuedTurns.length > 0 ? managed.queuedTurns.map(q => q.displayUserText) : undefined
         if (nextQueued) {
@@ -682,12 +735,13 @@ export class SessionManager {
               this.startManagedTurn(managed, nextQueued)
             }
           })
-        } else if (managed.meta.state === 'running') {
+        } else if (managed.meta.state === 'running' || managed.meta.state === 'waiting_permission') {
           managed.meta.state = 'idle'
           managed.meta.turnStartedAt = undefined
           managed.meta = this.decorateManagedMeta(managed)
           this.callbacks.onSessionUpdated(managed.meta)
         } else {
+          managed.meta.turnStartedAt = undefined
           managed.meta = this.decorateManagedMeta(managed)
           this.callbacks.onSessionUpdated(managed.meta)
         }
@@ -1084,19 +1138,22 @@ export class SessionManager {
   }
 
   private appendEvent(managed: ManagedSession, body: AgentEventBody): void {
+    const normalizedBody: AgentEventBody =
+      body.type === 'error' ? { ...body, message: formatEngineTurnError(body.message) } : body
     const seq = managed.meta.lastSeq + 1
     managed.meta.lastSeq = seq
     managed.meta.updatedAt = Date.now()
 
-    if (body.type === 'session.state') {
-      managed.meta.state = body.state
-      managed.meta.turnStartedAt = body.state === 'running' ? (managed.meta.turnStartedAt ?? Date.now()) : undefined
+    if (normalizedBody.type === 'session.state') {
+      managed.meta.state = normalizedBody.state
+      managed.meta.turnStartedAt =
+        normalizedBody.state === 'running' ? (managed.meta.turnStartedAt ?? Date.now()) : undefined
       managed.meta = this.decorateManagedMeta(managed)
       this.callbacks.onSessionUpdated(managed.meta)
     }
 
     const event = {
-      ...body,
+      ...normalizedBody,
       seq,
       sessionId: managed.meta.id,
       ts: managed.meta.updatedAt,

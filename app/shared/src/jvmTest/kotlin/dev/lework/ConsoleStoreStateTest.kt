@@ -1329,4 +1329,250 @@ class ConsoleStoreStateTest {
         )
         assertEquals("https://192.168.10.20:64450", remoteCandidates.first())
     }
+
+    @Test
+    fun `T15_1 isLikelyNetworkError classifies English and Chinese connectivity errors without false positives`() {
+        val networkMessages = listOf(
+            "read ECONNRESET",
+            "getaddrinfo ENOTFOUND api.anthropic.com",
+            "connect ETIMEDOUT",
+            "EAI_AGAIN temporary failure in name resolution",
+            "connect EHOSTUNREACH",
+            "connect ENETUNREACH",
+            "write EPIPE",
+            "TypeError: fetch failed",
+            "socket hang up",
+            "Connection refused",
+            "Connection reset by peer",
+            "Connection closed unexpectedly",
+            "Request timed out after 30s",
+            "Client timeout waiting for stream",
+            "Device is offline",
+            "DNS lookup failed",
+            "HTTP 502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+            "Unable to resolve host",
+            "No route to host",
+            "Unexpected EOF",
+            "Broken pipe",
+            "电脑断网导致请求失败",
+            "网络连接异常: 代理不可达",
+            "连接断开，响应超时",
+        )
+        for (msg in networkMessages) {
+            assertTrue(dev.lework.store.isLikelyNetworkError(msg), "Expected network error match for: $msg")
+        }
+
+        val nonNetworkMessages = listOf(
+            null,
+            "",
+            "Invalid params: cwd is required",
+            "Permission denied on /etc/hosts",
+            "SyntaxError: Unexpected token in JSON",
+            "FAILED_PRECONDITION (code 400): region unsupported",
+            "typeof x === 'string'",
+        )
+        for (msg in nonNetworkMessages) {
+            assertFalse(dev.lework.store.isLikelyNetworkError(msg), "Expected non-network error for: $msg")
+        }
+    }
+
+    @Test
+    fun `T15_2 aggregates frequent network errors and collapses repeated timeline error notices`() = runTest {
+        val transport = FakeHubTransport()
+        val sid = "host:claude:net_spam"
+        transport.sessions.add(
+            SessionMeta(
+                id = sid,
+                engineId = "claude",
+                cwd = "/workspace/lework",
+                title = "断网频繁报错测试",
+                state = SessionState.RUNNING,
+                createdAt = 1_000L,
+                updatedAt = 2_000L,
+                lastSeq = 0,
+            ),
+        )
+        transport.sessionEventsMap[sid] = mutableListOf(
+            AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "帮我重构网络模块"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sid)
+            runCurrent()
+
+            // Emit 3 consecutive network errors (plus matching TurnDone error frames which must be deduped!)
+            transport.emitEvent(AgentEvent.ErrorEvent(1, sid, 2_001L, "网络连接异常: read ECONNRESET"))
+            transport.emitEvent(AgentEvent.TurnDone(2, sid, 2_002L, "t_1", "error", "网络连接异常: read ECONNRESET"))
+            runCurrent()
+
+            val banner1 = store.state.value.turnRecoveryBanner
+            assertTrue(banner1 != null && banner1.isNetworkError)
+            assertEquals(1, banner1.errorCount)
+            assertEquals("网络连接异常，任务已中断", banner1.headline)
+
+            transport.emitEvent(AgentEvent.ErrorEvent(3, sid, 3_001L, "网络连接异常: TypeError: fetch failed (ENOTFOUND)"))
+            transport.emitEvent(AgentEvent.ErrorEvent(4, sid, 4_001L, "网络连接异常: socket hang up"))
+            runCurrent()
+
+            val banner3 = store.state.value.turnRecoveryBanner
+            assertTrue(banner3 != null && banner3.isNetworkError)
+            assertEquals(3, banner3.errorCount)
+            assertEquals("检测到网络频繁异常（已报错 3 次）", banner3.headline)
+            assertTrue(banner3.detail.contains("请检查电脑网络或代理后点击重试"))
+
+            // Timeline MUST collapse all 3 consecutive network errors into ONE single Notice with `(×3)`!
+            val notices = store.state.value.activeTranscript.items.filterIsInstance<ChatTimelineItem.Notice>()
+            assertEquals(1, notices.size)
+            assertEquals(3, notices.first().repeatCount)
+            assertTrue(notices.first().text.endsWith("(×3)"))
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `T15_3 retryLastTurn Case A reconnects and resends exact offline prompt and images with zero loss`() = runTest {
+        val transport = FakeHubTransport()
+        val sid = "host:claude:offline_send"
+        transport.sessions.add(
+            SessionMeta(
+                id = sid,
+                engineId = "claude",
+                cwd = "/workspace/lework",
+                title = "断网发送重连测试",
+                state = SessionState.IDLE,
+                createdAt = 1_000L,
+                updatedAt = 2_000L,
+                lastSeq = 0,
+            ),
+        )
+        transport.sessionEventsMap[sid] = mutableListOf(
+            AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "初始上下文"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sid)
+            runCurrent()
+
+            // Attach an image and drop connection (computer/network offline)
+            val img = PromptImageAttachment(
+                mimeType = "image/png",
+                dataBase64 = "aGVsbG8=",
+                fileName = "error_screenshot.png",
+            )
+            store.attachImage(img)
+            transport.connectHelloException = RuntimeException("connect ENETUNREACH")
+            transport.discoverNullRemaining = 10
+            transport.emitDisconnected("Network dropped")
+            runCurrent()
+            assertEquals(ConnectionStatus.RECONNECTING, store.state.value.connectionStatus)
+
+            // User taps Send while offline -> fails fast, preserves exact prompt + image in banner!
+            store.sendPrompt("请分析这张报错截图并修复")
+            runCurrent()
+
+            val bannerAfterSend = store.state.value.turnRecoveryBanner
+            assertTrue(bannerAfterSend != null && bannerAfterSend.isNetworkError)
+            assertEquals("请分析这张报错截图并修复", bannerAfterSend.failedPromptText)
+            assertEquals(listOf(img), bannerAfterSend.failedImages)
+            assertEquals(0, transport.sentPrompts.size)
+
+            // Tapping Retry while STILL offline increments errorCount and STILL preserves prompt + image
+            val prevCount = bannerAfterSend.errorCount
+            store.retryLastTurn()
+            runCurrent()
+            val bannerStillOffline = store.state.value.turnRecoveryBanner
+            assertTrue(bannerStillOffline != null)
+            assertEquals(prevCount + 1, bannerStillOffline.errorCount)
+            assertEquals("请分析这张报错截图并修复", bannerStillOffline.failedPromptText)
+            assertEquals(listOf(img), bannerStillOffline.failedImages)
+            assertFalse(store.state.value.retryingTurn)
+
+            // Network comes back online -> Retry reconnects, catches up session, and resends exact prompt + image!
+            transport.connectHelloException = null
+            transport.discoverNullRemaining = 0
+            val subCountBefore = transport.subscribeSessionCount
+            store.retryLastTurn()
+            runCurrent()
+
+            assertEquals(ConnectionStatus.CONNECTED, store.state.value.connectionStatus)
+            assertTrue(transport.subscribeSessionCount > subCountBefore)
+            assertEquals(listOf(sid to "请分析这张报错截图并修复"), transport.sentPrompts)
+            assertEquals(1, transport.sentPromptImages.size)
+            assertEquals("error_screenshot.png", transport.sentPromptImages.first().second.first().fileName)
+            assertNull(store.state.value.turnRecoveryBanner)
+            assertFalse(store.state.value.retryingTurn)
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `T15_4 retryLastTurn Case B seamlessly continues mid-turn upstream network failure in same session`() = runTest {
+        val transport = FakeHubTransport()
+        val sid = "host:agy:mid_turn_drop"
+        transport.sessions.add(
+            SessionMeta(
+                id = sid,
+                engineId = "agy",
+                cwd = "/workspace/lework",
+                title = "中途断网无缝续跑",
+                state = SessionState.RUNNING,
+                createdAt = 1_000L,
+                updatedAt = 2_000L,
+                lastSeq = 1,
+            ),
+        )
+        transport.sessionEventsMap[sid] = mutableListOf(
+            AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "重构整个鉴权层并补齐测试"),
+            AgentEvent.AssistantDelta(1, sid, 1_500L, "a_0", "已完成第一步分析，正在修改核心文件…"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(sid)
+            runCurrent()
+
+            // Computer loses internet mid-turn -> Hub emits ErrorEvent + TurnDone(error)
+            transport.emitEvent(AgentEvent.ErrorEvent(2, sid, 2_500L, "网络连接异常: fetch failed (ENOTFOUND)"))
+            transport.emitEvent(AgentEvent.TurnDone(3, sid, 2_510L, "turn_1", "error", "网络连接异常: fetch failed (ENOTFOUND)"))
+            runCurrent()
+
+            val banner = store.state.value.turnRecoveryBanner
+            assertTrue(banner != null && banner.isNetworkError)
+            assertNull(banner.failedPromptText)
+            assertEquals(1, banner.errorCount)
+
+            // User taps Retry -> sends seamless continuation prompt into the EXACT same session
+            store.retryLastTurn()
+            runCurrent()
+
+            assertEquals(listOf(sid to ConsoleStore.SEAMLESS_CONTINUE_PROMPT), transport.sentPrompts)
+            assertNull(store.state.value.turnRecoveryBanner)
+
+            // Simulate another error followed by streaming progress -> streaming delta auto-clears banner
+            transport.emitEvent(AgentEvent.ErrorEvent(4, sid, 3_500L, "网络连接异常: ETIMEDOUT"))
+            runCurrent()
+            assertTrue(store.state.value.turnRecoveryBanner != null)
+
+            transport.emitEvent(AgentEvent.AssistantDelta(5, sid, 4_000L, "a_2", "继续完成剩余重构步骤。"))
+            runCurrent()
+            assertNull(store.state.value.turnRecoveryBanner)
+        } finally {
+            storeScope.cancel()
+        }
+    }
 }

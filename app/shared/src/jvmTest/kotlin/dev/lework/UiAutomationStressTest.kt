@@ -1035,4 +1035,67 @@ class UiAutomationStressTest {
                 if (png != null) File(outDir, "mermaid_multi_diagrams.png").writeBytes(png.bytes)
             }
         }
+
+    @Test
+    fun `T15_5 renders network error recovery banner on frequent errors and clicking retry seamlessly continues previous turn`() =
+        runComposeUiTest {
+            JvmPlatformTestHooks.reset()
+            val transport = FakeHubTransport()
+            val sid = "host:claude:ui_net_recovery"
+            transport.sessions.add(
+                SessionMeta(
+                    id = sid,
+                    engineId = "claude",
+                    cwd = "/workspace/lework",
+                    title = "断网重试 UI 回归测试",
+                    state = SessionState.IDLE,
+                    createdAt = 1_000L,
+                    updatedAt = 2_000L,
+                    lastSeq = 0,
+                ),
+            )
+            transport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "帮我修复并发竞态并跑全量测试"),
+            )
+
+            lateinit var store: ConsoleStore
+            setContent {
+                val scope: CoroutineScope = rememberCoroutineScope()
+                val created = androidx.compose.runtime.remember { ConsoleStore(scope, transport) }
+                store = created
+                Box(modifier = Modifier.size(width = 420.dp, height = 840.dp)) {
+                    ConsoleApp(externalStore = created, autoBootstrap = true)
+                }
+            }
+            waitForIdle()
+            runOnIdle { store.selectSession(sid) }
+            waitForIdle()
+
+            // Emit 3 consecutive network errors -> banner shows frequent-error count + hint, timeline collapses to (×3)
+            transport.emitEvent(AgentEvent.ErrorEvent(1, sid, 2_001L, "网络连接异常: read ECONNRESET"))
+            transport.emitEvent(AgentEvent.ErrorEvent(2, sid, 3_001L, "网络连接异常: fetch failed (ENOTFOUND)"))
+            transport.emitEvent(AgentEvent.ErrorEvent(3, sid, 4_001L, "网络连接异常: socket hang up"))
+            waitForIdle()
+
+            onNodeWithTag("network_error_recovery_banner").assertIsDisplayed()
+            onNodeWithTag("recovery_error_count_badge", useUnmergedTree = true).assertExists()
+            onNodeWithText("检测到网络频繁异常（已报错 3 次）", substring = true).assertIsDisplayed()
+            onNodeWithText("请检查电脑网络或代理后点击重试", substring = true).assertIsDisplayed()
+            onNodeWithText("(×3)", substring = true).assertExists()
+
+            // Tap "重试继续" -> seamlessly continues previous turn in the same session and hides the banner!
+            onNodeWithTag("retry_last_turn_button").assertIsDisplayed().performClick()
+            waitForIdle()
+
+            assertEquals(listOf(sid to ConsoleStore.SEAMLESS_CONTINUE_PROMPT), transport.sentPrompts)
+            onNodeWithTag("network_error_recovery_banner").assertDoesNotExist()
+
+            // Emit another network error and verify dismiss button closes the sticky banner cleanly
+            transport.emitEvent(AgentEvent.ErrorEvent(4, sid, 5_001L, "网络连接异常: ETIMEDOUT"))
+            waitForIdle()
+            onNodeWithTag("network_error_recovery_banner").assertIsDisplayed()
+            onNodeWithTag("dismiss_recovery_banner_button").performClick()
+            waitForIdle()
+            onNodeWithTag("network_error_recovery_banner").assertDoesNotExist()
+        }
 }

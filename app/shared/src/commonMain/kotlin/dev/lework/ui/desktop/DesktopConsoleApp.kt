@@ -276,6 +276,8 @@ internal fun DesktopConsoleApp(
                                         isSessionRunning = sessRunning,
                                         onLoadOlder = { store.loadOlderHistory(activeKey) },
                                         onDismissKeyboard = {},
+                                        showInlineErrorRetry = state.turnRecoveryBanner == null,
+                                        onRetryLastTurn = store::retryLastTurn,
                                     )
                                 }
                             }
@@ -321,7 +323,17 @@ internal fun DesktopConsoleApp(
                             )
                         }
 
-                        if (!state.promptErrorText.isNullOrBlank()) {
+                        val recoveryBanner = state.turnRecoveryBanner
+                        if (recoveryBanner != null) {
+                            NetworkErrorRecoveryBanner(
+                                banner = recoveryBanner,
+                                connectionStatus = state.connectionStatus,
+                                isRetrying = state.retryingTurn,
+                                onRetry = store::retryLastTurn,
+                                onDismiss = store::dismissTurnRecoveryBanner,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                            )
+                        } else if (!state.promptErrorText.isNullOrBlank()) {
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = Everforest.Red.copy(alpha = 0.12f),

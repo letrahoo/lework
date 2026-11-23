@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { EngineCapabilities, EngineStatus, SessionMode } from '@lework/protocol'
 import type { ModelRegistry } from '../registry/model-registry.ts'
+import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 /**
@@ -252,7 +253,7 @@ class PiEmbeddedSession implements EngineSession {
       this.init.emit({ type: 'turn.done', turnId, stopReason: 'end_turn' })
       this.init.emit({ type: 'session.state', state: 'idle' })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = formatEngineTurnError(err)
       this.init.emit({ type: 'error', message: msg })
       this.init.emit({ type: 'turn.done', turnId, stopReason: 'error', error: msg })
       this.init.emit({ type: 'session.state', state: 'idle' })

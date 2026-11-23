@@ -9,6 +9,7 @@ import type {
 } from '@lework/protocol'
 import { findExecutable, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
+import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -87,8 +88,12 @@ class ClaudeAcpSession implements EngineSession {
   readonly cwd: string
   private rpc: StdioJsonRpcProcess | null = null
   private acpSessionId: string | null = null
+  private lastNativeSessionId: string | undefined
+  private selectedModel: string | undefined
+  private activeMode: import('@lework/protocol').SessionMode | undefined
   private currentMsgId = `msg_${crypto.randomUUID()}`
   private readonly pendingPermissions = new Map<string, PendingPermission>()
+  private activeTurn = false
   private closed = false
 
   constructor(
@@ -99,28 +104,44 @@ class ClaudeAcpSession implements EngineSession {
   ) {
     this.sessionId = init.sessionId
     this.cwd = init.cwd
+    this.lastNativeSessionId = init.resumeNativeId
+    this.selectedModel = init.modelId
+    this.activeMode = init.mode
+  }
+
+  isAlive(): boolean {
+    return Boolean(!this.closed && this.rpc?.isAlive() && this.acpSessionId)
   }
 
   async start(): Promise<void> {
-    this.rpc = new StdioJsonRpcProcess({
+    const rpc = new StdioJsonRpcProcess({
       command: this.acpBin,
       args: this.acpArgs,
       cwd: this.cwd,
       env: { ...process.env, ...this.extraEnv },
       onInbound: msg => this.handleInbound(msg),
       onExit: (code, signal) => {
-        if (!this.closed) {
+        this.pendingPermissions.clear()
+        if (this.rpc === rpc) {
+          this.acpSessionId = null
+        }
+        if (!this.closed && !this.activeTurn) {
+          const detail = formatEngineTurnError(
+            new Error(`Claude ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`),
+            rpc.getStderrTail(),
+          )
           this.init.emit({
             type: 'session.state',
             state: 'error',
-            detail: `Claude ACP process exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`,
+            detail,
           })
         }
       },
     })
-    this.rpc.start()
+    this.rpc = rpc
+    rpc.start()
 
-    await this.rpc.request(
+    await rpc.request(
       'initialize',
       {
         protocolVersion: 1,
@@ -138,20 +159,21 @@ class ClaudeAcpSession implements EngineSession {
 
     let created: Record<string, unknown> | null = null
     let upstreamId: string | null = null
+    const resumeTarget = this.lastNativeSessionId ?? this.init.resumeNativeId
 
-    if (this.init.resumeNativeId) {
+    if (resumeTarget) {
       try {
-        created = (await this.rpc.request(
+        created = (await rpc.request(
           'session/resume',
           {
-            sessionId: this.init.resumeNativeId,
+            sessionId: resumeTarget,
             cwd: this.cwd,
             mcpServers: [],
           },
           30_000,
         )) as Record<string, unknown> | null
         upstreamId =
-          typeof created?.sessionId === 'string' ? created.sessionId : this.init.resumeNativeId
+          typeof created?.sessionId === 'string' ? created.sessionId : resumeTarget
       } catch {
         created = null
         upstreamId = null
@@ -159,7 +181,7 @@ class ClaudeAcpSession implements EngineSession {
     }
 
     if (!upstreamId) {
-      created = (await this.rpc.request(
+      created = (await rpc.request(
         'session/new',
         {
           cwd: this.cwd,
@@ -171,31 +193,33 @@ class ClaudeAcpSession implements EngineSession {
     }
 
     if (!upstreamId) {
-      await this.close()
+      await rpc.close()
+      if (this.rpc === rpc) this.rpc = null
       throw new Error('Claude ACP session/new did not return a valid sessionId')
     }
     this.acpSessionId = upstreamId
+    this.lastNativeSessionId = upstreamId
     this.init.onNativeSessionLinked?.(upstreamId)
     const reportedCurrentModel = this.extractModels(created ?? {})
-    if (this.init.modelId && this.init.modelId !== reportedCurrentModel) {
-      await this.rpc
+    if (this.selectedModel && this.selectedModel !== reportedCurrentModel) {
+      await rpc
         .request(
           'session/set_model',
           {
             sessionId: this.acpSessionId,
-            modelId: this.init.modelId,
+            modelId: this.selectedModel,
           },
           3_000,
         )
         .catch(() => undefined)
     }
-    if (this.init.mode) {
-      await this.rpc
+    if (this.activeMode) {
+      await rpc
         .request(
           'session/set_mode',
           {
             sessionId: this.acpSessionId,
-            modeId: this.init.mode,
+            modeId: this.activeMode,
           },
           3_000,
         )
@@ -203,11 +227,19 @@ class ClaudeAcpSession implements EngineSession {
     }
   }
 
+  private async ensureRunning(): Promise<void> {
+    if (this.isAlive()) return
+    const stale = this.rpc
+    this.rpc = null
+    this.acpSessionId = null
+    this.pendingPermissions.clear()
+    await stale?.close().catch(() => undefined)
+    await this.start()
+  }
+
   async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
-    if (!this.rpc || !this.acpSessionId) {
-      throw new Error('Claude ACP session is not initialized')
-    }
     this.currentMsgId = `msg_${turnId}`
+    this.activeTurn = true
     this.init.emit({ type: 'session.state', state: 'running' })
 
     const promptBlocks: Array<Record<string, unknown>> = []
@@ -224,10 +256,18 @@ class ClaudeAcpSession implements EngineSession {
     }
 
     try {
-      const res = (await this.rpc.request(
+      await this.ensureRunning()
+      const rpc = this.rpc
+      const acpSessionId = this.acpSessionId
+      if (!rpc || !acpSessionId) {
+        throw new Error('Claude ACP session is not initialized')
+      }
+      rpc.clearStderrTail()
+
+      const res = (await rpc.request(
         'session/prompt',
         {
-          sessionId: this.acpSessionId,
+          sessionId: acpSessionId,
           prompt: promptBlocks,
         },
         10 * 60_000,
@@ -242,10 +282,22 @@ class ClaudeAcpSession implements EngineSession {
       this.init.emit({ type: 'turn.done', turnId, stopReason })
       this.init.emit({ type: 'session.state', state: 'idle' })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const stderr = this.rpc?.getStderrTail()
+      for (const [reqId] of this.pendingPermissions.entries()) {
+        this.pendingPermissions.delete(reqId)
+        this.init.emit({
+          type: 'permission.resolved',
+          requestId: reqId,
+          optionId: null,
+          outcome: 'cancelled',
+        })
+      }
+      const msg = formatEngineTurnError(err, stderr)
       this.init.emit({ type: 'error', message: msg })
       this.init.emit({ type: 'turn.done', turnId, stopReason: 'error', error: msg })
       this.init.emit({ type: 'session.state', state: 'idle' })
+    } finally {
+      this.activeTurn = false
     }
   }
 
@@ -306,7 +358,8 @@ class ClaudeAcpSession implements EngineSession {
   }
 
   async setModel(modelId: string): Promise<void> {
-    if (!this.rpc || !this.acpSessionId) return
+    this.selectedModel = modelId
+    if (!this.isAlive() || !this.rpc || !this.acpSessionId) return
     await this.rpc.request('session/set_model', {
       sessionId: this.acpSessionId,
       modelId,
@@ -314,7 +367,8 @@ class ClaudeAcpSession implements EngineSession {
   }
 
   async setMode(mode: import('@lework/protocol').SessionMode): Promise<void> {
-    if (!this.rpc || !this.acpSessionId) return
+    this.activeMode = mode
+    if (!this.isAlive() || !this.rpc || !this.acpSessionId) return
     await this.rpc.request('session/set_mode', {
       sessionId: this.acpSessionId,
       modeId: mode,
