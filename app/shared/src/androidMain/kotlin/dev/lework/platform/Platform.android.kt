@@ -602,7 +602,23 @@ private fun prefs() =
 
 actual fun platformName(): String = "Android ${Build.VERSION.RELEASE}"
 
-actual fun appVersionLabel(): String = "v0.6.9 (20261123.0845)"
+actual fun appVersionLabel(): String {
+    val ctx = AndroidPlatformRuntime.appContext
+    if (ctx != null) {
+        runCatching {
+            val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+            val vName = info.versionName?.trim().orEmpty().ifEmpty { "0.7.0" }
+            val vCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+            return "v$vName ($vCode)"
+        }
+    }
+    return "v0.7.0"
+}
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 

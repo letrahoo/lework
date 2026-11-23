@@ -57,8 +57,7 @@ import {
   searchWorkspaceFiles,
 } from './storage/workspace-fs.ts'
 import { UsageService } from './usage/index.ts'
-
-const HUB_VERSION = '0.6.9'
+import { HUB_VERSION } from './version.ts'
 
 interface ClientConn {
   ws: WebSocket

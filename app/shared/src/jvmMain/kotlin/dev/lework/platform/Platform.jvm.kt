@@ -115,8 +115,11 @@ actual fun platformName(): String =
 actual fun isDesktopPlatform(): Boolean =
     JvmDesktopRuntime.isEnabled || JvmPlatformTestHooks.simulateDesktopLayout
 
-actual fun appVersionLabel(): String =
-    if (JvmDesktopRuntime.isEnabled) "Lework Desktop v0.6.9" else "v0.5.0 (test)"
+actual fun appVersionLabel(): String {
+    if (!JvmDesktopRuntime.isEnabled) return "v0.5.0 (test)"
+    val ver = System.getProperty("lework.app.version")?.trim()?.takeIf { it.isNotEmpty() } ?: "0.7.0"
+    return "Lework Desktop v$ver"
+}
 
 actual fun epochMillis(): Long = System.currentTimeMillis()
 
