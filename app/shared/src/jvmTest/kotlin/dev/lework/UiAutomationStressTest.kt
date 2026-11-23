@@ -1210,4 +1210,74 @@ class UiAutomationStressTest {
             assertEquals(1, transport.sentPromptImages.size)
             assertEquals(2, transport.sentPromptImages.first().second.size)
         }
+
+    @Test
+    fun `T8_10 cancels individual and all queued prompts via QueuedPromptsCard without collapsing and shows host notice`() =
+        runComposeUiTest {
+            val transport = FakeHubTransport()
+            val sid = "sess_ui_queue_cancel"
+            val baseMeta = SessionMeta(
+                id = sid,
+                engineId = "claude",
+                cwd = "/workspace/lework",
+                title = "队列取消交互校验",
+                state = SessionState.RUNNING,
+                createdAt = 1_000L,
+                updatedAt = 2_000L,
+                lastSeq = 0,
+                queuedPrompts = listOf("队列任务一", "队列任务二", "队列任务三"),
+            )
+            transport.sessions.add(baseMeta)
+            transport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 1_000L, "u_0", "当前正在运行的指令"),
+            )
+
+            lateinit var store: ConsoleStore
+            setContent {
+                val scope = rememberCoroutineScope()
+                val created = androidx.compose.runtime.remember { ConsoleStore(scope, transport) }
+                store = created
+                Box(modifier = Modifier.size(width = 402.dp, height = 874.dp)) {
+                    ConsoleApp(externalStore = created, autoBootstrap = true)
+                }
+            }
+            waitForIdle()
+            runOnIdle { store.selectSession(sid) }
+            waitForIdle()
+
+            // Card displays queued items, individual cancel buttons, and "全部取消" button
+            onNodeWithTag("queued_prompts_card", useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithTag("queued_prompt_cancel_0").assertIsDisplayed()
+            onNodeWithTag("queued_prompt_cancel_1").assertIsDisplayed()
+            onNodeWithTag("queued_prompt_cancel_all").assertIsDisplayed()
+
+            // Expand to view all 3 items, then cancel item 0 without collapsing or breaking
+            onNodeWithTag("queued_prompts_expand_toggle").performClick()
+            waitForIdle()
+            onNodeWithText("队列任务三", substring = true, useUnmergedTree = true).assertIsDisplayed()
+
+            onNodeWithTag("queued_prompt_cancel_0").performClick()
+            waitForIdle()
+            onNodeWithText("队列任务一", substring = true, useUnmergedTree = true).assertDoesNotExist()
+            onNodeWithText("队列任务二", substring = true, useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithText("队列任务三", substring = true, useUnmergedTree = true).assertIsDisplayed()
+            assertEquals(Triple<String, Int?, Boolean>(sid, 0, false), transport.cancelQueuedCalls.first())
+
+            // Click "全部取消" -> clears queue card completely
+            onNodeWithTag("queued_prompt_cancel_all").performClick()
+            waitForIdle()
+            onNodeWithTag("queued_prompts_card", useUnmergedTree = true).assertDoesNotExist()
+            assertEquals(Triple<String, Int?, Boolean>(sid, null, true), transport.cancelQueuedCalls.last())
+
+            // Host-terminal notice banner displays and dismisses cleanly
+            transport.cancelQueuedNotice = "已从 Lework 排队列表移除；若消息已写入电脑终端待执行区，请在终端内按需撤销"
+            transport.emitSessionUpdate(baseMeta.copy(queuedPrompts = listOf("终端排队消息")))
+            waitForIdle()
+            onNodeWithTag("queued_prompt_cancel_0").performClick()
+            waitForIdle()
+            onNodeWithTag("prompt_notice_banner").assertIsDisplayed()
+            onNodeWithTag("prompt_notice_dismiss_btn").performClick()
+            waitForIdle()
+            onNodeWithTag("prompt_notice_banner").assertDoesNotExist()
+        }
 }

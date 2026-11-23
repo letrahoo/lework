@@ -2115,6 +2115,7 @@ class ConsoleStore(
                 openedDiffTitle = null,
                 checkpointNotice = null,
                 promptErrorText = null,
+                promptNoticeText = null,
                 turnRecoveryBanner = null,
                 retryingTurn = false,
                 selectedWorkspacePath = path,
@@ -2153,6 +2154,7 @@ class ConsoleStore(
                 submittingApprovalRequestId = null,
                 approvalErrorText = null,
                 promptErrorText = null,
+                promptNoticeText = null,
                 turnRecoveryBanner = s.turnRecoveryBanner?.takeIf { it.sessionId == sessionId },
                 retryingTurn = false,
                 selectedEngineId = targetEngineId,
@@ -2415,6 +2417,10 @@ class ConsoleStore(
         }
     }
 
+    fun dismissPromptNotice() {
+        _state.update { it.copy(promptNoticeText = null) }
+    }
+
     fun consumeRestoredDraft() {
         _state.update { it.copy(unsentDraftToRestore = null) }
     }
@@ -2640,6 +2646,7 @@ class ConsoleStore(
                 mentionQuery = null,
                 workspaceFileSuggestions = emptyList(),
                 promptErrorText = null,
+                promptNoticeText = null,
                 turnRecoveryBanner = null,
                 unsentDraftToRestore = null,
             )
@@ -2797,6 +2804,84 @@ class ConsoleStore(
         val activeId = _state.value.activeSessionId ?: return
         scope.launch {
             runCatching { rpc.cancelSession(activeId) }
+        }
+    }
+
+    fun cancelQueuedPrompt(index: Int) {
+        cancelQueuedInternal(index = index, all = false)
+    }
+
+    fun clearQueuedPrompts() {
+        cancelQueuedInternal(index = null, all = true)
+    }
+
+    private fun cancelQueuedInternal(index: Int?, all: Boolean) {
+        val sessionId = _state.value.activeSessionId ?: return
+        val targetSession = _state.value.sessions.firstOrNull { it.id == sessionId } ?: return
+        val previousQueue = targetSession.queuedPrompts.orEmpty()
+        if (previousQueue.isEmpty()) return
+        if (!all && (index == null || index !in previousQueue.indices)) return
+
+        val optimisticQueue = if (all) {
+            emptyList()
+        } else {
+            previousQueue.filterIndexed { i, _ -> i != index }
+        }
+
+        _state.update { s ->
+            s.copy(
+                promptErrorText = null,
+                promptNoticeText = null,
+                sessions = s.sessions.map { meta ->
+                    if (meta.id == sessionId) {
+                        meta.copy(queuedPrompts = optimisticQueue.takeIf { it.isNotEmpty() })
+                    } else {
+                        meta
+                    }
+                },
+            )
+        }
+
+        scope.launch {
+            try {
+                val result = rpc.cancelQueuedPrompt(
+                    sessionId = sessionId,
+                    index = if (all) null else index,
+                    all = all,
+                )
+                val reconciled = result.queuedPrompts.takeIf { it.isNotEmpty() }
+                val notice = result.notice?.trim()?.takeIf { it.isNotEmpty() }
+                _state.update { s ->
+                    s.copy(
+                        promptNoticeText = if (s.activeSessionId == sessionId) notice else s.promptNoticeText,
+                        sessions = s.sessions.map { meta ->
+                            if (meta.id == sessionId) {
+                                meta.copy(queuedPrompts = reconciled)
+                            } else {
+                                meta
+                            }
+                        },
+                    )
+                }
+            } catch (t: Throwable) {
+                val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "请检查连接后重试"
+                _state.update { s ->
+                    s.copy(
+                        promptErrorText = if (s.activeSessionId == sessionId) {
+                            "取消队列消息未成功: $errMsg"
+                        } else {
+                            s.promptErrorText
+                        },
+                        sessions = s.sessions.map { meta ->
+                            if (meta.id == sessionId) {
+                                meta.copy(queuedPrompts = previousQueue.takeIf { it.isNotEmpty() })
+                            } else {
+                                meta
+                            }
+                        },
+                    )
+                }
+            }
         }
     }
 

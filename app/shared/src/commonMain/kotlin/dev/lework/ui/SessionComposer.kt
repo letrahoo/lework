@@ -59,6 +59,7 @@ internal fun ClaudeStyleComposer(
     onCycleEffort: () -> Unit,
     onSend: () -> Unit,
     onCancel: () -> Unit,
+    onClearQueuedPrompts: () -> Unit = {},
     onPickImage: () -> Unit = {},
     onCaptureCamera: () -> Unit = {},
     onPasteClipboardImages: () -> Boolean = { false },
@@ -160,6 +161,7 @@ internal fun ClaudeStyleComposer(
             ) {
                 if (queuedCount > 0) {
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
@@ -175,6 +177,18 @@ internal fun ClaudeStyleComposer(
                             color = Everforest.BoldGold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "取消排队",
+                            fontSize = 11.sp,
+                            color = Everforest.SoftRed,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onClearQueuedPrompts() }
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                                .testTag("composer_clear_queued_btn"),
                         )
                     }
                 }

@@ -70,4 +70,31 @@ describe('protocol-schema v1', () => {
     })
     expect(n.event.type).toBe('message.assistant.delta')
   })
+
+  it('validates session.cancelQueued params and result schemas', () => {
+    const byIndex = Methods['session.cancelQueued'].params.parse({
+      sessionId: 'sess_1',
+      index: 0,
+    })
+    expect(byIndex).toEqual({ sessionId: 'sess_1', index: 0 })
+
+    const clearAll = Methods['session.cancelQueued'].params.parse({
+      sessionId: 'sess_1',
+      all: true,
+    })
+    expect(clearAll).toEqual({ sessionId: 'sess_1', all: true })
+
+    expect(() =>
+      Methods['session.cancelQueued'].params.parse({ sessionId: 'sess_1', index: -1 }),
+    ).toThrow()
+
+    const res = Methods['session.cancelQueued'].result.parse({
+      ok: true,
+      queuedPrompts: ['next prompt'],
+      removedCount: 1,
+      notice: '已从 Lework 排队列表移除',
+    })
+    expect(res.removedCount).toBe(1)
+    expect(res.queuedPrompts).toEqual(['next prompt'])
+  })
 })

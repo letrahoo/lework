@@ -228,6 +228,7 @@ data class ConsoleUiState(
     val submittingApprovalRequestId: String? = null,
     val approvalErrorText: String? = null,
     val promptErrorText: String? = null,
+    val promptNoticeText: String? = null,
     val turnRecoveryBanner: TurnRecoveryBannerState? = null,
     val retryingTurn: Boolean = false,
     val unsentDraftToRestore: String? = null,

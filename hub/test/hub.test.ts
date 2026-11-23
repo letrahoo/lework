@@ -550,6 +550,170 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
     client.close()
   })
 
+  it('cancels individual queued prompts by index, clears all queued prompts, and handles empty/out-of-range idempotently', async () => {
+    let releaseBlockingTurn: (() => void) | null = null
+    let shouldBlockNextTurn = true
+    const receivedPrompts: string[] = []
+    const slowAdapter = {
+      id: 'mock',
+      displayName: 'Cancel Queue Test Engine',
+      kind: 'cli' as const,
+      async probe() {
+        return { installed: true, ready: true, detail: 'ok' }
+      },
+      capabilities() {
+        return {
+          permissions: false,
+          images: false,
+          modelSwitch: false,
+          modes: false,
+          history: false,
+          cancel: true,
+        }
+      },
+      async openSession(opts: any) {
+        return {
+          async prompt(turnId: string, text: string) {
+            receivedPrompts.push(text)
+            if (shouldBlockNextTurn) {
+              shouldBlockNextTurn = false
+              await new Promise<void>(resolve => {
+                releaseBlockingTurn = resolve
+              })
+            }
+            opts.emit({
+              type: 'message.assistant.delta',
+              messageId: `a_${turnId}`,
+              text: `完成:${text}`,
+            })
+            opts.emit({
+              type: 'turn.done',
+              turnId,
+              stopReason: 'end_turn',
+            })
+          },
+          async cancel() {
+            releaseBlockingTurn?.()
+          },
+          async respondPermission() {},
+          async close() {
+            releaseBlockingTurn?.()
+          },
+        }
+      },
+    }
+
+    server = new HubServer({
+      config: {
+        hubId: 'hub_cancel_queue_test',
+        name: 'CancelQueueMac',
+        role: 'slave',
+        host: '127.0.0.1',
+        port: 0,
+        token: 'secret-cancel-queue-token',
+        workspaceRoots: [repoRoot],
+        cpaEndpoint: 'http://127.0.0.1:8317',
+      },
+      adapters: [slowAdapter as any],
+    })
+
+    const { port } = await server.start()
+    const client = new TestRpcClient()
+    await client.connect(`wss://127.0.0.1:${port}/v1/ws`)
+    await client.call('hub.hello', {
+      protocolVersion: PROTOCOL_VERSION,
+      token: 'secret-cancel-queue-token',
+      client: { name: 'test-ios', version: '0.7.5', platform: 'ios' },
+    })
+
+    const created = await client.call('session.create', {
+      engineId: 'mock',
+      cwd: repoRoot,
+    })
+    const sid = created.session.id
+
+    // 1. Start blocking turn and queue 3 prompts
+    await client.call('session.prompt', { sessionId: sid, text: '主任务 1' })
+    await client.call('session.prompt', { sessionId: sid, text: '队列消息 A' })
+    await client.call('session.prompt', { sessionId: sid, text: '队列消息 B（待取消）' })
+    const thirdQueued = await client.call('session.prompt', { sessionId: sid, text: '队列消息 C' })
+
+    // Cancel middle item (index = 1)
+    const cancelMid = await client.call('session.cancelQueued', {
+      sessionId: sid,
+      index: 1,
+    })
+    expect(cancelMid).toEqual({
+      ok: true,
+      queuedPrompts: ['队列消息 A', '队列消息 C'],
+      removedCount: 1,
+    })
+
+    // Out-of-range index is idempotent
+    const outOfRange = await client.call('session.cancelQueued', {
+      sessionId: sid,
+      index: 99,
+    })
+    expect(outOfRange).toEqual({
+      ok: true,
+      queuedPrompts: ['队列消息 A', '队列消息 C'],
+      removedCount: 0,
+    })
+
+    // Release blocking turn -> only A and C execute in FIFO order; B is NEVER executed
+    releaseBlockingTurn!()
+    await client.waitForEvent(
+      'turn.done',
+      ev => ev.sessionId === sid && ev.turnId === thirdQueued.turnId,
+    )
+    expect(receivedPrompts).toEqual(['主任务 1', '队列消息 A', '队列消息 C'])
+
+    // Empty queue cancel is idempotent
+    const onEmpty = await client.call('session.cancelQueued', {
+      sessionId: sid,
+      all: true,
+    })
+    expect(onEmpty).toEqual({
+      ok: true,
+      queuedPrompts: [],
+      removedCount: 0,
+    })
+
+    // 2. Start a second blocking turn, queue 2 prompts, then clear all with `all: true`
+    shouldBlockNextTurn = true
+    const secondMain = await client.call('session.prompt', { sessionId: sid, text: '主任务 2' })
+    await client.call('session.prompt', { sessionId: sid, text: '全部取消-1' })
+    await client.call('session.prompt', { sessionId: sid, text: '全部取消-2' })
+
+    const clearAll = await client.call('session.cancelQueued', {
+      sessionId: sid,
+      all: true,
+    })
+    expect(clearAll).toEqual({
+      ok: true,
+      queuedPrompts: [],
+      removedCount: 2,
+    })
+
+    const listedAfterClear = await client.call('session.list', {})
+    expect(listedAfterClear.sessions.find((s: any) => s.id === sid)?.queuedPrompts).toBeUndefined()
+
+    releaseBlockingTurn!()
+    await client.waitForEvent(
+      'turn.done',
+      ev => ev.sessionId === sid && ev.turnId === secondMain.turnId,
+    )
+    await new Promise(r => setTimeout(r, 60))
+
+    expect(receivedPrompts).toEqual(['主任务 1', '队列消息 A', '队列消息 C', '主任务 2'])
+    const finalList = await client.call('session.list', {})
+    const finalMeta = finalList.sessions.find((s: any) => s.id === sid)
+    expect(finalMeta?.state).toBe('idle')
+    expect(finalMeta?.queuedPrompts).toBeUndefined()
+
+    client.close()
+  })
+
   it('restarts persistent AGY stream-json worker on model/effort/mode switch and avoids bogus effort suffixes', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-agy-switch-'))
     const mockAgyScript = path.join(tmpDir, 'mock-agy-stream.mjs')

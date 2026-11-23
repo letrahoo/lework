@@ -501,6 +501,21 @@ export const GitDiffResult = z.object({
 })
 export type GitDiffResult = z.infer<typeof GitDiffResult>
 
+export const SessionCancelQueuedParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  index: z.number().int().min(0).optional(),
+  all: z.boolean().optional(),
+})
+export type SessionCancelQueuedParams = z.infer<typeof SessionCancelQueuedParamsSchema>
+
+export const SessionCancelQueuedResultSchema = z.object({
+  ok: z.boolean(),
+  queuedPrompts: z.array(z.string()),
+  removedCount: z.number().int().min(0),
+  notice: z.string().optional(),
+})
+export type SessionCancelQueuedResult = z.infer<typeof SessionCancelQueuedResultSchema>
+
 export const Methods = {
   'hub.hello': {
     params: z.object({ protocolVersion: z.number().int(), token: z.string().min(8).max(1024), client: ClientInfo }),
@@ -593,6 +608,10 @@ export const Methods = {
   'session.cancel': {
     params: z.object({ sessionId: z.string() }),
     result: z.object({ ok: z.literal(true) }),
+  },
+  'session.cancelQueued': {
+    params: SessionCancelQueuedParamsSchema,
+    result: SessionCancelQueuedResultSchema,
   },
   'session.setModel': {
     params: z.object({

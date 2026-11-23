@@ -587,6 +587,21 @@ data class SessionCancelParams(
 )
 
 @Serializable
+data class SessionCancelQueuedParams(
+    val sessionId: String,
+    val index: Int? = null,
+    val all: Boolean? = null,
+)
+
+@Serializable
+data class SessionCancelQueuedResult(
+    val ok: Boolean,
+    val queuedPrompts: List<String> = emptyList(),
+    val removedCount: Int = 0,
+    val notice: String? = null,
+)
+
+@Serializable
 data class SessionSetModelParams(
     val sessionId: String,
     val modelId: String,

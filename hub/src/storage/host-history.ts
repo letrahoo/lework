@@ -4,6 +4,7 @@ import type {
   AgentEvent,
   EngineModelSpec,
   ReasoningEffort,
+  SessionCancelQueuedResult,
   SessionMeta,
   SessionMode,
   SubagentSummary,
@@ -99,6 +100,7 @@ export class HostTaskInspector {
   private readonly terminalBridge: TerminalBridge
   private claudeRuntimeMap = new Map<string, ClaudeLiveSessionMeta>()
   private lastTerminalModelKey = new Map<string, string>()
+  private suppressedHostQueued = new Map<string, Set<string>>()
   private lastScanAt = 0
 
   constructor(callbacksOrOpts?: HostLiveCallbacks | HostTaskInspectorOptions) {
@@ -293,6 +295,19 @@ export class HostTaskInspector {
       }
     }
 
+    // Apply host-side queued prompt suppression and clear stale suppressions once idle
+    for (const [id, entry] of next) {
+      const isActive = entry.meta.state === 'running' || entry.meta.state === 'waiting_permission'
+      if (!isActive) {
+        this.suppressedHostQueued.delete(id)
+      } else if (entry.meta.queuedPrompts?.length) {
+        entry.meta = {
+          ...entry.meta,
+          queuedPrompts: this.filterSuppressedQueuedPrompts(id, entry.meta.queuedPrompts),
+        }
+      }
+    }
+
     // Preserve rich runtime/transcript metadata already parsed for watched or cached sessions
     for (const [id, entry] of next) {
       const prev = this.hostIndex.get(id)
@@ -467,13 +482,17 @@ export class HostTaskInspector {
     const isSessionBusy = liveState === 'running' || liveState === 'waiting_permission'
     if (!isSessionBusy) {
       queuedPrompts = undefined
-    } else if (entry.meta.engineId === 'agy') {
-      queuedPrompts = resolveAgyQueuedPrompts(
-        this.homeDir,
-        entry.nativeId,
-        lastUserInputTs ?? 0,
-        recentUserTexts ?? [],
-      )
+      this.suppressedHostQueued.delete(sessionId)
+    } else {
+      if (entry.meta.engineId === 'agy') {
+        queuedPrompts = resolveAgyQueuedPrompts(
+          this.homeDir,
+          entry.nativeId,
+          lastUserInputTs ?? 0,
+          recentUserTexts ?? [],
+        )
+      }
+      queuedPrompts = this.filterSuppressedQueuedPrompts(sessionId, queuedPrompts)
     }
 
     const mergedWorkspaces = mergeUniqueWorkspaces([
@@ -664,6 +683,16 @@ export class HostTaskInspector {
       }
     }
 
+    if (wasBusy) {
+      const suppressed = this.suppressedHostQueued.get(sessionId)
+      if (suppressed) {
+        suppressed.delete(normalizeQueuedPromptKey(displayUserText))
+        if (suppressed.size === 0) {
+          this.suppressedHostQueued.delete(sessionId)
+        }
+      }
+    }
+
     const nextQueued = wasBusy
       ? [...new Set([...(entry.meta.queuedPrompts ?? []), displayUserText])]
       : entry.meta.queuedPrompts
@@ -718,6 +747,79 @@ export class HostTaskInspector {
       }, 300)
     }
     return ok
+  }
+
+  cancelQueuedHostPrompt(
+    sessionId: string,
+    opts?: { index?: number; all?: boolean },
+  ): SessionCancelQueuedResult | null {
+    const entry = this.getHostSession(sessionId)
+    if (!entry) return null
+
+    let current = [...(entry.meta.queuedPrompts ?? [])]
+    if (current.length === 0) {
+      const loaded = this.readHostSessionEvents(sessionId)
+      if (loaded?.session.queuedPrompts?.length) {
+        current = [...loaded.session.queuedPrompts]
+      }
+    }
+
+    let removed: string[] = []
+    let remaining: string[] = current
+    if (opts?.all === true || opts?.index === undefined) {
+      removed = current
+      remaining = []
+    } else if (opts.index >= 0 && opts.index < current.length) {
+      removed = [current[opts.index]!]
+      remaining = current.filter((_, i) => i !== opts.index)
+    }
+
+    if (removed.length > 0) {
+      let suppressed = this.suppressedHostQueued.get(sessionId)
+      if (!suppressed) {
+        suppressed = new Set<string>()
+        this.suppressedHostQueued.set(sessionId, suppressed)
+      }
+      for (const text of removed) {
+        const key = normalizeQueuedPromptKey(text)
+        if (key) suppressed.add(key)
+      }
+
+      entry.meta = {
+        ...entry.meta,
+        queuedPrompts: remaining.length > 0 ? remaining : undefined,
+        updatedAt: Date.now(),
+      }
+      const w = this.watched.get(sessionId)
+      if (w) {
+        w.lastQueuedKey = remaining.join('\u0000')
+      }
+      this.liveCallbacks?.onSessionUpdated(entry.meta)
+
+      return {
+        ok: true,
+        queuedPrompts: remaining,
+        removedCount: removed.length,
+        notice: '已从 Lework 排队列表移除；若消息已写入电脑终端待执行区，请在终端内按需撤销',
+      }
+    }
+
+    return {
+      ok: true,
+      queuedPrompts: remaining,
+      removedCount: 0,
+    }
+  }
+
+  private filterSuppressedQueuedPrompts(
+    sessionId: string,
+    prompts: string[] | undefined,
+  ): string[] | undefined {
+    if (!prompts || prompts.length === 0) return undefined
+    const suppressed = this.suppressedHostQueued.get(sessionId)
+    if (!suppressed || suppressed.size === 0) return prompts
+    const filtered = prompts.filter(p => !suppressed.has(normalizeQueuedPromptKey(p)))
+    return filtered.length > 0 ? filtered : undefined
   }
 
   async respondHostPermission(
@@ -1130,4 +1232,8 @@ export class HostTaskInspector {
       }
     }
   }
+}
+
+function normalizeQueuedPromptKey(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
 }

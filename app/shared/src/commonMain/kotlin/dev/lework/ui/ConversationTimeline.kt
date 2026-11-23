@@ -129,6 +129,8 @@ internal fun ConversationStreamView(
     transcript: SessionTranscript,
     isSessionRunning: Boolean,
     onLoadOlder: () -> Unit,
+    onCancelQueuedPrompt: (Int) -> Unit = {},
+    onClearQueuedPrompts: () -> Unit = {},
     onDismissKeyboard: () -> Unit = {},
     showInlineErrorRetry: Boolean = false,
     onRetryLastTurn: (() -> Unit)? = null,
@@ -216,7 +218,11 @@ internal fun ConversationStreamView(
     ) {
         if (queuedPrompts.isNotEmpty()) {
             item(key = "queued_prompts_card", contentType = "queued_prompts") {
-                QueuedPromptsCard(prompts = queuedPrompts)
+                QueuedPromptsCard(
+                    prompts = queuedPrompts,
+                    onCancelItem = onCancelQueuedPrompt,
+                    onCancelAll = onClearQueuedPrompts,
+                )
             }
         }
 
@@ -347,10 +353,18 @@ internal fun ConversationStreamView(
 private val CLAUDE_SPINNER_FRAMES = listOf("·", "✻", "✽", "✢", "✳", "✶")
 
 @Composable
-private fun QueuedPromptsCard(prompts: List<String>) {
-    var expanded by remember(prompts) { mutableStateOf(false) }
+private fun QueuedPromptsCard(
+    prompts: List<String>,
+    onCancelItem: (Int) -> Unit,
+    onCancelAll: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
     val hasLongContent = prompts.size > 2 || prompts.any { it.length > 90 || it.contains('\n') }
-    val displayed = if (expanded) prompts else prompts.take(2)
+    LaunchedEffect(hasLongContent) {
+        if (!hasLongContent) expanded = false
+    }
+    val isExpanded = expanded && hasLongContent
+    val displayed = if (isExpanded) prompts else prompts.take(2)
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -358,17 +372,11 @@ private fun QueuedPromptsCard(prompts: List<String>) {
         border = BorderStroke(1.dp, Everforest.Bg3),
         modifier = Modifier
             .fillMaxWidth()
-            .then(
-                if (hasLongContent) {
-                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { expanded = !expanded }
-                } else {
-                    Modifier
-                },
-            ),
+            .testTag("queued_prompts_card"),
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -381,30 +389,100 @@ private fun QueuedPromptsCard(prompts: List<String>) {
                     fontFamily = FontFamily.Monospace,
                     color = Everforest.CommentGrey,
                 )
-                if (hasLongContent) {
-                    Text(
-                        text = if (expanded) "收起" else "展开",
-                        fontSize = 11.sp,
-                        color = Everforest.CommentGrey,
-                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (prompts.size > 1) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Everforest.Bg2,
+                            border = BorderStroke(0.8.dp, Everforest.Bg3),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onCancelAll() }
+                                .testTag("queued_prompt_cancel_all"),
+                        ) {
+                            Text(
+                                text = "全部取消",
+                                fontSize = 11.sp,
+                                color = Everforest.SoftRed,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    if (hasLongContent) {
+                        Text(
+                            text = if (isExpanded) "收起" else "展开",
+                            fontSize = 11.sp,
+                            color = Everforest.CommentGrey,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { expanded = !expanded }
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .testTag("queued_prompts_expand_toggle"),
+                        )
+                    }
                 }
             }
             displayed.forEachIndexed { idx, prompt ->
-                val cleanText = if (expanded) prompt else prompt.replace('\n', ' ')
-                Text(
-                    text = if (prompts.size > 1) "${idx + 1}. $cleanText" else cleanText,
-                    fontSize = 13.5.sp,
-                    lineHeight = 19.sp,
-                    maxLines = if (expanded) 12 else 2,
-                    overflow = TextOverflow.Ellipsis,
-                    color = Everforest.Fg,
-                )
+                val cleanText = if (isExpanded) prompt else prompt.replace('\n', ' ')
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = if (prompts.size > 1) "${idx + 1}. $cleanText" else cleanText,
+                        fontSize = 13.5.sp,
+                        lineHeight = 19.sp,
+                        maxLines = if (isExpanded) 12 else 2,
+                        overflow = TextOverflow.Ellipsis,
+                        color = Everforest.Fg,
+                        modifier = Modifier
+                            .weight(1f)
+                            .then(
+                                if (hasLongContent) {
+                                    Modifier.clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                    ) { expanded = !expanded }
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    )
+                    Surface(
+                        shape = CircleShape,
+                        color = Everforest.Bg2,
+                        border = BorderStroke(0.8.dp, Everforest.Bg3),
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .clickable { onCancelItem(idx) }
+                            .testTag("queued_prompt_cancel_$idx"),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "取消该条队列消息",
+                                tint = Everforest.Grey2,
+                                modifier = Modifier.size(13.5.dp),
+                            )
+                        }
+                    }
+                }
             }
-            if (!expanded && prompts.size > displayed.size) {
+            if (!isExpanded && prompts.size > displayed.size) {
                 Text(
                     text = "还有 ${prompts.size - displayed.size} 条待执行…",
                     fontSize = 11.5.sp,
                     color = Everforest.CommentGrey,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { expanded = true }
+                        .padding(vertical = 1.dp),
                 )
             }
         }
