@@ -40,6 +40,7 @@ type PeerCandidate struct {
 	HostName      string `json:"hostName"`
 	DNSName       string `json:"dnsName"`
 	TailscaleIP   string `json:"tailscaleIp"`
+	OS            string `json:"os,omitempty"`
 	Online        bool   `json:"online"`
 	IsLeworkNode  bool   `json:"isLeworkNode"`
 	LocalProxyURL string `json:"localProxyUrl,omitempty"`
@@ -91,6 +92,7 @@ type RawPeerInfo struct {
 	IsTagged     bool
 	HostName     string
 	DNSName      string
+	OS           string
 	Online       bool
 	TailscaleIPs []string
 }
@@ -113,10 +115,34 @@ type realTsnetBackend struct {
 	authURL string
 }
 
+func prepareSandboxEnv(stateDir string) {
+	dirs := map[string]string{
+		"TS_LOGS_DIR":     filepath.Join(stateDir, "logs"),
+		"TMPDIR":          filepath.Join(stateDir, "tmp"),
+		"XDG_CACHE_HOME":  filepath.Join(stateDir, "cache"),
+		"XDG_CONFIG_HOME": filepath.Join(stateDir, "config"),
+	}
+	for envKey, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			if envKey == "TS_LOGS_DIR" || os.Getenv(envKey) == "" {
+				_ = os.Setenv(envKey, dir)
+			}
+		}
+	}
+	if os.Getenv("HOME") == "" {
+		homeDir := filepath.Join(stateDir, "home")
+		if os.MkdirAll(homeDir, 0o700) == nil {
+			_ = os.Setenv("HOME", homeDir)
+		}
+	}
+	_ = os.Setenv("TS_NO_LOGS_NO_SUPPORT", "true")
+}
+
 func newRealTsnetBackend(cfg Config) (*realTsnetBackend, error) {
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, err
 	}
+	prepareSandboxEnv(cfg.StateDir)
 	logf := func(string, ...any) {}
 	if cfg.VerboseLog {
 		logf = func(format string, args ...any) {
@@ -241,6 +267,7 @@ func (b *realTsnetBackend) QueryStatus(ctx context.Context) (*RawTailnetStatus, 
 			IsTagged:     isTagged,
 			HostName:     p.HostName,
 			DNSName:      strings.TrimSuffix(p.DNSName, "."),
+			OS:           p.OS,
 			Online:       p.Online,
 			TailscaleIPs: ips,
 		})
@@ -323,6 +350,9 @@ func (b *realTsnetBackend) Logout(ctx context.Context) error {
 }
 
 func (b *realTsnetBackend) NotifyLinkChange(ctx context.Context) error {
+	if nm, ok := b.srv.Sys().NetMon.GetOK(); ok {
+		nm.InjectEvent()
+	}
 	lc, err := b.srv.LocalClient()
 	if err != nil {
 		return err
@@ -521,18 +551,25 @@ func (m *Manager) Status(ctx context.Context) StatusSnapshot {
 		if len(p.TailscaleIPs) == 0 {
 			continue
 		}
-		isLework := strings.HasPrefix(strings.ToLower(p.HostName), "lework")
+		isLework := isLeworkHubHost(p.HostName, p.OS)
 		primaryIP := p.TailscaleIPs[0]
 		candidates = append(candidates, PeerCandidate{
 			HostName:     p.HostName,
 			DNSName:      p.DNSName,
 			TailscaleIP:  primaryIP,
+			OS:           p.OS,
 			Online:       p.Online,
 			IsLeworkNode: isLework,
 		})
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
+		iMobile := isMobileClientPeer(candidates[i].HostName, candidates[i].OS)
+		jMobile := isMobileClientPeer(candidates[j].HostName, candidates[j].OS)
+		if iMobile != jMobile {
+			// Desktop / server hosts (macOS, Linux, Windows) always rank ahead of iOS/Android mobile client nodes
+			return !iMobile
+		}
 		if candidates[i].Online != candidates[j].Online {
 			return candidates[i].Online
 		}
@@ -887,6 +924,25 @@ func (m *Manager) ServeControlHTTP(secret string) (int, *http.Server, error) {
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	return ln.Addr().(*net.TCPAddr).Port, srv, nil
+}
+
+func isMobileClientPeer(hostName, osName string) bool {
+	lowerOS := strings.ToLower(strings.TrimSpace(osName))
+	if lowerOS == "ios" || lowerOS == "android" {
+		return true
+	}
+	lowerHost := strings.ToLower(strings.TrimSpace(hostName))
+	return strings.HasPrefix(lowerHost, "lework-ios") ||
+		strings.HasPrefix(lowerHost, "lework-android") ||
+		strings.HasPrefix(lowerHost, "levi-remote-")
+}
+
+func isLeworkHubHost(hostName, osName string) bool {
+	if isMobileClientPeer(hostName, osName) {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(hostName))
+	return strings.HasPrefix(lower, "lework-hub") || strings.HasPrefix(lower, "lework")
 }
 
 func sanitizeHostname(raw string) string {

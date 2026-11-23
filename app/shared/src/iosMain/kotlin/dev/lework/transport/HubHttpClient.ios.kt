@@ -47,6 +47,11 @@ actual fun createHubHttpClient(pinnedOnly: Boolean): HttpClient = HttpClient(Dar
     install(WebSockets)
     followRedirects = false
     engine {
+        configureSession {
+            // Embedded `tsnet` forwards every Tailscale peer over `127.0.0.1:<ephemeralPort>`;
+            // raise Darwin's default 4-per-host limit so multi-node tailnets never queue behind offline peers.
+            HTTPMaximumConnectionsPerHost = 32
+        }
         handleChallenge { _, _, challenge, completionHandler ->
             val space = challenge.protectionSpace
             if (space.authenticationMethod != NSURLAuthenticationMethodServerTrust) {

@@ -659,8 +659,11 @@ private fun parseMobileTsnetJson(rawJson: String): MobileTsnetStatus {
             error = err.message ?: "Invalid tsnet JSON",
         )
     }
-    val withAvail = parsed.copy(available = hasBridge)
-    val liveProxies = withAvail.peers
+    val orderedPeers = prioritizeTsnetPeers(parsed.peers, loadPairedHosts(), loadActiveHostId())
+    val withAvail = parsed.copy(available = hasBridge, peers = orderedPeers)
+    val liveProxies = orderedPeers
+        .filterNot { it.isMobileClientNode() }
+        .ifEmpty { orderedPeers }
         .mapNotNull { it.localProxyUrl?.takeIf { u -> u.isNotBlank() } }
     IosDiscoveryBus.updateTsnetProxies(liveProxies)
     return withAvail

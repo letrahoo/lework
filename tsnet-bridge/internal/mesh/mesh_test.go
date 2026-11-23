@@ -320,3 +320,43 @@ func TestForwarderSecretBlocksUnauthenticatedLocalCallers(t *testing.T) {
 		t.Fatalf("expected exact TLS_CLIENT_HELLO stream after preamble, got %q (err=%v)", string(out), err)
 	}
 }
+
+func TestDesktopHostsSortAheadOfMobileClientNodes(t *testing.T) {
+	fb := &fakeBackend{
+		dialAddr: "127.0.0.1:1",
+		status: &RawTailnetStatus{
+			BackendState: "Running",
+			SelfUserID:   42,
+			Peers: []RawPeerInfo{
+				{UserID: 42, HostName: "lework-ios-iphone", OS: "iOS", Online: true, TailscaleIPs: []string{"100.64.0.10"}},
+				{UserID: 42, HostName: "lework-android-phone", OS: "android", Online: true, TailscaleIPs: []string{"100.64.0.11"}},
+				{UserID: 42, HostName: "Home Mac mini", OS: "macOS", Online: true, TailscaleIPs: []string{"100.64.0.12"}},
+				{UserID: 42, HostName: "lework-hub-devbox", OS: "linux", Online: true, TailscaleIPs: []string{"100.64.0.13"}},
+			},
+		},
+	}
+
+	mgr, err := NewManager(Config{
+		StateDir: t.TempDir(),
+		Hostname: "lework-android",
+		HubPort:  64450,
+	}, func(Config) (EngineBackend, error) { return fb, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	snap := mgr.Status(context.Background())
+	if len(snap.Peers) != 4 {
+		t.Fatalf("expected 4 peers, got %d", len(snap.Peers))
+	}
+	if snap.Peers[0].HostName != "lework-hub-devbox" || !snap.Peers[0].IsLeworkNode {
+		t.Fatalf("expected lework-hub-devbox first with IsLeworkNode=true, got %+v", snap.Peers[0])
+	}
+	if snap.Peers[1].HostName != "Home Mac mini" {
+		t.Fatalf("expected Home Mac mini second ahead of mobile clients, got %+v", snap.Peers[1])
+	}
+	if snap.Peers[2].IsLeworkNode || snap.Peers[3].IsLeworkNode {
+		t.Fatalf("mobile client nodes must not be marked IsLeworkNode: %+v", snap.Peers[2:])
+	}
+}

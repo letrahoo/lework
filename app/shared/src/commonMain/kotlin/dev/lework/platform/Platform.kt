@@ -21,10 +21,79 @@ data class MobileTsnetPeer(
     val hostName: String = "",
     val dnsName: String = "",
     val tailscaleIp: String = "",
+    val os: String = "",
     val online: Boolean = false,
     val isLeworkNode: Boolean = false,
     val localProxyUrl: String? = null,
 )
+
+fun MobileTsnetPeer.isMobileClientNode(): Boolean {
+    val cleanOs = os.trim().lowercase()
+    if (cleanOs == "ios" || cleanOs == "android") return true
+    val cleanHost = hostName.trim().lowercase()
+    val cleanDns = dnsName.trim().lowercase()
+    return cleanHost.startsWith("lework-ios") ||
+        cleanHost.startsWith("lework-android") ||
+        cleanHost.startsWith("levi-remote-") ||
+        cleanDns.startsWith("lework-ios") ||
+        cleanDns.startsWith("lework-android") ||
+        cleanDns.startsWith("levi-remote-")
+}
+
+fun prioritizeTsnetPeers(
+    peers: List<MobileTsnetPeer>,
+    pairedHosts: List<PairedHost> = emptyList(),
+    activeHostId: String? = null,
+): List<MobileTsnetPeer> {
+    if (peers.size <= 1) return peers
+    fun extractHostsFromEndpoints(endpoints: List<String>): Set<String> =
+        endpoints.mapNotNull { raw ->
+            val afterScheme = raw.substringAfter("://", raw).substringBefore('/')
+            val host = if (afterScheme.startsWith("[")) {
+                afterScheme.substringAfter('[').substringBefore(']')
+            } else {
+                afterScheme.substringBefore(':')
+            }.trim().lowercase()
+            host.takeIf { it.isNotEmpty() && it != "127.0.0.1" && it != "localhost" }
+        }.toSet()
+
+    val activeHost = activeHostId?.let { id -> pairedHosts.firstOrNull { it.hubId == id } }
+    val activeKnownIpsOrHosts = activeHost?.let { h ->
+        extractHostsFromEndpoints(h.endpoints) + setOfNotNull(h.name.trim().lowercase().takeIf { it.isNotEmpty() })
+    }.orEmpty()
+
+    val pairedKnownIpsOrHosts = pairedHosts.flatMap { h ->
+        extractHostsFromEndpoints(h.endpoints) + listOfNotNull(h.name.trim().lowercase().takeIf { it.isNotEmpty() })
+    }.toSet()
+
+    fun matchesSet(peer: MobileTsnetPeer, known: Set<String>): Boolean {
+        if (known.isEmpty()) return false
+        val ip = peer.tailscaleIp.trim().lowercase()
+        val host = peer.hostName.trim().lowercase()
+        val dns = peer.dnsName.trim().trimEnd('.').lowercase()
+        val shortDns = dns.substringBefore('.')
+        return (ip.isNotEmpty() && ip in known) ||
+            (host.isNotEmpty() && host in known) ||
+            (dns.isNotEmpty() && dns in known) ||
+            (shortDns.isNotEmpty() && shortDns in known)
+    }
+
+    fun rank(peer: MobileTsnetPeer): Int {
+        if (matchesSet(peer, activeKnownIpsOrHosts)) return 0
+        if (matchesSet(peer, pairedKnownIpsOrHosts)) return 1
+        val isMobile = peer.isMobileClientNode()
+        if (!isMobile && peer.isLeworkNode && peer.online) return 2
+        if (!isMobile && peer.online) return 3
+        if (!isMobile && peer.isLeworkNode) return 4
+        if (!isMobile) return 5
+        if (peer.online) return 6
+        return 7
+    }
+
+    return peers.withIndex()
+        .sortedWith(compareBy<IndexedValue<MobileTsnetPeer>> { rank(it.value) }.thenBy { it.index })
+        .map { it.value }
+}
 
 @Serializable
 data class MobileTsnetStatus(

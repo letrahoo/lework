@@ -540,9 +540,13 @@ private object AndroidTsnetDaemon {
                 }
                 val raw = stream.bufferedReader().use { it.readText() }
                 val parsed = ProtocolJson.decodeFromString(MobileTsnetStatus.serializer(), raw)
-                val withAvail = parsed.copy(available = true)
-                val proxies = withAvail.peers.mapNotNull { it.localProxyUrl?.takeIf { u -> u.isNotBlank() } }
-                AndroidPlatformRuntime.updateTsnetProxies(proxies)
+                val orderedPeers = prioritizeTsnetPeers(parsed.peers, loadPairedHosts(), loadActiveHostId())
+                val withAvail = parsed.copy(available = true, peers = orderedPeers)
+                val nonMobileProxies = orderedPeers
+                    .filterNot { it.isMobileClientNode() }
+                    .mapNotNull { it.localProxyUrl?.takeIf { u -> u.isNotBlank() } }
+                val allProxies = (nonMobileProxies + orderedPeers.mapNotNull { it.localProxyUrl?.takeIf { u -> u.isNotBlank() } }).distinct()
+                AndroidPlatformRuntime.updateTsnetProxies(allProxies)
                 withAvail
             }.getOrElse { err ->
                 MobileTsnetStatus(
