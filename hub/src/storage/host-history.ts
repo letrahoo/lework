@@ -30,6 +30,7 @@ import {
   readClaudeLocalSettings,
   readCodexLocalSettings,
   readCodexModelsCache,
+  resolveAgyWireModel,
 } from './host-history/engine-settings.ts'
 import {
   TerminalApprovalError,
@@ -82,6 +83,7 @@ export class HostTaskInspector {
   private readonly homeDir: string
   private readonly terminalBridge: TerminalBridge
   private claudeRuntimeMap = new Map<string, ClaudeLiveSessionMeta>()
+  private lastTerminalModelKey = new Map<string, string>()
   private lastScanAt = 0
 
   constructor(callbacksOrOpts?: HostLiveCallbacks | HostTaskInspectorOptions) {
@@ -465,6 +467,60 @@ export class HostTaskInspector {
     return this.terminalBridge.checkAgyPresenceLock(nativeId)
   }
 
+  private resolveLiveTerminalModelArg(
+    engineId: string,
+    modelId: string,
+    effort?: ReasoningEffort,
+  ): string {
+    if (engineId === 'agy') {
+      const resolved = resolveAgyWireModel(modelId, effort, this.agyModelsCache ?? undefined)
+      return resolved.wireModel ?? modelId
+    }
+    return modelId
+  }
+
+  async trySwitchLiveHostModel(
+    sessionId: string,
+    modelId: string,
+    effort?: ReasoningEffort,
+  ): Promise<boolean> {
+    const entry = this.getHostSession(sessionId)
+    if (!entry) return false
+    const engineId = entry.meta.engineId
+    if (engineId !== 'claude' && engineId !== 'agy') return false
+
+    const modelArg = this.resolveLiveTerminalModelArg(engineId, modelId, effort)
+    if (this.lastTerminalModelKey.get(sessionId) === modelArg) {
+      return true
+    }
+
+    if (engineId === 'claude') {
+      this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
+    }
+    const claudeRt = engineId === 'claude' ? this.claudeRuntimeMap.get(entry.nativeId) : undefined
+
+    const switched = await this.terminalBridge.sendModelSwitchToSession(
+      {
+        nativeId: entry.nativeId,
+        engineId,
+        cwd: entry.meta.cwd,
+        title: entry.meta.title,
+        claudeRuntime: claudeRt,
+      },
+      modelArg,
+    )
+    if (switched) {
+      this.lastTerminalModelKey.set(sessionId, modelArg)
+      entry.meta = {
+        ...entry.meta,
+        model: modelId,
+        ...(effort ? { reasoningEffort: effort } : {}),
+        updatedAt: Date.now(),
+      }
+    }
+    return switched
+  }
+
   /**
    * Attempts to inject a mobile-sent prompt directly into an active `tmux` / `iTerm2` CLI session
    * (`host:agy:*` or `host:claude:*`) so computer terminal and mobile UI stay 100% in sync.
@@ -476,6 +532,10 @@ export class HostTaskInspector {
     sessionId: string,
     terminalPromptText: string,
     displayUserText: string,
+    modelOverride?: {
+      modelId?: string
+      reasoningEffort?: ReasoningEffort
+    },
   ): Promise<boolean> {
     const entry = this.getHostSession(sessionId)
     if (!entry) return false
@@ -488,6 +548,37 @@ export class HostTaskInspector {
       this.claudeRuntimeMap = this.terminalBridge.readClaudeRuntimeMap()
     }
     const claudeRt = engineId === 'claude' ? this.claudeRuntimeMap.get(entry.nativeId) : undefined
+
+    if (modelOverride?.modelId) {
+      const targetArg = this.resolveLiveTerminalModelArg(
+        engineId,
+        modelOverride.modelId,
+        modelOverride.reasoningEffort ?? entry.meta.reasoningEffort,
+      )
+      const currentArg =
+        this.lastTerminalModelKey.get(sessionId) ??
+        (entry.meta.model
+          ? this.resolveLiveTerminalModelArg(engineId, entry.meta.model, entry.meta.reasoningEffort)
+          : undefined)
+      if (targetArg !== currentArg) {
+        const switched = await this.terminalBridge
+          .sendModelSwitchToSession(
+            {
+              nativeId: entry.nativeId,
+              engineId,
+              cwd: entry.meta.cwd,
+              title: entry.meta.title,
+              claudeRuntime: claudeRt,
+            },
+            targetArg,
+          )
+          .catch(() => false)
+        if (switched) {
+          this.lastTerminalModelKey.set(sessionId, targetArg)
+          await new Promise(r => setTimeout(r, 250))
+        }
+      }
+    }
 
     const delivery = await this.terminalBridge.sendPromptToSession(
       {

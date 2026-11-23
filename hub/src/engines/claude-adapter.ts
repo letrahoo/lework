@@ -176,13 +176,29 @@ class ClaudeAcpSession implements EngineSession {
     }
     this.acpSessionId = upstreamId
     this.init.onNativeSessionLinked?.(upstreamId)
-    this.extractModels(created ?? {})
+    const reportedCurrentModel = this.extractModels(created ?? {})
+    if (this.init.modelId && this.init.modelId !== reportedCurrentModel) {
+      await this.rpc
+        .request(
+          'session/set_model',
+          {
+            sessionId: this.acpSessionId,
+            modelId: this.init.modelId,
+          },
+          3_000,
+        )
+        .catch(() => undefined)
+    }
     if (this.init.mode) {
       await this.rpc
-        .request('session/set_mode', {
-          sessionId: this.acpSessionId,
-          modeId: this.init.mode,
-        })
+        .request(
+          'session/set_mode',
+          {
+            sessionId: this.acpSessionId,
+            modeId: this.init.mode,
+          },
+          3_000,
+        )
         .catch(() => undefined)
     }
   }
@@ -294,6 +310,14 @@ class ClaudeAcpSession implements EngineSession {
     await this.rpc.request('session/set_model', {
       sessionId: this.acpSessionId,
       modelId,
+    })
+  }
+
+  async setMode(mode: import('@lework/protocol').SessionMode): Promise<void> {
+    if (!this.rpc || !this.acpSessionId) return
+    await this.rpc.request('session/set_mode', {
+      sessionId: this.acpSessionId,
+      modeId: mode,
     })
   }
 
@@ -466,12 +490,12 @@ class ClaudeAcpSession implements EngineSession {
     })
   }
 
-  private extractModels(payload: Record<string, unknown>): void {
+  private extractModels(payload: Record<string, unknown>): string | undefined {
     const modelsObj =
       payload.models && typeof payload.models === 'object'
         ? (payload.models as Record<string, unknown>)
         : null
-    if (!modelsObj) return
+    if (!modelsObj) return undefined
     const current = typeof modelsObj.currentModelId === 'string' ? modelsObj.currentModelId : undefined
     const avail = Array.isArray(modelsObj.availableModels) ? modelsObj.availableModels : []
     const parsed: ModelOption[] = avail
@@ -486,6 +510,7 @@ class ClaudeAcpSession implements EngineSession {
     if (parsed.length > 0) {
       this.init.onModelsChanged?.(current, parsed)
     }
+    return current
   }
 }
 

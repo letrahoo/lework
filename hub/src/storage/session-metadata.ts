@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import type { SessionMeta, SessionWorktreeInfo } from '@lework/protocol'
+import type { ReasoningEffort, SessionMeta, SessionMode, SessionWorktreeInfo } from '@lework/protocol'
 import { defaultDataDir } from '../platform/index.ts'
 
 export interface SessionMetadataRecord {
@@ -8,6 +8,10 @@ export interface SessionMetadataRecord {
   archived?: boolean
   archivedAt?: number
   worktree?: SessionWorktreeInfo
+  preferredModel?: string
+  preferredEffort?: ReasoningEffort
+  preferredMode?: SessionMode
+  diskModelAtOverride?: string
   updatedAt: number
   filePath?: string
   nativeId?: string
@@ -77,7 +81,29 @@ export class SessionMetadataStore {
     const cleanCustom = rec?.customTitle?.trim()
     const isArchived = rec?.archived === true
     const persistedWorktree = rec?.worktree ?? meta.worktree
-    if (!cleanCustom && !isArchived && !persistedWorktree) {
+    const diskModelChangedSinceOverride =
+      Boolean(rec?.preferredModel) &&
+      Boolean(meta.model) &&
+      Boolean(rec?.diskModelAtOverride) &&
+      meta.model !== rec?.diskModelAtOverride &&
+      meta.model !== rec?.preferredModel
+
+    const effectiveModel =
+      !diskModelChangedSinceOverride && rec?.preferredModel ? rec.preferredModel : meta.model
+    const effectiveEffort =
+      !diskModelChangedSinceOverride && rec?.preferredEffort
+        ? rec.preferredEffort
+        : meta.reasoningEffort
+    const effectiveMode = rec?.preferredMode ?? meta.mode
+
+    if (
+      !cleanCustom &&
+      !isArchived &&
+      !persistedWorktree &&
+      effectiveModel === meta.model &&
+      effectiveEffort === meta.reasoningEffort &&
+      effectiveMode === meta.mode
+    ) {
       if (!meta.customTitle && !meta.archived && meta.archivedAt === undefined && !meta.worktree) return meta
       const copy = { ...meta }
       delete copy.customTitle
@@ -89,6 +115,9 @@ export class SessionMetadataStore {
     const copy: SessionMeta = {
       ...meta,
       title: cleanCustom || meta.title,
+      ...(effectiveModel ? { model: effectiveModel } : {}),
+      ...(effectiveEffort ? { reasoningEffort: effectiveEffort } : {}),
+      ...(effectiveMode ? { mode: effectiveMode } : {}),
     }
     if (cleanCustom) {
       copy.customTitle = cleanCustom
@@ -108,6 +137,17 @@ export class SessionMetadataStore {
       delete copy.worktree
     }
     return copy
+  }
+
+  private hasPersistedFields(rec: SessionMetadataRecord): boolean {
+    return Boolean(
+      rec.customTitle ||
+        rec.archived ||
+        rec.worktree ||
+        rec.preferredModel ||
+        rec.preferredEffort ||
+        rec.preferredMode,
+    )
   }
 
   setWorktree(
@@ -137,7 +177,52 @@ export class SessionMetadataStore {
       } else {
         delete next.worktree
       }
-      if (!next.customTitle && !next.archived && !next.worktree) {
+      if (!this.hasPersistedFields(next)) {
+        this.records.delete(id)
+      } else {
+        this.records.set(id, next)
+      }
+    }
+    this.persist()
+  }
+
+  setSessionPrefs(
+    sessionId: string,
+    prefs: {
+      model?: string
+      reasoningEffort?: ReasoningEffort
+      mode?: SessionMode
+    },
+    ctx?: {
+      hostAliasId?: string
+      filePath?: string
+      nativeId?: string
+      baseMeta?: SessionMeta
+    },
+  ): void {
+    this.ensureLoaded()
+    const now = Date.now()
+    const ids = [sessionId, ctx?.hostAliasId].filter((v): v is string => Boolean(v && v.trim()))
+    for (const id of new Set(ids)) {
+      const prev = this.records.get(id)
+      const next: SessionMetadataRecord = {
+        ...prev,
+        updatedAt: now,
+        ...(ctx?.filePath ? { filePath: ctx.filePath } : {}),
+        ...(ctx?.nativeId ? { nativeId: ctx.nativeId } : {}),
+        ...(ctx?.baseMeta ? { snapshotMeta: stripOverrides(ctx.baseMeta, id) } : {}),
+      }
+      if (prefs.model?.trim()) {
+        next.preferredModel = prefs.model.trim()
+        next.diskModelAtOverride = ctx?.baseMeta?.model ?? prev?.diskModelAtOverride
+      }
+      if (prefs.reasoningEffort) {
+        next.preferredEffort = prefs.reasoningEffort
+      }
+      if (prefs.mode) {
+        next.preferredMode = prefs.mode
+      }
+      if (!this.hasPersistedFields(next)) {
         this.records.delete(id)
       } else {
         this.records.set(id, next)
@@ -174,7 +259,7 @@ export class SessionMetadataStore {
       } else {
         delete next.customTitle
       }
-      if (!next.customTitle && !next.archived && !next.worktree) {
+      if (!this.hasPersistedFields(next)) {
         this.records.delete(id)
       } else {
         this.records.set(id, next)
@@ -212,7 +297,7 @@ export class SessionMetadataStore {
         delete next.archived
         delete next.archivedAt
       }
-      if (!next.customTitle && !next.archived && !next.worktree) {
+      if (!this.hasPersistedFields(next)) {
         this.records.delete(id)
       } else {
         this.records.set(id, next)
@@ -233,6 +318,10 @@ export class SessionMetadataStore {
       archived: hubRec?.archived ?? hostRec?.archived,
       archivedAt: hubRec?.archivedAt ?? hostRec?.archivedAt,
       worktree: hubRec?.worktree ?? hostRec?.worktree,
+      preferredModel: hubRec?.preferredModel ?? hostRec?.preferredModel,
+      preferredEffort: hubRec?.preferredEffort ?? hostRec?.preferredEffort,
+      preferredMode: hubRec?.preferredMode ?? hostRec?.preferredMode,
+      diskModelAtOverride: hubRec?.diskModelAtOverride ?? hostRec?.diskModelAtOverride,
       updatedAt: Math.max(hubRec?.updatedAt ?? 0, hostRec?.updatedAt ?? 0, Date.now()),
     }
     this.records.set(hubSessionId, merged)

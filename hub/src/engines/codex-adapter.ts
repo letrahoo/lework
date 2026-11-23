@@ -274,6 +274,10 @@ class CodexAppServerSession implements EngineSession {
     this.selectedModel = modelId
   }
 
+  async setEffort(effort: import('@lework/protocol').ReasoningEffort): Promise<void> {
+    this.selectedEffort = effort
+  }
+
   async close(): Promise<void> {
     this.closed = true
     this.turnWaiter?.resolve()

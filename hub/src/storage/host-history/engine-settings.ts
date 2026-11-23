@@ -170,6 +170,16 @@ export function readCodexModelsCache(homeDir: string, efforts: ReasoningEffort[]
   }
 }
 
+let cachedAgyCatalog: EngineModelSpec[] | null = null
+
+export function getCachedAgyCatalog(): EngineModelSpec[] | undefined {
+  return cachedAgyCatalog ?? undefined
+}
+
+export function setCachedAgyCatalog(models: EngineModelSpec[] | null): void {
+  cachedAgyCatalog = models
+}
+
 export function fallbackAgyModels(): EngineModelSpec[] {
   const eff: ReasoningEffort[] = ['low', 'medium', 'high']
   return [
@@ -213,10 +223,65 @@ export async function loadAgyModelsFromCli(): Promise<EngineModelSpec[]> {
         defaultEffort: efforts.includes('high') ? 'high' : efforts[0],
       }
     })
-    return specs.length > 0 ? specs : fallbackAgyModels()
+    if (specs.length > 0) {
+      cachedAgyCatalog = specs
+      return specs
+    }
+    return fallbackAgyModels()
   } catch {
     return fallbackAgyModels()
   }
+}
+
+export function resolveAgyWireModel(
+  rawModel: string | undefined,
+  requestedEffort?: ReasoningEffort,
+  catalog?: EngineModelSpec[],
+): { wireModel?: string; wireEffort?: ReasoningEffort } {
+  const trimmed = rawModel?.trim()
+  if (!trimmed) {
+    return { wireModel: undefined, wireEffort: requestedEffort }
+  }
+
+  const effectiveCatalog = catalog ?? cachedAgyCatalog ?? undefined
+  const parsed = parseAgyModelString(trimmed, effectiveCatalog)
+  const baseId = parsed.modelId ?? trimmed
+  const effectiveRequestEffort = requestedEffort ?? parsed.effort
+
+  if (effectiveCatalog && effectiveCatalog.length > 0) {
+    const spec = effectiveCatalog.find(m => m.id.toLowerCase() === baseId.toLowerCase())
+    if (spec) {
+      if (!spec.efforts || spec.efforts.length === 0) {
+        return { wireModel: spec.id, wireEffort: undefined }
+      }
+      const chosenEffort =
+        effectiveRequestEffort && spec.efforts.includes(effectiveRequestEffort)
+          ? effectiveRequestEffort
+          : spec.defaultEffort && spec.efforts.includes(spec.defaultEffort)
+            ? spec.defaultEffort
+            : spec.efforts[0]!
+      return {
+        wireModel: `${spec.id}-${chosenEffort}`,
+        wireEffort: chosenEffort,
+      }
+    }
+  }
+
+  const noEffortSuffix =
+    baseId.includes('orchestrator') ||
+    baseId.startsWith('gpt-oss') ||
+    baseId.includes('@') ||
+    /^claude-haiku/i.test(baseId)
+  if (noEffortSuffix) {
+    return { wireModel: baseId, wireEffort: undefined }
+  }
+  if (effectiveRequestEffort) {
+    return {
+      wireModel: `${baseId}-${effectiveRequestEffort}`,
+      wireEffort: effectiveRequestEffort,
+    }
+  }
+  return { wireModel: baseId, wireEffort: undefined }
 }
 
 export function parseAgyModelString(

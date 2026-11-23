@@ -37,6 +37,8 @@ export interface EngineSession {
   cancel(): Promise<void>
   respondPermission(requestId: string, optionId: string | null): Promise<void>
   setModel?(modelId: string): Promise<void>
+  setEffort?(effort: ReasoningEffort): Promise<void>
+  setMode?(mode: SessionMode): Promise<void>
   close(): Promise<void>
 }
 

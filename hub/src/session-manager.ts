@@ -42,6 +42,9 @@ interface QueuedTurnItem {
   rawText: string
   displayUserText: string
   stagedImages: StagedPromptImage[]
+  modelId?: string
+  reasoningEffort?: ReasoningEffort
+  mode?: SessionMode
 }
 
 interface ManagedSession {
@@ -428,6 +431,10 @@ export class SessionManager {
             sessionId,
             terminalPromptText,
             displayUserText,
+            {
+              modelId: overrides?.modelId,
+              reasoningEffort: overrides?.reasoningEffort,
+            },
           )
         } catch (err) {
           if (err instanceof TerminalApprovalError) {
@@ -445,6 +452,10 @@ export class SessionManager {
               sessionId,
               terminalPromptText,
               displayUserText,
+              {
+                modelId: overrides?.modelId,
+                reasoningEffort: overrides?.reasoningEffort,
+              },
             )
             if (!deliveredToTerminal) {
               const where = lockCheck.hostAppHint ? `${lockCheck.hostAppHint} 窗口` : '电脑其他终端窗口'
@@ -457,6 +468,21 @@ export class SessionManager {
         }
 
         if (deliveredToTerminal) {
+          if (overrides?.modelId || overrides?.reasoningEffort || overrides?.mode) {
+            this.metaStore.setSessionPrefs(
+              sessionId,
+              {
+                model: overrides.modelId,
+                reasoningEffort: overrides.reasoningEffort,
+                mode: overrides.mode,
+              },
+              {
+                filePath: hostEntry.filePath,
+                nativeId: hostEntry.nativeId,
+                baseMeta: hostEntry.meta,
+              },
+            )
+          }
           if (managed) {
             this.sessions.delete(sessionId)
             void managed.handle.close().catch(() => {})
@@ -477,14 +503,15 @@ export class SessionManager {
         }
 
         if (!managed) {
+          const decoratedHost = this.metaStore.applyToMeta(hostLoaded.session)
           await this.createSession({
             engineId: hostLoaded.session.engineId,
             cwd: hostLoaded.session.cwd,
             workspaces: hostLoaded.session.workspaces,
             title: hostLoaded.session.title,
-            modelId: overrides?.modelId ?? hostLoaded.session.model,
-            reasoningEffort: overrides?.reasoningEffort,
-            mode: overrides?.mode,
+            modelId: overrides?.modelId ?? decoratedHost.model,
+            reasoningEffort: overrides?.reasoningEffort ?? decoratedHost.reasoningEffort,
+            mode: overrides?.mode ?? decoratedHost.mode,
             fixedSessionId: sessionId,
             resumeNativeId: hostEntry.nativeId,
             seedEvents: hostLoaded.events,
@@ -499,15 +526,30 @@ export class SessionManager {
     if (managed.meta.state === 'waiting_permission') {
       throw new HubRpcError(ErrorCode.Conflict, '当前会话正在等待权限确认，请先完成审批后再发送。')
     }
-    if (overrides?.modelId && managed.handle.setModel && managed.meta.state !== 'running') {
-      await managed.handle.setModel(overrides.modelId).catch(() => undefined)
-      managed.meta.model = overrides.modelId
-    }
-    if (overrides?.reasoningEffort) {
-      managed.meta.reasoningEffort = overrides.reasoningEffort
-    }
-    if (overrides?.mode) {
-      managed.meta.mode = overrides.mode
+    if (overrides?.modelId || overrides?.reasoningEffort || overrides?.mode) {
+      const hostAliasId =
+        managed.nativeId && !sessionId.startsWith('host:')
+          ? `host:${managed.meta.engineId}:${managed.nativeId}`
+          : undefined
+      const hostEntry = sessionId.startsWith('host:')
+        ? this.hostInspector.getHostSession(sessionId)
+        : hostAliasId
+          ? this.hostInspector.getHostSession(hostAliasId)
+          : undefined
+      this.metaStore.setSessionPrefs(
+        sessionId,
+        {
+          model: overrides.modelId,
+          reasoningEffort: overrides.reasoningEffort,
+          mode: overrides.mode,
+        },
+        {
+          hostAliasId,
+          filePath: hostEntry?.filePath,
+          nativeId: hostEntry?.nativeId ?? managed.nativeId,
+          baseMeta: hostEntry?.meta ?? managed.meta,
+        },
+      )
     }
 
     if (managed.meta.state === 'running') {
@@ -519,6 +561,9 @@ export class SessionManager {
         rawText: text,
         displayUserText,
         stagedImages,
+        modelId: overrides?.modelId,
+        reasoningEffort: overrides?.reasoningEffort,
+        mode: overrides?.mode,
       })
       managed.meta.queuedPrompts = managed.queuedTurns.map(q => q.displayUserText)
       managed.meta.updatedAt = Date.now()
@@ -526,6 +571,12 @@ export class SessionManager {
       this.callbacks.onSessionUpdated(managed.meta)
       return { turnId }
     }
+
+    await this.applyTurnOverrides(managed, {
+      modelId: overrides?.modelId,
+      reasoningEffort: overrides?.reasoningEffort,
+      mode: overrides?.mode,
+    })
 
     this.startManagedTurn(managed, {
       turnId,
@@ -535,6 +586,34 @@ export class SessionManager {
     })
 
     return { turnId }
+  }
+
+  private async applyTurnOverrides(
+    managed: ManagedSession,
+    overrides: {
+      modelId?: string
+      reasoningEffort?: ReasoningEffort
+      mode?: SessionMode
+    },
+  ): Promise<void> {
+    if (overrides.modelId && overrides.modelId !== managed.meta.model) {
+      if (managed.handle.setModel) {
+        await managed.handle.setModel(overrides.modelId).catch(() => undefined)
+      }
+      managed.meta.model = overrides.modelId
+    }
+    if (overrides.reasoningEffort && overrides.reasoningEffort !== managed.meta.reasoningEffort) {
+      if (managed.handle.setEffort) {
+        await managed.handle.setEffort(overrides.reasoningEffort).catch(() => undefined)
+      }
+      managed.meta.reasoningEffort = overrides.reasoningEffort
+    }
+    if (overrides.mode && overrides.mode !== managed.meta.mode) {
+      if (managed.handle.setMode) {
+        await managed.handle.setMode(overrides.mode).catch(() => undefined)
+      }
+      managed.meta.mode = overrides.mode
+    }
   }
 
   private startManagedTurn(managed: ManagedSession, item: QueuedTurnItem): void {
@@ -594,7 +673,15 @@ export class SessionManager {
         managed.meta.queuedPrompts =
           managed.queuedTurns.length > 0 ? managed.queuedTurns.map(q => q.displayUserText) : undefined
         if (nextQueued) {
-          this.startManagedTurn(managed, nextQueued)
+          void this.applyTurnOverrides(managed, {
+            modelId: nextQueued.modelId,
+            reasoningEffort: nextQueued.reasoningEffort,
+            mode: nextQueued.mode,
+          }).finally(() => {
+            if (!managed.closed && this.sessions.has(sessionId)) {
+              this.startManagedTurn(managed, nextQueued)
+            }
+          })
         } else if (managed.meta.state === 'running') {
           managed.meta.state = 'idle'
           managed.meta.turnStartedAt = undefined
@@ -674,17 +761,88 @@ export class SessionManager {
     }
   }
 
-  async setModel(sessionId: string, modelId: string): Promise<SessionMeta> {
-    const managed = this.requireSession(sessionId)
-    if (!managed.handle.setModel) {
-      throw new HubRpcError(ErrorCode.EngineError, 'Engine does not support changing models.')
+  async setModel(
+    sessionId: string,
+    modelId: string,
+    opts?: {
+      reasoningEffort?: ReasoningEffort
+      mode?: SessionMode
+    },
+  ): Promise<SessionMeta> {
+    const cleanModel = modelId.trim()
+    if (!cleanModel) {
+      throw new HubRpcError(ErrorCode.InvalidParams, 'Model ID is required.')
     }
-    await managed.handle.setModel(modelId)
-    managed.meta.model = modelId
-    managed.meta.updatedAt = Date.now()
-    managed.meta = this.decorateManagedMeta(managed)
-    this.callbacks.onSessionUpdated(managed.meta)
-    return managed.meta
+
+    const managed = this.sessions.get(sessionId)
+    const hostAliasId =
+      managed?.nativeId && !sessionId.startsWith('host:')
+        ? `host:${managed.meta.engineId}:${managed.nativeId}`
+        : undefined
+    const hostEntry = sessionId.startsWith('host:')
+      ? this.hostInspector.getHostSession(sessionId)
+      : hostAliasId
+        ? this.hostInspector.getHostSession(hostAliasId)
+        : undefined
+
+    if (!managed && !hostEntry) {
+      throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+    }
+
+    this.metaStore.setSessionPrefs(
+      sessionId,
+      {
+        model: cleanModel,
+        reasoningEffort: opts?.reasoningEffort,
+        mode: opts?.mode,
+      },
+      {
+        hostAliasId,
+        filePath: hostEntry?.filePath,
+        nativeId: hostEntry?.nativeId ?? managed?.nativeId,
+        baseMeta: hostEntry?.meta ?? managed?.meta,
+      },
+    )
+
+    if (managed) {
+      if (!managed.handle.setModel) {
+        throw new HubRpcError(ErrorCode.EngineError, 'Engine does not support changing models.')
+      }
+      await managed.handle.setModel(cleanModel)
+      managed.meta.model = cleanModel
+      if (opts?.reasoningEffort) {
+        await managed.handle.setEffort?.(opts.reasoningEffort)
+        managed.meta.reasoningEffort = opts.reasoningEffort
+      }
+      if (opts?.mode) {
+        await managed.handle.setMode?.(opts.mode)
+        managed.meta.mode = opts.mode
+      }
+      managed.meta.updatedAt = Date.now()
+      managed.meta = this.decorateManagedMeta(managed)
+      this.callbacks.onSessionUpdated(managed.meta)
+      return managed.meta
+    }
+
+    if (sessionId.startsWith('host:')) {
+      await this.hostInspector
+        .trySwitchLiveHostModel(
+          sessionId,
+          cleanModel,
+          opts?.reasoningEffort ?? hostEntry!.meta.reasoningEffort,
+        )
+        .catch(() => false)
+    }
+
+    const updated = this.metaStore.applyToMeta({
+      ...hostEntry!.meta,
+      model: cleanModel,
+      ...(opts?.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
+      ...(opts?.mode ? { mode: opts.mode } : {}),
+      updatedAt: Date.now(),
+    })
+    this.callbacks.onSessionUpdated(updated)
+    return updated
   }
 
   renameSession(sessionId: string, title: string): SessionMeta {
@@ -914,7 +1072,7 @@ export class SessionManager {
     this.sleepInhibitor.dispose()
     const all = [...this.sessions.values()]
     this.sessions.clear()
-    await Promise.allSettled(all.map(s => s.handle.close()))
+    await Promise.allSettled(all.map(s => s.handle?.close()))
   }
 
   private requireSession(sessionId: string): ManagedSession {

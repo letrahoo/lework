@@ -338,6 +338,49 @@ export class TerminalBridge {
     return { delivered: true }
   }
 
+  /**
+   * Sends an interactive `/model <id>` command into a verified, idle live `tmux` / `iTerm2`
+   * session (`claude` or `agy`) when the user switches the model from the mobile App.
+   * Strict allowlist prevents any non-identifier characters from ever reaching the terminal.
+   */
+  async sendModelSwitchToSession(
+    params: {
+      nativeId: string
+      engineId: string
+      cwd?: string
+      title?: string
+      claudeRuntime?: ClaudeLiveSessionMeta
+    },
+    modelCommandArg: string,
+  ): Promise<boolean> {
+    if (process.platform !== 'darwin' && process.platform !== 'linux') return false
+    if (params.engineId !== 'claude' && params.engineId !== 'agy') return false
+    const cleanModel = modelCommandArg.trim()
+    if (!/^[A-Za-z0-9._:@-]{1,96}$/.test(cleanModel)) {
+      return false
+    }
+
+    this.agyProcCache = null
+    if (params.claudeRuntime?.pid) {
+      this.pidTtyCache.delete(params.claudeRuntime.pid)
+    }
+
+    let target = await this.findTarget(params)
+    if (!target && this.topologyCache) {
+      this.topologyCache = null
+      target = await this.findTarget(params)
+    }
+    if (!target) return false
+
+    const screen = await this.readScreenTail(target, 35)
+    if (!screen || screen.length === 0) return false
+    if (parseTerminalPermissionPrompt(params.nativeId, screen)) return false
+    if (parseLiveSpinnerLine(screen)) return false
+
+    await this.sendPromptPayload(target, `/model ${cleanModel}`)
+    return true
+  }
+
   async sendCancelToSession(params: {
     nativeId: string
     engineId: string

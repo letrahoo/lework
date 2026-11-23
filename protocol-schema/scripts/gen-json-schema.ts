@@ -706,6 +706,8 @@ data class SessionCancelParams(
 data class SessionSetModelParams(
     val sessionId: String,
     val modelId: String,
+    val reasoningEffort: ReasoningEffort? = null,
+    val mode: SessionMode? = null,
 )
 
 @Serializable

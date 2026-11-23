@@ -1024,4 +1024,144 @@ class ConsoleStoreStateTest {
             JvmPlatformTestHooks.reset()
         }
     }
+
+    @Test
+    fun `T12_3 selectEngineAndModel updates active session model without snap-back and detaches when switching engine`() = runTest {
+        val transport = FakeHubTransport()
+        val sonnetSpec = EngineModelSpec(
+            id = "claude-sonnet-4-6",
+            name = "Claude Sonnet 4.6",
+            efforts = emptyList(),
+            defaultEffort = null,
+        )
+        val geminiProSpec = EngineModelSpec(
+            id = "gemini-3.1-pro",
+            name = "Gemini 3.1 Pro",
+            efforts = listOf(ReasoningEffort.LOW, ReasoningEffort.HIGH),
+            defaultEffort = ReasoningEffort.HIGH,
+        )
+        val opusSpec = EngineModelSpec(
+            id = "claude-opus-4-6",
+            name = "Claude Opus 4.6",
+            efforts = listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH),
+            defaultEffort = ReasoningEffort.HIGH,
+        )
+        transport.enginesOverride = listOf(
+            EngineInfo(
+                id = "agy",
+                displayName = "AGY",
+                kind = EngineKind.CLI,
+                status = EngineStatus(installed = true, ready = true, version = "0.2.3"),
+                capabilities = EngineCapabilities(
+                    permissions = true,
+                    images = true,
+                    modelSwitch = true,
+                    modes = true,
+                    history = true,
+                    cancel = true,
+                ),
+                models = listOf(geminiProSpec, sonnetSpec),
+                defaultModel = "gemini-3.1-pro",
+                defaultMode = SessionMode.AUTO,
+                defaultEffort = ReasoningEffort.HIGH,
+                supportedModes = listOf(SessionMode.AUTO, SessionMode.PLAN),
+            ),
+            EngineInfo(
+                id = "claude",
+                displayName = "Claude Code",
+                kind = EngineKind.CLI,
+                status = EngineStatus(installed = true, ready = true, version = "2.1.328"),
+                capabilities = EngineCapabilities(
+                    permissions = true,
+                    images = true,
+                    modelSwitch = true,
+                    modes = true,
+                    history = true,
+                    cancel = true,
+                ),
+                models = listOf(opusSpec),
+                defaultModel = "claude-opus-4-6",
+                defaultMode = SessionMode.ACCEPT_EDITS,
+                defaultEffort = ReasoningEffort.MEDIUM,
+                supportedModes = listOf(SessionMode.AUTO, SessionMode.ACCEPT_EDITS, SessionMode.PLAN),
+            ),
+        )
+        val agySid = "host:agy:conv_switch_1"
+        transport.sessions.add(
+            SessionMeta(
+                id = agySid,
+                engineId = "agy",
+                cwd = "/workspace/lework",
+                title = "Model Switch Session",
+                state = SessionState.IDLE,
+                createdAt = 1_000L,
+                updatedAt = 2_000L,
+                lastSeq = 0,
+                model = "gemini-3.1-pro",
+                reasoningEffort = ReasoningEffort.HIGH,
+                mode = SessionMode.AUTO,
+            ),
+        )
+        transport.sessionEventsMap[agySid] = mutableListOf(
+            AgentEvent.UserMessage(0, agySid, 1_000L, "u_0", "现在是什么模型"),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.bootstrapOrConnect()
+            runCurrent()
+            store.selectSession(agySid)
+            runCurrent()
+            assertEquals("gemini-3.1-pro", store.state.value.selectedModelId)
+
+            // 1. Switch model within same engine (`agy`: gemini-3.1-pro -> claude-sonnet-4-6) and mode -> PLAN
+            store.selectEngineAndModel("agy", sonnetSpec)
+            runCurrent()
+            assertEquals("claude-sonnet-4-6", store.state.value.selectedModelId)
+            assertEquals("claude-sonnet-4-6", store.state.value.activeSession?.model)
+            assertEquals(1, transport.setModelCalls.size)
+            assertEquals("claude-sonnet-4-6", transport.setModelCalls.last().modelId)
+
+            store.selectMode(SessionMode.PLAN)
+            runCurrent()
+            assertEquals(SessionMode.PLAN, store.state.value.selectedMode)
+            assertEquals(2, transport.setModelCalls.size)
+            assertEquals(SessionMode.PLAN, transport.setModelCalls.last().mode)
+
+            // 2. Prompt in active session carries new model & mode; foreground reconnect does NOT snap back to defaultModel!
+            store.sendPrompt("请用新模型回答")
+            runCurrent()
+            assertEquals("claude-sonnet-4-6", transport.sentPromptParams.last().modelId)
+            assertEquals(SessionMode.PLAN, transport.sentPromptParams.last().mode)
+
+            JvmPlatformTestHooks.setForeground(false)
+            runCurrent()
+            transport.emitDisconnected("lock screen")
+            runCurrent()
+            JvmPlatformTestHooks.setForeground(true)
+            runCurrent()
+            assertEquals("claude-sonnet-4-6", store.state.value.selectedModelId)
+            assertEquals(SessionMode.PLAN, store.state.value.selectedMode)
+
+            // 3. Switching to a DIFFERENT engine (`claude`) detaches from `host:agy:*` into a clean draft
+            //    so the next prompt creates a `claude` session instead of sending to the old `agy` session!
+            store.selectEngineAndModel("claude", opusSpec, ReasoningEffort.MEDIUM)
+            runCurrent()
+            assertNull(store.state.value.activeSessionId)
+            assertEquals("claude", store.state.value.selectedEngineId)
+            assertEquals("claude-opus-4-6", store.state.value.selectedModelId)
+            assertEquals("/workspace/lework", store.state.value.selectedWorkspacePath)
+            assertTrue(agySid in transport.unsubscribedIds)
+
+            store.sendPrompt("在 Claude 新会话里继续")
+            runCurrent()
+            val createdClaudeSession = store.state.value.activeSession
+            assertEquals("claude", createdClaudeSession?.engineId)
+            assertEquals("claude-opus-4-6", createdClaudeSession?.model)
+        } finally {
+            storeScope.cancel()
+            JvmPlatformTestHooks.reset()
+        }
+    }
 }

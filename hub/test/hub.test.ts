@@ -13,6 +13,8 @@ import { PiEngineAdapter } from '../src/engines/pi-adapter.ts'
 import { generateServiceDescriptor } from '../src/platform/index.ts'
 import { HubServer } from '../src/server.ts'
 import { HostTaskInspector } from '../src/storage/host-history.ts'
+import { setCachedAgyCatalog } from '../src/storage/host-history/engine-settings.ts'
+import { TerminalBridge } from '../src/storage/terminal-bridge.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, '../..')
@@ -546,5 +548,274 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
     expect(idleMeta?.queuedPrompts).toBeUndefined()
 
     client.close()
+  })
+
+  it('restarts persistent AGY stream-json worker on model/effort/mode switch and avoids bogus effort suffixes', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-agy-switch-'))
+    const mockAgyScript = path.join(tmpDir, 'mock-agy-stream.mjs')
+    fs.writeFileSync(
+      mockAgyScript,
+      `
+import readline from 'node:readline'
+const args = process.argv.slice(2)
+const convIdx = args.indexOf('--conversation')
+const convId = convIdx >= 0 ? args[convIdx + 1] : 'conv_agy_switch_1'
+const rl = readline.createInterface({ input: process.stdin })
+let sentInit = false
+rl.on('line', line => {
+  if (!line.trim()) return
+  if (!sentInit) {
+    sentInit = true
+    process.stdout.write(JSON.stringify({ event: 'init', conversation_id: convId }) + '\\n')
+  }
+  const reply = 'ARGS:' + args.join(' ')
+  process.stdout.write(JSON.stringify({ event: 'step_update', step_update: { step_type: 'agent_response', text_delta: reply } }) + '\\n')
+  process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: convId, status: 'OK', response: reply } }) + '\\n')
+})
+`,
+      'utf8',
+    )
+
+    setCachedAgyCatalog([
+      {
+        id: 'gemini-4-carbon',
+        name: 'Gemini 4 Carbon',
+        providerId: 'sub_agy',
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'high',
+      },
+      {
+        id: 'claude-sonnet-4-6',
+        name: 'Claude Sonnet 4.6',
+        providerId: 'sub_agy',
+      },
+    ])
+
+    try {
+      const agyAdapter = new AgyEngineAdapter({
+        binary: process.execPath,
+        args: [mockAgyScript, '--input-format', 'stream-json', '--output-format', 'stream-json'],
+      })
+
+      server = new HubServer({
+        config: {
+          hubId: 'hub_agy_switch',
+          name: 'AgySwitchMac',
+          role: 'slave',
+          host: '127.0.0.1',
+          port: 0,
+          token: 'secret-agy-switch-token',
+          workspaceRoots: [repoRoot],
+          cpaEndpoint: 'http://127.0.0.1:8317',
+        },
+        adapters: [agyAdapter],
+      })
+
+      const { port } = await server.start()
+      const client = new TestRpcClient()
+      await client.connect(`wss://127.0.0.1:${port}/v1/ws`)
+      await client.call('hub.hello', {
+        protocolVersion: PROTOCOL_VERSION,
+        token: 'secret-agy-switch-token',
+        client: { name: 'test-ios', version: '0.6.9', platform: 'ios' },
+      })
+
+      const { session } = await client.call('session.create', {
+        engineId: 'agy',
+        cwd: repoRoot,
+        modelId: 'gemini-4-carbon',
+        reasoningEffort: 'high',
+        mode: 'auto',
+      })
+
+      // Turn 1: initial worker runs gemini-4-carbon-high
+      const t1 = await client.call('session.prompt', {
+        sessionId: session.id,
+        text: 'turn 1',
+      })
+      await client.waitForEvent('turn.done', ev => ev.turnId === t1.turnId)
+      const turn1Delta = client.events.find(
+        (e): e is Extract<AgentEvent, { type: 'message.assistant.delta' }> =>
+          e.type === 'message.assistant.delta' && e.text.includes('--model gemini-4-carbon-high'),
+      )
+      expect(turn1Delta?.text).toContain('--effort high')
+      expect(turn1Delta?.text).toContain('--mode auto')
+
+      // Switch to non-effort model claude-sonnet-4-6 + plan mode via session.setModel
+      const updatedMeta = await client.call('session.setModel', {
+        sessionId: session.id,
+        modelId: 'claude-sonnet-4-6',
+        reasoningEffort: 'high',
+        mode: 'plan',
+      })
+      expect(updatedMeta.session.model).toBe('claude-sonnet-4-6')
+      expect(updatedMeta.session.mode).toBe('plan')
+
+      // Turn 2: persistent worker MUST have restarted with --conversation conv_agy_switch_1 and NO -high suffix!
+      const t2 = await client.call('session.prompt', {
+        sessionId: session.id,
+        text: 'turn 2',
+      })
+      await client.waitForEvent('turn.done', ev => ev.turnId === t2.turnId)
+      const turn2Delta = client.events.find(
+        (e): e is Extract<AgentEvent, { type: 'message.assistant.delta' }> =>
+          e.type === 'message.assistant.delta' && e.text.includes('--model claude-sonnet-4-6'),
+      )
+      expect(turn2Delta).toBeDefined()
+      expect(turn2Delta?.text).toContain('--conversation conv_agy_switch_1')
+      expect(turn2Delta?.text).toContain('--mode plan')
+      expect(turn2Delta?.text).not.toContain('claude-sonnet-4-6-high')
+      expect(turn2Delta?.text).not.toContain('--effort')
+
+      // Turn 3: switching effort via session.prompt overrides also restarts worker with new effort
+      const t3 = await client.call('session.prompt', {
+        sessionId: session.id,
+        text: 'turn 3',
+        modelId: 'gemini-4-carbon',
+        reasoningEffort: 'low',
+      })
+      await client.waitForEvent('turn.done', ev => ev.turnId === t3.turnId)
+      const turn3Delta = client.events.find(
+        (e): e is Extract<AgentEvent, { type: 'message.assistant.delta' }> =>
+          e.type === 'message.assistant.delta' && e.text.includes('--model gemini-4-carbon-low'),
+      )
+      expect(turn3Delta?.text).toContain('--effort low')
+
+      client.close()
+    } finally {
+      setCachedAgyCatalog(null)
+    }
+  })
+
+  it('persists session.setModel on unmaterialized host:agy:* sessions and syncs live tmux /model', async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lework-host-agy-model-'))
+    const convId = 'ac96b78c-test-host-conv'
+    const logDir = path.join(fakeHome, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs')
+    fs.mkdirSync(logDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(logDir, 'transcript.jsonl'),
+      [
+        JSON.stringify({
+          type: 'USER_INPUT',
+          created_at: '2026-11-23T00:00:00Z',
+          content:
+            '<USER_REQUEST>你好</USER_REQUEST>\n<USER_SETTINGS_CHANGE>The user changed setting `Model Selection` from None to Gemini 4 Carbon (High).</USER_SETTINGS_CHANGE>',
+        }),
+        JSON.stringify({
+          type: 'PLANNER_RESPONSE',
+          created_at: '2026-11-23T00:00:02Z',
+          response: '你好！',
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    )
+
+    const injectedTmuxKeys: string[][] = []
+    const bridge = new TerminalBridge({
+      homeDir: fakeHome,
+      tmuxBin: '/usr/local/bin/tmux',
+      tmuxSocketPaths: [],
+      isPidAlive: pid => pid === 4242,
+      runCommand: async (bin, args) => {
+        if (bin === '/usr/local/bin/tmux' && args.includes('list-panes')) {
+          return '%1|/dev/ttys021|0\n'
+        }
+        if (bin === 'ps' && args[0] === '-axo') {
+          return ` 4242 ttys021 agy --conversation ${convId}\n`
+        }
+        if (bin === 'lsof') {
+          return `p4242\nfcwd\nn${repoRoot}\n`
+        }
+        if (bin === '/usr/local/bin/tmux' && args.includes('capture-pane')) {
+          return '> \n? for shortcuts   auto · Gemini 4 Carbon · high\n'
+        }
+        if (bin === '/usr/local/bin/tmux' && args.includes('send-keys')) {
+          injectedTmuxKeys.push(args)
+        }
+        return ''
+      },
+    })
+
+    // Unsafe characters in model arg must be rejected before touching terminal
+    const rejectedBad = await bridge.sendModelSwitchToSession(
+      { nativeId: convId, engineId: 'agy', cwd: repoRoot },
+      'bad model; rm -rf /',
+    )
+    expect(rejectedBad).toBe(false)
+    expect(injectedTmuxKeys).toHaveLength(0)
+
+    const inspector = new HostTaskInspector({ homeDir: fakeHome, terminalBridge: bridge })
+    setCachedAgyCatalog([
+      {
+        id: 'gemini-4-carbon',
+        name: 'Gemini 4 Carbon',
+        providerId: 'sub_agy',
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'high',
+      },
+      {
+        id: 'gemini-4-argon',
+        name: 'Gemini 4 Argon',
+        providerId: 'sub_agy',
+        efforts: ['low', 'medium', 'high'],
+        defaultEffort: 'high',
+      },
+    ])
+
+    try {
+      server = new HubServer({
+        config: {
+          hubId: 'hub_host_model_test',
+          name: 'HostModelMac',
+          role: 'slave',
+          host: '127.0.0.1',
+          port: 0,
+          token: 'secret-host-model-token',
+          workspaceRoots: [repoRoot, fakeHome],
+          cpaEndpoint: 'http://127.0.0.1:8317',
+        },
+        adapters: [new AgyEngineAdapter()],
+        hostInspector: inspector,
+      })
+
+      const { port } = await server.start()
+      const client = new TestRpcClient()
+      await client.connect(`wss://127.0.0.1:${port}/v1/ws`)
+      await client.call('hub.hello', {
+        protocolVersion: PROTOCOL_VERSION,
+        token: 'secret-host-model-token',
+        client: { name: 'test-ios', version: '0.6.9', platform: 'ios' },
+      })
+
+      const hostSid = `host:agy:${convId}`
+      const initialList = await client.call('session.list', {})
+      const initialHost = initialList.sessions.find((s: any) => s.id === hostSid)
+      expect(initialHost?.model).toBe('gemini-4-carbon')
+
+      // Switch model on unmaterialized host session: must NOT throw NotFound, must persist & send /model to tmux!
+      const switched = await client.call('session.setModel', {
+        sessionId: hostSid,
+        modelId: 'gemini-4-argon',
+        reasoningEffort: 'medium',
+      })
+      expect(switched.session.model).toBe('gemini-4-argon')
+      expect(switched.session.reasoningEffort).toBe('medium')
+
+      if (process.platform === 'darwin' || process.platform === 'linux') {
+        expect(injectedTmuxKeys.some(a => a.includes('/model gemini-4-argon-medium'))).toBe(true)
+      }
+
+      // Subsequent stream.subscribe MUST preserve gemini-4-argon instead of snapping back to transcript's gemini-4-carbon!
+      const subSnap = await client.call('stream.subscribe', {
+        sessionId: hostSid,
+        afterSeq: -1,
+      })
+      expect(subSnap.session.model).toBe('gemini-4-argon')
+      expect(subSnap.session.reasoningEffort).toBe('medium')
+
+      client.close()
+    } finally {
+      setCachedAgyCatalog(null)
+    }
   })
 })

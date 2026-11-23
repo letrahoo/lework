@@ -157,7 +157,12 @@ interface HubTransport {
     ): String
 
     suspend fun cancelSession(sessionId: String)
-    suspend fun setSessionModel(sessionId: String, modelId: String): SessionMeta
+    suspend fun setSessionModel(
+        sessionId: String,
+        modelId: String,
+        reasoningEffort: ReasoningEffort? = null,
+        mode: SessionMode? = null,
+    ): SessionMeta
     suspend fun renameSession(sessionId: String, title: String): SessionMeta
     suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMeta
 
@@ -653,10 +658,22 @@ class HubRpcClient(
         call<OkResult>("session.cancel", encodeParams(SessionCancelParams(sessionId = sessionId)))
     }
 
-    override suspend fun setSessionModel(sessionId: String, modelId: String): SessionMeta =
+    override suspend fun setSessionModel(
+        sessionId: String,
+        modelId: String,
+        reasoningEffort: ReasoningEffort?,
+        mode: SessionMode?,
+    ): SessionMeta =
         call<SessionCreateResult>(
             "session.setModel",
-            encodeParams(SessionSetModelParams(sessionId = sessionId, modelId = modelId)),
+            encodeParams(
+                SessionSetModelParams(
+                    sessionId = sessionId,
+                    modelId = modelId,
+                    reasoningEffort = reasoningEffort,
+                    mode = mode,
+                ),
+            ),
         ).session
 
     override suspend fun renameSession(sessionId: String, title: String): SessionMeta =

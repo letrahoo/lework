@@ -61,7 +61,11 @@ class ConsoleStore(
     private var subscribedSessionId: String? = null
     private val warmSubscribedSessionIds = mutableSetOf<String>()
     private var subscribeSeqToken: Long = 0L
+    private var userManuallyPickedModel: Boolean = false
+    private var userManuallyPickedEffort: Boolean = false
     private var userManuallyPickedMode: Boolean = false
+    private var modelSwitchVersion: Long = 0L
+    private val pendingModelSwitchBySession = mutableMapOf<String, Pair<Long, Triple<String, ReasoningEffort, SessionMode>>>()
     private var manualPairingMode: Boolean = false
     private var pairingInFlight: Boolean = false
     private var pendingDeepLinkSessionId: String? = null
@@ -208,24 +212,34 @@ class ConsoleStore(
                         (prevActive.state == SessionState.RUNNING || prevActive.state == SessionState.WAITING_PERMISSION) &&
                         updated.state == SessionState.IDLE
                 _state.update { s ->
-                    val existing = s.sessions.indexOfFirst { it.id == updated.id }
-                    val nextList = if (existing >= 0) {
-                        s.sessions.toMutableList().also { it[existing] = updated }
+                    val pendingOverride = pendingModelSwitchBySession[updated.id]?.second
+                    val mergedUpdated = if (pendingOverride != null) {
+                        updated.copy(
+                            model = pendingOverride.first,
+                            reasoningEffort = pendingOverride.second,
+                            mode = pendingOverride.third,
+                        )
                     } else {
-                        listOf(updated) + s.sessions
+                        updated
                     }
-                    val syncMode = if (s.activeSessionId == updated.id && updated.mode != null) {
-                        updated.mode
+                    val existing = s.sessions.indexOfFirst { it.id == mergedUpdated.id }
+                    val nextList = if (existing >= 0) {
+                        s.sessions.toMutableList().also { it[existing] = mergedUpdated }
+                    } else {
+                        listOf(mergedUpdated) + s.sessions
+                    }
+                    val syncMode = if (s.activeSessionId == mergedUpdated.id && mergedUpdated.mode != null) {
+                        mergedUpdated.mode
                     } else {
                         s.selectedMode
                     }
-                    val syncModel = if (s.activeSessionId == updated.id && !updated.model.isNullOrBlank()) {
-                        updated.model
+                    val syncModel = if (s.activeSessionId == mergedUpdated.id && !mergedUpdated.model.isNullOrBlank()) {
+                        mergedUpdated.model
                     } else {
                         s.selectedModelId
                     }
-                    val syncEffort = if (s.activeSessionId == updated.id && updated.reasoningEffort != null) {
-                        updated.reasoningEffort
+                    val syncEffort = if (s.activeSessionId == mergedUpdated.id && mergedUpdated.reasoningEffort != null) {
+                        mergedUpdated.reasoningEffort
                     } else {
                         s.selectedEffort
                     }
@@ -1447,18 +1461,6 @@ class ConsoleStore(
                 ?: status.engines.firstOrNull()
             val chosenEngineId = chosenEngine?.id ?: "claude"
 
-            val chosenModel = chosenEngine?.models?.firstOrNull { it.id == chosenEngine.defaultModel }
-                ?: chosenEngine?.models?.firstOrNull { it.id == current.selectedModelId }
-                ?: chosenEngine?.models?.firstOrNull()
-            val chosenEffort = chosenEngine?.defaultEffort
-                ?: chosenModel?.defaultEffort
-                ?: current.selectedEffort
-            val chosenMode = if (userManuallyPickedMode) {
-                current.selectedMode
-            } else {
-                chosenEngine?.defaultMode ?: SessionMode.AUTO
-            }
-
             val validWs = workspaces.firstOrNull { it.path == current.selectedWorkspacePath }?.path
                 ?: workspaces.firstOrNull()?.path.orEmpty()
 
@@ -1475,6 +1477,42 @@ class ConsoleStore(
                     }?.id
                 }
                 else -> prevActiveId
+            }
+            val resolvedActiveSession = resolvedActiveId?.let { id -> sessions.firstOrNull { it.id == id } }
+            val preserveCurrentSelection =
+                (userManuallyPickedModel || isForegroundResume || current.hasEnteredWorkspace) &&
+                    current.selectedEngineId == chosenEngineId
+
+            val chosenModel = if (preserveCurrentSelection) {
+                chosenEngine?.models?.firstOrNull { it.id == current.selectedModelId }
+                    ?: chosenEngine?.models?.firstOrNull { it.id == resolvedActiveSession?.model }
+                    ?: chosenEngine?.models?.firstOrNull { it.id == chosenEngine.defaultModel }
+                    ?: chosenEngine?.models?.firstOrNull()
+            } else {
+                chosenEngine?.models?.firstOrNull { it.id == chosenEngine.defaultModel }
+                    ?: chosenEngine?.models?.firstOrNull { it.id == current.selectedModelId }
+                    ?: chosenEngine?.models?.firstOrNull()
+            }
+            val chosenEffort = if (userManuallyPickedEffort || preserveCurrentSelection) {
+                val supported = chosenModel?.efforts.orEmpty()
+                if (supported.isNotEmpty()) {
+                    current.selectedEffort.takeIf { it in supported }
+                        ?: resolvedActiveSession?.reasoningEffort?.takeIf { it in supported }
+                        ?: chosenModel?.defaultEffort?.takeIf { it in supported }
+                        ?: chosenEngine?.defaultEffort?.takeIf { it in supported }
+                        ?: supported.first()
+                } else {
+                    current.selectedEffort
+                }
+            } else {
+                chosenEngine?.defaultEffort
+                    ?: chosenModel?.defaultEffort
+                    ?: current.selectedEffort
+            }
+            val chosenMode = if (userManuallyPickedMode || preserveCurrentSelection) {
+                current.selectedMode
+            } else {
+                chosenEngine?.defaultMode ?: SessionMode.AUTO
             }
 
             manualPairingMode = false
@@ -1663,6 +1701,9 @@ class ConsoleStore(
 
     /** Starts a clean blank draft session using the computer's aligned engine setup. */
     fun startNewDraftSession() {
+        userManuallyPickedModel = false
+        userManuallyPickedEffort = false
+        userManuallyPickedMode = false
         switchSubscriptionTo(null)
         _state.update { s ->
             val eng = s.selectedEngine
@@ -1685,22 +1726,97 @@ class ConsoleStore(
         }
     }
 
+    private fun syncSessionModelToHub(
+        sessionId: String,
+        modelId: String,
+        effort: ReasoningEffort,
+        mode: SessionMode,
+    ) {
+        val ver = ++modelSwitchVersion
+        pendingModelSwitchBySession[sessionId] = ver to Triple(modelId, effort, mode)
+        scope.launch {
+            try {
+                val updated = rpc.setSessionModel(sessionId, modelId, effort, mode)
+                if (pendingModelSwitchBySession[sessionId]?.first == ver) {
+                    _state.update { st ->
+                        st.copy(
+                            sessions = st.sessions.map { item -> if (item.id == updated.id) updated else item },
+                        )
+                    }
+                }
+            } catch (_: Throwable) {
+                // Keep optimistic UI selection; next `session.prompt` also sends explicit overrides.
+            } finally {
+                if (pendingModelSwitchBySession[sessionId]?.first == ver) {
+                    pendingModelSwitchBySession.remove(sessionId)
+                }
+            }
+        }
+    }
+
     fun selectEngineAndModel(
         engineId: String,
         modelSpec: EngineModelSpec? = null,
         effort: ReasoningEffort? = null,
     ) {
+        userManuallyPickedModel = true
+        if (effort != null) userManuallyPickedEffort = true
+        val prevActive = _state.value.activeSession
+        val switchedDifferentEngine = prevActive != null && prevActive.engineId != engineId
+        if (switchedDifferentEngine) {
+            switchSubscriptionTo(null)
+        }
+
         _state.update { s ->
             val eng = s.engines.firstOrNull { it.id == engineId }
             val chosenModel = modelSpec
                 ?: eng?.models?.firstOrNull { it.id == eng.defaultModel }
                 ?: eng?.models?.firstOrNull()
-            val nextEffort = effort
-                ?: eng?.defaultEffort
-                ?: chosenModel?.defaultEffort
-                ?: s.selectedEffort
-            val nextMode = eng?.defaultMode ?: s.selectedMode
+            val supportedEfforts = chosenModel?.efforts.orEmpty()
+            val nextEffort = when {
+                effort != null -> effort
+                supportedEfforts.isNotEmpty() -> {
+                    s.selectedEffort.takeIf { s.selectedEngineId == engineId && it in supportedEfforts }
+                        ?: chosenModel?.defaultEffort?.takeIf { it in supportedEfforts }
+                        ?: eng?.defaultEffort?.takeIf { it in supportedEfforts }
+                        ?: supportedEfforts.first()
+                }
+                else -> chosenModel?.defaultEffort ?: eng?.defaultEffort ?: s.selectedEffort
+            }
+            val nextMode = if (switchedDifferentEngine) {
+                eng?.defaultMode ?: s.selectedMode
+            } else {
+                s.selectedMode
+            }
+            val updatedSessions = if (!switchedDifferentEngine && prevActive != null && chosenModel != null) {
+                s.sessions.map { item ->
+                    if (item.id == prevActive.id) {
+                        item.copy(
+                            model = chosenModel.id,
+                            reasoningEffort = nextEffort,
+                            mode = nextMode,
+                        )
+                    } else {
+                        item
+                    }
+                }
+            } else {
+                s.sessions
+            }
             s.copy(
+                activeSessionId = if (switchedDifferentEngine) null else s.activeSessionId,
+                loadingSessionId = if (switchedDifferentEngine) null else s.loadingSessionId,
+                checkpoints = if (switchedDifferentEngine) emptyList() else s.checkpoints,
+                activeSessionUsage = if (switchedDifferentEngine) null else s.activeSessionUsage,
+                openedDiffContent = if (switchedDifferentEngine) null else s.openedDiffContent,
+                openedDiffTitle = if (switchedDifferentEngine) null else s.openedDiffTitle,
+                checkpointNotice = if (switchedDifferentEngine) null else s.checkpointNotice,
+                selectedWorkspacePath = if (switchedDifferentEngine) {
+                    prevActive.cwd.ifEmpty { s.selectedWorkspacePath }
+                } else {
+                    s.selectedWorkspacePath
+                },
+                sessions = updatedSessions,
                 selectedEngineId = engineId,
                 selectedProviderId = chosenModel?.providerId,
                 selectedModelId = chosenModel?.id,
@@ -1710,18 +1826,37 @@ class ConsoleStore(
         }
         persistCurrentPrefs()
 
-        val active = _state.value.activeSession
-        val modelId = _state.value.selectedModelId
-        if (active != null && active.engineId == engineId && modelId != null) {
-            scope.launch {
-                runCatching { rpc.setSessionModel(active.id, modelId) }
-            }
+        val cur = _state.value
+        val active = cur.activeSession
+        val modelId = cur.selectedModelId
+        if (!switchedDifferentEngine && active != null && active.engineId == engineId && modelId != null) {
+            syncSessionModelToHub(active.id, modelId, cur.selectedEffort, cur.selectedMode)
         }
     }
 
     fun selectEffort(effort: ReasoningEffort) {
-        _state.update { it.copy(selectedEffort = effort) }
+        userManuallyPickedEffort = true
+        _state.update { s ->
+            val activeId = s.activeSessionId
+            s.copy(
+                selectedEffort = effort,
+                sessions = if (activeId != null) {
+                    s.sessions.map { item ->
+                        if (item.id == activeId) item.copy(reasoningEffort = effort) else item
+                    }
+                } else {
+                    s.sessions
+                },
+            )
+        }
         persistCurrentPrefs()
+
+        val cur = _state.value
+        val active = cur.activeSession
+        val modelId = cur.selectedModelId ?: active?.model
+        if (active != null && modelId != null) {
+            syncSessionModelToHub(active.id, modelId, effort, cur.selectedMode)
+        }
     }
 
     fun toggleFavoriteModel(engineId: String, modelId: String) {
@@ -1754,8 +1889,27 @@ class ConsoleStore(
 
     fun selectMode(mode: SessionMode) {
         userManuallyPickedMode = true
-        _state.update { it.copy(selectedMode = mode) }
+        _state.update { s ->
+            val activeId = s.activeSessionId
+            s.copy(
+                selectedMode = mode,
+                sessions = if (activeId != null) {
+                    s.sessions.map { item ->
+                        if (item.id == activeId) item.copy(mode = mode) else item
+                    }
+                } else {
+                    s.sessions
+                },
+            )
+        }
         persistCurrentPrefs()
+
+        val cur = _state.value
+        val active = cur.activeSession
+        val modelId = cur.selectedModelId ?: active?.model
+        if (active != null && modelId != null) {
+            syncSessionModelToHub(active.id, modelId, cur.selectedEffort, mode)
+        }
     }
 
     fun selectWorkspace(path: String) {
@@ -1833,6 +1987,9 @@ class ConsoleStore(
     }
 
     fun selectSession(sessionId: String) {
+        userManuallyPickedModel = false
+        userManuallyPickedEffort = false
+        userManuallyPickedMode = false
         switchSubscriptionTo(sessionId)
         val meta = _state.value.sessions.firstOrNull { it.id == sessionId }
         _state.update { s ->
@@ -2353,19 +2510,29 @@ class ConsoleStore(
 
         _state.update { s ->
             if (s.activeSessionId != sessionId) return@update s
-            val updatedSessions = if (s.sessions.any { it.id == snap.session.id }) {
+            val pendingOverride = pendingModelSwitchBySession[snap.session.id]?.second
+            val effectiveSession = if (pendingOverride != null) {
+                snap.session.copy(
+                    model = pendingOverride.first,
+                    reasoningEffort = pendingOverride.second,
+                    mode = pendingOverride.third,
+                )
+            } else {
+                snap.session
+            }
+            val updatedSessions = if (s.sessions.any { it.id == effectiveSession.id }) {
                 s.sessions.map { item ->
-                    if (item.id == snap.session.id) snap.session else item
+                    if (item.id == effectiveSession.id) effectiveSession else item
                 }
             } else {
-                listOf(snap.session) + s.sessions
+                listOf(effectiveSession) + s.sessions
             }
             val nextTranscript = if (isInitialLoad) {
                 val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
                 val concurrentPerms = s.transcripts[sessionId]?.pendingPermissions.orEmpty()
                 val mergedPerms = if (built.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }) {
                     built.pendingPermissions
-                } else if (snap.session.state == SessionState.WAITING_PERMISSION) {
+                } else if (effectiveSession.state == SessionState.WAITING_PERMISSION) {
                     (built.pendingPermissions + concurrentPerms).distinctBy { it.requestId }
                 } else {
                     built.pendingPermissions
@@ -2378,7 +2545,7 @@ class ConsoleStore(
                 )
             } else {
                 var cur = reduceTranscriptBatch(s.transcripts[sessionId] ?: SessionTranscript(), snap.events)
-                if (snap.session.state != SessionState.WAITING_PERMISSION &&
+                if (effectiveSession.state != SessionState.WAITING_PERMISSION &&
                     snap.events.none { it is AgentEvent.PermissionRequested }
                 ) {
                     cur = cur.copy(
@@ -2387,16 +2554,16 @@ class ConsoleStore(
                 }
                 cur
             }
-            val eng = s.engines.firstOrNull { it.id == snap.session.engineId }
+            val eng = s.engines.firstOrNull { it.id == effectiveSession.engineId }
             s.copy(
                 sessions = updatedSessions,
                 loadingSessionId = if (s.loadingSessionId == sessionId) null else s.loadingSessionId,
-                selectedEngineId = snap.session.engineId,
-                selectedModelId = snap.session.model ?: eng?.defaultModel ?: s.selectedModelId,
-                selectedMode = snap.session.mode ?: eng?.defaultMode ?: s.selectedMode,
-                selectedEffort = snap.session.reasoningEffort ?: eng?.defaultEffort ?: s.selectedEffort,
-                selectedWorkspacePath = snap.session.cwd,
-                currentBrowsePath = snap.session.cwd,
+                selectedEngineId = effectiveSession.engineId,
+                selectedModelId = effectiveSession.model ?: eng?.defaultModel ?: s.selectedModelId,
+                selectedMode = effectiveSession.mode ?: eng?.defaultMode ?: s.selectedMode,
+                selectedEffort = effectiveSession.reasoningEffort ?: eng?.defaultEffort ?: s.selectedEffort,
+                selectedWorkspacePath = effectiveSession.cwd,
+                currentBrowsePath = effectiveSession.cwd,
                 transcripts = s.transcripts + (sessionId to nextTranscript),
             )
         }

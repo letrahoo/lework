@@ -582,7 +582,12 @@ export const Methods = {
     result: z.object({ ok: z.literal(true) }),
   },
   'session.setModel': {
-    params: z.object({ sessionId: z.string(), modelId: z.string() }),
+    params: z.object({
+      sessionId: z.string(),
+      modelId: z.string(),
+      reasoningEffort: ReasoningEffort.optional(),
+      mode: SessionMode.optional(),
+    }),
     result: z.object({ session: SessionMeta }),
   },
   'session.rename': {
