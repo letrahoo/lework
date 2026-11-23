@@ -4,17 +4,7 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - 'THIRD_PARTY_NOTICES.md'
   pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - 'THIRD_PARTY_NOTICES.md'
   workflow_dispatch:
     inputs:
       run_macos:
