@@ -118,6 +118,14 @@ object JvmDesktopRuntime {
         "bitbucket.org",
         "ssh.dev.azure.com",
     )
+    private val FORGE_HOST_PREFIXES = listOf(
+        "git.",
+        "gitlab.",
+        "code.",
+        "gerrit.",
+        "gitea.",
+        "bitbucket.",
+    )
 
     fun initialize(customStateDir: File? = null) {
         synchronized(stateLock) {
@@ -546,23 +554,62 @@ object JvmDesktopRuntime {
     fun listSshConfigHosts(): List<String> = runCatching {
         val sshCfg = File(System.getProperty("user.home"), ".ssh/config")
         if (!sshCfg.isFile) return@runCatching emptyList()
+        parseSshConfigHosts(sshCfg.readText())
+    }.getOrDefault(emptyList())
+
+    internal fun parseSshConfigHosts(configText: String): List<String> {
         val results = mutableListOf<String>()
-        sshCfg.forEachLine { rawLine ->
-            val trimmed = rawLine.substringBefore('#').trim()
-            if (trimmed.startsWith("Host ", ignoreCase = true) || trimmed.startsWith("Host\t", ignoreCase = true)) {
-                val aliases = trimmed.substring(4).trim().split(Regex("\\s+"))
-                for (alias in aliases) {
-                    if (alias.isEmpty() || alias.contains('*') || alias.contains('?') || alias.startsWith('!')) continue
-                    val lower = alias.lowercase()
-                    if (FORGE_HOST_PATTERNS.any { lower == it || lower.endsWith(".$it") }) continue
+        var currentAliases = emptyList<String>()
+        var currentUser: String? = null
+        var currentHostName: String? = null
+
+        fun isGitForgeHost(raw: String): Boolean {
+            val lower = raw.trim().lowercase()
+            if (lower.isEmpty()) return false
+            if (FORGE_HOST_PATTERNS.any { lower == it || lower.endsWith(".$it") }) return true
+            if (FORGE_HOST_PREFIXES.any { lower.startsWith(it) && lower.length > it.length }) return true
+            return false
+        }
+
+        fun flushBlock() {
+            if (currentAliases.isEmpty()) return
+            val isGitUser = currentUser?.equals("git", ignoreCase = true) == true
+            val isForgeHostName = currentHostName?.let(::isGitForgeHost) == true
+            if (!isGitUser && !isForgeHostName) {
+                for (alias in currentAliases) {
+                    if (isGitForgeHost(alias)) continue
                     if (SSH_TARGET_REGEX.matches(alias) && alias !in results) {
                         results.add(alias)
                     }
                 }
             }
+            currentAliases = emptyList()
+            currentUser = null
+            currentHostName = null
         }
-        results.take(8)
-    }.getOrDefault(emptyList())
+
+        configText.lineSequence().forEach { rawLine ->
+            val trimmed = rawLine.substringBefore('#').trim()
+            if (trimmed.isEmpty()) return@forEach
+            val parts = trimmed.split(Regex("[\\s=]+"), limit = 2)
+            if (parts.size < 2) return@forEach
+            val key = parts[0].lowercase()
+            val value = parts[1].trim()
+            when (key) {
+                "host" -> {
+                    flushBlock()
+                    currentAliases = value
+                        .split(Regex("\\s+"))
+                        .filter { it.isNotEmpty() && !it.contains('*') && !it.contains('?') && !it.startsWith('!') }
+                }
+                "match" -> flushBlock()
+                "user" -> if (currentUser == null) currentUser = value
+                "hostname" -> if (currentHostName == null) currentHostName = value
+            }
+        }
+        flushBlock()
+        return results.take(8)
+    }
 
     suspend fun requestSshPairingLink(rawTarget: String): Result<String> = withContext(Dispatchers.IO) {
         val clean = rawTarget.trim()

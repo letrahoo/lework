@@ -1185,4 +1185,43 @@ class ConsoleStoreStateTest {
         assertEquals(6, atCaret)
         assertEquals("", dev.lework.store.extractMentionQueryAtCursor(atText, atCaret))
     }
+
+    @Test
+    fun `T12_5 parseSshConfigHosts skips User git and self-hosted forge hosts while keeping devbox aliases`() {
+        val sampleConfig = """
+            # Public GitHub & self-hosted Git forges (with or without explicit User git)
+            Host github.com
+                User git
+                IdentityFile ~/.ssh/id_ed25519
+
+            Host corp-forge
+                HostName repo.internal.example
+                User git
+
+            Host code.company.internal
+                IdentityFile ~/.ssh/id_work
+
+            Host my-git-alias
+                HostName git.company.internal
+                Port 2222
+
+            # Real devboxes (should be preserved)
+            Host devbox devbox-01
+                HostName 192.168.10.20
+                User dev
+
+            Host gpu-node
+                HostName 192.168.10.30
+                User=ubuntu
+
+            Match host *.internal
+                User git
+
+            Host *
+                ServerAliveInterval 60
+        """.trimIndent()
+
+        val hosts = dev.lework.platform.JvmDesktopRuntime.parseSshConfigHosts(sampleConfig)
+        assertEquals(listOf("devbox", "devbox-01", "gpu-node"), hosts)
+    }
 }
