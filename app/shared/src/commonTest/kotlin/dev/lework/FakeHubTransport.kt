@@ -402,6 +402,22 @@ class FakeHubTransport : HubTransport {
         if (delayMs > 0L) delay(delayMs)
 
         val meta = sessions.firstOrNull { it.id == sessionId }
+            ?: sessions.firstNotNullOfOrNull { parent ->
+                parent.subagents?.firstOrNull { it.id == sessionId }?.let { sub ->
+                    SessionMeta(
+                        id = sub.id,
+                        engineId = parent.engineId,
+                        cwd = sub.workspace ?: parent.cwd,
+                        title = sub.title,
+                        state = sub.state,
+                        createdAt = sub.createdAt ?: sub.updatedAt,
+                        updatedAt = sub.updatedAt,
+                        lastSeq = -1,
+                        source = SessionSource.HOST,
+                        liveStatusText = if (sub.state == SessionState.RUNNING) sub.statusText else null,
+                    )
+                }
+            }
             ?: SessionMeta(
                 id = sessionId,
                 engineId = "claude",

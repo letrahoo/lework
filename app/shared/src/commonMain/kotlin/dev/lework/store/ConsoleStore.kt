@@ -81,11 +81,17 @@ class ConsoleStore(
     private val lastErrorSignatureBySession = mutableMapOf<String, Pair<String, Long>>()
     private var consecutiveReconnectFailures: Int = 0
     private var activeUserSendOrRetryDepth: Int = 0
+    private var subagentInspectJob: Job? = null
+    private var subagentInspectToken: Long = 0L
+    private var subscribedSubagentId: String? = null
 
     private fun switchSubscriptionTo(nextSessionId: String?) {
         val prev = subscribedSessionId
         subscribedSessionId = nextSessionId
         subscribeSeqToken++
+        if (prev != nextSessionId) {
+            clearInspectedSubagent(updateState = true)
+        }
         if (prev != null && prev != nextSessionId) {
             val prevMeta = _state.value.sessions.firstOrNull { it.id == prev }
             val keepWarmOnDesktop =
@@ -275,12 +281,18 @@ class ConsoleStore(
                     } else {
                         s.turnRecoveryBanner
                     }
+                    val syncedSubagent = if (s.activeSessionId == mergedUpdated.id && s.inspectedSubagent != null) {
+                        mergedUpdated.subagents?.firstOrNull { it.id == s.inspectedSubagent.id } ?: s.inspectedSubagent
+                    } else {
+                        s.inspectedSubagent
+                    }
                     s.copy(
                         sessions = nextList,
                         selectedMode = syncMode,
                         selectedModelId = syncModel,
                         selectedEffort = syncEffort,
                         turnRecoveryBanner = nextBanner,
+                        inspectedSubagent = syncedSubagent,
                     )
                 }
                 reconcileDesktopRunningWarmSubscriptions(_state.value.sessions)
@@ -1720,7 +1732,13 @@ class ConsoleStore(
         scope.launch {
             runCatching {
                 val sessions = rpc.listSessions()
-                _state.update { it.copy(sessions = sessions) }
+                _state.update { s ->
+                    val syncedSub = s.inspectedSubagent?.let { curSub ->
+                        val activeParent = s.activeSessionId?.let { id -> sessions.firstOrNull { it.id == id } }
+                        activeParent?.subagents?.firstOrNull { it.id == curSub.id } ?: curSub
+                    }
+                    s.copy(sessions = sessions, inspectedSubagent = syncedSub)
+                }
             }
         }
     }
@@ -2971,6 +2989,11 @@ class ConsoleStore(
                     preserveUnsentOnSameContext = false,
                 )
             }
+            val syncedSubagent = if (s.inspectedSubagent != null) {
+                effectiveSession.subagents?.firstOrNull { it.id == s.inspectedSubagent.id } ?: s.inspectedSubagent
+            } else {
+                null
+            }
             s.copy(
                 sessions = updatedSessions,
                 loadingSessionId = if (s.loadingSessionId == sessionId) null else s.loadingSessionId,
@@ -2982,11 +3005,21 @@ class ConsoleStore(
                 currentBrowsePath = effectiveSession.cwd,
                 transcripts = s.transcripts + (sessionId to nextTranscript),
                 turnRecoveryBanner = nextBanner,
+                inspectedSubagent = syncedSubagent,
             )
         }
     }
 
     private fun applyIncomingEvent(event: AgentEvent) {
+        val inspectedSub = _state.value.inspectedSubagent
+        if (inspectedSub != null && event.sessionId == inspectedSub.id) {
+            _state.update { s ->
+                if (s.inspectedSubagent?.id != event.sessionId) return@update s
+                val nextSubTranscript = reduceTranscript(s.inspectedSubagentTranscript, event)
+                s.copy(inspectedSubagentTranscript = nextSubTranscript)
+            }
+            if (event.sessionId != _state.value.activeSessionId) return
+        }
         if (event is AgentEvent.UserMessage && event.text.isNotBlank()) {
             lastSubmittedPromptBySession[event.sessionId] = event.text
         }
@@ -3082,6 +3115,167 @@ class ConsoleStore(
         }
         if (event is AgentEvent.Usage || event is AgentEvent.TurnDone) {
             refreshActiveSessionUsage(event.sessionId)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Live SubAgents Drill-Down Inspector Actions
+    // -----------------------------------------------------------------------
+
+    fun openSubagentInspector(subagent: SubagentSummary) {
+        val prevSubId = subscribedSubagentId
+        if (prevSubId != null && prevSubId != subagent.id && prevSubId != subscribedSessionId && prevSubId !in warmSubscribedSessionIds) {
+            scope.launch {
+                runCatching { rpc.unsubscribeSession(prevSubId) }
+            }
+        }
+        val keepExistingTranscript = _state.value.inspectedSubagent?.id == subagent.id
+        subscribedSubagentId = subagent.id
+        val reqToken = ++subagentInspectToken
+        subagentInspectJob?.cancel()
+        _state.update { s ->
+            val latest = s.activeSession?.subagents?.firstOrNull { it.id == subagent.id } ?: subagent
+            s.copy(
+                inspectedSubagent = latest,
+                inspectedSubagentTranscript = if (keepExistingTranscript) s.inspectedSubagentTranscript else SessionTranscript(),
+                inspectedSubagentLoading = true,
+                inspectedSubagentError = null,
+            )
+        }
+        loadSubagentTranscript(subagent.id, reqToken)
+    }
+
+    fun refreshInspectedSubagent() {
+        val current = _state.value.inspectedSubagent ?: return
+        val latest = _state.value.activeSession?.subagents?.firstOrNull { it.id == current.id } ?: current
+        subscribedSubagentId = latest.id
+        val reqToken = ++subagentInspectToken
+        subagentInspectJob?.cancel()
+        _state.update { s ->
+            s.copy(
+                inspectedSubagent = latest,
+                inspectedSubagentLoading = true,
+                inspectedSubagentError = null,
+            )
+        }
+        loadSubagentTranscript(latest.id, reqToken, refreshParentList = true)
+    }
+
+    fun closeSubagentInspector() {
+        clearInspectedSubagent(updateState = true)
+    }
+
+    private fun clearInspectedSubagent(updateState: Boolean) {
+        subagentInspectToken++
+        subagentInspectJob?.cancel()
+        subagentInspectJob = null
+        val prevSubId = subscribedSubagentId
+        subscribedSubagentId = null
+        if (prevSubId != null && prevSubId != subscribedSessionId && prevSubId !in warmSubscribedSessionIds) {
+            scope.launch {
+                runCatching { rpc.unsubscribeSession(prevSubId) }
+            }
+        }
+        if (updateState && (
+            _state.value.inspectedSubagent != null ||
+                _state.value.inspectedSubagentLoading ||
+                _state.value.inspectedSubagentError != null ||
+                _state.value.inspectedSubagentTranscript.items.isNotEmpty()
+        )) {
+            _state.update {
+                it.copy(
+                    inspectedSubagent = null,
+                    inspectedSubagentTranscript = SessionTranscript(),
+                    inspectedSubagentLoading = false,
+                    inspectedSubagentError = null,
+                )
+            }
+        }
+    }
+
+    private fun loadSubagentTranscript(
+        subagentId: String,
+        reqToken: Long,
+        refreshParentList: Boolean = false,
+    ) {
+        subagentInspectJob = scope.launch {
+            try {
+                if (refreshParentList) {
+                    runCatching {
+                        val freshSessions = rpc.listSessions()
+                        if (freshSessions.isNotEmpty() && reqToken == subagentInspectToken) {
+                            _state.update { st ->
+                                val parent = st.activeSessionId?.let { id -> freshSessions.firstOrNull { it.id == id } }
+                                val freshSub = parent?.subagents?.firstOrNull { it.id == subagentId }
+                                st.copy(
+                                    sessions = freshSessions,
+                                    inspectedSubagent = if (st.inspectedSubagent?.id == subagentId && freshSub != null) {
+                                        freshSub
+                                    } else {
+                                        st.inspectedSubagent
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+                val snap = rpc.subscribeSession(
+                    sessionId = subagentId,
+                    afterSeq = -1,
+                    limit = 160,
+                )
+                if (reqToken != subagentInspectToken || _state.value.inspectedSubagent?.id != subagentId) {
+                    if (subagentId != subscribedSessionId && subagentId !in warmSubscribedSessionIds) {
+                        runCatching { rpc.unsubscribeSession(subagentId) }
+                    }
+                    return@launch
+                }
+                val reduced = reduceTranscriptBatch(SessionTranscript(), snap.events).copy(
+                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                    hasMoreBefore = snap.hasMoreBefore == true,
+                    loadingOlder = false,
+                )
+                _state.update { s ->
+                    val currentSub = s.inspectedSubagent?.takeIf { it.id == subagentId } ?: return@update s
+                    val fromParent = s.activeSession?.subagents?.firstOrNull { it.id == subagentId }
+                    val base = fromParent ?: currentSub
+                    val snapIsAuthoritative = snap.session.updatedAt >= base.updatedAt
+                    val resolvedState = if (snapIsAuthoritative) snap.session.state else base.state
+                    val synced = base.copy(
+                        state = resolvedState,
+                        statusText = when {
+                            resolvedState == SessionState.RUNNING ->
+                                snap.session.liveStatusText ?: base.statusText ?: "执行中…"
+                            resolvedState == SessionState.ERROR ->
+                                base.statusText ?: "执行出错"
+                            fromParent != null && fromParent.state == resolvedState ->
+                                fromParent.statusText ?: "已完成"
+                            else ->
+                                "已完成"
+                        },
+                        updatedAt = maxOf(base.updatedAt, snap.session.updatedAt),
+                    )
+                    s.copy(
+                        inspectedSubagent = synced,
+                        inspectedSubagentTranscript = reduced,
+                        inspectedSubagentLoading = false,
+                        inspectedSubagentError = null,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                if (reqToken != subagentInspectToken || _state.value.inspectedSubagent?.id != subagentId) {
+                    return@launch
+                }
+                _state.update { s ->
+                    if (s.inspectedSubagent?.id != subagentId) return@update s
+                    s.copy(
+                        inspectedSubagentLoading = false,
+                        inspectedSubagentError = t.message?.takeIf { it.isNotBlank() } ?: "无法读取 SubAgent 执行记录",
+                    )
+                }
+            }
         }
     }
 

@@ -174,7 +174,14 @@ export class SessionManager {
   }
 
   private decorateManagedMeta(managed: ManagedSession): SessionMeta {
-    return this.metaStore.applyToMeta({ ...managed.meta, title: managed.autoTitle })
+    const subagents = managed.nativeId
+      ? this.hostInspector.getDiscoveredSubagents(`host:${managed.meta.engineId}:${managed.nativeId}`)
+      : undefined
+    return this.metaStore.applyToMeta({
+      ...managed.meta,
+      title: managed.autoTitle,
+      ...(subagents && subagents.length > 0 ? { subagents } : {}),
+    })
   }
 
   listSessions(engineId?: string): SessionMeta[] {

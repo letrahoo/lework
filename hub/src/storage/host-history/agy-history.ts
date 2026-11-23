@@ -2,13 +2,15 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AgentEvent, EngineModelSpec, ReasoningEffort } from '@lework/protocol'
+import type { AgentEvent, EngineModelSpec, ReasoningEffort, SessionMeta, SubagentSummary } from '@lework/protocol'
 import {
   classifyRawToolCall,
+  describeToolActivity,
   extractProjectRootFromToolInput,
   mergeUniqueWorkspaces,
   readFirstAndLastLines,
   readFullSessionLines,
+  sortAndCapSubagents,
   type CachedTranscript,
   type HostTranscriptEntry,
   type ParsedHostTranscript,
@@ -33,6 +35,7 @@ export function scanAgySessions(
   transcriptCache: Map<string, CachedTranscript>,
   out: Map<string, HostTranscriptEntry>,
   agyCatalog?: EngineModelSpec[],
+  subagentOut?: Map<string, HostTranscriptEntry>,
 ): void {
   const agyRoot = path.join(homeDir, '.gemini', 'antigravity-cli')
   const brainDir = path.join(agyRoot, 'brain')
@@ -48,10 +51,55 @@ export function scanAgySessions(
     return
   }
   const candidates: Array<{ convId: string; path: string; mtimeMs: number; birthtimeMs: number }> = []
+  const subagentCandidatesByParent = new Map<
+    string,
+    Array<{
+      convId: string
+      path: string
+      mtimeMs: number
+      birthtimeMs: number
+      summary: AgySummaryInfo
+    }>
+  >()
+
+  const resolveRootParentId = (startId: string): string | undefined => {
+    const visited = new Set<string>([startId])
+    let cur = agySummaryMap.get(startId)?.parentConversationId
+    while (cur && !visited.has(cur)) {
+      visited.add(cur)
+      const parentInfo = agySummaryMap.get(cur)
+      if (!parentInfo?.isSubagent || !parentInfo.parentConversationId) {
+        return cur
+      }
+      cur = parentInfo.parentConversationId
+    }
+    return cur
+  }
+
   for (const d of entries) {
     if (!d.isDirectory()) continue
-    if (agySummaryMap.get(d.name)?.isSubagent) continue
+    const summaryInfo = agySummaryMap.get(d.name)
     const tp = path.join(brainDir, d.name, '.system_generated', 'logs', 'transcript.jsonl')
+    if (summaryInfo?.isSubagent) {
+      try {
+        const st = fs.statSync(tp)
+        const rootParentId = resolveRootParentId(d.name)
+        if (rootParentId) {
+          const list = subagentCandidatesByParent.get(rootParentId) ?? []
+          list.push({
+            convId: d.name,
+            path: tp,
+            mtimeMs: st.mtimeMs,
+            birthtimeMs: st.birthtimeMs,
+            summary: summaryInfo,
+          })
+          subagentCandidatesByParent.set(rootParentId, list)
+        }
+      } catch {
+        // ignore missing subagent transcript
+      }
+      continue
+    }
     try {
       const st = fs.statSync(tp)
       candidates.push({ convId: d.name, path: tp, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs })
@@ -136,6 +184,28 @@ export function scanAgySessions(
       )
       const cached = transcriptCache.get(sessionId)
 
+      const rawChildren = subagentCandidatesByParent.get(c.convId) ?? []
+      rawChildren.sort((a, b) => b.mtimeMs - a.mtimeMs)
+      const subagentSummaries: SubagentSummary[] = []
+      for (const child of rawChildren.slice(0, 24)) {
+        try {
+          const built = buildAgySubagentSummary(
+            child.convId,
+            child.path,
+            child.mtimeMs,
+            child.birthtimeMs,
+            child.summary,
+            homeDir,
+            primaryCwd,
+          )
+          subagentSummaries.push(built.summary)
+          subagentOut?.set(built.summary.id, built.entry)
+        } catch {
+          // ignore unreadable subagent transcript
+        }
+      }
+      const subagents = sortAndCapSubagents(subagentSummaries, 12)
+
       out.set(sessionId, {
         nativeId: c.convId,
         filePath: c.path,
@@ -154,12 +224,184 @@ export function scanAgySessions(
           reasoningEffort: cached?.reasoningEffort ?? parsedModel.effort ?? agyDefaults.effort,
           mode: agyDefaults.defaultMode,
           source: 'host',
+          ...(subagents.length > 0 ? { subagents } : {}),
         },
       })
     } catch {
       // ignore
     }
   }
+}
+
+function extractAgySubagentBrief(rawContent: string): string | undefined {
+  if (!rawContent || !rawContent.includes('[Message]') || !rawContent.includes('content=')) {
+    return undefined
+  }
+  const idx = rawContent.indexOf('content=')
+  if (idx < 0) return undefined
+  const body = rawContent
+    .slice(idx + 'content='.length)
+    .replace(/<\/SYSTEM_MESSAGE>[\s\S]*$/g, '')
+    .trim()
+  return body || undefined
+}
+
+function buildAgySubagentSummary(
+  convId: string,
+  filePath: string,
+  mtimeMs: number,
+  birthtimeMs: number,
+  summaryInfo: AgySummaryInfo | undefined,
+  homeDir: string,
+  fallbackCwd: string,
+): { summary: SubagentSummary; entry: HostTranscriptEntry } {
+  const { first, last } = readFirstAndLastLines(filePath, 15, 12)
+  let firstPrompt = ''
+  const inferredPaths: string[] = []
+  for (const l of [...first, ...last]) {
+    try {
+      const o = JSON.parse(l) as {
+        type?: string
+        content?: string
+        tool_calls?: Array<{ args?: Record<string, unknown>; arguments?: Record<string, unknown> }>
+      }
+      if (!firstPrompt && o.type === 'USER_INPUT' && typeof o.content === 'string') {
+        const reqs = extractAgyUserRequests(o.content)
+        const candidate = reqs[0] ?? extractAgySubagentBrief(o.content)
+        if (candidate) {
+          const cleaned = parseStagedImagePromptHeader(candidate, false).cleanText
+          firstPrompt = cleaned.replace(/\s+/g, ' ').trim().slice(0, 48)
+        }
+      }
+      if (Array.isArray(o.tool_calls)) {
+        for (const tc of o.tool_calls) {
+          const argsObj = normalizeAgyArgs(tc.args ?? tc.arguments)
+          extractProjectRootFromToolInput(argsObj, inferredPaths, homeDir)
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const title = (summaryInfo?.title || firstPrompt || `SubAgent ${convId.slice(0, 8)}`).slice(0, 64)
+  const workspaces = mergeUniqueWorkspaces(
+    [...(summaryInfo?.workspaces ?? []), ...inferredPaths],
+    homeDir,
+  )
+  const workspace = workspaces[0]
+  const activity = inferAgySubagentActivity(last, mtimeMs)
+  const subId = `host:agy:${convId}`
+  const createdAt = Math.floor(birthtimeMs || mtimeMs)
+  const updatedAt = Math.floor(mtimeMs)
+
+  const summary: SubagentSummary = {
+    id: subId,
+    title,
+    state: activity.state,
+    statusText: activity.statusText,
+    createdAt,
+    updatedAt,
+    ...(workspace ? { workspace } : {}),
+  }
+
+  const entry: HostTranscriptEntry = {
+    nativeId: convId,
+    filePath,
+    meta: {
+      id: subId,
+      engineId: 'agy',
+      cwd: workspace ?? fallbackCwd,
+      workspaces: workspace ? [workspace] : [fallbackCwd],
+      title,
+      state: activity.state,
+      liveStatusText: activity.state === 'running' ? activity.statusText : undefined,
+      createdAt,
+      updatedAt,
+      lastSeq: 0,
+      source: 'host',
+    },
+  }
+  return { summary, entry }
+}
+
+export function resolveAgySubagentEntry(
+  homeDir: string,
+  sessionId: string,
+): HostTranscriptEntry | undefined {
+  if (!sessionId.startsWith('host:agy:')) return undefined
+  const convId = sessionId.slice('host:agy:'.length)
+  if (!/^[A-Za-z0-9_-]{4,128}$/.test(convId)) return undefined
+  const agyRoot = path.join(homeDir, '.gemini', 'antigravity-cli')
+  const tp = path.join(agyRoot, 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl')
+  let st: fs.Stats
+  try {
+    st = fs.statSync(tp)
+  } catch {
+    return undefined
+  }
+  const summaryMap = readAgyConversationSummaries(path.join(agyRoot, 'conversation_summaries.db'))
+  const built = buildAgySubagentSummary(
+    convId,
+    tp,
+    st.mtimeMs,
+    st.birthtimeMs,
+    summaryMap.get(convId),
+    homeDir,
+    homeDir,
+  )
+  return built.entry
+}
+
+export function inferAgySubagentActivity(
+  tailLines: string[],
+  mtimeMs: number,
+): { state: SessionMeta['state']; statusText: string } {
+  let lastStatus: string | undefined
+  let lastType: string | undefined
+  let lastToolActivity: string | undefined
+
+  for (let i = tailLines.length - 1; i >= 0; i--) {
+    try {
+      const o = JSON.parse(tailLines[i]!) as {
+        type?: string
+        status?: string
+        tool_calls?: Array<{ name?: string; args?: unknown; arguments?: unknown }>
+      }
+      if (lastType === undefined && o.type) {
+        lastType = o.type
+        lastStatus = o.status
+      }
+      if (!lastToolActivity && Array.isArray(o.tool_calls) && o.tool_calls.length > 0) {
+        const lastTc = o.tool_calls[o.tool_calls.length - 1]!
+        if (lastTc.name) {
+          const argsObj = normalizeAgyArgs(lastTc.args ?? lastTc.arguments)
+          lastToolActivity = describeToolActivity(
+            lastTc.name,
+            argsObj ? JSON.stringify(argsObj) : undefined,
+          )
+        }
+      }
+      if (lastType && lastToolActivity) break
+    } catch {
+      // ignore
+    }
+  }
+
+  if (lastStatus === 'ERROR') {
+    return { state: 'error', statusText: '执行出错' }
+  }
+  if (lastStatus === 'CANCELLED') {
+    return { state: 'idle', statusText: '已取消' }
+  }
+  const activelyRunning = Date.now() - mtimeMs < 90_000 && isAgyTailActivelyRunning(tailLines)
+  if (activelyRunning) {
+    if (lastType === 'USER_INPUT') {
+      return { state: 'running', statusText: '思考中…' }
+    }
+    return { state: 'running', statusText: lastToolActivity ?? '思考中…' }
+  }
+  return { state: 'idle', statusText: '已完成' }
 }
 
 export function parseAgyTranscript(
@@ -214,6 +456,23 @@ export function parseAgyTranscript(
               ...(imgInfo.imagePreviews ? { imagePreviews: imgInfo.imagePreviews } : {}),
             })
           })
+        } else if (events.length === 0) {
+          const brief = extractAgySubagentBrief(o.content)
+          if (brief) {
+            isRunning = true
+            turnStartedAt = ts
+            events.push({
+              seq: seq++,
+              sessionId,
+              ts,
+              type: 'message.user',
+              messageId: `u_${o.step_index ?? seq}`,
+              text: brief.slice(0, 4000),
+            })
+          } else if (!o.content.trim().startsWith('<SYSTEM_MESSAGE>') && !o.content.trim().startsWith('<CONTEXT_SUMMARY>')) {
+            isRunning = true
+            turnStartedAt = ts
+          }
         } else if (!o.content.trim().startsWith('<SYSTEM_MESSAGE>') && !o.content.trim().startsWith('<CONTEXT_SUMMARY>')) {
           isRunning = true
           turnStartedAt = ts
@@ -402,6 +661,7 @@ interface AgySummaryInfo {
   title?: string
   workspaces: string[]
   isSubagent: boolean
+  parentConversationId?: string
 }
 
 let cachedSummaryDbPath = ''
@@ -478,6 +738,7 @@ export function readAgyConversationSummaries(summaryDbPath: string): Map<string,
           title,
           workspaces: parseAgyWorkspaceUris(row.workspace_uris),
           isSubagent: Boolean(parentId) || depth > 0,
+          parentConversationId: parentId || undefined,
         })
       }
     } finally {

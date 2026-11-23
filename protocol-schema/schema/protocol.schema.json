@@ -393,6 +393,54 @@
       ],
       "additionalProperties": false
     },
+    "SubagentSummary": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "idle",
+            "running",
+            "waiting_permission",
+            "error",
+            "closed"
+          ]
+        },
+        "statusText": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "workspace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "state",
+        "updatedAt"
+      ],
+      "additionalProperties": false
+    },
     "SessionMeta": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -539,6 +587,56 @@
             "required": [
               "id",
               "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "subagents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "idle",
+                  "running",
+                  "waiting_permission",
+                  "error",
+                  "closed"
+                ]
+              },
+              "statusText": {
+                "type": "string"
+              },
+              "createdAt": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "updatedAt": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "workspace": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "state",
+              "updatedAt"
             ],
             "additionalProperties": false
           }
@@ -3101,6 +3199,56 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "subagents": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "idle",
+                            "running",
+                            "waiting_permission",
+                            "error",
+                            "closed"
+                          ]
+                        },
+                        "statusText": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "updatedAt": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "workspace": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "title",
+                        "state",
+                        "updatedAt"
+                      ],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [
@@ -3338,6 +3486,56 @@
                     "required": [
                       "id",
                       "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "subagents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "idle",
+                          "running",
+                          "waiting_permission",
+                          "error",
+                          "closed"
+                        ]
+                      },
+                      "statusText": {
+                        "type": "string"
+                      },
+                      "createdAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "updatedAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "workspace": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "state",
+                      "updatedAt"
                     ],
                     "additionalProperties": false
                   }
@@ -3674,6 +3872,56 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "subagents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "idle",
+                          "running",
+                          "waiting_permission",
+                          "error",
+                          "closed"
+                        ]
+                      },
+                      "statusText": {
+                        "type": "string"
+                      },
+                      "createdAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "updatedAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "workspace": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "state",
+                      "updatedAt"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -3868,6 +4116,56 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "subagents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "idle",
+                          "running",
+                          "waiting_permission",
+                          "error",
+                          "closed"
+                        ]
+                      },
+                      "statusText": {
+                        "type": "string"
+                      },
+                      "createdAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "updatedAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "workspace": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "state",
+                      "updatedAt"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -4058,6 +4356,56 @@
                     "required": [
                       "id",
                       "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "subagents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "idle",
+                          "running",
+                          "waiting_permission",
+                          "error",
+                          "closed"
+                        ]
+                      },
+                      "statusText": {
+                        "type": "string"
+                      },
+                      "createdAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "updatedAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "workspace": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "state",
+                      "updatedAt"
                     ],
                     "additionalProperties": false
                   }
@@ -4290,6 +4638,56 @@
                     "required": [
                       "id",
                       "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "subagents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "idle",
+                          "running",
+                          "waiting_permission",
+                          "error",
+                          "closed"
+                        ]
+                      },
+                      "statusText": {
+                        "type": "string"
+                      },
+                      "createdAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "updatedAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "workspace": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "state",
+                      "updatedAt"
                     ],
                     "additionalProperties": false
                   }
@@ -6602,6 +7000,56 @@
                   "required": [
                     "id",
                     "name"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "subagents": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "role": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "idle",
+                        "running",
+                        "waiting_permission",
+                        "error",
+                        "closed"
+                      ]
+                    },
+                    "statusText": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "updatedAt": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "workspace": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "state",
+                    "updatedAt"
                   ],
                   "additionalProperties": false
                 }

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { AgentEvent, SessionMeta } from '@lework/protocol'
+import type { AgentEvent, SessionMeta, SubagentSummary } from '@lework/protocol'
 
 export interface HostTranscriptEntry {
   meta: SessionMeta
@@ -231,4 +231,69 @@ export function classifyRawToolCall(
   }
 
   return { title: short, kind: 'other', input: rawInput }
+}
+
+export function sortAndCapSubagents(list: SubagentSummary[], limit = 12): SubagentSummary[] {
+  return [...list]
+    .sort((a, b) => {
+      const aActive = a.state === 'running' || a.state === 'waiting_permission' ? 0 : 1
+      const bActive = b.state === 'running' || b.state === 'waiting_permission' ? 0 : 1
+      if (aActive !== bActive) return aActive - bActive
+      return b.updatedAt - a.updatedAt
+    })
+    .slice(0, limit)
+}
+
+export function describeToolActivity(rawName: string, rawInput?: string): string {
+  const short = rawName.replace(/^default_api:/, '').trim()
+  const lower = short.toLowerCase()
+  if (lower === 'send_message') return '回报结果'
+
+  let argsObj: Record<string, unknown> | undefined
+  if (rawInput && rawInput.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(rawInput) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        argsObj = parsed as Record<string, unknown>
+      }
+    } catch {
+      // ignore non-json input
+    }
+  }
+
+  const pickFileBase = (): string | undefined => {
+    const p = argsObj?.Path ?? argsObj?.path ?? argsObj?.file_path ?? argsObj?.TargetFile
+    if (typeof p !== 'string' || !p.trim()) return undefined
+    const base = path.basename(p.trim())
+    return base ? base.slice(0, 24) : undefined
+  }
+
+  const classified = classifyRawToolCall(short, rawInput)
+  if (classified.title === 'Skill') return '加载技能'
+  if (classified.title === 'Task') return '调度子任务'
+
+  switch (classified.kind) {
+    case 'execute': {
+      const summary = argsObj?.toolSummary ?? argsObj?.description
+      if (typeof summary === 'string' && summary.trim()) {
+        const clean = summary.replace(/\s+/g, ' ').trim()
+        return clean.length <= 20 ? `执行 · ${clean}` : '执行命令'
+      }
+      return '执行命令'
+    }
+    case 'edit': {
+      const base = pickFileBase()
+      return base ? `修改 ${base}` : '修改文件'
+    }
+    case 'read': {
+      const base = pickFileBase()
+      return base ? `查阅 ${base}` : '查阅文件'
+    }
+    case 'search':
+      return '检索代码'
+    case 'fetch':
+      return '检索网络'
+    default:
+      return '处理中…'
+  }
 }
