@@ -878,4 +878,122 @@ class UiAutomationStressTest {
                 JvmPlatformTestHooks.openedUrls,
             )
         }
+
+    @Test
+    fun `T8_8 renders native Mermaid flowchart card, toggles diagram and source views, and opens fullscreen preview`() =
+        runComposeUiTest {
+            val sampleMarkdown = """
+                ## 架构流程
+
+                ```mermaid
+                flowchart TD
+                    subgraph client["终端界面"]
+                        A["用户输入"] --> B(消息编排)
+                    end
+                    B --> C{"是否需要审批?"}
+                    C -->|是| D((等待确认))
+                    C -->|否| E[(执行引擎)]
+                ```
+            """.trimIndent()
+
+            setContent {
+                Box(modifier = Modifier.size(width = 480.dp, height = 800.dp)) {
+                    EverforestMarkdownContent(markdown = sampleMarkdown)
+                }
+            }
+            waitForIdle()
+
+            // 1. Renders native Mermaid diagram card & canvas by default
+            onNodeWithTag("mermaid_diagram_card").assertIsDisplayed()
+            onNodeWithText("mermaid · 流程图").assertIsDisplayed()
+            onNodeWithTag("mermaid_canvas").assertIsDisplayed()
+            onNodeWithTag("mermaid_source_view").assertDoesNotExist()
+
+            val captureDir = (System.getProperty("lework.captureScreenshotsDir")
+                ?: System.getenv("LEWORK_CAPTURE_DIR"))?.takeIf { it.isNotBlank() }
+            if (captureDir != null) {
+                val outDir = File(captureDir).apply { mkdirs() }
+                val png = SkiaImage.makeFromBitmap(onRoot().captureToImage().asSkiaBitmap()).encodeToData(EncodedImageFormat.PNG)
+                if (png != null) File(outDir, "mermaid_flowchart.png").writeBytes(png.bytes)
+            }
+
+            // 2. Toggle to `源码` view and verify Mermaid source renders cleanly
+            onNodeWithTag("mermaid_tab_source").performClick()
+            waitForIdle()
+            onNodeWithTag("mermaid_source_view").assertIsDisplayed()
+            onNodeWithText("flowchart TD", substring = true).assertIsDisplayed()
+            onNodeWithTag("mermaid_canvas").assertDoesNotExist()
+
+            // 3. Toggle back to `图表` view
+            onNodeWithTag("mermaid_tab_diagram").performClick()
+            waitForIdle()
+            onNodeWithTag("mermaid_canvas").assertIsDisplayed()
+
+            // 4. Open fullscreen preview dialog, test zoom controls, and dismiss cleanly
+            onNodeWithTag("mermaid_btn_fullscreen").performClick()
+            waitForIdle()
+            onNodeWithTag("mermaid_fullscreen_dialog").assertIsDisplayed()
+            onNodeWithText("全屏查看 · 流程图").assertIsDisplayed()
+            onNodeWithText("100%").assertIsDisplayed()
+
+            onNodeWithTag("mermaid_fullscreen_zoom_in").performClick()
+            waitForIdle()
+            onNodeWithText("125%").assertIsDisplayed()
+
+            onNodeWithTag("mermaid_fullscreen_zoom_reset").performClick()
+            waitForIdle()
+            onNodeWithText("100%").assertIsDisplayed()
+
+            onNodeWithTag("mermaid_fullscreen_close").performClick()
+            waitForIdle()
+            onNodeWithTag("mermaid_fullscreen_dialog").assertDoesNotExist()
+        }
+
+    @Test
+    fun `T8_9 renders sequence, state, er, pie mermaid diagrams and unsupported fallback banner cleanly`() =
+        runComposeUiTest {
+            val multiDiagramMd = """
+                ```mermaid
+                sequenceDiagram
+                    actor U as 用户
+                    participant S as 服务
+                    U->>S: 请求
+                    S-->>U: 响应
+                ```
+
+                ```mermaid
+                pie showData
+                    title 模块占比
+                    "核心" : 70
+                    "测试" : 30
+                ```
+
+                ```mermaid
+                gantt
+                    title Unsupported Sample
+                    Task A :a1, 2026-01-01, 2d
+                ```
+            """.trimIndent()
+
+            setContent {
+                Box(modifier = Modifier.size(width = 480.dp, height = 1000.dp)) {
+                    EverforestMarkdownContent(markdown = multiDiagramMd)
+                }
+            }
+            waitForIdle()
+
+            onNodeWithText("mermaid · 时序图").assertIsDisplayed()
+            onNodeWithText("mermaid · 饼图").assertIsDisplayed()
+            onNodeWithText("模块占比").assertIsDisplayed()
+            onNodeWithTag("mermaid_fallback_banner").assertIsDisplayed()
+            onNodeWithText("暂未支持的图表语法，已切换源码视图").assertIsDisplayed()
+
+            val captureDir = (System.getProperty("lework.captureScreenshotsDir")
+                ?: System.getenv("LEWORK_CAPTURE_DIR"))?.takeIf { it.isNotBlank() }
+            if (captureDir != null) {
+                val outDir = File(captureDir).apply { mkdirs() }
+                val png = SkiaImage.makeFromBitmap(onRoot().captureToImage().asSkiaBitmap()).encodeToData(EncodedImageFormat.PNG)
+                if (png != null) File(outDir, "mermaid_multi_diagrams.png").writeBytes(png.bytes)
+            }
+        }
 }
