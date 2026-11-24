@@ -75,7 +75,7 @@ function sanitizeProviderId(rawId: string | undefined, name: string, existingIds
   return `${base}_${crypto.randomBytes(2).toString('hex')}`
 }
 
-function normalizeManualModels(raw?: string[]): string[] | undefined {
+function normalizeModelList(raw?: string[], max = 80): string[] | undefined {
   if (!raw || raw.length === 0) return undefined
   const seen = new Set<string>()
   const out: string[] = []
@@ -85,7 +85,7 @@ function normalizeManualModels(raw?: string[]): string[] | undefined {
     seen.add(clean)
     out.push(clean)
   }
-  return out.length > 0 ? out.slice(0, 80) : undefined
+  return out.length > 0 ? out.slice(0, max) : undefined
 }
 
 export class ModelRegistry {
@@ -171,7 +171,8 @@ export class ModelRegistry {
                 enabledEngines: sanitizeEnabledEngines(item.enabledEngines, safeWireApis),
                 enabled: item.enabled !== false,
                 ...(item.builtIn ? { builtIn: true } : {}),
-                ...(normalizeManualModels(item.manualModels) ? { manualModels: normalizeManualModels(item.manualModels) } : {}),
+                ...(normalizeModelList(item.manualModels, 80) ? { manualModels: normalizeModelList(item.manualModels, 80) } : {}),
+                ...(normalizeModelList(item.selectedModels, 120) ? { selectedModels: normalizeModelList(item.selectedModels, 120) } : {}),
               })
             } catch {
               // ignore malformed persisted entry
@@ -278,7 +279,14 @@ export class ModelRegistry {
       if (!isEngineCompatibleWithWireApis(engineId, provider.wireApis)) continue
       const probe = this.probeStates.get(provider.id)
       if (!probe?.healthy || probe.models.length === 0) continue
-      for (const modelId of probe.models) {
+      const selectedSet =
+        provider.selectedModels && provider.selectedModels.length > 0
+          ? new Set(provider.selectedModels)
+          : null
+      const exposedModels = selectedSet
+        ? probe.models.filter(m => selectedSet.has(m))
+        : probe.models
+      for (const modelId of exposedModels) {
         out.push({
           id: modelId,
           providerId: provider.id,
@@ -391,8 +399,13 @@ export class ModelRegistry {
 
     const manualModels =
       input.manualModels !== undefined
-        ? normalizeManualModels(input.manualModels)
+        ? normalizeModelList(input.manualModels, 80)
         : existingById?.manualModels
+
+    const selectedModels =
+      input.selectedModels !== undefined
+        ? normalizeModelList(input.selectedModels, 120)
+        : existingById?.selectedModels
 
     const nextConfig: StoredProviderConfig = {
       id,
@@ -406,6 +419,7 @@ export class ModelRegistry {
       enabled: input.enabled ?? existingById?.enabled ?? true,
       ...(existingById?.builtIn ? { builtIn: true } : {}),
       ...(manualModels ? { manualModels } : {}),
+      ...(selectedModels ? { selectedModels } : {}),
     }
 
     const idx = this.providers.findIndex(p => p.id === id)
@@ -456,7 +470,7 @@ export class ModelRegistry {
       input.apiKeyEnv !== undefined ? (input.apiKeyEnv.trim() || undefined) : existing?.apiKeyEnv
     const manualModels =
       input.manualModels !== undefined
-        ? normalizeManualModels(input.manualModels)
+        ? normalizeModelList(input.manualModels, 80)
         : existing?.manualModels
 
     const draft: StoredProviderConfig = {

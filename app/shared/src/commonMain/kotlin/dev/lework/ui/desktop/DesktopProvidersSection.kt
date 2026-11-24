@@ -3,6 +3,7 @@ package dev.lework.ui.desktop
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -11,10 +12,12 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -55,6 +58,7 @@ internal fun DesktopProvidersSection(
     onClearFeedback: () -> Unit,
 ) {
     var editingProvider by remember { mutableStateOf<ProviderInfo?>(null) }
+    var filteringProvider by remember { mutableStateOf<ProviderInfo?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
 
     val externalProviders = state.externalProviders
@@ -159,7 +163,13 @@ internal fun DesktopProvidersSection(
                             isProbing -> "正在探测…"
                             !provider.enabled -> "已停用"
                             provider.healthy -> buildString {
-                                append("在线 · ${provider.models.size} 个模型")
+                                val total = provider.models.size
+                                val curated = provider.selectedModels.count { it in provider.models }
+                                if (provider.selectedModels.isNotEmpty()) {
+                                    append("在线 · 已选 $curated/$total 个模型")
+                                } else {
+                                    append("在线 · $total 个模型")
+                                }
                                 provider.latencyMs?.let { append(" · ${it}ms") }
                             }
                             provider.authStatus == "required" -> "需填写访问密钥"
@@ -233,6 +243,31 @@ internal fun DesktopProvidersSection(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     ) {
+                                        if (provider.enabled && provider.models.isNotEmpty()) {
+                                            val hasFilter = provider.selectedModels.isNotEmpty()
+                                            Surface(
+                                                shape = RoundedCornerShape(5.dp),
+                                                color = if (hasFilter) Everforest.BgGreen else Everforest.Bg0,
+                                                border = BorderStroke(
+                                                    0.8.dp,
+                                                    if (hasFilter) Everforest.Green.copy(alpha = 0.45f) else Everforest.Bg3,
+                                                ),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(5.dp))
+                                                    .clickable(enabled = !state.providersBusy) {
+                                                        onClearFeedback()
+                                                        filteringProvider = provider
+                                                    }
+                                                    .testTag("settings_provider_filter_${provider.id}"),
+                                            ) {
+                                                Text(
+                                                    text = if (hasFilter) "筛选 (${provider.selectedModels.size})" else "筛选模型",
+                                                    fontSize = 10.5.sp,
+                                                    color = if (hasFilter) Everforest.Green else Everforest.Aqua,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                )
+                                            }
+                                        }
                                         Text(
                                             text = if (provider.enabled) "停用" else "启用",
                                             fontSize = 11.sp,
@@ -348,6 +383,364 @@ internal fun DesktopProvidersSection(
                 editingProvider = null
             },
         )
+    }
+
+    val activeFilterTarget = filteringProvider?.let { target ->
+        externalProviders.firstOrNull { it.id == target.id } ?: target
+    }
+    if (activeFilterTarget != null) {
+        DesktopProviderModelFilterDialog(
+            provider = activeFilterTarget,
+            busy = state.providersBusy,
+            onSave = { selectedList ->
+                onUpsertProvider(
+                    ProviderConfigInput(
+                        id = activeFilterTarget.id,
+                        name = activeFilterTarget.name,
+                        adapter = activeFilterTarget.adapter,
+                        baseUrl = activeFilterTarget.baseUrl ?: "http://127.0.0.1:8317",
+                        wireApis = activeFilterTarget.wireApis.takeIf { it.isNotEmpty() },
+                        enabledEngines = activeFilterTarget.enabledEngines,
+                        enabled = activeFilterTarget.enabled,
+                        selectedModels = selectedList,
+                    ),
+                ) {
+                    filteringProvider = null
+                }
+            },
+            onDismiss = { filteringProvider = null },
+        )
+    }
+}
+
+private fun modelFamilyLabel(modelId: String): String {
+    val lower = modelId.lowercase()
+    return when {
+        lower.startsWith("claude") -> "Claude"
+        lower.startsWith("gpt") || lower.startsWith("o1") || lower.startsWith("o3") ||
+            lower.startsWith("o4") || lower.startsWith("codex") -> "GPT / Codex"
+        lower.startsWith("gemini") -> "Gemini"
+        lower.startsWith("kimi") || lower.startsWith("moonshot") -> "Kimi"
+        lower.startsWith("deepseek") -> "DeepSeek"
+        lower.startsWith("glm") -> "GLM"
+        lower.startsWith("qwen") -> "Qwen"
+        else -> "其他"
+    }
+}
+
+@Composable
+private fun DesktopProviderModelFilterDialog(
+    provider: ProviderInfo,
+    busy: Boolean,
+    onSave: (List<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val allModels = remember(provider.models) { provider.models.distinct() }
+    var selectedSet by remember(provider.id, provider.selectedModels, allModels) {
+        val initial = provider.selectedModels.filter { it in allModels }.toSet()
+        mutableStateOf(if (initial.isEmpty()) allModels.toSet() else initial)
+    }
+    var searchQuery by remember(provider.id) { mutableStateOf("") }
+    var selectedFamily by remember(provider.id) { mutableStateOf<String?>(null) }
+
+    val families = remember(allModels) {
+        val counts = linkedMapOf<String, Int>()
+        for (m in allModels) {
+            val fam = modelFamilyLabel(m)
+            counts[fam] = (counts[fam] ?: 0) + 1
+        }
+        counts.entries.sortedByDescending { it.value }.map { it.key to it.value }
+    }
+
+    val filteredModels = remember(allModels, searchQuery, selectedFamily) {
+        val q = searchQuery.trim().lowercase()
+        allModels.filter { id ->
+            val famOk = selectedFamily == null || modelFamilyLabel(id) == selectedFamily
+            val qOk = q.isEmpty() || id.lowercase().contains(q)
+            famOk && qOk
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = Everforest.Bg1,
+            border = BorderStroke(1.dp, Everforest.Bg3),
+            shadowElevation = 18.dp,
+            modifier = Modifier
+                .width(500.dp)
+                .heightIn(max = 620.dp)
+                .onPreviewKeyEvent { ev ->
+                    if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
+                        onDismiss()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                .testTag("provider_model_filter_dialog"),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "筛选「${provider.name}」展示的模型",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.Fg,
+                        )
+                        Text(
+                            text = "仅把勾选的模型合并到 ⌘K 引擎列表中（已选 ${selectedSet.size} / 共 ${allModels.size} 个）",
+                            fontSize = 11.5.sp,
+                            color = Everforest.CommentGrey,
+                        )
+                    }
+                    LeworkIconActionButton(
+                        icon = Icons.Rounded.Close,
+                        tooltip = "关闭",
+                        shortcut = "Esc",
+                        onClick = onDismiss,
+                    )
+                }
+
+                // Search bar
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Everforest.Bg0,
+                    border = BorderStroke(1.dp, Everforest.Bg3),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = null,
+                            tint = Everforest.CommentGrey,
+                            modifier = Modifier.size(14.5.dp),
+                        )
+                        Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                            if (searchQuery.isEmpty()) {
+                                Text("搜索模型关键词，例如 claude / gpt-6.2 / kimi…", fontSize = 12.sp, color = Everforest.Grey0)
+                            }
+                            BasicTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                singleLine = true,
+                                textStyle = TextStyle(fontSize = 12.sp, color = Everforest.Fg),
+                                cursorBrush = SolidColor(Everforest.Green),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("provider_model_filter_search"),
+                            )
+                        }
+                        if (searchQuery.isNotEmpty()) {
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "清空",
+                                tint = Everforest.Grey1,
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clickable { searchQuery = "" },
+                            )
+                        }
+                    }
+                }
+
+                // Family filter chips
+                if (families.size > 1) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        ProviderChoiceChip(
+                            label = "全部 (${allModels.size})",
+                            selected = selectedFamily == null,
+                            onClick = { selectedFamily = null },
+                        )
+                        for ((fam, count) in families) {
+                            ProviderChoiceChip(
+                                label = "$fam ($count)",
+                                selected = selectedFamily == fam,
+                                onClick = { selectedFamily = if (selectedFamily == fam) null else fam },
+                            )
+                        }
+                    }
+                }
+
+                // Quick bulk actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "全选当前 (${filteredModels.size})",
+                            fontSize = 11.5.sp,
+                            color = Everforest.Green,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(5.dp))
+                                .clickable { selectedSet = selectedSet + filteredModels }
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                        )
+                        Text(
+                            text = "取消当前",
+                            fontSize = 11.5.sp,
+                            color = Everforest.Grey1,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(5.dp))
+                                .clickable { selectedSet = selectedSet - filteredModels.toSet() }
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                                .testTag("provider_filter_btn_clear_visible"),
+                        )
+                    }
+                    Text(
+                        text = "恢复全部展示",
+                        fontSize = 11.5.sp,
+                        color = Everforest.Aqua,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(5.dp))
+                            .clickable { selectedSet = allModels.toSet() }
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                            .testTag("provider_filter_btn_reset_all"),
+                    )
+                }
+
+                HorizontalDivider(color = Everforest.Bg2)
+
+                // Model checklist
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .heightIn(min = 140.dp, max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    if (filteredModels.isEmpty()) {
+                        Text(
+                            text = "没有匹配的模型",
+                            fontSize = 12.sp,
+                            color = Everforest.Grey1,
+                            modifier = Modifier.padding(vertical = 20.dp),
+                        )
+                    } else {
+                        for (modelId in filteredModels) {
+                            val checked = modelId in selectedSet
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(if (checked) Everforest.Bg2.copy(alpha = 0.65f) else Everforest.Bg0.copy(alpha = 0.45f))
+                                    .clickable {
+                                        selectedSet = if (checked) selectedSet - modelId else selectedSet + modelId
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 7.dp)
+                                    .testTag("provider_filter_item_$modelId"),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = if (checked) Everforest.Green else Everforest.Bg0,
+                                    border = BorderStroke(1.dp, if (checked) Everforest.Green else Everforest.Bg3),
+                                    modifier = Modifier.size(16.dp),
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        if (checked) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Check,
+                                                contentDescription = null,
+                                                tint = Everforest.Bg0,
+                                                modifier = Modifier.size(12.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = modelId,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (checked) Everforest.Fg else Everforest.Grey1,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = modelFamilyLabel(modelId),
+                                    fontSize = 10.sp,
+                                    color = Everforest.CommentGrey,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = Everforest.Bg2)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (selectedSet.size == allModels.size) {
+                            "当前为全量展示"
+                        } else if (selectedSet.isEmpty()) {
+                            "至少勾选 1 个模型，或点「恢复全部展示」"
+                        } else {
+                            "保存后仅展示已勾选的 ${selectedSet.size} 个模型"
+                        },
+                        fontSize = 11.sp,
+                        color = if (selectedSet.isEmpty()) Everforest.BoldGold else Everforest.CommentGrey,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = onDismiss) {
+                            Text("取消", color = Everforest.Grey1, fontSize = 12.sp)
+                        }
+                        val canSave = !busy && selectedSet.isNotEmpty()
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (canSave) Everforest.Green else Everforest.Bg2,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = canSave) {
+                                    // All models checked => save empty list (meaning "no allowlist filter")
+                                    val payload = if (selectedSet.size >= allModels.size) {
+                                        emptyList()
+                                    } else {
+                                        allModels.filter { it in selectedSet }
+                                    }
+                                    onSave(payload)
+                                }
+                                .testTag("provider_filter_btn_save"),
+                        ) {
+                            Text(
+                                text = if (busy) "保存中…" else "保存筛选",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (canSave) Everforest.Bg0 else Everforest.Grey0,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

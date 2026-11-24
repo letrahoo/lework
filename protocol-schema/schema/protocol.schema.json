@@ -333,6 +333,12 @@
             "type": "string"
           }
         },
+        "selectedModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "healthy": {
           "type": "boolean"
         },
@@ -433,6 +439,15 @@
         },
         "manualModels": {
           "maxItems": 80,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "selectedModels": {
+          "maxItems": 120,
           "type": "array",
           "items": {
             "type": "string",
@@ -3007,6 +3022,12 @@
                       "type": "string"
                     }
                   },
+                  "selectedModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "healthy": {
                     "type": "boolean"
                   },
@@ -3423,6 +3444,12 @@
                       "type": "string"
                     }
                   },
+                  "selectedModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "healthy": {
                     "type": "boolean"
                   },
@@ -3719,6 +3746,15 @@
                     "minLength": 1,
                     "maxLength": 160
                   }
+                },
+                "selectedModels": {
+                  "maxItems": 120,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  }
                 }
               },
               "required": [
@@ -3803,6 +3839,12 @@
                   "type": "string"
                 },
                 "manualModels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "selectedModels": {
                   "type": "array",
                   "items": {
                     "type": "string"
@@ -3911,6 +3953,12 @@
                     "type": "string"
                   },
                   "manualModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "selectedModels": {
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -4231,6 +4279,12 @@
                       "type": "string"
                     }
                   },
+                  "selectedModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "healthy": {
                     "type": "boolean"
                   },
@@ -4532,6 +4586,15 @@
                     "minLength": 1,
                     "maxLength": 160
                   }
+                },
+                "selectedModels": {
+                  "maxItems": 120,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  }
                 }
               },
               "required": [
@@ -4613,6 +4676,12 @@
                   "type": "string"
                 },
                 "manualModels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "selectedModels": {
                   "type": "array",
                   "items": {
                     "type": "string"
@@ -4721,6 +4790,12 @@
                     "type": "string"
                   },
                   "manualModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "selectedModels": {
                     "type": "array",
                     "items": {
                       "type": "string"

@@ -98,6 +98,7 @@ data class ProviderInfo(
     val hasApiKey: Boolean = false,
     val apiKeyEnv: String? = null,
     val manualModels: List<String> = emptyList(),
+    val selectedModels: List<String> = emptyList(),
     val healthy: Boolean,
     val authStatus: String? = null,
     val latencyMs: Int? = null,
@@ -118,6 +119,7 @@ data class ProviderConfigInput(
     val enabledEngines: List<String>? = null,
     val enabled: Boolean? = null,
     val manualModels: List<String>? = null,
+    val selectedModels: List<String>? = null,
 )
 
 @Serializable

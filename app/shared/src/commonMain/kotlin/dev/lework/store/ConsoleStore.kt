@@ -2457,7 +2457,11 @@ class ConsoleStore(
                 val summary = if (!res.provider.enabled) {
                     "已停用模型服务「${res.provider.name}」"
                 } else if (res.provider.healthy) {
-                    "已保存「${res.provider.name}」，可用 ${res.provider.models.size} 个模型"
+                    if (res.provider.selectedModels.isNotEmpty()) {
+                        "已保存「${res.provider.name}」，已选 ${res.provider.selectedModels.size} / ${res.provider.models.size} 个模型"
+                    } else {
+                        "已保存「${res.provider.name}」，可用 ${res.provider.models.size} 个模型"
+                    }
                 } else {
                     "已保存「${res.provider.name}」（当前离线：${res.provider.error ?: "暂不可连接"}）"
                 }

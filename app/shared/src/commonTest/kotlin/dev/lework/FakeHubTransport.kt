@@ -469,6 +469,7 @@ class FakeHubTransport : HubTransport {
             },
             apiKeyEnv = input.apiKeyEnv ?: existing?.apiKeyEnv,
             manualModels = input.manualModels ?: existing?.manualModels.orEmpty(),
+            selectedModels = input.selectedModels ?: existing?.selectedModels.orEmpty(),
             healthy = enabled && models.isNotEmpty(),
             authStatus = if (enabled) "authenticated" else null,
             latencyMs = if (enabled) 18 else null,

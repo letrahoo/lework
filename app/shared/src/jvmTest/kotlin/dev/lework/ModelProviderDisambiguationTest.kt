@@ -228,6 +228,62 @@ class ModelProviderDisambiguationTest {
         onNodeWithTag("picker_model_claude_cpa_local_claude-opus-4-6", useUnmergedTree = true).performClick()
         assertEquals("cpa_local", pickedSpec?.providerId)
         assertEquals("claude-opus-4-6", pickedSpec?.id)
+
+        // Source filter strip isolates official vs CPA models cleanly
+        onNodeWithTag("picker_source_filter_cpa_local", useUnmergedTree = true).performClick()
+        onNodeWithTag("picker_model_claude_cpa_local_claude-opus-4-6", useUnmergedTree = true).assertIsDisplayed()
+        onNodeWithTag("picker_model_claude_sub_claude_claude-opus-4-6", useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    @OptIn(ExperimentalTestApi::class)
+    @Test
+    fun settingsDialogFiltersProviderModelsSubset() = runComposeUiTest {
+        var savedInput: ProviderConfigInput? = null
+        val state = ConsoleUiState(
+            connectionStatus = ConnectionStatus.CONNECTED,
+            hub = HubInfo("hub_mac", "MacBook Pro", HubRole.SLAVE, PlatformType.DARWIN, "0.7.15"),
+            providers = listOf(
+                ProviderInfo(
+                    id = "cpa_local",
+                    name = "CPA",
+                    type = ProviderType.ENDPOINT,
+                    adapter = ProviderAdapterKind.CPA,
+                    baseUrl = "http://127.0.0.1:8317",
+                    wireApis = listOf(WireApi.ANTHROPIC_MESSAGES, WireApi.OPENAI_RESPONSES),
+                    enabledEngines = listOf("claude", "codex", "pi"),
+                    enabled = true,
+                    builtIn = true,
+                    healthy = true,
+                    latencyMs = 8,
+                    models = listOf("claude-opus-4-6", "gpt-6.2-sol", "kimi-k2.6"),
+                ),
+            ),
+        )
+
+        setContent {
+            MaterialTheme {
+                DesktopSettingsDialog(
+                    state = state,
+                    onDismiss = {},
+                    onSwitchHost = {},
+                    onRemoveHost = {},
+                    onPairAnotherHost = {},
+                    onUpsertProvider = { input, onSuccess ->
+                        savedInput = input
+                        onSuccess()
+                    },
+                    onLogout = {},
+                )
+            }
+        }
+
+        onNodeWithTag("settings_provider_filter_cpa_local", useUnmergedTree = true).performClick()
+        onNodeWithTag("provider_model_filter_dialog", useUnmergedTree = true).assertIsDisplayed()
+        // Uncheck kimi-k2.6 so only claude-opus-4-6 and gpt-6.2-sol are kept
+        onNodeWithTag("provider_filter_item_kimi-k2.6", useUnmergedTree = true).performClick()
+        onNodeWithTag("provider_filter_btn_save", useUnmergedTree = true).performClick()
+
+        assertEquals(listOf("claude-opus-4-6", "gpt-6.2-sol"), savedInput?.selectedModels)
     }
 
     @OptIn(ExperimentalTestApi::class)

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -16,6 +17,7 @@ export interface StoredProviderConfig {
   enabled: boolean
   builtIn?: boolean
   manualModels?: string[]
+  selectedModels?: string[]
 }
 
 export interface ProviderProbeResult {
@@ -158,7 +160,32 @@ export function mergeSessionEnv(
   return merged
 }
 
-function readCpaKeyFromConfigFiles(): string | undefined {
+function detectRunningCpaConfigPaths(): string[] {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') return []
+  try {
+    const res = spawnSync('ps', ['-ww', '-eo', 'command'], {
+      encoding: 'utf8',
+      timeout: 800,
+    })
+    if (res.status !== 0 || !res.stdout) return []
+    const found: string[] = []
+    for (const line of res.stdout.split(/\r?\n/)) {
+      if (!/cli-?proxy-?api/i.test(line)) continue
+      const match = line.match(/(?:^|\s)--?config(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/)
+      const rawPath = match?.[1] ?? match?.[2] ?? match?.[3]
+      if (!rawPath) continue
+      const expanded = rawPath.startsWith('~/') ? path.join(os.homedir(), rawPath.slice(2)) : rawPath
+      if (path.isAbsolute(expanded) && !found.includes(expanded)) {
+        found.push(expanded)
+      }
+    }
+    return found
+  } catch {
+    return []
+  }
+}
+
+function readCpaKeyFromConfigFiles(baseUrl?: string): string | undefined {
   const explicit = process.env.LEWORK_CPA_CONFIG?.trim()
   const candidates = explicit
     ? [explicit]
@@ -166,6 +193,7 @@ function readCpaKeyFromConfigFiles(): string | undefined {
         path.join(defaultDataDir(), 'cpa-config.yaml'),
         path.join(os.homedir(), '.cli-proxy-api', 'config.yaml'),
         path.join(os.homedir(), '.config', 'cli-proxy-api', 'config.yaml'),
+        ...(baseUrl && isLoopbackUrl(baseUrl) ? detectRunningCpaConfigPaths() : []),
       ]
 
   for (const cfgPath of candidates) {
@@ -220,6 +248,7 @@ function extractModelsFromPayload(body: unknown, manualModels?: string[]): strin
   for (const m of manualModels ?? []) {
     push(m)
   }
+  out.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
   return out.slice(0, 120)
 }
 
@@ -245,7 +274,7 @@ export class CpaProviderAdapter implements ProviderAdapter {
     if (fromNamedEnv) return fromNamedEnv
     const fromDefaultEnv = process.env.LEWORK_CPA_KEY?.trim()
     if (fromDefaultEnv) return fromDefaultEnv
-    return readCpaKeyFromConfigFiles()
+    return readCpaKeyFromConfigFiles(config.baseUrl)
   }
 
   async probe(config: StoredProviderConfig): Promise<ProviderProbeResult> {
@@ -415,6 +444,7 @@ export function toPublicProviderInfo(
     hasApiKey: Boolean(config.apiKey?.trim() || hasResolvedKey),
     ...(config.apiKeyEnv ? { apiKeyEnv: config.apiKeyEnv } : {}),
     ...(config.manualModels && config.manualModels.length > 0 ? { manualModels: [...config.manualModels] } : {}),
+    ...(config.selectedModels && config.selectedModels.length > 0 ? { selectedModels: [...config.selectedModels] } : {}),
     healthy,
     ...(config.enabled && probe?.authStatus ? { authStatus: probe.authStatus } : {}),
     ...(config.enabled && probe?.latencyMs !== undefined ? { latencyMs: probe.latencyMs } : {}),

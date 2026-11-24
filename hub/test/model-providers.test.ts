@@ -406,7 +406,7 @@ describe('Host-scoped Model Providers & Multi-Engine Merging', () => {
         },
       })
       expect(upserted.provider.healthy).toBe(true)
-      expect(upserted.provider.models).toEqual(['gpt-5.4', 'claude-opus-4-6'])
+      expect(upserted.provider.models).toEqual(['claude-opus-4-6', 'gpt-5.4'])
       expect(upserted.provider.hasApiKey).toBe(true)
       expect(JSON.stringify(upserted)).not.toContain('demo-key')
 
@@ -416,6 +416,43 @@ describe('Host-scoped Model Providers & Multi-Engine Merging', () => {
           (m: any) => m.id === 'gpt-5.4' && m.providerId === upserted.provider.id && m.providerName === 'MyGateway',
         ),
       ).toBe(true)
+
+      // Curate selectedModels to only expose `gpt-5.4` (keeps full discovered list in `provider.models`)
+      const filtered = await rpc('provider.upsert', {
+        provider: {
+          id: upserted.provider.id,
+          name: 'MyGateway',
+          adapter: 'generic',
+          baseUrl: proxyUrl,
+          wireApis: ['anthropic-messages', 'openai-responses'],
+          enabledEngines: ['claude', 'codex'],
+          selectedModels: ['gpt-5.4'],
+        },
+      })
+      expect(filtered.provider.models).toEqual(['claude-opus-4-6', 'gpt-5.4'])
+      expect(filtered.provider.selectedModels).toEqual(['gpt-5.4'])
+      const claudeFiltered = filtered.engines.find((e: any) => e.id === 'claude')
+      expect(
+        claudeFiltered.models.filter((m: any) => m.providerId === upserted.provider.id).map((m: any) => m.id),
+      ).toEqual(['gpt-5.4'])
+
+      // Passing empty selectedModels clears the filter and restores all discovered models
+      const restored = await rpc('provider.upsert', {
+        provider: {
+          id: upserted.provider.id,
+          name: 'MyGateway',
+          adapter: 'generic',
+          baseUrl: proxyUrl,
+          wireApis: ['anthropic-messages', 'openai-responses'],
+          enabledEngines: ['claude', 'codex'],
+          selectedModels: [],
+        },
+      })
+      expect(restored.provider.selectedModels).toBeUndefined()
+      const claudeRestored = restored.engines.find((e: any) => e.id === 'claude')
+      expect(
+        claudeRestored.models.filter((m: any) => m.providerId === upserted.provider.id).map((m: any) => m.id),
+      ).toEqual(['claude-opus-4-6', 'gpt-5.4'])
 
       // Remove provider -> models disappear cleanly
       const removed = await rpc('provider.remove', { providerId: upserted.provider.id })

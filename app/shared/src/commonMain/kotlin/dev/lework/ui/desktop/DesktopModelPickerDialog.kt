@@ -3,6 +3,7 @@ package dev.lework.ui.desktop
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -10,6 +11,7 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -88,6 +90,7 @@ internal fun DesktopModelPickerDialog(
         mutableStateOf(state.selectedEngineId.ifBlank { state.taskEngines.firstOrNull()?.id.orEmpty() })
     }
     var searchQuery by remember { mutableStateOf("") }
+    var selectedSourceFilter by remember(selectedTab) { mutableStateOf<String?>(null) }
     var expandedMore by remember(selectedTab) { mutableStateOf(false) }
     var showPermissionsMenu by remember { mutableStateOf(false) }
     var previewedEffort by remember { mutableStateOf<ReasoningEffort?>(null) }
@@ -119,8 +122,30 @@ internal fun DesktopModelPickerDialog(
         }
     }
 
+    val engineSourceFilters = remember(allEntries, selectedTab, state.providers) {
+        if (selectedTab == "favorites") {
+            emptyList()
+        } else {
+            val entries = allEntries.filter { it.engineId == selectedTab }
+            val seen = linkedMapOf<String, String>()
+            for (entry in entries) {
+                val pid = entry.spec.providerId
+                val key = if (entry.spec.isExternalProvider()) pid.orEmpty() else "native"
+                if (key !in seen) {
+                    val label = if (key == "native") {
+                        "官方"
+                    } else {
+                        entry.sourceBadge ?: state.providers.firstOrNull { it.id == pid }?.name ?: "代理"
+                    }
+                    seen[key] = label
+                }
+            }
+            if (seen.size > 1) seen.entries.map { it.key to it.value } else emptyList()
+        }
+    }
+
     val isSearching = searchQuery.trim().isNotEmpty()
-    val tabFilteredEntries = remember(allEntries, selectedTab, searchQuery, favSet) {
+    val tabFilteredEntries = remember(allEntries, selectedTab, searchQuery, selectedSourceFilter, favSet) {
         val q = searchQuery.trim().lowercase()
         if (q.isNotEmpty()) {
             allEntries.filter { entry ->
@@ -134,8 +159,11 @@ internal fun DesktopModelPickerDialog(
         } else if (selectedTab == "favorites") {
             allEntries.filter { it.isFavorite }
         } else {
-            allEntries.filter { it.engineId == selectedTab }
-                .sortedByDescending { it.isFavorite }
+            allEntries.filter { entry ->
+                if (entry.engineId != selectedTab) return@filter false
+                val src = selectedSourceFilter ?: return@filter true
+                if (src == "native") !entry.spec.isExternalProvider() else entry.spec.providerId == src
+            }.sortedByDescending { it.isFavorite }
         }
     }
 
@@ -432,6 +460,61 @@ internal fun DesktopModelPickerDialog(
                                     .height(1.dp)
                                     .background(if (searchFocused || isSearching) Everforest.Green else Everforest.Bg2),
                             )
+                        }
+
+                        if (!isSearching && engineSourceFilters.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                val allSelected = selectedSourceFilter == null
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = if (allSelected) Everforest.BgGreen else Everforest.Bg0,
+                                    border = BorderStroke(
+                                        0.8.dp,
+                                        if (allSelected) Everforest.Green.copy(alpha = 0.5f) else Everforest.Bg3,
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .clickable { selectedSourceFilter = null }
+                                        .testTag("picker_source_filter_all"),
+                                ) {
+                                    Text(
+                                        text = "全部",
+                                        fontSize = 10.5.sp,
+                                        color = if (allSelected) Everforest.Green else Everforest.Grey1,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp),
+                                    )
+                                }
+                                for ((key, label) in engineSourceFilters) {
+                                    val active = selectedSourceFilter == key
+                                    val accent = if (key == "native") Everforest.Green else Everforest.Aqua
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = if (active) Everforest.Bg2 else Everforest.Bg0,
+                                        border = BorderStroke(
+                                            0.8.dp,
+                                            if (active) accent.copy(alpha = 0.6f) else Everforest.Bg3,
+                                        ),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .clickable { selectedSourceFilter = if (active) null else key }
+                                            .testTag("picker_source_filter_$key"),
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            fontSize = 10.5.sp,
+                                            color = if (active) accent else Everforest.Grey1,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp),
+                                        )
+                                    }
+                                }
+                            }
                         }
 
                         if (visibleEntries.isEmpty()) {

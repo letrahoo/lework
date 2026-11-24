@@ -111,6 +111,7 @@ export const ProviderInfo = z.object({
   hasApiKey: z.boolean().optional(),
   apiKeyEnv: z.string().optional(),
   manualModels: z.array(z.string()).optional(),
+  selectedModels: z.array(z.string()).optional(),
   healthy: z.boolean(),
   authStatus: ProviderAuthStatus.optional(),
   latencyMs: z.number().int().nonnegative().optional(),
@@ -131,6 +132,7 @@ export const ProviderConfigInput = z.object({
   enabledEngines: z.array(z.string().min(1).max(32)).max(16).optional(),
   enabled: z.boolean().optional(),
   manualModels: z.array(z.string().min(1).max(160)).max(80).optional(),
+  selectedModels: z.array(z.string().min(1).max(160)).max(120).optional(),
 })
 export type ProviderConfigInput = z.infer<typeof ProviderConfigInput>
 
