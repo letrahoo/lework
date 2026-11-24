@@ -142,6 +142,7 @@ export const EngineKind = z.enum(['cli', 'service', 'server', 'embedded'])
 export const EngineStatus = z.object({
   installed: z.boolean(),
   ready: z.boolean(),
+  authStatus: z.enum(['authenticated', 'required', 'unknown']).optional(),
   version: z.string().optional(),
   detail: z.string().optional(),
 })

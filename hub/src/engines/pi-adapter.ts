@@ -26,13 +26,7 @@ export class PiEngineAdapter implements EngineAdapter {
   ) {}
 
   async probe(): Promise<EngineStatus> {
-    const models = this.registry?.getCachedCpaModels() ?? []
-    return {
-      installed: true,
-      ready: true,
-      version: '0.2.0-embedded',
-      detail: `In-process agent · CLIProxyAPI (${this.cpaEndpoint}) · ${models.length || 'auto'} models`,
-    }
+    return this.registry?.getCpaStatus() ?? { installed: false, ready: false }
   }
 
   capabilities(): EngineCapabilities {
@@ -48,15 +42,9 @@ export class PiEngineAdapter implements EngineAdapter {
 
   async openSession(init: EngineSessionInit): Promise<EngineSession> {
     const cpaModels = this.registry?.getCachedCpaModels() ?? []
-    const modelOptions =
-      cpaModels.length > 0
-        ? cpaModels.slice(0, 12).map(id => ({ id, name: `CPA · ${id}` }))
-        : [
-            { id: 'gpt-5-codex', name: 'CPA · gpt-5-codex' },
-            { id: 'claude-sonnet-4-5', name: 'CPA · claude-sonnet-4-5' },
-            { id: 'gemini-2.5-pro', name: 'CPA · gemini-2.5-pro' },
-          ]
-    const initialModel = init.modelId ?? modelOptions[0]?.id ?? 'gpt-5-codex'
+    const modelOptions = cpaModels.slice(0, 12).map(id => ({ id, name: `CPA · ${id}` }))
+    const initialModel = init.modelId ?? modelOptions[0]?.id
+    if (!initialModel) throw new Error('本机代理没有可用模型')
     init.onModelsChanged?.(initialModel, modelOptions)
     return new PiEmbeddedSession(init, this.cpaEndpoint, this.registry, initialModel)
   }
@@ -219,7 +207,7 @@ class PiEmbeddedSession implements EngineSession {
         })
       }
 
-      // 4. Query CLIProxyAPI (:8317) if available, with graceful local synthesis fallback
+      // 4. Query CLIProxyAPI (:8317)
       const effectiveText = text.trim() || (images?.length ? '请分析所附图片。' : '')
       const textPrompt = `[Workspace files: ${entries.join(', ')}]\n\n${effectiveText}`
       if (images && images.length > 0) {
@@ -235,19 +223,7 @@ class PiEmbeddedSession implements EngineSession {
         this.history.push({ role: 'user', content: textPrompt })
       }
       const streamedFromCpa = await this.tryStreamFromCpa(msgId, this.abortController.signal)
-      if (!streamedFromCpa) {
-        const imgNote = images?.length ? `（含 ${images.length} 张附图）` : ''
-        const reply =
-          `[Pi Engine · ${this.selectedModel}]\n` +
-          `已扫描工作区 \`${this.cwd}\`（共发现 ${entries.length} 个顶层条目：${entries.slice(0, 8).join(', ')}）。\n` +
-          `针对你的指令「${effectiveText}」${imgNote}，已完成工作区上下文读取与工具执行。`
-        this.init.emit({
-          type: 'message.assistant.delta',
-          messageId: msgId,
-          text: reply,
-        })
-        this.history.push({ role: 'assistant', content: reply })
-      }
+      if (!streamedFromCpa) throw new Error('本机代理未返回模型回复，请在主机上检查连接和授权')
 
       this.init.emit({ type: 'usage', inputTokens: text.length + 60, outputTokens: 96 })
       this.init.emit({ type: 'turn.done', turnId, stopReason: 'end_turn' })
@@ -264,7 +240,6 @@ class PiEmbeddedSession implements EngineSession {
 
   private async tryStreamFromCpa(msgId: string, signal: AbortSignal): Promise<boolean> {
     const apiKey = this.registry?.getCpaApiKey()
-    if (!apiKey) return false
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), 8_000)
     timer.unref?.()
@@ -276,7 +251,7 @@ class PiEmbeddedSession implements EngineSession {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          authorization: `Bearer ${apiKey}`,
+          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify({
           model: this.selectedModel,

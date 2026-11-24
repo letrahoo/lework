@@ -61,7 +61,7 @@ export function findExecutable(name: string, candidatePaths: string[] = []): str
   return null
 }
 
-function isExecutableFile(filePath: string): boolean {
+export function isExecutableFile(filePath: string): boolean {
   try {
     const st = fs.statSync(filePath)
     if (!st.isFile()) return false
@@ -81,7 +81,8 @@ export function probeCommandVersion(binPath: string, args: string[] = ['--versio
     })
     if (res.status === 0) {
       const out = `${res.stdout ?? ''}\n${res.stderr ?? ''}`.trim().split('\n')[0]?.trim()
-      return out || undefined
+      // A wrapper may print unrelated diagnostics; expose only a numeric version.
+      return out?.match(/\b\d{1,5}\.\d{1,5}\.\d{1,5}\b/)?.[0]
     }
   } catch {
     // ignore

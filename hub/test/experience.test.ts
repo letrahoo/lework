@@ -229,9 +229,9 @@ describe('v0.6.0 Experience Optimizations: Offline Notifications, @file Search &
       })
       expect(filtered.files).toEqual(['src/ui/SessionComposer.kt'])
 
-      // Create embedded Pi session and send an image-only prompt
+      // Stage the image with the deterministic engine; no model service is needed
       const { session } = await client.call('session.create', {
-        engineId: 'pi',
+        engineId: 'mock',
         cwd: tmpWs,
       })
       const onePxPngBase64 =

@@ -9,6 +9,29 @@ import dev.lework.platform.loadPairedHosts
 import dev.lework.platform.loadSavedAuthUserName
 import dev.lework.protocol.*
 
+internal val EngineInfo.canStartTask: Boolean
+    get() = id != "mock" && status.installed && (status.ready || status.authStatus == "unknown")
+
+internal val EngineInfo.readinessLabel: String
+    get() = when {
+        status.authStatus == "required" && status.ready -> "本机代理可用 · 主机 CLI 需授权"
+        status.authStatus == "unknown" && status.ready -> "本机代理可用 · CLI 登录状态未知"
+        status.ready -> "可用"
+        status.authStatus == "unknown" -> "登录状态未知"
+        status.authStatus == "required" -> "需在主机上授权"
+        else -> "当前不可用"
+    }
+
+/** Do not silently replace native CLI config with a proxy model just because the proxy is online. */
+internal fun EngineInfo.draftDefaultModel(): EngineModelSpec? =
+    models.firstOrNull { it.id == defaultModel && it.providerId != "cpa_local" }
+        ?: models.firstOrNull { it.providerId != "cpa_local" }
+        ?: models.firstOrNull()?.takeIf { id == "pi" || status.authStatus == "required" }
+
+internal fun List<EngineInfo>.draftEngine(preferred: String): EngineInfo? =
+    firstOrNull { it.id == preferred && it.canStartTask } ?: firstOrNull { it.canStartTask && it.status.ready }
+        ?: firstOrNull { it.canStartTask }
+
 enum class ConnectionStatus {
     DISCOVERING,
     NEEDS_AUTH,
@@ -300,6 +323,9 @@ data class ConsoleUiState(
     val activeTranscript: SessionTranscript
         get() = activeSessionId?.let { transcripts[it] } ?: SessionTranscript()
 
+    val taskEngines: List<EngineInfo>
+        get() = if (connectionStatus == ConnectionStatus.CONNECTED) engines.filter { it.id != "mock" && it.status.installed } else emptyList()
+
     val selectedEngine: EngineInfo?
         get() = engines.firstOrNull { it.id == selectedEngineId }
 
@@ -318,7 +344,7 @@ data class ConsoleUiState(
                 }?.let { return it }
                 return EngineModelSpec(id = target, name = target)
             }
-            return availableModelsForEngine.firstOrNull()
+            return selectedEngine?.draftDefaultModel()
         }
 
     val availableEfforts: List<ReasoningEffort>

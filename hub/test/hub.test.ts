@@ -244,24 +244,9 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
     const gitStatus = await client.call('git.status', { path: repoRoot })
     expect(gitStatus.isGitRepo).toBe(true)
 
-    // 10. Pi Engine embedded turn + approval flow
-    const { session: piSession } = await client.call('session.create', {
-      engineId: 'pi',
-      cwd: repoRoot,
-      mode: 'plan',
-    })
-    await client.call('session.prompt', {
-      sessionId: piSession.id,
-      text: '生成计划并扫描工作区',
-    })
-    const piDone = await client.waitForEvent(
-      'turn.done',
-      ev => ev.sessionId === piSession.id,
-    )
-    expect(piDone.stopReason).toBe('end_turn')
-    expect(
-      client.events.some(e => e.sessionId === piSession.id && e.type === 'plan.updated'),
-    ).toBe(true)
+    // No configured model service: do not create a simulated Pi task or send any prompt.
+    await expect(client.call('session.create', { engineId: 'pi', cwd: repoRoot }))
+      .rejects.toMatchObject({ code: ErrorCode.EngineUnavailable })
 
     client.close()
     client2.close()
@@ -450,7 +435,7 @@ describe('HubServer + ClaudeCodeAdapter M0 E2E', () => {
       displayName: 'Slow Queue Test Engine',
       kind: 'cli' as const,
       async probe() {
-        return { ready: true, detail: 'ok' }
+        return { installed: true, ready: true, detail: 'ok' }
       },
       capabilities() {
         return { streaming: true, approvals: false, setModel: false, images: false }
