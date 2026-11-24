@@ -1,13 +1,7 @@
-import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { EngineCapabilities, EngineStatus } from '@lework/protocol'
-import { findExecutable } from '../platform/index.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from './types.ts'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const repoRoot = path.resolve(__dirname, '../../..')
 
 export interface DshAdapterOptions {
   tunnelHost?: string
@@ -33,25 +27,8 @@ export class DshEngineAdapter implements EngineAdapter {
   }
 
   async probe(): Promise<EngineStatus> {
-    const tunnelUp = await probeTcpPort(this.host, this.tunnelPort)
-    const hostUp = await probeTcpPort(this.host, this.hostPort)
-    const vendorPresent = fs.existsSync(
-      path.join(repoRoot, 'vendor', 'dsh-channel', 'package.json'),
-    )
-    const dshCli = findExecutable('dsh')
-    const installed = tunnelUp || hostUp || vendorPresent || Boolean(dshCli)
-    const activeEndpoint = tunnelUp
-      ? `${this.host}:${this.tunnelPort} (tunnel active)`
-      : hostUp
-        ? `${this.host}:${this.hostPort} (DSH host active)`
-        : 'local DSH channel ready'
-
-    return {
-      installed,
-      ready: installed,
-      version: '0.6.2-channel',
-      detail: activeEndpoint,
-    }
+    // The current session simulates replies; a CLI file or an open TCP port is not an execution path.
+    return { installed: false, ready: false, detail: '尚未接入本机 DSH 执行入口' }
   }
 
   capabilities(): EngineCapabilities {

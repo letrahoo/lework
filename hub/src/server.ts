@@ -316,11 +316,10 @@ export class HubServer {
   }
 
   async buildStatus() {
-    // Probe providers first so CPA models are cached before listEngines() builds catalogs
-    const prelimEngines = await this.sessionManager.listEngines()
-    const installedSet = new Set(prelimEngines.filter(e => e.status.installed).map(e => e.id))
-    const providers = await this.registry.probeProviders(installedSet)
+    await this.registry.refreshCpaModels()
     const engines = await this.sessionManager.listEngines()
+    const installedSet = new Set(engines.filter(e => e.status.installed).map(e => e.id))
+    const providers = this.registry.listProviders(engines)
     const hub = this.getHubInfo()
     const selfSlave: SlaveInfo = {
       id: hub.id,
@@ -934,6 +933,7 @@ export class HubServer {
         return { profiles }
       }
       case 'engine.list': {
+        await this.registry.refreshCpaModels()
         const engines = await this.sessionManager.listEngines()
         return { engines }
       }

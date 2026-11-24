@@ -18,7 +18,7 @@ it.each([false, true])('applies modes and replies to approvals (resume=%s)', asy
     return { thread: { id: 'thread' } }
   })
   try {
-    const session = await new CodexEngineAdapter({ binary: 'codex' }).openSession({
+    const session = await new CodexEngineAdapter({ binary: process.execPath }).openSession({
       cwd: process.cwd(), sessionId: 'test', mode: 'plan',
       resumeNativeId: resume ? 'thread' : undefined,
       emit(event) { if (event.type === 'permission.requested') requestId = event.requestId },

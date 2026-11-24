@@ -84,7 +84,8 @@ internal fun EngineModelPickerSheet(
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            for (eng in state.engines) {
+            if (state.taskEngines.isEmpty()) Text("当前主机没有可选引擎", color = Everforest.Grey1)
+            for (eng in state.taskEngines) {
                 val selected = eng.id == state.selectedEngineId
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -95,7 +96,7 @@ internal fun EngineModelPickerSheet(
                     ),
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable(enabled = eng.status.ready) {
+                        .clickable(enabled = eng.canStartTask) {
                             onSelectEngineAndModel(eng.id, null, null)
                         },
                 ) {
@@ -107,13 +108,13 @@ internal fun EngineModelPickerSheet(
                         EngineGlyphIcon(
                             engineId = eng.id,
                             size = 15.dp,
-                            tintOverride = if (eng.status.ready) null else Everforest.Grey0.copy(alpha = 0.45f),
+                            tintOverride = if (eng.canStartTask) null else Everforest.Grey0.copy(alpha = 0.45f),
                         )
                         Text(
-                            text = shortEngineLabel(eng.id),
+                            text = "${shortEngineLabel(eng.id)} · ${eng.readinessLabel}",
                             fontSize = 13.sp,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (eng.status.ready) Everforest.Fg else Everforest.Grey0,
+                            color = if (eng.canStartTask) Everforest.Fg else Everforest.Grey0,
                         )
                     }
                 }
@@ -121,19 +122,20 @@ internal fun EngineModelPickerSheet(
         }
 
         // 2. Model List inside the chosen Engine
-        Text("可用模型", fontSize = 12.sp, color = Everforest.Grey1)
+        val selectable = state.taskEngines.firstOrNull { it.id == state.selectedEngineId && it.canStartTask }
+        Text(if (selectable != null && selectable.models.isEmpty()) "模型由主机 CLI 决定" else "可用模型", fontSize = 12.sp, color = Everforest.Grey1)
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 360.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            items(state.availableModelsForEngine, key = { "${it.providerId}_${it.id}" }) { m ->
+            items(selectable?.models.orEmpty(), key = { "${it.providerId}_${it.id}" }) { m ->
                 val selected = m.id == state.selectedModelSpec?.id
                 val sourceTag = when (m.providerId) {
                     "cpa_local" -> "本机代理"
                     null -> ""
-                    else -> "官方订阅"
+                    else -> "主机 CLI"
                 }
                 Surface(
                     shape = RoundedCornerShape(10.dp),

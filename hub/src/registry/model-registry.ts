@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { ProfileInfo, ProviderInfo } from '@lework/protocol'
+import type { EngineInfo, EngineStatus, ProfileInfo, ProviderInfo } from '@lework/protocol'
 import { defaultDataDir } from '../platform/index.ts'
 
 const resolveCpaConfigPath = (): string =>
@@ -9,6 +9,7 @@ const resolveCpaConfigPath = (): string =>
 
 export class ModelRegistry {
   private cachedCpaKey: string | null = null
+  private cpaAuthRequired = false
   private cachedCpaModels: string[] = []
   private readonly profilesPath: string
   private profiles: ProfileInfo[] = []
@@ -43,47 +44,21 @@ export class ModelRegistry {
     return undefined
   }
 
-  async probeProviders(installedEngines: Set<string>): Promise<ProviderInfo[]> {
-    const cpaResult = await this.fetchCpaModels()
-    return [
-      {
-        id: 'cpa_local',
-        name: `CLIProxyAPI (${this.cpaEndpoint.replace(/^https?:\/\//, '')})`,
-        type: 'endpoint',
-        baseUrl: this.cpaEndpoint,
-        wireApi: 'anthropic-messages',
-        healthy: cpaResult.healthy,
-        models: cpaResult.models,
-      },
-      {
-        id: 'sub_claude',
-        name: 'Claude Code 内置订阅',
-        type: 'subscription',
-        healthy: installedEngines.has('claude'),
-        models: ['claude-sonnet-4-5', 'claude-opus-4-1'],
-      },
-      {
-        id: 'sub_codex',
-        name: 'OpenAI Codex 内置订阅',
-        type: 'subscription',
-        healthy: installedEngines.has('codex'),
-        models: ['gpt-5-codex', 'o3'],
-      },
-      {
-        id: 'sub_agy',
-        name: 'Google Antigravity 官方订阅 (禁止反代)',
-        type: 'subscription',
-        healthy: installedEngines.has('agy'),
-        models: ['gemini-2.5-pro', 'claude-sonnet-4-5'],
-      },
-      {
-        id: 'sub_dsh',
-        name: 'DeepSeek Harness 本机配置',
-        type: 'subscription',
-        healthy: installedEngines.has('dsh'),
-        models: ['deepseek-chat', 'deepseek-reasoner'],
-      },
-    ]
+  getCpaStatus(): EngineStatus {
+    const ready = this.cachedCpaModels.length > 0
+    return { installed: ready || this.cpaAuthRequired, ready, authStatus: this.cpaAuthRequired ? 'required' : undefined }
+  }
+
+  listProviders(engines: EngineInfo[]): ProviderInfo[] {
+    const local: ProviderInfo = {
+      id: 'cpa_local', name: 'CLIProxyAPI', type: 'endpoint', wireApi: 'anthropic-messages',
+      healthy: this.getCpaStatus().ready, models: this.cachedCpaModels,
+    }
+    return [local, ...engines.filter(e => e.status.installed && ['claude', 'codex', 'agy'].includes(e.id)).map(e => ({
+      id: `sub_${e.id}`, name: `${e.displayName} · 主机 CLI`, type: 'subscription' as const,
+      healthy: e.status.authStatus === 'authenticated',
+      models: (e.models ?? []).filter(m => m.providerId !== 'cpa_local').map(m => m.id),
+    }))]
   }
 
   getCachedCpaModels(): string[] {
@@ -152,7 +127,7 @@ export class ModelRegistry {
     return {}
   }
 
-  private async fetchCpaModels(): Promise<{ healthy: boolean; models: string[] }> {
+  async refreshCpaModels(): Promise<void> {
     const ctl = new AbortController()
     const timer = setTimeout(() => ctl.abort(), 2000)
     timer.unref?.()
@@ -164,22 +139,22 @@ export class ModelRegistry {
         headers,
         signal: ctl.signal,
       })
-      clearTimeout(timer)
+      this.cpaAuthRequired = res.status === 401 || res.status === 403
       if (res.ok) {
         const body = (await res.json()) as { data?: Array<{ id?: string }> }
         const models = (body.data ?? [])
           .map(item => (typeof item?.id === 'string' ? item.id : ''))
-          .filter(Boolean)
+          .filter(id => id && !id.includes('image'))
           .slice(0, 80)
-        if (models.length > 0) {
-          this.cachedCpaModels = models
-        }
-        return { healthy: true, models: this.cachedCpaModels }
+        this.cachedCpaModels = models
+        return
       }
-      return { healthy: res.status === 401 || res.status === 403, models: this.cachedCpaModels }
+      this.cachedCpaModels = []
     } catch {
+      this.cpaAuthRequired = false
+      this.cachedCpaModels = []
+    } finally {
       clearTimeout(timer)
-      return { healthy: false, models: this.cachedCpaModels }
     }
   }
 

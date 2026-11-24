@@ -286,6 +286,7 @@ data class EngineStatus(
     val ready: Boolean,
     val version: String? = null,
     val detail: String? = null,
+    val authStatus: String? = null,
 )
 
 @Serializable

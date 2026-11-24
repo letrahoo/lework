@@ -114,6 +114,14 @@
             "ready": {
               "type": "boolean"
             },
+            "authStatus": {
+              "type": "string",
+              "enum": [
+                "authenticated",
+                "required",
+                "unknown"
+              ]
+            },
             "version": {
               "type": "string"
             },
@@ -2372,6 +2380,14 @@
                       "ready": {
                         "type": "boolean"
                       },
+                      "authStatus": {
+                        "type": "string",
+                        "enum": [
+                          "authenticated",
+                          "required",
+                          "unknown"
+                        ]
+                      },
                       "version": {
                         "type": "string"
                       },
@@ -2894,6 +2910,14 @@
                       },
                       "ready": {
                         "type": "boolean"
+                      },
+                      "authStatus": {
+                        "type": "string",
+                        "enum": [
+                          "authenticated",
+                          "required",
+                          "unknown"
+                        ]
                       },
                       "version": {
                         "type": "string"

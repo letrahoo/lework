@@ -124,16 +124,16 @@ export class SessionManager {
     const cpaModels = this.registry?.getCachedCpaModels() ?? []
     const out: EngineInfo[] = []
     for (const adapter of this.adapters.values()) {
-      const [status, models] = await Promise.all([
-        adapter.probe(),
-        this.hostInspector.getModelsForEngine(adapter.id, cpaModels),
-      ])
+      const status = await adapter.probe()
+      const catalog = status.installed ? await this.hostInspector.getModelsForEngine(adapter.id, cpaModels) : []
+      const models = catalog.filter(m => m.providerId === 'cpa_local' ? cpaModels.includes(m.id) : status.authStatus !== 'required')
+      const hasProxyRoute = models.some(m => m.providerId === 'cpa_local')
       const hostDefaults = this.hostInspector.getEngineHostDefaults(adapter.id)
       out.push({
         id: adapter.id,
         displayName: adapter.displayName,
         kind: adapter.kind,
-        status,
+        status: hasProxyRoute ? { ...status, ready: true } : status,
         capabilities: adapter.capabilities(),
         models,
         defaultModel: hostDefaults.defaultModel,
@@ -234,6 +234,8 @@ export class SessionManager {
 
     // Enforce compliance & provider/model guardrails BEFORE probing local CLI binaries so invalid
     // provider combinations deterministically reject with InvalidParams on any host.
+    const proxyRoute = params.providerId === 'cpa_local' && (adapter.id === 'claude' || adapter.id === 'codex')
+    if (proxyRoute || adapter.id === 'pi') await this.registry?.refreshCpaModels()
     let extraEnv: NodeJS.ProcessEnv = {}
     if (this.registry) {
       try {
@@ -247,10 +249,13 @@ export class SessionManager {
     }
 
     const status = await adapter.probe()
-    if (!status.ready) {
+    const canStart = proxyRoute
+      ? Boolean(this.registry?.getCachedCpaModels().length)
+      : status.ready || status.authStatus === 'unknown'
+    if (!status.installed || !canStart) {
       throw new HubRpcError(
         ErrorCode.EngineUnavailable,
-        status.detail ?? `Engine "${adapter.displayName}" is not ready`,
+        status.authStatus === 'required' ? '请先在主机上完成授权' : `Engine "${adapter.displayName}" is not ready`,
       )
     }
 

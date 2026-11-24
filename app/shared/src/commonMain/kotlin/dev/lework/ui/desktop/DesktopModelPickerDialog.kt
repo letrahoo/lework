@@ -41,6 +41,8 @@ import androidx.compose.ui.window.DialogProperties
 import dev.lework.protocol.EngineModelSpec
 import dev.lework.protocol.ReasoningEffort
 import dev.lework.protocol.SessionMode
+import dev.lework.store.canStartTask
+import dev.lework.store.readinessLabel
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.*
 
@@ -76,8 +78,8 @@ internal fun DesktopModelPickerDialog(
     onDismiss: () -> Unit,
 ) {
     val favSet = remember(state.favoriteModelKeys) { state.favoriteModelKeys.toSet() }
-    var selectedTab by remember {
-        mutableStateOf(state.selectedEngineId.ifBlank { state.engines.firstOrNull()?.id ?: "claude" })
+    var selectedTab by remember(state.hub?.id) {
+        mutableStateOf(state.selectedEngineId.ifBlank { state.taskEngines.firstOrNull()?.id.orEmpty() })
     }
     var searchQuery by remember { mutableStateOf("") }
     var expandedMore by remember(selectedTab) { mutableStateOf(false) }
@@ -87,10 +89,10 @@ internal fun DesktopModelPickerDialog(
     val searchInteraction = remember { MutableInteractionSource() }
     val searchFocused by searchInteraction.collectIsFocusedAsState()
 
-    val allEntries = remember(state.engines, favSet) {
+    val allEntries = remember(state.taskEngines, favSet) {
         buildList {
-            for (eng in state.engines) {
-                if (!eng.status.ready && eng.models.isEmpty()) continue
+            for (eng in state.taskEngines) {
+                if (!eng.canStartTask) continue
                 val engLabel = eng.displayName.ifBlank { shortEngineLabel(eng.id) }
                 for (m in eng.models) {
                     val key = "${eng.id}:${m.id}"
@@ -266,20 +268,16 @@ internal fun DesktopModelPickerDialog(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            for (eng in state.engines) {
+                            for (eng in state.taskEngines) {
                                 val isSelected = !isSearching && selectedTab == eng.id
-                                val isReady = eng.status.ready
+                                val isReady = eng.canStartTask
                                 val engHover = remember { MutableInteractionSource() }
                                 val isEngHovered by engHover.collectIsHoveredAsState()
                                 val engTitle = eng.displayName.ifBlank { shortEngineLabel(eng.id) }
 
                                 LeworkTooltip(
                                     label = engTitle,
-                                    subtitle = if (isReady) {
-                                        "就绪 · ${eng.models.size} 个可选模型"
-                                    } else {
-                                        "当前未就绪或未登录"
-                                    },
+                                    subtitle = "${eng.readinessLabel} · ${eng.models.size} 个可选模型",
                                 ) {
                                     Box(
                                         modifier = Modifier
@@ -430,7 +428,11 @@ internal fun DesktopModelPickerDialog(
                                     text = if (selectedTab == "favorites" && !isSearching) {
                                         "暂无收藏模型\n将鼠标移至任意模型行右侧点 ☆ 即可收藏"
                                     } else {
-                                        "未找到匹配的模型"
+                                        when {
+                                            state.taskEngines.isEmpty() -> "当前主机没有可选引擎"
+                                            !isSearching && state.taskEngines.any { it.id == selectedTab && it.canStartTask && it.models.isEmpty() } -> "模型由主机 CLI 决定"
+                                            else -> "未找到匹配的模型"
+                                        }
                                     },
                                     fontSize = 12.5.sp,
                                     lineHeight = 19.sp,

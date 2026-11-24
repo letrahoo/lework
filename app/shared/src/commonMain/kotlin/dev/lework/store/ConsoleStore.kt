@@ -1787,10 +1787,8 @@ class ConsoleStore(
                 userName = resolvedUserName,
             )
             val uiEngines = status.engines.filterNot { it.id == "mock" }
-            val chosenEngine = uiEngines.firstOrNull { it.id == current.selectedEngineId && it.status.ready }
-                ?: uiEngines.firstOrNull { it.status.ready }
-                ?: status.engines.firstOrNull()
-            val chosenEngineId = chosenEngine?.id ?: "claude"
+            val chosenEngine = uiEngines.draftEngine(current.selectedEngineId)
+            val chosenEngineId = chosenEngine?.id.orEmpty()
 
             val validWs = workspaces.firstOrNull { it.path == current.selectedWorkspacePath }?.path
                 ?: workspaces.firstOrNull()?.path.orEmpty()
@@ -1814,15 +1812,16 @@ class ConsoleStore(
                 (userManuallyPickedModel || isForegroundResume || current.hasEnteredWorkspace) &&
                     current.selectedEngineId == chosenEngineId
 
+            val previousModel = chosenEngine?.models?.firstOrNull {
+                current.hub?.id == status.hub.id && current.selectedEngineId == chosenEngine.id &&
+                    it.id == current.selectedModelId && it.providerId == current.selectedProviderId
+            }
             val chosenModel = if (preserveCurrentSelection) {
-                chosenEngine?.models?.firstOrNull { it.id == current.selectedModelId }
-                    ?: chosenEngine?.models?.firstOrNull { it.id == resolvedActiveSession?.model }
-                    ?: chosenEngine?.models?.firstOrNull { it.id == chosenEngine.defaultModel }
-                    ?: chosenEngine?.models?.firstOrNull()
+                previousModel ?: chosenEngine?.models?.firstOrNull { it.id == resolvedActiveSession?.model }
+                    ?: chosenEngine?.draftDefaultModel()
             } else {
-                chosenEngine?.models?.firstOrNull { it.id == chosenEngine.defaultModel }
-                    ?: chosenEngine?.models?.firstOrNull { it.id == current.selectedModelId }
-                    ?: chosenEngine?.models?.firstOrNull()
+                chosenEngine?.models?.firstOrNull { it.id == chosenEngine.defaultModel } ?: previousModel
+                    ?: chosenEngine?.draftDefaultModel()
             }
             val chosenEffort = if (userManuallyPickedEffort || preserveCurrentSelection) {
                 val supported = chosenModel?.efforts.orEmpty()
@@ -1863,11 +1862,11 @@ class ConsoleStore(
                     hubFingerprint = HubTrust.observedFor(baseUrl)?.let { HubAttestation.shortFingerprint(it) },
                     hub = status.hub,
                     slaves = status.slaves,
-                    engines = uiEngines.ifEmpty { status.engines },
+                    engines = uiEngines,
                     providers = status.providers,
                     workspaces = workspaces,
                     selectedEngineId = chosenEngineId,
-                    selectedProviderId = chosenModel?.providerId ?: current.selectedProviderId,
+                    selectedProviderId = chosenModel?.providerId,
                     selectedModelId = chosenModel?.id,
                     selectedEffort = chosenEffort,
                     selectedMode = chosenMode,
@@ -2077,10 +2076,10 @@ class ConsoleStore(
         userManuallyPickedMode = false
         switchSubscriptionTo(null)
         _state.update { s ->
-            val eng = s.selectedEngine
+            val eng = s.taskEngines.draftEngine(s.selectedEngineId)
             val defaultModel = eng?.models?.firstOrNull { it.id == eng.defaultModel }
-                ?: eng?.models?.firstOrNull { it.id == s.selectedModelId }
-                ?: eng?.models?.firstOrNull()
+                ?: eng?.models?.firstOrNull { eng.id == s.selectedEngineId && it.id == s.selectedModelId && it.providerId == s.selectedProviderId }
+                ?: eng?.draftDefaultModel()
             s.copy(
                 activeSessionId = null,
                 loadingSessionId = null,
@@ -2095,8 +2094,9 @@ class ConsoleStore(
                 promptErrorText = null,
                 turnRecoveryBanner = null,
                 retryingTurn = false,
-                selectedProviderId = defaultModel?.providerId ?: s.selectedProviderId,
-                selectedModelId = eng?.defaultModel ?: defaultModel?.id ?: s.selectedModelId,
+                selectedEngineId = eng?.id.orEmpty(),
+                selectedProviderId = defaultModel?.providerId,
+                selectedModelId = defaultModel?.id,
                 selectedEffort = eng?.defaultEffort ?: defaultModel?.defaultEffort ?: s.selectedEffort,
                 selectedMode = eng?.defaultMode ?: s.selectedMode,
             )
@@ -2136,6 +2136,11 @@ class ConsoleStore(
         modelSpec: EngineModelSpec? = null,
         effort: ReasoningEffort? = null,
     ) {
+        val snapshot = _state.value
+        if (snapshot.activeSession?.engineId != engineId) {
+            val target = snapshot.taskEngines.firstOrNull { it.id == engineId && it.canStartTask } ?: return
+            if (modelSpec != null && modelSpec !in target.models) return
+        }
         userManuallyPickedModel = true
         if (effort != null) userManuallyPickedEffort = true
         val prevActive = _state.value.activeSession
@@ -2148,7 +2153,7 @@ class ConsoleStore(
             val eng = s.engines.firstOrNull { it.id == engineId }
             val chosenModel = modelSpec
                 ?: eng?.models?.firstOrNull { it.id == eng.defaultModel }
-                ?: eng?.models?.firstOrNull()
+                ?: eng?.draftDefaultModel()
             val supportedEfforts = chosenModel?.efforts.orEmpty()
             val nextEffort = when {
                 effort != null -> effort
@@ -2344,23 +2349,10 @@ class ConsoleStore(
     }
 
     fun startNewDraftInWorkspace(path: String) {
-        switchSubscriptionTo(null)
+        startNewDraftSession()
         _state.update {
             it.copy(
-                activeSessionId = null,
-                loadingSessionId = null,
-                checkpoints = emptyList(),
-                activeSessionUsage = null,
-                activeSessionArtifacts = emptyList(),
-                openedArtifact = null,
-                artifactError = null,
-                openedDiffContent = null,
-                openedDiffTitle = null,
-                checkpointNotice = null,
-                promptErrorText = null,
                 promptNoticeText = null,
-                turnRecoveryBanner = null,
-                retryingTurn = false,
                 selectedWorkspacePath = path,
                 selectedExtraWorkspaces = emptyList(),
                 currentBrowsePath = path,
@@ -2818,6 +2810,9 @@ class ConsoleStore(
     ): String {
         val cur = _state.value
         val sessionId = cur.activeSessionId ?: run {
+            check(cur.taskEngines.any { it.id == cur.selectedEngineId && it.canStartTask }) {
+                "当前主机没有可用于此任务的引擎，请检查安装和授权后重新连接。"
+            }
             val cwd = cur.selectedWorkspacePath.ifEmpty {
                 cur.workspaces.firstOrNull()?.path ?: throw IllegalStateException("未找到可用工作区目录")
             }

@@ -109,6 +109,7 @@ internal fun connectionChannelLabel(
 // ---------------------------------------------------------------------------
 
 internal fun shortEngineLabel(engineId: String): String = when (engineId) {
+    "" -> "未选择引擎"
     "claude" -> "Claude"
     "codex" -> "Codex"
     "agy" -> "AGY"

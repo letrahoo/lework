@@ -1,3 +1,5 @@
+import { readClaudeLocalSettings } from '../storage/host-history/engine-settings.ts'
+import { probeCliAuth } from './cli-auth-status.ts'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,7 +9,7 @@ import type {
   ModelOption,
   PermissionOption,
 } from '@lework/protocol'
-import { findExecutable, probeCommandVersion } from '../platform/index.ts'
+import { findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
@@ -38,7 +40,7 @@ export class ClaudeCodeAdapter implements EngineAdapter {
   constructor(private readonly opts: ClaudeAdapterOptions = {}) {}
 
   private resolveAcpBinary(): string | null {
-    if (this.opts.acpBinary) return this.opts.acpBinary
+    if (this.opts.acpBinary) return isExecutableFile(this.opts.acpBinary) ? this.opts.acpBinary : null
     return findExecutable('claude-agent-acp', [
       path.join(hubRoot, 'node_modules', '.bin', 'claude-agent-acp'),
       path.join(repoRoot, 'node_modules', '.bin', 'claude-agent-acp'),
@@ -47,12 +49,16 @@ export class ClaudeCodeAdapter implements EngineAdapter {
 
   async probe(): Promise<EngineStatus> {
     const acpBin = this.resolveAcpBinary()
-    const claudeBin = findExecutable('claude')
+    const claudeBin = this.opts.acpBinary ? null : findExecutable('claude')
     const version = claudeBin ? probeCommandVersion(claudeBin, ['--version']) : undefined
     const installed = Boolean(acpBin && (claudeBin || this.opts.acpBinary))
+    let authStatus = installed && claudeBin ? await probeCliAuth(claudeBin, 'claude') : 'unknown'
+    // CLI login covers its built-in provider, not all user-configured credentials.
+    if (authStatus === 'required' && (process.env.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || readClaudeLocalSettings().usesExternalAuth)) authStatus = 'unknown'
     return {
       installed,
-      ready: installed,
+      ready: installed && authStatus === 'authenticated',
+      authStatus: installed ? authStatus : undefined,
       version: version ?? (acpBin ? 'acp-ready' : undefined),
       detail: installed
         ? `ACP adapter: ${acpBin}`

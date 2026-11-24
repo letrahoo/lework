@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
 import type { EngineCapabilities, EngineStatus, ReasoningEffort, SessionMode } from '@lework/protocol'
-import { augmentedPathEnv, findExecutable, probeCommandVersion } from '../platform/index.ts'
+import { augmentedPathEnv, findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
 import { classifyRawToolCall } from '../storage/host-history.ts'
 import {
   parseAgyModelString,
@@ -29,7 +29,7 @@ export class AgyEngineAdapter implements EngineAdapter {
   constructor(private readonly opts: AgyAdapterOptions = {}) {}
 
   private resolveBinary(): string | null {
-    if (this.opts.binary) return this.opts.binary
+    if (this.opts.binary) return isExecutableFile(this.opts.binary) ? this.opts.binary : null
     return findExecutable('agy')
   }
 
@@ -39,7 +39,8 @@ export class AgyEngineAdapter implements EngineAdapter {
     const installed = Boolean(bin)
     return {
       installed,
-      ready: installed,
+      ready: false,
+      authStatus: installed ? 'unknown' : undefined,
       version,
       detail: installed
         ? `${bin} (stream-json · 仅官方订阅登录)`

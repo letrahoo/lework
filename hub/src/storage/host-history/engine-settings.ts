@@ -91,9 +91,9 @@ export function readClaudeLocalSettings(homeDir = os.homedir()): {
   env?: Record<string, string>
   defaultMode: SessionMode
   effort: ReasoningEffort
-  usesLocalProxy: boolean
+  usesExternalAuth?: boolean
 } {
-  const settingsPath = path.join(homeDir, '.claude', 'settings.json')
+  const settingsPath = path.join(process.env.CLAUDE_CONFIG_DIR ?? path.join(homeDir, '.claude'), 'settings.json')
   try {
     if (fs.existsSync(settingsPath)) {
       const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as {
@@ -101,10 +101,10 @@ export function readClaudeLocalSettings(homeDir = os.homedir()): {
         defaultMode?: string
         effortLevel?: string
         env?: Record<string, string>
+        apiKeyHelper?: unknown
         permissions?: { defaultMode?: string }
       }
       const rawMode = parsed.permissions?.defaultMode ?? parsed.defaultMode
-      const baseUrl = parsed.env?.ANTHROPIC_BASE_URL ?? ''
       const rawModel = typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model.trim() : undefined
       return {
         model: resolveClaudeEffectiveModel(rawModel, parsed.env),
@@ -112,21 +112,22 @@ export function readClaudeLocalSettings(homeDir = os.homedir()): {
         env: parsed.env,
         defaultMode: normalizeHostMode(rawMode, 'default'),
         effort: normalizeHostEffort(parsed.effortLevel, 'medium'),
-        usesLocalProxy: baseUrl.includes('127.0.0.1') || baseUrl.includes('localhost'),
+        usesExternalAuth: Boolean(parsed.apiKeyHelper || parsed.env?.ANTHROPIC_BASE_URL || parsed.env?.ANTHROPIC_AUTH_TOKEN || parsed.env?.ANTHROPIC_API_KEY),
       }
     }
   } catch {
     // ignore
   }
-  return { defaultMode: 'default', effort: 'medium', usesLocalProxy: false }
+  return { defaultMode: 'default', effort: 'medium' }
 }
 
 export function readCodexLocalSettings(homeDir = os.homedir()): {
+  usesExternalProvider?: boolean
   model?: string
   defaultMode: SessionMode
   effort: ReasoningEffort
 } {
-  const tomlPath = path.join(homeDir, '.codex', 'config.toml')
+  const tomlPath = path.join(process.env.CODEX_HOME ?? path.join(homeDir, '.codex'), 'config.toml')
   try {
     if (fs.existsSync(tomlPath)) {
       const raw = fs.readFileSync(tomlPath, 'utf8')
@@ -137,6 +138,7 @@ export function readCodexLocalSettings(homeDir = os.homedir()): {
       const sandbox = rootSettings.match(/^\s*sandbox_mode\s*=\s*["']([^"']+)["']/m)?.[1]
       const approvalMatch = rootSettings.match(/^\s*approval_policy\s*=\s*["']([^"']+)["']/m)
       return {
+        usesExternalProvider: /^\s*(?:model_provider|profile)\s*=/m.test(rootSettings),
         model: modelMatch?.[1]?.trim() || undefined,
         defaultMode: approvalMatch?.[1] === 'never'
           ? (sandbox === 'workspace-write' || sandbox === 'danger-full-access' ? 'bypassPermissions' : 'plan')
@@ -151,7 +153,7 @@ export function readCodexLocalSettings(homeDir = os.homedir()): {
 }
 
 export function readCodexModelsCache(homeDir: string, efforts: ReasoningEffort[]): EngineModelSpec[] {
-  const p = path.join(homeDir, '.codex', 'models_cache.json')
+  const p = path.join(process.env.CODEX_HOME ?? path.join(homeDir, '.codex'), 'models_cache.json')
   if (!fs.existsSync(p)) return []
   try {
     const data = JSON.parse(fs.readFileSync(p, 'utf8')) as {
@@ -185,19 +187,9 @@ export function setCachedAgyCatalog(models: EngineModelSpec[] | null): void {
   cachedAgyCatalog = models
 }
 
-export function fallbackAgyModels(): EngineModelSpec[] {
-  const eff: ReasoningEffort[] = ['low', 'medium', 'high']
-  return [
-    { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon', providerId: 'sub_agy', efforts: eff, defaultEffort: 'high' },
-    { id: 'gemini-4-argon', name: 'Gemini 4 Argon', providerId: 'sub_agy', efforts: eff, defaultEffort: 'high' },
-    { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', providerId: 'sub_agy', efforts: eff, defaultEffort: 'medium' },
-    { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', providerId: 'sub_agy', efforts: eff, defaultEffort: 'medium' },
-  ]
-}
-
 export async function loadAgyModelsFromCli(): Promise<EngineModelSpec[]> {
   const bin = findExecutable('agy')
-  if (!bin) return fallbackAgyModels()
+  if (!bin) return []
   try {
     const { stdout } = await execFileAsync(bin, ['models'], {
       timeout: 8_000,
@@ -232,9 +224,9 @@ export async function loadAgyModelsFromCli(): Promise<EngineModelSpec[]> {
       cachedAgyCatalog = specs
       return specs
     }
-    return fallbackAgyModels()
+    return []
   } catch {
-    return fallbackAgyModels()
+    return []
   }
 }
 

@@ -1,6 +1,8 @@
+import { readCodexLocalSettings } from '../storage/host-history/engine-settings.ts'
+import { probeCliAuth } from './cli-auth-status.ts'
 import crypto from 'node:crypto'
 import type { EngineCapabilities, EngineStatus, PermissionOption, SessionMode } from '@lework/protocol'
-import { findExecutable, probeCommandVersion } from '../platform/index.ts'
+import { findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
@@ -32,7 +34,7 @@ export class CodexEngineAdapter implements EngineAdapter {
   constructor(private readonly opts: CodexAdapterOptions = {}) {}
 
   private resolveBinary(): string | null {
-    if (this.opts.binary) return this.opts.binary
+    if (this.opts.binary) return isExecutableFile(this.opts.binary) ? this.opts.binary : null
     return findExecutable('codex')
   }
 
@@ -40,9 +42,13 @@ export class CodexEngineAdapter implements EngineAdapter {
     const bin = this.resolveBinary()
     const version = bin ? probeCommandVersion(bin, ['--version']) : undefined
     const installed = Boolean(bin)
+    // login status covers Codex's own login, not a user-configured provider.
+    const nativeProvider = installed && !process.env.OPENAI_BASE_URL && !readCodexLocalSettings().usesExternalProvider
+    const authStatus = nativeProvider && bin ? await probeCliAuth(bin, 'codex') : 'unknown'
     return {
       installed,
-      ready: installed,
+      ready: installed && authStatus === 'authenticated',
+      authStatus: installed ? authStatus : undefined,
       version,
       detail: installed ? `${bin} app-server (JSON-RPC stdio)` : 'Missing codex CLI in PATH',
     }

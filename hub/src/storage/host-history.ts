@@ -192,23 +192,7 @@ export class HostTaskInspector {
 
     if (engineId === 'claude') {
       const claudeCfg = readClaudeLocalSettings(this.homeDir)
-      const subModels: EngineModelSpec[] = [
-        {
-          id: 'claude-sonnet-4-5',
-          name: 'Claude Sonnet 4.5',
-          providerId: 'sub_claude',
-          efforts: stdEfforts,
-          defaultEffort: 'medium',
-        },
-        {
-          id: 'claude-opus-4-6',
-          name: 'Claude Opus 4.6',
-          providerId: 'sub_claude',
-          efforts: stdEfforts,
-          defaultEffort: 'high',
-        },
-      ]
-      const proxyModels: EngineModelSpec[] = cpaModels
+      const combined: EngineModelSpec[] = cpaModels
         .filter(m => !m.includes('image'))
         .slice(0, 60)
         .map(m => ({
@@ -218,12 +202,11 @@ export class HostTaskInspector {
           efforts: stdEfforts,
           defaultEffort: 'medium' as const,
         }))
-      const combined = [...subModels, ...proxyModels]
-      if (claudeCfg.model && !combined.some(m => m.id === claudeCfg.model)) {
+      if (claudeCfg.model) {
         combined.unshift({
           id: claudeCfg.model,
           name: claudeCfg.model,
-          providerId: claudeCfg.usesLocalProxy ? 'cpa_local' : 'sub_claude',
+          providerId: 'sub_claude', // Keep the CLI's own endpoint, including custom/local providers.
           efforts: stdEfforts,
           defaultEffort: claudeCfg.effort,
         })
@@ -233,19 +216,18 @@ export class HostTaskInspector {
 
     if (engineId === 'codex') {
       const fromCache = readCodexModelsCache(this.homeDir, codexEfforts)
-      if (fromCache.length > 0) return fromCache
-      return [
-        { id: 'gpt-6.2-sol', name: 'GPT-6.2-Sol', providerId: 'sub_codex', efforts: codexEfforts, defaultEffort: 'high' },
-        { id: 'gpt-6.2-astra', name: 'GPT-6.2-Astra', providerId: 'sub_codex', efforts: codexEfforts, defaultEffort: 'high' },
-        { id: 'gpt-6.1-sol', name: 'GPT-6.1-Sol', providerId: 'sub_codex', efforts: codexEfforts, defaultEffort: 'medium' },
-      ]
+      const cfg = readCodexLocalSettings(this.homeDir)
+      if (cfg.model && !fromCache.some(m => m.id === cfg.model)) {
+        fromCache.unshift({ id: cfg.model, name: cfg.model, providerId: 'sub_codex', defaultEffort: cfg.effort, efforts: codexEfforts })
+      }
+      return fromCache
     }
 
     if (engineId === 'agy') {
       if (this.agyModelsCache) return this.agyModelsCache
       if (this.agyLoading) return this.agyLoading
       this.agyLoading = loadAgyModelsFromCli().then(specs => {
-        this.agyModelsCache = specs
+        if (specs.length) this.agyModelsCache = specs
         this.agyLoading = null
         return specs
       })
@@ -254,28 +236,10 @@ export class HostTaskInspector {
 
     if (engineId === 'pi') {
       const list = cpaModels.filter(m => !m.includes('image')).slice(0, 18)
-      if (list.length > 0) {
-        return list.map(id => ({
-          id,
-          name: id,
-          providerId: 'cpa_local',
-          efforts: stdEfforts,
-          defaultEffort: 'medium' as const,
-        }))
-      }
-      return [
-        { id: 'claude-opus-4-6-thinking', name: 'claude-opus-4-6-thinking', providerId: 'cpa_local', efforts: stdEfforts, defaultEffort: 'high' },
-        { id: 'gpt-6.2-sol', name: 'gpt-6.2-sol', providerId: 'cpa_local', efforts: stdEfforts, defaultEffort: 'medium' },
-      ]
+      return list.map(id => ({ id, name: id, providerId: 'cpa_local', efforts: stdEfforts, defaultEffort: 'medium' }))
     }
 
-    if (engineId === 'dsh') {
-      return [
-        { id: 'deepseek-chat', name: 'DeepSeek V3 Chat', providerId: 'sub_dsh', efforts: ['medium'], defaultEffort: 'medium' },
-        { id: 'deepseek-reasoner', name: 'DeepSeek R1 Reasoner', providerId: 'sub_dsh', efforts: ['medium', 'high'], defaultEffort: 'high' },
-      ]
-    }
-
+    if (engineId !== 'mock') return []
     return [
       { id: 'mock-fast', name: 'Simulator Standard', efforts: stdEfforts, defaultEffort: 'medium' },
     ]
