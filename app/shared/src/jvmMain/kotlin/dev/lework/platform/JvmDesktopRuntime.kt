@@ -90,7 +90,10 @@ object JvmDesktopRuntime {
         private set
 
     private val stateLock = Any()
+    private val logLock = Any()
     private var stateFile: File = File(System.getProperty("user.home"), ".lework/desktop/client-state.json")
+    private var runtimeLogFile: File = File(System.getProperty("user.home"), ".lework/desktop/runtime.log")
+    private const val MAX_RUNTIME_LOG_BYTES = 2L * 1024L * 1024L
     private var persisted = PersistedDesktopState()
     @Volatile
     private var localMacHubId: String? = null
@@ -145,10 +148,14 @@ object JvmDesktopRuntime {
             )
             ensurePrivateDir(baseDir)
             stateFile = File(baseDir, "client-state.json")
+            synchronized(logLock) {
+                runtimeLogFile = File(baseDir, "runtime.log")
+            }
             persisted = loadStateFromDisk(stateFile)
             isEnabled = true
             seedLocalMacHubIfAvailable()
         }
+        logRuntimeEvent("DESKTOP", "runtime initialized stateDir=${stateFile.parentFile?.absolutePath.orEmpty()}")
         registerDesktopUriHandler()
         Runtime.getRuntime().addShutdownHook(
             Thread {
@@ -157,7 +164,46 @@ object JvmDesktopRuntime {
         )
     }
 
+    fun runtimeLogPath(): String = synchronized(logLock) { runtimeLogFile.absolutePath }
+
+    fun logRuntimeEvent(tag: String, message: String) {
+        val line = formatRuntimeLogLine(System.currentTimeMillis(), tag, message)
+        if (System.getenv("LEWORK_DEBUG_LOG") == "1" || System.getProperty("lework.debug.log") == "true") {
+            System.err.println(line)
+        }
+        synchronized(logLock) {
+            runCatching {
+                val target = runtimeLogFile
+                target.parentFile?.let { ensurePrivateDir(it) }
+                if (target.isFile && target.length() >= MAX_RUNTIME_LOG_BYTES) {
+                    val rotated = File(target.parentFile, "${target.name}.1")
+                    runCatching {
+                        Files.move(
+                            target.toPath(),
+                            rotated.toPath(),
+                            StandardCopyOption.REPLACE_EXISTING,
+                        )
+                    }.onFailure {
+                        runCatching { rotated.delete() }
+                        runCatching { target.renameTo(rotated) }
+                    }
+                }
+                val isNew = !target.exists()
+                target.appendText(line + "\n")
+                if (isNew) {
+                    runCatching {
+                        Files.setPosixFilePermissions(
+                            target.toPath(),
+                            setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     fun shutdown() {
+        logRuntimeEvent("DESKTOP", "runtime shutdown")
         runCatching { dnsSdBrowseProc?.destroy() }
         dnsSdBrowseProc = null
         DesktopTsnetDaemon.stopSync()
@@ -168,11 +214,18 @@ object JvmDesktopRuntime {
     }
 
     fun onWindowFocusChanged(focused: Boolean) {
+        val prev = _foreground.value
         _foreground.value = focused
+        if (prev != focused) {
+            logRuntimeEvent("WINDOW", "focus changed $prev->$focused")
+        }
     }
 
     fun emitIncomingPairingUri(uri: String?) {
         val clean = uri?.trim()?.takeIf { it.isNotEmpty() }
+        if (clean != null) {
+            logRuntimeEvent("DEEPLINK", "incoming uri=${redactUrlForLog(clean)}")
+        }
         _incomingPairingUri.value = clean
     }
 
@@ -300,12 +353,20 @@ object JvmDesktopRuntime {
         tsnetProxyPorts = urls.mapNotNull { u ->
             u.substringAfter("127.0.0.1:", "").substringBefore('/').toIntOrNull()
         }.toSet()
-        _combinedUrls.value = (bonjourUrls + tsnetProxyUrls).distinct()
+        val next = (bonjourUrls + tsnetProxyUrls).distinct()
+        if (next != _combinedUrls.value) {
+            logRuntimeEvent("DISCOVERY", "tsnet proxies updated count=${urls.size} combined=${next.size}")
+        }
+        _combinedUrls.value = next
     }
 
     private fun updateBonjourUrls(urls: List<String>) {
         bonjourUrls = urls
-        _combinedUrls.value = (bonjourUrls + tsnetProxyUrls).distinct()
+        val next = (bonjourUrls + tsnetProxyUrls).distinct()
+        if (next != _combinedUrls.value) {
+            logRuntimeEvent("DISCOVERY", "bonjour urls updated count=${urls.size} urls=${urls.take(4).joinToString(",") { redactUrlForLog(it) }}")
+        }
+        _combinedUrls.value = next
     }
 
     internal fun prioritizeLocalHostEndpoints(
@@ -510,6 +571,7 @@ object JvmDesktopRuntime {
 
     // --- OS Clipboard & Browser ---
     fun openExternalUrl(url: String) {
+        logRuntimeEvent("EXTERNAL_URL", "open ${redactUrlForLog(url)}")
         runCatching {
             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
                 Desktop.getDesktop().browse(URI(url))

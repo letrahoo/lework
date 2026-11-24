@@ -73,13 +73,17 @@ import platform.Foundation.NSCalendarUnitSecond
 import platform.Foundation.NSCalendarUnitYear
 import platform.Foundation.NSData
 import platform.Foundation.NSDate
+import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.Foundation.NSFileManager
+import platform.Foundation.NSFileSize
+import platform.Foundation.NSLog
 import platform.Foundation.NSNetService
 import platform.Foundation.NSNetServiceBrowser
 import platform.Foundation.NSNetServiceBrowserDelegateProtocol
 import platform.Foundation.NSNetServiceDelegateProtocol
 import platform.Foundation.NSNotificationCenter
+import platform.Foundation.NSNumber
 import platform.Foundation.NSOperationQueue
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.Foundation.NSSelectorFromString
@@ -103,7 +107,11 @@ import platform.UIKit.endEditing
 import platform.darwin.NSObject
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
+import platform.darwin.dispatch_queue_create
 import platform.posix.AF_INET
+import platform.posix.fclose
+import platform.posix.fopen
+import platform.posix.fputs
 import platform.posix.sockaddr
 
 private const val KEY_LAST_GOOD_URL = "lework.last.good.url"
@@ -154,6 +162,7 @@ object IosNativeBridge {
     }
 
     fun notifyNetworkChanged(tsnetJson: String, isWifi: Boolean) {
+        logRuntimeEvent("IOS_NET", "network changed isWifi=$isWifi nextEpoch=${networkEpochFlow.value + 1L}")
         if (!isWifi) {
             IosDiscoveryBus.updateBonjour(emptyList())
         } else {
@@ -223,6 +232,7 @@ object IosNativeBridge {
     fun handleIncomingUrl(url: String) {
         val trimmed = url.trim()
         if (trimmed.startsWith("lework://", ignoreCase = true)) {
+            logRuntimeEvent("DEEPLINK", "incoming uri=${redactUrlForLog(trimmed)}")
             incomingUriFlow.value = trimmed
         }
     }
@@ -423,6 +433,9 @@ private object IosAppLifecycle {
                 `object` = null,
                 queue = NSOperationQueue.mainQueue,
             ) { _ ->
+                if (!_isForeground.value) {
+                    logRuntimeEvent("IOS_LIFE", "UIApplicationDidBecomeActive")
+                }
                 _isForeground.value = true
             }
             bgObserver = center.addObserverForName(
@@ -430,6 +443,9 @@ private object IosAppLifecycle {
                 `object` = null,
                 queue = NSOperationQueue.mainQueue,
             ) { _ ->
+                if (_isForeground.value) {
+                    logRuntimeEvent("IOS_LIFE", "UIApplicationDidEnterBackground")
+                }
                 _isForeground.value = false
             }
         }
@@ -610,6 +626,7 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
 }
 
 actual fun openExternalUrl(url: String) {
+    logRuntimeEvent("EXTERNAL_URL", "open ${redactUrlForLog(url)}")
     val nsUrl = NSURL.URLWithString(url) ?: return
     UIApplication.sharedApplication.openURL(
         nsUrl,
@@ -1008,3 +1025,48 @@ actual fun listSshConfigHosts(): List<String> = emptyList()
 
 actual suspend fun requestSshHostPairingLink(sshTarget: String): Result<String> =
     Result.failure(UnsupportedOperationException("仅桌面端支持通过本机 SSH 直连远程开发机"))
+
+private object IosRuntimeLogger {
+    private const val MAX_LOG_BYTES = 2L * 1024L * 1024L
+    private val queue = dispatch_queue_create("dev.lework.runtimelog", null)
+
+    fun logPath(): String? {
+        val dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, true)
+        val base = (dirs.firstOrNull() as? String)?.takeIf { it.isNotBlank() } ?: return null
+        return "$base/lework-runtime.log"
+    }
+
+    fun append(tag: String, message: String) {
+        val safeTag = tag.trim().ifEmpty { "APP" }.take(24)
+        val clean = sanitizeRuntimeLogMessage(message)
+        val line = formatRuntimeLogLine(epochMillis(), safeTag, clean)
+        NSLog("%@", "[Lework/$safeTag] $clean")
+        val path = logPath() ?: return
+        dispatch_async(queue) {
+            runCatching {
+                val fm = NSFileManager.defaultManager
+                val attrs = fm.attributesOfItemAtPath(path, error = null)
+                val size = (attrs?.get(NSFileSize) as? NSNumber)?.longLongValue ?: 0L
+                if (size >= MAX_LOG_BYTES) {
+                    val rotated = "$path.1"
+                    fm.removeItemAtPath(rotated, error = null)
+                    fm.moveItemAtPath(path, toPath = rotated, error = null)
+                }
+                val fp = fopen(path, "a")
+                if (fp != null) {
+                    try {
+                        fputs(line + "\n", fp)
+                    } finally {
+                        fclose(fp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+actual fun logRuntimeEvent(tag: String, message: String) {
+    IosRuntimeLogger.append(tag, message)
+}
+
+actual fun runtimeLogFilePath(): String? = IosRuntimeLogger.logPath()

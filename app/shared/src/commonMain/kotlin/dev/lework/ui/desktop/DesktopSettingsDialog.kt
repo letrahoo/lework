@@ -33,6 +33,7 @@ import androidx.compose.ui.window.DialogProperties
 import dev.lework.platform.PairedHost
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.copyTextToClipboard
+import dev.lework.platform.runtimeLogFilePath
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
@@ -51,8 +52,10 @@ internal fun DesktopSettingsDialog(
     onLogout: () -> Unit,
 ) {
     var copiedFingerprint by remember { mutableStateOf(false) }
+    var copiedLogPath by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
     val onlineCount = state.engines.count { it.status.ready }
+    val logPath = remember { runtimeLogFilePath() }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -427,6 +430,57 @@ internal fun DesktopSettingsDialog(
                             DesktopShortcutRow("切换引擎与模型", "⌘K", "查看代码变更与快照", "⇧⌘D")
                             DesktopShortcutRow("刷新会话列表", "⌘R", "打开设置", "⌘,")
                             DesktopShortcutRow("发送消息", "Enter", "输入框换行", "Shift+Enter")
+                        }
+                    }
+
+                    if (!logPath.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Everforest.Bg0,
+                            border = BorderStroke(1.dp, Everforest.Bg2),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        text = "运行日志",
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Everforest.Fg,
+                                    )
+                                    Text(
+                                        text = logPath,
+                                        fontSize = 10.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Everforest.Grey0,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                Text(
+                                    text = if (copiedLogPath) "已复制路径" else "复制路径",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Everforest.Green,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable {
+                                            copyTextToClipboard(logPath)
+                                            copiedLogPath = true
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        .testTag("settings_btn_copy_runtime_log_path"),
+                                )
+                            }
                         }
                     }
                 }

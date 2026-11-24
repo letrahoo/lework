@@ -19,6 +19,9 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import dev.lework.platform.JvmDesktopRuntime
+import dev.lework.platform.appVersionLabel
+import dev.lework.platform.logRuntimeEvent
+import dev.lework.platform.runtimeLogFilePath
 import dev.lework.store.ConsoleStore
 import dev.lework.ui.ConsoleApp
 import dev.lework.ui.rememberLeworkBrandPainter
@@ -31,6 +34,17 @@ fun main(args: Array<String>) {
     System.setProperty("apple.awt.application.appearance", "NSAppearanceNameDarkAqua")
 
     JvmDesktopRuntime.initialize()
+    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+        val stack = throwable.stackTrace.take(12).joinToString(" <- ") { "${it.className}.${it.methodName}:${it.lineNumber}" }
+        logRuntimeEvent(
+            "CRASH",
+            "uncaught thread=${thread.name} err=${throwable::class.simpleName}:${throwable.message} stack=$stack",
+        )
+    }
+    logRuntimeEvent(
+        "APP",
+        "desktop start version=${appVersionLabel()} argsCount=${args.size} logPath=${runtimeLogFilePath().orEmpty()}",
+    )
     args.firstOrNull { it.startsWith("lework://", ignoreCase = true) }?.let { rawUri ->
         JvmDesktopRuntime.emitIncomingPairingUri(rawUri)
     }
@@ -53,6 +67,7 @@ fun main(args: Array<String>) {
 
         Window(
             onCloseRequest = {
+                logRuntimeEvent("APP", "window close requested")
                 JvmDesktopRuntime.shutdown()
                 exitApplication()
             },

@@ -60,7 +60,11 @@ import { UsageService } from './usage/index.ts'
 import { HUB_VERSION } from './version.ts'
 
 interface ClientConn {
+  id: number
   ws: WebSocket
+  remoteAddr: string
+  connectedAtMs: number
+  clientLabel: string | null
   authenticated: boolean
   isAlive: boolean
   subscribedSessions: Set<string>
@@ -98,6 +102,7 @@ export class HubServer {
   private readonly httpServer: http.Server
   private readonly wss: WebSocketServer
   private readonly clients = new Set<ClientConn>()
+  private nextClientConnId = 1
   private readonly remoteSlaves = new Map<string, SlaveInfo>()
   private readonly sessionManager: SessionManager
   private readonly registry: ModelRegistry
@@ -207,7 +212,7 @@ export class HubServer {
           return
         }
         this.wss.handleUpgrade(req, socket, head, ws => {
-          this.handleConnection(ws)
+          this.handleConnection(ws, req.socket.remoteAddress ?? 'unknown')
         })
         return
       }
@@ -265,6 +270,10 @@ export class HubServer {
         for (const c of this.clients) {
           if (c.ws.readyState !== WebSocket.OPEN) continue
           if (!c.isAlive) {
+            this.logWs(
+              `#${c.id} heartbeat timeout client=${c.clientLabel ?? 'unauth'} remote=${c.remoteAddr}; terminating`,
+              true,
+            )
             c.ws.terminate()
             continue
           }
@@ -743,18 +752,35 @@ export class HubServer {
     })
   }
 
-  private handleConnection(ws: WebSocket): void {
+  private logWs(message: string, warn = false): void {
+    const line = `${new Date().toISOString()} [lework-ws] ${message}`
+    if (warn) {
+      console.warn(line)
+    } else {
+      console.log(line)
+    }
+  }
+
+  private handleConnection(ws: WebSocket, remoteAddr = 'unknown'): void {
     const conn: ClientConn = {
+      id: this.nextClientConnId++,
       ws,
+      remoteAddr,
+      connectedAtMs: Date.now(),
+      clientLabel: null,
       authenticated: false,
       isAlive: true,
       subscribedSessions: new Set(),
       helloTimer: null,
     }
     conn.helloTimer = setTimeout(() => {
-      if (!conn.authenticated) ws.close(1008, 'Authentication timeout')
+      if (!conn.authenticated) {
+        this.logWs(`#${conn.id} hello timeout remote=${conn.remoteAddr}; closing 1008`, true)
+        ws.close(1008, 'Authentication timeout')
+      }
     }, HELLO_DEADLINE_MS)
     this.clients.add(conn)
+    this.logWs(`#${conn.id} open remote=${conn.remoteAddr} active=${this.clients.size}`)
 
     ws.on('pong', () => {
       conn.isAlive = true
@@ -764,13 +790,18 @@ export class HubServer {
       void this.handleWsMessage(conn, String(raw))
     })
 
-    ws.on('close', () => {
+    ws.on('close', (code, reasonBuf) => {
       if (conn.helloTimer) clearTimeout(conn.helloTimer)
       for (const sid of conn.subscribedSessions) {
         this.sessionManager.releaseHostWatch(sid)
       }
       conn.subscribedSessions.clear()
       this.clients.delete(conn)
+      const reason = Buffer.isBuffer(reasonBuf) ? reasonBuf.toString('utf8') : String(reasonBuf ?? '')
+      const durMs = Math.max(0, Date.now() - conn.connectedAtMs)
+      this.logWs(
+        `#${conn.id} close code=${code} reason=${reason || 'none'} auth=${conn.authenticated} client=${conn.clientLabel ?? 'unauth'} durMs=${durMs} active=${this.clients.size}`,
+      )
       if (this.clients.size === 0) {
         this.sessionManager.stopGlobalHostMonitor()
       }
@@ -820,18 +851,19 @@ export class HubServer {
       this.sendJson(conn.ws, { jsonrpc: '2.0', id, result })
     } catch (err) {
       if (err instanceof HubRpcError) {
+        this.logWs(
+          `#${conn.id} rpc error method=${methodName} code=${err.code} msg=${err.message.slice(0, 160)}`,
+          true,
+        )
         this.sendRpcError(conn.ws, id, err.code, err.message)
         if (methodName === 'hub.hello' && !conn.authenticated) {
           // Failed authentication: slow down guessing and drop the socket.
           setTimeout(() => conn.ws.close(1008, 'Unauthorized'), AUTH_FAILURE_DELAY_MS)
         }
       } else {
-        this.sendRpcError(
-          conn.ws,
-          id,
-          ErrorCode.Internal,
-          err instanceof Error ? err.message : 'Internal error',
-        )
+        const msg = err instanceof Error ? err.message : 'Internal error'
+        this.logWs(`#${conn.id} rpc internal error method=${methodName} msg=${msg.slice(0, 160)}`, true)
+        this.sendRpcError(conn.ws, id, ErrorCode.Internal, msg)
       }
     }
   }
@@ -839,7 +871,11 @@ export class HubServer {
   private async dispatchMethod(conn: ClientConn, method: MethodName, params: unknown): Promise<unknown> {
     switch (method) {
       case 'hub.hello': {
-        const p = params as { protocolVersion: number; token: string }
+        const p = params as {
+          protocolVersion: number
+          token: string
+          client?: { name?: string; version?: string; platform?: string }
+        }
         if (p.protocolVersion !== PROTOCOL_VERSION) {
           throw new HubRpcError(
             ErrorCode.VersionMismatch,
@@ -850,10 +886,15 @@ export class HubServer {
           throw new HubRpcError(ErrorCode.Unauthorized, 'Invalid or expired access token')
         }
         conn.authenticated = true
+        const cName = p.client?.name?.trim() || 'client'
+        const cPlatform = p.client?.platform?.trim() || 'unknown'
+        const cVer = p.client?.version?.trim() || '?'
+        conn.clientLabel = `${cName}/${cPlatform}@${cVer}`.slice(0, 80)
         if (conn.helloTimer) {
           clearTimeout(conn.helloTimer)
           conn.helloTimer = null
         }
+        this.logWs(`#${conn.id} hello ok client=${conn.clientLabel} protocol=${p.protocolVersion}`)
         this.sessionManager.startGlobalHostMonitor()
         return {
           protocolVersion: PROTOCOL_VERSION,
