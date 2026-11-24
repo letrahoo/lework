@@ -3578,11 +3578,13 @@ class ConsoleStore(
                 transcripts = s.transcripts + (event.sessionId to next),
             )
         }
-        if (event is AgentEvent.Usage || event is AgentEvent.TurnDone) {
-            refreshActiveSessionUsage(event.sessionId)
-        }
-        if (event is AgentEvent.TurnDone || event is AgentEvent.PlanUpdated) {
-            refreshSessionArtifacts(event.sessionId)
+        if (event.sessionId == _state.value.activeSessionId) {
+            if (event is AgentEvent.Usage || event is AgentEvent.TurnDone) {
+                refreshActiveSessionUsage(event.sessionId)
+            }
+            if (event is AgentEvent.TurnDone || event is AgentEvent.PlanUpdated) {
+                refreshSessionArtifacts(event.sessionId)
+            }
         }
     }
 

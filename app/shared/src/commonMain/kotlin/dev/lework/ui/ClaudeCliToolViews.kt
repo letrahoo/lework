@@ -135,6 +135,7 @@ internal fun ClaudeProcessTraceView(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 26.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .clickable { traceExpanded = !traceExpanded }
                 .padding(vertical = 4.dp, horizontal = 2.dp),

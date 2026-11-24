@@ -46,9 +46,11 @@ import dev.lework.platform.appVersionLabel
 import dev.lework.platform.epochMillis
 import dev.lework.platform.isDesktopPlatform
 import dev.lework.platform.loadSavedRelayUrls
+import dev.lework.platform.logRuntimeEvent
 import dev.lework.protocol.*
 import dev.lework.store.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -169,33 +171,116 @@ internal fun ConversationStreamView(
     var prevLastSeq by remember(sessionKey) { mutableStateOf(transcript.lastSeq) }
     var prevSpinnerVisible by remember(sessionKey) { mutableStateOf(showLiveSpinner) }
     var prevQueuedCount by remember(sessionKey) { mutableStateOf(queuedPrompts.size) }
+    var isAutoScrollingToBottom by remember(sessionKey) { mutableStateOf(false) }
 
     // With `reverseLayout = true`:
     // - Index 0 is ALWAYS the exact pixel bottom (no initial jump or landing mid-message!).
     // - Prepending older history appends items to the END of `reversedSegments` (above viewport),
     //   keeping indices 0..current and ongoing fling velocity 100% untouched (never jumps to top!).
-    // - Only when new live events or queued prompts arrive at index 0 while near bottom do we pin to 0.
+    // - Update previous watermarks BEFORE suspending so rapid streaming deltas never cancel and
+    //   replay bottom pins, never fight active user scrolls, and skip no-op scrolls at `(0, 0)`.
     LaunchedEffect(transcript.lastSeq, showLiveSpinner, queuedPrompts.size) {
         val hasNewTail = transcript.lastSeq > prevLastSeq ||
             (showLiveSpinner && !prevSpinnerVisible) ||
             queuedPrompts.size > prevQueuedCount
-        if (hasNewTail) {
-            val nearBottom = listState.firstVisibleItemIndex <= 1 && listState.firstVisibleItemScrollOffset < 120
-            if (nearBottom) {
-                listState.animateScrollToItem(0)
-            }
-        }
         prevLastSeq = transcript.lastSeq
         prevSpinnerVisible = showLiveSpinner
         prevQueuedCount = queuedPrompts.size
+
+        if (hasNewTail && !isUserDragging && !listState.isScrollInProgress) {
+            val alreadyAtBottom =
+                listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+            val nearBottom =
+                listState.firstVisibleItemIndex <= 1 && listState.firstVisibleItemScrollOffset < 96
+            if (!alreadyAtBottom && nearBottom) {
+                isAutoScrollingToBottom = true
+                try {
+                    listState.scrollToItem(0)
+                } finally {
+                    isAutoScrollingToBottom = false
+                }
+            }
+        }
+    }
+
+    // Anomaly-only vertical bounce telemetry (zero log noise in normal operation; logs throttled
+    // diagnostics if viewport height or scroll anchor rapidly oscillates without user dragging).
+    val latestIsDragging by rememberUpdatedState(isUserDragging)
+    val latestSegmentCount by rememberUpdatedState(reversedSegments.size)
+    val latestSpinnerVisible by rememberUpdatedState(showLiveSpinner)
+    LaunchedEffect(sessionKey) {
+        var lastViewportH = -1
+        var viewportChanges = 0
+        var viewportWindowStartMs = 0L
+        var lastAnchorKey = -1L
+        var lastScrollDir = 0
+        var scrollReversals = 0
+        var scrollWindowStartMs = 0L
+        var lastReportedMs = 0L
+
+        snapshotFlow {
+            Triple(
+                listState.layoutInfo.viewportSize.height,
+                listState.firstVisibleItemIndex,
+                listState.firstVisibleItemScrollOffset,
+            )
+        }
+            .distinctUntilChanged()
+            .collect { (viewportH, firstIdx, firstOff) ->
+                val now = epochMillis()
+                if (viewportH > 0) {
+                    if (lastViewportH > 0 && viewportH != lastViewportH) {
+                        if (now - viewportWindowStartMs > 2_000L) {
+                            viewportWindowStartMs = now
+                            viewportChanges = 1
+                        } else {
+                            viewportChanges++
+                        }
+                        if (viewportChanges >= 4 && now - lastReportedMs >= 5_000L) {
+                            lastReportedMs = now
+                            logRuntimeEvent(
+                                "TIMELINE",
+                                "viewport-jitter sid=$sessionKey h=$lastViewportH->$viewportH changes=$viewportChanges idx=$firstIdx off=$firstOff segs=$latestSegmentCount",
+                            )
+                        }
+                    }
+                    lastViewportH = viewportH
+                }
+
+                val anchorKey = (firstIdx.toLong() shl 20) + firstOff.toLong()
+                if (!latestIsDragging && lastAnchorKey >= 0L && anchorKey != lastAnchorKey) {
+                    val dir = if (anchorKey > lastAnchorKey) 1 else -1
+                    if (lastScrollDir != 0 && dir != lastScrollDir) {
+                        if (now - scrollWindowStartMs > 1_500L) {
+                            scrollWindowStartMs = now
+                            scrollReversals = 1
+                        } else {
+                            scrollReversals++
+                        }
+                        if (scrollReversals >= 4 && now - lastReportedMs >= 5_000L) {
+                            lastReportedMs = now
+                            logRuntimeEvent(
+                                "TIMELINE",
+                                "scroll-bounce sid=$sessionKey reversals=$scrollReversals idx=$firstIdx off=$firstOff vpH=$viewportH segs=$latestSegmentCount spinner=$latestSpinnerVisible",
+                            )
+                        }
+                    }
+                    lastScrollDir = dir
+                }
+                lastAnchorKey = anchorKey
+            }
     }
 
     // Smoothly trigger reverse pagination when scrolling upward near the oldest loaded item
     val nearOldestEdge by remember(reversedSegments.size) {
         derivedStateOf {
+            if (isAutoScrollingToBottom) return@derivedStateOf false
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val scrolledUpFromBottom =
+                listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 24
             reversedSegments.isNotEmpty() &&
                 listState.isScrollInProgress &&
+                (isUserDragging || scrolledUpFromBottom) &&
                 lastVisible >= (reversedSegments.size - 3).coerceAtLeast(1)
         }
     }
@@ -512,7 +597,7 @@ private fun ClaudeLiveSpinnerRow(
         }
     }
 
-    val rawLive = session.liveStatusText?.trim().orEmpty()
+    val rawLive = session.liveStatusText?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
     val styledLine = if (rawLive.isNotEmpty()) {
         val parenIdx = rawLive.indexOf(" (")
         buildAnnotatedString {
@@ -548,7 +633,9 @@ private fun ClaudeLiveSpinnerRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp, horizontal = 2.dp),
+            .height(28.dp)
+            .padding(horizontal = 2.dp)
+            .testTag("live_spinner_row"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -556,6 +643,9 @@ private fun ClaudeLiveSpinnerRow(
             fontSize = 13.sp,
             lineHeight = 19.sp,
             fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
