@@ -9,6 +9,7 @@ import {
   SlaveInfo,
   EngineInfo,
   ProviderInfo,
+  ProviderConfigInput,
   ProfileInfo,
   Workspace,
   SessionWorktreeInfo,
@@ -52,6 +53,7 @@ const bundle = {
     SlaveInfo: z.toJSONSchema(SlaveInfo),
     EngineInfo: z.toJSONSchema(EngineInfo),
     ProviderInfo: z.toJSONSchema(ProviderInfo),
+    ProviderConfigInput: z.toJSONSchema(ProviderConfigInput),
     ProfileInfo: z.toJSONSchema(ProfileInfo),
     Workspace: z.toJSONSchema(Workspace),
     SessionWorktreeInfo: z.toJSONSchema(SessionWorktreeInfo),
@@ -217,6 +219,12 @@ enum class ProviderType {
 }
 
 @Serializable
+enum class ProviderAdapterKind {
+    @SerialName("cpa") CPA,
+    @SerialName("generic") GENERIC,
+}
+
+@Serializable
 enum class WireApi {
     @SerialName("openai-chat") OPENAI_CHAT,
     @SerialName("openai-responses") OPENAI_RESPONSES,
@@ -229,10 +237,72 @@ data class ProviderInfo(
     val id: String,
     val name: String,
     val type: ProviderType,
+    val adapter: ProviderAdapterKind? = null,
     val baseUrl: String? = null,
     val wireApi: WireApi? = null,
+    val wireApis: List<WireApi> = emptyList(),
+    val enabledEngines: List<String> = emptyList(),
+    val enabled: Boolean = true,
+    val builtIn: Boolean = false,
+    val hasApiKey: Boolean = false,
+    val apiKeyEnv: String? = null,
+    val manualModels: List<String> = emptyList(),
     val healthy: Boolean,
-    val models: List<String>,
+    val authStatus: String? = null,
+    val latencyMs: Int? = null,
+    val error: String? = null,
+    val models: List<String> = emptyList(),
+)
+
+@Serializable
+data class ProviderConfigInput(
+    val id: String? = null,
+    val name: String,
+    val adapter: ProviderAdapterKind? = null,
+    val baseUrl: String,
+    val apiKey: String? = null,
+    val clearApiKey: Boolean? = null,
+    val apiKeyEnv: String? = null,
+    val wireApis: List<WireApi>? = null,
+    val enabledEngines: List<String>? = null,
+    val enabled: Boolean? = null,
+    val manualModels: List<String>? = null,
+)
+
+@Serializable
+data class ProviderListResult(
+    val providers: List<ProviderInfo> = emptyList(),
+    val engines: List<EngineInfo> = emptyList(),
+)
+
+@Serializable
+data class ProviderUpsertParams(
+    val provider: ProviderConfigInput,
+)
+
+@Serializable
+data class ProviderUpsertResult(
+    val provider: ProviderInfo,
+    val providers: List<ProviderInfo> = emptyList(),
+    val engines: List<EngineInfo> = emptyList(),
+)
+
+@Serializable
+data class ProviderRemoveParams(
+    val providerId: String,
+)
+
+@Serializable
+data class ProviderProbeParams(
+    val providerId: String? = null,
+    val provider: ProviderConfigInput? = null,
+)
+
+@Serializable
+data class ProviderProbeResult(
+    val provider: ProviderInfo? = null,
+    val providers: List<ProviderInfo> = emptyList(),
+    val engines: List<EngineInfo> = emptyList(),
 )
 
 @Serializable
@@ -258,6 +328,7 @@ data class EngineModelSpec(
     val id: String,
     val name: String,
     val providerId: String? = null,
+    val providerName: String? = null,
     val efforts: List<ReasoningEffort> = emptyList(),
     val defaultEffort: ReasoningEffort? = null,
 )
@@ -397,6 +468,7 @@ data class SessionMeta(
     val createdAt: Long,
     val updatedAt: Long,
     val lastSeq: Int,
+    val providerId: String? = null,
     val model: String? = null,
     val reasoningEffort: ReasoningEffort? = null,
     val mode: SessionMode? = null,
@@ -764,6 +836,7 @@ data class SessionPromptParams(
     val sessionId: String,
     val text: String,
     val images: List<PromptImageAttachment>? = null,
+    val providerId: String? = null,
     val modelId: String? = null,
     val reasoningEffort: ReasoningEffort? = null,
     val mode: SessionMode? = null,
@@ -797,6 +870,7 @@ data class SessionCancelQueuedResult(
 @Serializable
 data class SessionSetModelParams(
     val sessionId: String,
+    val providerId: String? = null,
     val modelId: String,
     val reasoningEffort: ReasoningEffort? = null,
     val mode: SessionMode? = null,

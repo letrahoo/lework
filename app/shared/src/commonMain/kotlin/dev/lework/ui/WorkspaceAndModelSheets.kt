@@ -130,13 +130,14 @@ internal fun EngineModelPickerSheet(
                 .heightIn(max = 360.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            items(selectable?.models.orEmpty(), key = { "${it.providerId}_${it.id}" }) { m ->
-                val selected = m.id == state.selectedModelSpec?.id
-                val sourceTag = when (m.providerId) {
-                    "cpa_local" -> "本机代理"
-                    null -> ""
-                    else -> "主机 CLI"
-                }
+            val engineModels = selectable?.models.orEmpty()
+            items(engineModels, key = { "${it.providerId}_${it.id}" }) { m ->
+                val activeSpec = state.selectedModelSpec
+                val selected = m.id == activeSpec?.id &&
+                    (m.providerId == activeSpec?.providerId ||
+                        (activeSpec?.providerId == null && !m.isExternalProvider()))
+                val sourceTag = m.sourceBadgeLabel(engineModels, state.providers).orEmpty()
+                val isExternal = m.isExternalProvider()
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = if (selected) Everforest.Bg2 else Everforest.Bg0.copy(alpha = 0.5f),
@@ -167,7 +168,7 @@ internal fun EngineModelPickerSheet(
                                 Text(
                                     text = sourceTag,
                                     fontSize = 11.sp,
-                                    color = if (m.providerId == "cpa_local") Everforest.Aqua else Everforest.Grey1,
+                                    color = if (isExternal) Everforest.Aqua else Everforest.Green,
                                 )
                             }
                         }

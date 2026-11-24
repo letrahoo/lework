@@ -979,10 +979,12 @@ private fun MinimalTopBar(
     onOpenFilesSheet: () -> Unit,
 ) {
     val engineLabel = shortEngineLabel(state.selectedEngineId)
-    val modelLabel = state.selectedModelSpec?.name
+    val activeModelSpec = state.selectedModelSpec
+    val modelLabel = activeModelSpec?.name
         ?.removeSuffix(" (Proxy)")
         ?.let { if (it.length > 24) it.take(23) + "…" else it }
         ?: "默认模型"
+    val externalSourceLabel = activeModelSpec?.externalProviderLabel(state.providers)
     val hasActiveTasks = state.runningSessions.isNotEmpty()
 
     Row(
@@ -1036,6 +1038,11 @@ private fun MinimalTopBar(
                         }
                         withStyle(SpanStyle(color = Everforest.CommentGrey)) {
                             append(" · $modelLabel")
+                        }
+                        if (!externalSourceLabel.isNullOrBlank()) {
+                            withStyle(SpanStyle(color = Everforest.Aqua, fontWeight = FontWeight.Medium)) {
+                                append(" · $externalSourceLabel")
+                            }
                         }
                     },
                     fontSize = 13.sp,

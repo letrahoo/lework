@@ -16,6 +16,7 @@ import {
   type MethodName,
   type ProfileInfo,
   type PromptImageAttachment,
+  type ProviderConfigInput,
   type ReasoningEffort,
   type SessionMeta,
   type SessionMode,
@@ -168,6 +169,8 @@ export class HubServer {
       this.usageService = new UsageService({
         cpaEndpoint: this.config.cpaEndpoint,
         cpaManagementKey: this.config.cpaManagementKey,
+        getCpaEndpoint: () => this.registry.getCpaEndpoint(),
+        getCpaApiKey: () => this.registry.getCpaApiKey(),
         getSessionSnapshot: sessionSnapshotProvider,
       })
     }
@@ -316,7 +319,7 @@ export class HubServer {
   }
 
   async buildStatus() {
-    await this.registry.refreshCpaModels()
+    await this.registry.refreshProviders()
     const engines = await this.sessionManager.listEngines()
     const installedSet = new Set(engines.filter(e => e.status.installed).map(e => e.id))
     const providers = this.registry.listProviders(engines)
@@ -933,8 +936,65 @@ export class HubServer {
         const profiles = this.registry.upsertProfile(p.profile)
         return { profiles }
       }
+      case 'provider.list': {
+        await this.registry.refreshProviders()
+        const engines = await this.sessionManager.listEngines()
+        const providers = this.registry.listProviders(engines)
+        return { providers, engines }
+      }
+      case 'provider.upsert': {
+        const p = params as { provider: ProviderConfigInput }
+        try {
+          const provider = await this.registry.upsertProvider(p.provider)
+          const engines = await this.sessionManager.listEngines()
+          const providers = this.registry.listProviders(engines)
+          return { provider, providers, engines }
+        } catch (err) {
+          throw new HubRpcError(
+            ErrorCode.InvalidParams,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      }
+      case 'provider.remove': {
+        const p = params as { providerId: string }
+        try {
+          this.registry.removeProvider(p.providerId)
+          const engines = await this.sessionManager.listEngines()
+          const providers = this.registry.listProviders(engines)
+          return { providers, engines }
+        } catch (err) {
+          throw new HubRpcError(
+            ErrorCode.InvalidParams,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      }
+      case 'provider.probe': {
+        const p = (params ?? {}) as { providerId?: string; provider?: ProviderConfigInput }
+        try {
+          if (p.provider) {
+            const probed = await this.registry.probeProviderDraft(p.provider)
+            const engines = await this.sessionManager.listEngines()
+            const providers = this.registry.listProviders(engines)
+            return { provider: probed, providers, engines }
+          }
+          await this.registry.refreshProviders(p.providerId)
+          const engines = await this.sessionManager.listEngines()
+          const providers = this.registry.listProviders(engines)
+          const probed = p.providerId
+            ? providers.find(item => item.id === p.providerId)
+            : undefined
+          return { ...(probed ? { provider: probed } : {}), providers, engines }
+        } catch (err) {
+          throw new HubRpcError(
+            ErrorCode.InvalidParams,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      }
       case 'engine.list': {
-        await this.registry.refreshCpaModels()
+        await this.registry.refreshProviders()
         const engines = await this.sessionManager.listEngines()
         return { engines }
       }
@@ -995,6 +1055,7 @@ export class HubServer {
           sessionId: string
           text: string
           images?: PromptImageAttachment[]
+          providerId?: string
           modelId?: string
           reasoningEffort?: ReasoningEffort
           mode?: SessionMode
@@ -1005,6 +1066,7 @@ export class HubServer {
         }
         return await this.sessionManager.prompt(p.sessionId, p.text, {
           images: p.images,
+          providerId: p.providerId,
           modelId: p.modelId,
           reasoningEffort: p.reasoningEffort,
           mode: p.mode,
@@ -1025,11 +1087,13 @@ export class HubServer {
       case 'session.setModel': {
         const p = params as {
           sessionId: string
+          providerId?: string
           modelId: string
           reasoningEffort?: ReasoningEffort
           mode?: SessionMode
         }
         const session = await this.sessionManager.setModel(p.sessionId, p.modelId, {
+          providerId: p.providerId,
           reasoningEffort: p.reasoningEffort,
           mode: p.mode,
         })

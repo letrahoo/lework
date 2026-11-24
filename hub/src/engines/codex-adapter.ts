@@ -3,6 +3,7 @@ import { probeCliAuth } from './cli-auth-status.ts'
 import crypto from 'node:crypto'
 import type { EngineCapabilities, EngineStatus, PermissionOption, SessionMode } from '@lework/protocol'
 import { findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
+import { mergeSessionEnv } from '../registry/provider-adapters.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
@@ -120,7 +121,7 @@ class CodexAppServerSession implements EngineSession {
       command: this.bin,
       args: this.args,
       cwd: this.cwd,
-      env: { ...process.env, ...this.init.env },
+      env: mergeSessionEnv(process.env, this.init.env),
       onInbound: msg => this.handleInbound(msg),
       onExit: (code, signal) => {
         this.pendingApprovals.clear()

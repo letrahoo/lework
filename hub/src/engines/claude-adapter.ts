@@ -10,6 +10,7 @@ import type {
   PermissionOption,
 } from '@lework/protocol'
 import { findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
+import { mergeSessionEnv } from '../registry/provider-adapters.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
@@ -120,7 +121,7 @@ class ClaudeAcpSession implements EngineSession {
   }
 
   async start(): Promise<void> {
-    const childEnv: NodeJS.ProcessEnv = { ...process.env, ...this.extraEnv }
+    const childEnv: NodeJS.ProcessEnv = mergeSessionEnv(process.env, this.extraEnv)
     // Enable Claude Code's native Artifact toolset by default unless explicitly opted out (`CLAUDE_CODE_ARTIFACT=0`)
     if (childEnv.CLAUDE_CODE_ARTIFACT === undefined) {
       childEnv.CLAUDE_CODE_ARTIFACT = '1'

@@ -4,6 +4,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { EngineCapabilities, EngineStatus, SessionMode } from '@lework/protocol'
 import type { ModelRegistry } from '../registry/model-registry.ts'
+import {
+  normalizeBaseUrlForAnthropic,
+  normalizeBaseUrlForOpenAi,
+} from '../registry/provider-adapters.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
@@ -26,7 +30,7 @@ export class PiEngineAdapter implements EngineAdapter {
   ) {}
 
   async probe(): Promise<EngineStatus> {
-    return this.registry?.getCpaStatus() ?? { installed: false, ready: false }
+    return this.registry?.getExternalEngineStatus('pi') ?? { installed: false, ready: false }
   }
 
   capabilities(): EngineCapabilities {
@@ -41,10 +45,10 @@ export class PiEngineAdapter implements EngineAdapter {
   }
 
   async openSession(init: EngineSessionInit): Promise<EngineSession> {
-    const cpaModels = this.registry?.getCachedCpaModels() ?? []
-    const modelOptions = cpaModels.slice(0, 12).map(id => ({ id, name: `CPA · ${id}` }))
+    const extModels = this.registry?.getExternalModelsForEngine('pi') ?? []
+    const modelOptions = extModels.slice(0, 24).map(m => ({ id: m.id, name: `${m.providerName} · ${m.id}` }))
     const initialModel = init.modelId ?? modelOptions[0]?.id
-    if (!initialModel) throw new Error('本机代理没有可用模型')
+    if (!initialModel) throw new Error('当前主机没有可用的外部模型服务')
     init.onModelsChanged?.(initialModel, modelOptions)
     return new PiEmbeddedSession(init, this.cpaEndpoint, this.registry, initialModel)
   }
@@ -239,15 +243,64 @@ class PiEmbeddedSession implements EngineSession {
   }
 
   private async tryStreamFromCpa(msgId: string, signal: AbortSignal): Promise<boolean> {
-    const apiKey = this.registry?.getCpaApiKey()
+    const conn = this.registry?.resolveProviderConnection(this.init.providerId)
+    const baseUrl = conn?.baseUrl ?? this.cpaEndpoint
+    const apiKey = conn?.apiKey ?? this.registry?.getCpaApiKey()
+    const useAnthropicOnly =
+      Boolean(conn && conn.wireApis.length === 1 && conn.wireApis[0] === 'anthropic-messages')
     const ctl = new AbortController()
-    const timer = setTimeout(() => ctl.abort(), 8_000)
+    const timer = setTimeout(() => ctl.abort(), 15_000)
     timer.unref?.()
     const onAbort = () => ctl.abort()
     signal.addEventListener('abort', onAbort, { once: true })
 
     try {
-      const res = await fetch(`${this.cpaEndpoint}/v1/chat/completions`, {
+      if (useAnthropicOnly) {
+        const systemEntry = this.history.find(h => h.role === 'system')
+        const messages = this.history
+          .filter(h => h.role !== 'system')
+          .slice(-10)
+          .map(h => ({
+            role: h.role,
+            content: typeof h.content === 'string' ? h.content : JSON.stringify(h.content),
+          }))
+        const res = await fetch(`${normalizeBaseUrlForAnthropic(baseUrl)}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-version': '2023-06-01',
+            ...(apiKey ? { 'x-api-key': apiKey, authorization: `Bearer ${apiKey}` } : {}),
+          },
+          body: JSON.stringify({
+            model: this.selectedModel,
+            max_tokens: 4096,
+            ...(typeof systemEntry?.content === 'string' ? { system: systemEntry.content } : {}),
+            messages,
+          }),
+          signal: ctl.signal,
+        })
+        clearTimeout(timer)
+        if (!res.ok) return false
+        const data = (await res.json()) as {
+          content?: Array<{ type?: string; text?: string }>
+        }
+        const content = (data.content ?? [])
+          .filter(b => b.type === 'text' && typeof b.text === 'string')
+          .map(b => b.text)
+          .join('\n')
+        if (content.trim().length > 0) {
+          this.init.emit({
+            type: 'message.assistant.delta',
+            messageId: msgId,
+            text: content,
+          })
+          this.history.push({ role: 'assistant', content })
+          return true
+        }
+        return false
+      }
+
+      const res = await fetch(`${normalizeBaseUrlForOpenAi(baseUrl)}/chat/completions`, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

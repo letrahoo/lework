@@ -9,23 +9,77 @@ import dev.lework.platform.loadPairedHosts
 import dev.lework.platform.loadSavedAuthUserName
 import dev.lework.protocol.*
 
+internal fun isExternalProviderId(providerId: String?): Boolean {
+    val clean = providerId?.trim()
+    return !clean.isNullOrEmpty() && !clean.startsWith("sub_")
+}
+
+internal fun EngineModelSpec.isExternalProvider(): Boolean = isExternalProviderId(providerId)
+
+internal fun normalizeModelKey(modelId: String): String =
+    modelId.trim().lowercase().replace('.', '-')
+
+internal fun favoriteModelKey(engineId: String, providerId: String?, modelId: String): String =
+    "${engineId.trim()}:${providerId?.trim().orEmpty()}:${modelId.trim()}"
+
+internal fun isFavoriteModel(
+    favSet: Set<String>,
+    engineId: String,
+    providerId: String?,
+    modelId: String,
+): Boolean {
+    val exact = favoriteModelKey(engineId, providerId, modelId)
+    if (exact in favSet) return true
+    val legacy = "${engineId.trim()}:${modelId.trim()}"
+    // Legacy 2-part favorite keys only match native entries so native & external same-name models don't collide.
+    return !isExternalProviderId(providerId) && legacy in favSet
+}
+
+internal fun EngineModelSpec.externalProviderLabel(providers: List<ProviderInfo> = emptyList()): String? {
+    if (!isExternalProvider()) return null
+    val explicit = providerName?.trim()?.takeIf { it.isNotEmpty() }
+    if (explicit != null) return explicit
+    val fromList = providers.firstOrNull { it.id == providerId }?.name?.trim()?.takeIf { it.isNotEmpty() }
+    if (fromList != null) return fromList
+    return if (providerId == "cpa_local") "CPA" else "代理"
+}
+
+/**
+ * Source badge policy:
+ * - External providers ALWAYS display their service short label (e.g. `CPA`, `OpenRouter`).
+ * - Native subscription models display `官方` ONLY when another provider in the same engine exposes a same-name model.
+ */
+internal fun EngineModelSpec.sourceBadgeLabel(
+    allEngineModels: List<EngineModelSpec>,
+    providers: List<ProviderInfo> = emptyList(),
+): String? {
+    if (isExternalProvider()) {
+        return externalProviderLabel(providers)
+    }
+    val myNorm = normalizeModelKey(id)
+    val hasSameNameCollision = allEngineModels.any { other ->
+        other.providerId != providerId && normalizeModelKey(other.id) == myNorm
+    }
+    return if (hasSameNameCollision) "官方" else null
+}
+
 internal val EngineInfo.canStartTask: Boolean
     get() = id != "mock" && status.installed && (status.ready || status.authStatus == "unknown")
 
 internal val EngineInfo.readinessLabel: String
     get() = when {
-        status.authStatus == "required" && status.ready -> "本机代理可用 · 主机 CLI 需授权"
-        status.authStatus == "unknown" && status.ready -> "本机代理可用 · CLI 登录状态未知"
+        status.authStatus == "required" && status.ready -> "外部模型服务可用 · 主机 CLI 需授权"
+        status.authStatus == "unknown" && status.ready -> "外部模型服务可用 · CLI 登录状态未知"
         status.ready -> "可用"
         status.authStatus == "unknown" -> "登录状态未知"
         status.authStatus == "required" -> "需在主机上授权"
         else -> "当前不可用"
     }
 
-/** Do not silently replace native CLI config with a proxy model just because the proxy is online. */
+/** Do not silently replace native CLI config with an external proxy model just because a proxy is online. */
 internal fun EngineInfo.draftDefaultModel(): EngineModelSpec? =
-    models.firstOrNull { it.id == defaultModel && it.providerId != "cpa_local" }
-        ?: models.firstOrNull { it.providerId != "cpa_local" }
+    models.firstOrNull { it.id == defaultModel && !isExternalProviderId(it.providerId) }
+        ?: models.firstOrNull { !isExternalProviderId(it.providerId) }
         ?: models.firstOrNull()?.takeIf { id == "pi" || status.authStatus == "required" }
 
 internal fun List<EngineInfo>.draftEngine(preferred: String): EngineInfo? =
@@ -216,6 +270,11 @@ data class ConsoleUiState(
     val slaves: List<SlaveInfo> = emptyList(),
     val engines: List<EngineInfo> = emptyList(),
     val providers: List<ProviderInfo> = emptyList(),
+    val providersBusy: Boolean = false,
+    val providerProbingId: String? = null,
+    val providerDraftProbeResult: ProviderInfo? = null,
+    val providerActionError: String? = null,
+    val providerActionNotice: String? = null,
     val workspaces: List<Workspace> = emptyList(),
     val selectedEngineId: String = "claude",
     val selectedProviderId: String? = null,
@@ -326,6 +385,9 @@ data class ConsoleUiState(
     val taskEngines: List<EngineInfo>
         get() = if (connectionStatus == ConnectionStatus.CONNECTED) engines.filter { it.id != "mock" && it.status.installed } else emptyList()
 
+    val externalProviders: List<ProviderInfo>
+        get() = providers.filter { it.type == ProviderType.ENDPOINT }
+
     val selectedEngine: EngineInfo?
         get() = engines.firstOrNull { it.id == selectedEngineId }
 
@@ -335,14 +397,33 @@ data class ConsoleUiState(
     val selectedModelSpec: EngineModelSpec?
         get() {
             val target = selectedModelId?.trim().orEmpty()
+            val targetProvider = selectedProviderId?.trim()?.takeIf { it.isNotEmpty() }
             if (target.isNotEmpty()) {
-                val normTarget = target.lowercase().replace('.', '-')
+                val normTarget = normalizeModelKey(target)
+                fun matchesId(spec: EngineModelSpec): Boolean =
+                    spec.id.equals(target, ignoreCase = true) ||
+                        spec.name.removeSuffix(" (Proxy)").equals(target, ignoreCase = true) ||
+                        normalizeModelKey(spec.id) == normTarget
+
+                if (targetProvider != null) {
+                    availableModelsForEngine.firstOrNull {
+                        it.providerId == targetProvider && matchesId(it)
+                    }?.let { return it }
+                }
+                // Prefer native model over external proxy if providerId wasn't specified explicitly
                 availableModelsForEngine.firstOrNull {
-                    it.id.equals(target, ignoreCase = true) ||
-                        it.name.removeSuffix(" (Proxy)").equals(target, ignoreCase = true) ||
-                        it.id.lowercase().replace('.', '-') == normTarget
+                    !isExternalProviderId(it.providerId) && matchesId(it)
                 }?.let { return it }
-                return EngineModelSpec(id = target, name = target)
+                availableModelsForEngine.firstOrNull { matchesId(it) }?.let { return it }
+                val fallbackProviderName = targetProvider?.let { pid ->
+                    providers.firstOrNull { it.id == pid }?.name
+                }
+                return EngineModelSpec(
+                    id = target,
+                    name = target,
+                    providerId = targetProvider,
+                    providerName = fallbackProviderName,
+                )
             }
             return selectedEngine?.draftDefaultModel()
         }

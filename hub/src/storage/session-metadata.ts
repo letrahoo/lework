@@ -8,6 +8,7 @@ export interface SessionMetadataRecord {
   archived?: boolean
   archivedAt?: number
   worktree?: SessionWorktreeInfo
+  preferredProviderId?: string
   preferredModel?: string
   preferredEffort?: ReasoningEffort
   preferredMode?: SessionMode
@@ -88,6 +89,10 @@ export class SessionMetadataStore {
       meta.model !== rec?.diskModelAtOverride &&
       meta.model !== rec?.preferredModel
 
+    const effectiveProviderId =
+      !diskModelChangedSinceOverride && rec?.preferredProviderId
+        ? rec.preferredProviderId
+        : meta.providerId
     const effectiveModel =
       !diskModelChangedSinceOverride && rec?.preferredModel ? rec.preferredModel : meta.model
     const effectiveEffort =
@@ -100,6 +105,7 @@ export class SessionMetadataStore {
       !cleanCustom &&
       !isArchived &&
       !persistedWorktree &&
+      effectiveProviderId === meta.providerId &&
       effectiveModel === meta.model &&
       effectiveEffort === meta.reasoningEffort &&
       effectiveMode === meta.mode
@@ -115,6 +121,7 @@ export class SessionMetadataStore {
     const copy: SessionMeta = {
       ...meta,
       title: cleanCustom || meta.title,
+      ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}),
       ...(effectiveModel ? { model: effectiveModel } : {}),
       ...(effectiveEffort ? { reasoningEffort: effectiveEffort } : {}),
       ...(effectiveMode ? { mode: effectiveMode } : {}),
@@ -144,6 +151,7 @@ export class SessionMetadataStore {
       rec.customTitle ||
         rec.archived ||
         rec.worktree ||
+        rec.preferredProviderId ||
         rec.preferredModel ||
         rec.preferredEffort ||
         rec.preferredMode,
@@ -189,6 +197,7 @@ export class SessionMetadataStore {
   setSessionPrefs(
     sessionId: string,
     prefs: {
+      providerId?: string
       model?: string
       reasoningEffort?: ReasoningEffort
       mode?: SessionMode
@@ -211,6 +220,9 @@ export class SessionMetadataStore {
         ...(ctx?.filePath ? { filePath: ctx.filePath } : {}),
         ...(ctx?.nativeId ? { nativeId: ctx.nativeId } : {}),
         ...(ctx?.baseMeta ? { snapshotMeta: stripOverrides(ctx.baseMeta, id) } : {}),
+      }
+      if (prefs.providerId?.trim()) {
+        next.preferredProviderId = prefs.providerId.trim()
       }
       if (prefs.model?.trim()) {
         next.preferredModel = prefs.model.trim()
@@ -318,6 +330,7 @@ export class SessionMetadataStore {
       archived: hubRec?.archived ?? hostRec?.archived,
       archivedAt: hubRec?.archivedAt ?? hostRec?.archivedAt,
       worktree: hubRec?.worktree ?? hostRec?.worktree,
+      preferredProviderId: hubRec?.preferredProviderId ?? hostRec?.preferredProviderId,
       preferredModel: hubRec?.preferredModel ?? hostRec?.preferredModel,
       preferredEffort: hubRec?.preferredEffort ?? hostRec?.preferredEffort,
       preferredMode: hubRec?.preferredMode ?? hostRec?.preferredMode,

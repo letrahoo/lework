@@ -181,6 +181,9 @@
               "providerId": {
                 "type": "string"
               },
+              "providerName": {
+                "type": "string"
+              },
               "efforts": {
                 "type": "array",
                 "items": {
@@ -275,6 +278,13 @@
             "endpoint"
           ]
         },
+        "adapter": {
+          "type": "string",
+          "enum": [
+            "cpa",
+            "generic"
+          ]
+        },
         "baseUrl": {
           "type": "string"
         },
@@ -287,8 +297,60 @@
             "gemini"
           ]
         },
+        "wireApis": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "openai-chat",
+              "openai-responses",
+              "anthropic-messages",
+              "gemini"
+            ]
+          }
+        },
+        "enabledEngines": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "builtIn": {
+          "type": "boolean"
+        },
+        "hasApiKey": {
+          "type": "boolean"
+        },
+        "apiKeyEnv": {
+          "type": "string"
+        },
+        "manualModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "healthy": {
           "type": "boolean"
+        },
+        "authStatus": {
+          "type": "string",
+          "enum": [
+            "authenticated",
+            "required",
+            "unknown"
+          ]
+        },
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "error": {
+          "type": "string"
         },
         "models": {
           "type": "array",
@@ -303,6 +365,85 @@
         "type",
         "healthy",
         "models"
+      ],
+      "additionalProperties": false
+    },
+    "ProviderConfigInput": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48
+        },
+        "adapter": {
+          "type": "string",
+          "enum": [
+            "cpa",
+            "generic"
+          ]
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "apiKey": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "clearApiKey": {
+          "type": "boolean"
+        },
+        "apiKeyEnv": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "wireApis": {
+          "minItems": 1,
+          "maxItems": 4,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "openai-chat",
+              "openai-responses",
+              "anthropic-messages",
+              "gemini"
+            ]
+          }
+        },
+        "enabledEngines": {
+          "maxItems": 16,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "manualModels": {
+          "maxItems": 80,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        }
+      },
+      "required": [
+        "name",
+        "baseUrl"
       ],
       "additionalProperties": false
     },
@@ -535,6 +676,9 @@
           "type": "integer",
           "minimum": -9007199254740991,
           "maximum": 9007199254740991
+        },
+        "providerId": {
+          "type": "string"
         },
         "model": {
           "type": "string"
@@ -2709,6 +2853,9 @@
                         "providerId": {
                           "type": "string"
                         },
+                        "providerName": {
+                          "type": "string"
+                        },
                         "efforts": {
                           "type": "array",
                           "items": {
@@ -2805,6 +2952,13 @@
                       "endpoint"
                     ]
                   },
+                  "adapter": {
+                    "type": "string",
+                    "enum": [
+                      "cpa",
+                      "generic"
+                    ]
+                  },
                   "baseUrl": {
                     "type": "string"
                   },
@@ -2817,8 +2971,60 @@
                       "gemini"
                     ]
                   },
+                  "wireApis": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "openai-chat",
+                        "openai-responses",
+                        "anthropic-messages",
+                        "gemini"
+                      ]
+                    }
+                  },
+                  "enabledEngines": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "builtIn": {
+                    "type": "boolean"
+                  },
+                  "hasApiKey": {
+                    "type": "boolean"
+                  },
+                  "apiKeyEnv": {
+                    "type": "string"
+                  },
+                  "manualModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "healthy": {
                     "type": "boolean"
+                  },
+                  "authStatus": {
+                    "type": "string",
+                    "enum": [
+                      "authenticated",
+                      "required",
+                      "unknown"
+                    ]
+                  },
+                  "latencyMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "error": {
+                    "type": "string"
                   },
                   "models": {
                     "type": "array",
@@ -3133,6 +3339,1614 @@
           "additionalProperties": false
         }
       },
+      "provider.list": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "providers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "subscription",
+                      "endpoint"
+                    ]
+                  },
+                  "adapter": {
+                    "type": "string",
+                    "enum": [
+                      "cpa",
+                      "generic"
+                    ]
+                  },
+                  "baseUrl": {
+                    "type": "string"
+                  },
+                  "wireApi": {
+                    "type": "string",
+                    "enum": [
+                      "openai-chat",
+                      "openai-responses",
+                      "anthropic-messages",
+                      "gemini"
+                    ]
+                  },
+                  "wireApis": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "openai-chat",
+                        "openai-responses",
+                        "anthropic-messages",
+                        "gemini"
+                      ]
+                    }
+                  },
+                  "enabledEngines": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "builtIn": {
+                    "type": "boolean"
+                  },
+                  "hasApiKey": {
+                    "type": "boolean"
+                  },
+                  "apiKeyEnv": {
+                    "type": "string"
+                  },
+                  "manualModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "healthy": {
+                    "type": "boolean"
+                  },
+                  "authStatus": {
+                    "type": "string",
+                    "enum": [
+                      "authenticated",
+                      "required",
+                      "unknown"
+                    ]
+                  },
+                  "latencyMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "type",
+                  "healthy",
+                  "models"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "engines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "cli",
+                      "service",
+                      "server",
+                      "embedded"
+                    ]
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "installed": {
+                        "type": "boolean"
+                      },
+                      "ready": {
+                        "type": "boolean"
+                      },
+                      "authStatus": {
+                        "type": "string",
+                        "enum": [
+                          "authenticated",
+                          "required",
+                          "unknown"
+                        ]
+                      },
+                      "version": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "installed",
+                      "ready"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "capabilities": {
+                    "type": "object",
+                    "properties": {
+                      "permissions": {
+                        "type": "boolean"
+                      },
+                      "images": {
+                        "type": "boolean"
+                      },
+                      "modelSwitch": {
+                        "type": "boolean"
+                      },
+                      "modes": {
+                        "type": "boolean"
+                      },
+                      "history": {
+                        "type": "boolean"
+                      },
+                      "cancel": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "permissions",
+                      "images",
+                      "modelSwitch",
+                      "modes",
+                      "history",
+                      "cancel"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "providerId": {
+                          "type": "string"
+                        },
+                        "providerName": {
+                          "type": "string"
+                        },
+                        "efforts": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max"
+                            ]
+                          }
+                        },
+                        "defaultEffort": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "defaultModel": {
+                    "type": "string"
+                  },
+                  "defaultMode": {
+                    "type": "string",
+                    "enum": [
+                      "default",
+                      "acceptEdits",
+                      "plan",
+                      "auto",
+                      "bypassPermissions"
+                    ]
+                  },
+                  "defaultEffort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  "supportedModes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "acceptEdits",
+                        "plan",
+                        "auto",
+                        "bypassPermissions"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "displayName",
+                  "kind",
+                  "status",
+                  "capabilities"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "providers",
+            "engines"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "provider.upsert": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 48
+                },
+                "adapter": {
+                  "type": "string",
+                  "enum": [
+                    "cpa",
+                    "generic"
+                  ]
+                },
+                "baseUrl": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "apiKey": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "clearApiKey": {
+                  "type": "boolean"
+                },
+                "apiKeyEnv": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "wireApis": {
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "openai-chat",
+                      "openai-responses",
+                      "anthropic-messages",
+                      "gemini"
+                    ]
+                  }
+                },
+                "enabledEngines": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  }
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "manualModels": {
+                  "maxItems": 80,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  }
+                }
+              },
+              "required": [
+                "name",
+                "baseUrl"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "provider"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "subscription",
+                    "endpoint"
+                  ]
+                },
+                "adapter": {
+                  "type": "string",
+                  "enum": [
+                    "cpa",
+                    "generic"
+                  ]
+                },
+                "baseUrl": {
+                  "type": "string"
+                },
+                "wireApi": {
+                  "type": "string",
+                  "enum": [
+                    "openai-chat",
+                    "openai-responses",
+                    "anthropic-messages",
+                    "gemini"
+                  ]
+                },
+                "wireApis": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "openai-chat",
+                      "openai-responses",
+                      "anthropic-messages",
+                      "gemini"
+                    ]
+                  }
+                },
+                "enabledEngines": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "builtIn": {
+                  "type": "boolean"
+                },
+                "hasApiKey": {
+                  "type": "boolean"
+                },
+                "apiKeyEnv": {
+                  "type": "string"
+                },
+                "manualModels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "healthy": {
+                  "type": "boolean"
+                },
+                "authStatus": {
+                  "type": "string",
+                  "enum": [
+                    "authenticated",
+                    "required",
+                    "unknown"
+                  ]
+                },
+                "latencyMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "error": {
+                  "type": "string"
+                },
+                "models": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "type",
+                "healthy",
+                "models"
+              ],
+              "additionalProperties": false
+            },
+            "providers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "subscription",
+                      "endpoint"
+                    ]
+                  },
+                  "adapter": {
+                    "type": "string",
+                    "enum": [
+                      "cpa",
+                      "generic"
+                    ]
+                  },
+                  "baseUrl": {
+                    "type": "string"
+                  },
+                  "wireApi": {
+                    "type": "string",
+                    "enum": [
+                      "openai-chat",
+                      "openai-responses",
+                      "anthropic-messages",
+                      "gemini"
+                    ]
+                  },
+                  "wireApis": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "openai-chat",
+                        "openai-responses",
+                        "anthropic-messages",
+                        "gemini"
+                      ]
+                    }
+                  },
+                  "enabledEngines": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "builtIn": {
+                    "type": "boolean"
+                  },
+                  "hasApiKey": {
+                    "type": "boolean"
+                  },
+                  "apiKeyEnv": {
+                    "type": "string"
+                  },
+                  "manualModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "healthy": {
+                    "type": "boolean"
+                  },
+                  "authStatus": {
+                    "type": "string",
+                    "enum": [
+                      "authenticated",
+                      "required",
+                      "unknown"
+                    ]
+                  },
+                  "latencyMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "type",
+                  "healthy",
+                  "models"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "engines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "cli",
+                      "service",
+                      "server",
+                      "embedded"
+                    ]
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "installed": {
+                        "type": "boolean"
+                      },
+                      "ready": {
+                        "type": "boolean"
+                      },
+                      "authStatus": {
+                        "type": "string",
+                        "enum": [
+                          "authenticated",
+                          "required",
+                          "unknown"
+                        ]
+                      },
+                      "version": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "installed",
+                      "ready"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "capabilities": {
+                    "type": "object",
+                    "properties": {
+                      "permissions": {
+                        "type": "boolean"
+                      },
+                      "images": {
+                        "type": "boolean"
+                      },
+                      "modelSwitch": {
+                        "type": "boolean"
+                      },
+                      "modes": {
+                        "type": "boolean"
+                      },
+                      "history": {
+                        "type": "boolean"
+                      },
+                      "cancel": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "permissions",
+                      "images",
+                      "modelSwitch",
+                      "modes",
+                      "history",
+                      "cancel"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "providerId": {
+                          "type": "string"
+                        },
+                        "providerName": {
+                          "type": "string"
+                        },
+                        "efforts": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max"
+                            ]
+                          }
+                        },
+                        "defaultEffort": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "defaultModel": {
+                    "type": "string"
+                  },
+                  "defaultMode": {
+                    "type": "string",
+                    "enum": [
+                      "default",
+                      "acceptEdits",
+                      "plan",
+                      "auto",
+                      "bypassPermissions"
+                    ]
+                  },
+                  "defaultEffort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  "supportedModes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "acceptEdits",
+                        "plan",
+                        "auto",
+                        "bypassPermissions"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "displayName",
+                  "kind",
+                  "status",
+                  "capabilities"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "provider",
+            "providers",
+            "engines"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "provider.remove": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "providerId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "providerId"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "providers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "subscription",
+                      "endpoint"
+                    ]
+                  },
+                  "adapter": {
+                    "type": "string",
+                    "enum": [
+                      "cpa",
+                      "generic"
+                    ]
+                  },
+                  "baseUrl": {
+                    "type": "string"
+                  },
+                  "wireApi": {
+                    "type": "string",
+                    "enum": [
+                      "openai-chat",
+                      "openai-responses",
+                      "anthropic-messages",
+                      "gemini"
+                    ]
+                  },
+                  "wireApis": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "openai-chat",
+                        "openai-responses",
+                        "anthropic-messages",
+                        "gemini"
+                      ]
+                    }
+                  },
+                  "enabledEngines": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "builtIn": {
+                    "type": "boolean"
+                  },
+                  "hasApiKey": {
+                    "type": "boolean"
+                  },
+                  "apiKeyEnv": {
+                    "type": "string"
+                  },
+                  "manualModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "healthy": {
+                    "type": "boolean"
+                  },
+                  "authStatus": {
+                    "type": "string",
+                    "enum": [
+                      "authenticated",
+                      "required",
+                      "unknown"
+                    ]
+                  },
+                  "latencyMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "type",
+                  "healthy",
+                  "models"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "engines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "cli",
+                      "service",
+                      "server",
+                      "embedded"
+                    ]
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "installed": {
+                        "type": "boolean"
+                      },
+                      "ready": {
+                        "type": "boolean"
+                      },
+                      "authStatus": {
+                        "type": "string",
+                        "enum": [
+                          "authenticated",
+                          "required",
+                          "unknown"
+                        ]
+                      },
+                      "version": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "installed",
+                      "ready"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "capabilities": {
+                    "type": "object",
+                    "properties": {
+                      "permissions": {
+                        "type": "boolean"
+                      },
+                      "images": {
+                        "type": "boolean"
+                      },
+                      "modelSwitch": {
+                        "type": "boolean"
+                      },
+                      "modes": {
+                        "type": "boolean"
+                      },
+                      "history": {
+                        "type": "boolean"
+                      },
+                      "cancel": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "permissions",
+                      "images",
+                      "modelSwitch",
+                      "modes",
+                      "history",
+                      "cancel"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "providerId": {
+                          "type": "string"
+                        },
+                        "providerName": {
+                          "type": "string"
+                        },
+                        "efforts": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max"
+                            ]
+                          }
+                        },
+                        "defaultEffort": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "defaultModel": {
+                    "type": "string"
+                  },
+                  "defaultMode": {
+                    "type": "string",
+                    "enum": [
+                      "default",
+                      "acceptEdits",
+                      "plan",
+                      "auto",
+                      "bypassPermissions"
+                    ]
+                  },
+                  "defaultEffort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  "supportedModes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "acceptEdits",
+                        "plan",
+                        "auto",
+                        "bypassPermissions"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "displayName",
+                  "kind",
+                  "status",
+                  "capabilities"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "providers",
+            "engines"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "provider.probe": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "providerId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "provider": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 48
+                },
+                "adapter": {
+                  "type": "string",
+                  "enum": [
+                    "cpa",
+                    "generic"
+                  ]
+                },
+                "baseUrl": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                },
+                "apiKey": {
+                  "type": "string",
+                  "maxLength": 512
+                },
+                "clearApiKey": {
+                  "type": "boolean"
+                },
+                "apiKeyEnv": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "wireApis": {
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "openai-chat",
+                      "openai-responses",
+                      "anthropic-messages",
+                      "gemini"
+                    ]
+                  }
+                },
+                "enabledEngines": {
+                  "maxItems": 16,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32
+                  }
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "manualModels": {
+                  "maxItems": 80,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  }
+                }
+              },
+              "required": [
+                "name",
+                "baseUrl"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "subscription",
+                    "endpoint"
+                  ]
+                },
+                "adapter": {
+                  "type": "string",
+                  "enum": [
+                    "cpa",
+                    "generic"
+                  ]
+                },
+                "baseUrl": {
+                  "type": "string"
+                },
+                "wireApi": {
+                  "type": "string",
+                  "enum": [
+                    "openai-chat",
+                    "openai-responses",
+                    "anthropic-messages",
+                    "gemini"
+                  ]
+                },
+                "wireApis": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "openai-chat",
+                      "openai-responses",
+                      "anthropic-messages",
+                      "gemini"
+                    ]
+                  }
+                },
+                "enabledEngines": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "builtIn": {
+                  "type": "boolean"
+                },
+                "hasApiKey": {
+                  "type": "boolean"
+                },
+                "apiKeyEnv": {
+                  "type": "string"
+                },
+                "manualModels": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "healthy": {
+                  "type": "boolean"
+                },
+                "authStatus": {
+                  "type": "string",
+                  "enum": [
+                    "authenticated",
+                    "required",
+                    "unknown"
+                  ]
+                },
+                "latencyMs": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "error": {
+                  "type": "string"
+                },
+                "models": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "type",
+                "healthy",
+                "models"
+              ],
+              "additionalProperties": false
+            },
+            "providers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "subscription",
+                      "endpoint"
+                    ]
+                  },
+                  "adapter": {
+                    "type": "string",
+                    "enum": [
+                      "cpa",
+                      "generic"
+                    ]
+                  },
+                  "baseUrl": {
+                    "type": "string"
+                  },
+                  "wireApi": {
+                    "type": "string",
+                    "enum": [
+                      "openai-chat",
+                      "openai-responses",
+                      "anthropic-messages",
+                      "gemini"
+                    ]
+                  },
+                  "wireApis": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "openai-chat",
+                        "openai-responses",
+                        "anthropic-messages",
+                        "gemini"
+                      ]
+                    }
+                  },
+                  "enabledEngines": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "builtIn": {
+                    "type": "boolean"
+                  },
+                  "hasApiKey": {
+                    "type": "boolean"
+                  },
+                  "apiKeyEnv": {
+                    "type": "string"
+                  },
+                  "manualModels": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "healthy": {
+                    "type": "boolean"
+                  },
+                  "authStatus": {
+                    "type": "string",
+                    "enum": [
+                      "authenticated",
+                      "required",
+                      "unknown"
+                    ]
+                  },
+                  "latencyMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "name",
+                  "type",
+                  "healthy",
+                  "models"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "engines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "cli",
+                      "service",
+                      "server",
+                      "embedded"
+                    ]
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "installed": {
+                        "type": "boolean"
+                      },
+                      "ready": {
+                        "type": "boolean"
+                      },
+                      "authStatus": {
+                        "type": "string",
+                        "enum": [
+                          "authenticated",
+                          "required",
+                          "unknown"
+                        ]
+                      },
+                      "version": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "installed",
+                      "ready"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "capabilities": {
+                    "type": "object",
+                    "properties": {
+                      "permissions": {
+                        "type": "boolean"
+                      },
+                      "images": {
+                        "type": "boolean"
+                      },
+                      "modelSwitch": {
+                        "type": "boolean"
+                      },
+                      "modes": {
+                        "type": "boolean"
+                      },
+                      "history": {
+                        "type": "boolean"
+                      },
+                      "cancel": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "permissions",
+                      "images",
+                      "modelSwitch",
+                      "modes",
+                      "history",
+                      "cancel"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "models": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "providerId": {
+                          "type": "string"
+                        },
+                        "providerName": {
+                          "type": "string"
+                        },
+                        "efforts": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "medium",
+                              "high",
+                              "xhigh",
+                              "max"
+                            ]
+                          }
+                        },
+                        "defaultEffort": {
+                          "type": "string",
+                          "enum": [
+                            "low",
+                            "medium",
+                            "high",
+                            "xhigh",
+                            "max"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "defaultModel": {
+                    "type": "string"
+                  },
+                  "defaultMode": {
+                    "type": "string",
+                    "enum": [
+                      "default",
+                      "acceptEdits",
+                      "plan",
+                      "auto",
+                      "bypassPermissions"
+                    ]
+                  },
+                  "defaultEffort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ]
+                  },
+                  "supportedModes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "acceptEdits",
+                        "plan",
+                        "auto",
+                        "bypassPermissions"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "displayName",
+                  "kind",
+                  "status",
+                  "capabilities"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "providers",
+            "engines"
+          ],
+          "additionalProperties": false
+        }
+      },
       "engine.list": {
         "params": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3238,6 +5052,9 @@
                           "type": "string"
                         },
                         "providerId": {
+                          "type": "string"
+                        },
+                        "providerName": {
                           "type": "string"
                         },
                         "efforts": {
@@ -3612,6 +5429,9 @@
                     "type": "integer",
                     "minimum": -9007199254740991,
                     "maximum": 9007199254740991
+                  },
+                  "providerId": {
+                    "type": "string"
                   },
                   "model": {
                     "type": "string"
@@ -4080,6 +5900,9 @@
                   "minimum": -9007199254740991,
                   "maximum": 9007199254740991
                 },
+                "providerId": {
+                  "type": "string"
+                },
                 "model": {
                   "type": "string"
                 },
@@ -4267,6 +6090,9 @@
                 "additionalProperties": false
               }
             },
+            "providerId": {
+              "type": "string"
+            },
             "modelId": {
               "type": "string"
             },
@@ -4401,6 +6227,9 @@
             "sessionId": {
               "type": "string"
             },
+            "providerId": {
+              "type": "string"
+            },
             "modelId": {
               "type": "string"
             },
@@ -4520,6 +6349,9 @@
                   "type": "integer",
                   "minimum": -9007199254740991,
                   "maximum": 9007199254740991
+                },
+                "providerId": {
+                  "type": "string"
                 },
                 "model": {
                   "type": "string"
@@ -4770,6 +6602,9 @@
                   "minimum": -9007199254740991,
                   "maximum": 9007199254740991
                 },
+                "providerId": {
+                  "type": "string"
+                },
                 "model": {
                   "type": "string"
                 },
@@ -5017,6 +6852,9 @@
                   "type": "integer",
                   "minimum": -9007199254740991,
                   "maximum": 9007199254740991
+                },
+                "providerId": {
+                  "type": "string"
                 },
                 "model": {
                   "type": "string"
@@ -5525,6 +7363,9 @@
                   "type": "integer",
                   "minimum": -9007199254740991,
                   "maximum": 9007199254740991
+                },
+                "providerId": {
+                  "type": "string"
                 },
                 "model": {
                   "type": "string"
@@ -7895,6 +9736,9 @@
                 "type": "integer",
                 "minimum": -9007199254740991,
                 "maximum": 9007199254740991
+              },
+              "providerId": {
+                "type": "string"
               },
               "model": {
                 "type": "string"

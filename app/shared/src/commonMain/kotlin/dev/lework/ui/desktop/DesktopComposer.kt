@@ -47,6 +47,7 @@ import dev.lework.platform.canPickImages
 import dev.lework.protocol.SessionMode
 import dev.lework.protocol.SessionState
 import dev.lework.store.ConsoleUiState
+import dev.lework.store.externalProviderLabel
 import dev.lework.ui.*
 
 @Composable
@@ -400,15 +401,26 @@ internal fun DesktopComposer(
                         // Unified Engine + Model + Reasoning Level Trigger (⌘K)
                         val modelHover = remember { MutableInteractionSource() }
                         val isModelHovered by modelHover.collectIsHoveredAsState()
-                        val displayModelName = state.selectedModelSpec?.name
+                        val activeModelSpec = state.selectedModelSpec
+                        val displayModelName = activeModelSpec?.name
                             ?.removeSuffix(" (Proxy)")
                             ?.let { if (it.length > 22) it.take(21) + "…" else it }
                             ?: shortEngineLabel(state.selectedEngineId)
+                        val externalSourceLabel = activeModelSpec?.externalProviderLabel(state.providers)
 
                         LeworkTooltip(
                             label = "切换引擎、模型与推理等级",
                             shortcut = "⌘K",
-                            subtitle = "${shortEngineLabel(state.selectedEngineId)} · $displayModelName · ${effortDisplayLabel(state.selectedEffort)}",
+                            subtitle = buildString {
+                                append(shortEngineLabel(state.selectedEngineId))
+                                append(" · ")
+                                append(displayModelName)
+                                if (!externalSourceLabel.isNullOrBlank()) {
+                                    append(" [$externalSourceLabel]")
+                                }
+                                append(" · ")
+                                append(effortDisplayLabel(state.selectedEffort))
+                            },
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(999.dp),
@@ -435,6 +447,21 @@ internal fun DesktopComposer(
                                         color = Everforest.Fg,
                                         maxLines = 1,
                                     )
+                                    if (!externalSourceLabel.isNullOrBlank()) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = Everforest.Bg0,
+                                            modifier = Modifier.testTag("composer_model_provider_badge"),
+                                        ) {
+                                            Text(
+                                                text = externalSourceLabel,
+                                                fontSize = 9.5.sp,
+                                                color = Everforest.Aqua,
+                                                maxLines = 1,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 0.5.dp),
+                                            )
+                                        }
+                                    }
                                     Text(
                                         text = "· ${effortDisplayLabel(state.selectedEffort)}",
                                         fontSize = 11.sp,

@@ -77,8 +77,15 @@ class ConsoleStore(
     private var userManuallyPickedModel: Boolean = false
     private var userManuallyPickedEffort: Boolean = false
     private var userManuallyPickedMode: Boolean = false
+    private data class PendingModelSwitch(
+        val providerId: String?,
+        val modelId: String,
+        val effort: ReasoningEffort,
+        val mode: SessionMode,
+    )
+
     private var modelSwitchVersion: Long = 0L
-    private val pendingModelSwitchBySession = mutableMapOf<String, Pair<Long, Triple<String, ReasoningEffort, SessionMode>>>()
+    private val pendingModelSwitchBySession = mutableMapOf<String, Pair<Long, PendingModelSwitch>>()
     private var manualPairingMode: Boolean = false
     private var pairingInFlight: Boolean = false
     private var pendingDeepLinkSessionId: String? = null
@@ -313,9 +320,10 @@ class ConsoleStore(
                     val pendingOverride = pendingModelSwitchBySession[updated.id]?.second
                     val mergedUpdated = if (pendingOverride != null) {
                         updated.copy(
-                            model = pendingOverride.first,
-                            reasoningEffort = pendingOverride.second,
-                            mode = pendingOverride.third,
+                            providerId = pendingOverride.providerId ?: updated.providerId,
+                            model = pendingOverride.modelId,
+                            reasoningEffort = pendingOverride.effort,
+                            mode = pendingOverride.mode,
                         )
                     } else {
                         updated
@@ -330,6 +338,11 @@ class ConsoleStore(
                         mergedUpdated.mode
                     } else {
                         s.selectedMode
+                    }
+                    val syncProvider = if (s.activeSessionId == mergedUpdated.id && !mergedUpdated.providerId.isNullOrBlank()) {
+                        mergedUpdated.providerId
+                    } else {
+                        s.selectedProviderId
                     }
                     val syncModel = if (s.activeSessionId == mergedUpdated.id && !mergedUpdated.model.isNullOrBlank()) {
                         mergedUpdated.model
@@ -370,6 +383,7 @@ class ConsoleStore(
                     s.copy(
                         sessions = nextList,
                         selectedMode = syncMode,
+                        selectedProviderId = syncProvider,
                         selectedModelId = syncModel,
                         selectedEffort = syncEffort,
                         turnRecoveryBanner = nextBanner,
@@ -1865,6 +1879,11 @@ class ConsoleStore(
                     slaves = status.slaves,
                     engines = uiEngines,
                     providers = status.providers,
+                    providersBusy = false,
+                    providerProbingId = null,
+                    providerDraftProbeResult = null,
+                    providerActionError = null,
+                    providerActionNotice = null,
                     workspaces = workspaces,
                     selectedEngineId = chosenEngineId,
                     selectedProviderId = chosenModel?.providerId,
@@ -2106,15 +2125,22 @@ class ConsoleStore(
 
     private fun syncSessionModelToHub(
         sessionId: String,
+        providerId: String?,
         modelId: String,
         effort: ReasoningEffort,
         mode: SessionMode,
     ) {
         val ver = ++modelSwitchVersion
-        pendingModelSwitchBySession[sessionId] = ver to Triple(modelId, effort, mode)
+        pendingModelSwitchBySession[sessionId] = ver to PendingModelSwitch(providerId, modelId, effort, mode)
         scope.launch {
             try {
-                val updated = rpc.setSessionModel(sessionId, modelId, effort, mode)
+                val updated = rpc.setSessionModel(
+                    sessionId = sessionId,
+                    modelId = modelId,
+                    providerId = providerId,
+                    reasoningEffort = effort,
+                    mode = mode,
+                )
                 if (pendingModelSwitchBySession[sessionId]?.first == ver) {
                     _state.update { st ->
                         st.copy(
@@ -2175,6 +2201,7 @@ class ConsoleStore(
                 s.sessions.map { item ->
                     if (item.id == prevActive.id) {
                         item.copy(
+                            providerId = chosenModel.providerId,
                             model = chosenModel.id,
                             reasoningEffort = nextEffort,
                             mode = nextMode,
@@ -2216,7 +2243,7 @@ class ConsoleStore(
         val active = cur.activeSession
         val modelId = cur.selectedModelId
         if (!switchedDifferentEngine && active != null && active.engineId == engineId && modelId != null) {
-            syncSessionModelToHub(active.id, modelId, cur.selectedEffort, cur.selectedMode)
+            syncSessionModelToHub(active.id, cur.selectedProviderId, modelId, cur.selectedEffort, cur.selectedMode)
         }
     }
 
@@ -2241,19 +2268,25 @@ class ConsoleStore(
         val active = cur.activeSession
         val modelId = cur.selectedModelId ?: active?.model
         if (active != null && modelId != null) {
-            syncSessionModelToHub(active.id, modelId, effort, cur.selectedMode)
+            syncSessionModelToHub(active.id, cur.selectedProviderId, modelId, effort, cur.selectedMode)
         }
     }
 
-    fun toggleFavoriteModel(engineId: String, modelId: String) {
-        val key = "${engineId.trim()}:${modelId.trim()}"
-        if (key.length < 3) return
+    fun toggleFavoriteModel(engineId: String, modelId: String, providerId: String? = null) {
+        val cleanEngine = engineId.trim()
+        val cleanModel = modelId.trim()
+        if (cleanEngine.isEmpty() || cleanModel.isEmpty()) return
+        val key = favoriteModelKey(cleanEngine, providerId, cleanModel)
+        val legacyKey = "$cleanEngine:$cleanModel"
         _state.update { s ->
-            val next = if (key in s.favoriteModelKeys) {
-                s.favoriteModelKeys - key
+            val currentlyFav = key in s.favoriteModelKeys ||
+                (!isExternalProviderId(providerId) && legacyKey in s.favoriteModelKeys)
+            val cleaned = if (!isExternalProviderId(providerId)) {
+                s.favoriteModelKeys - key - legacyKey
             } else {
-                (s.favoriteModelKeys + key).distinct()
+                s.favoriteModelKeys - key
             }
+            val next = if (currentlyFav) cleaned else (cleaned + key).distinct()
             s.copy(favoriteModelKeys = next)
         }
         persistCurrentPrefs()
@@ -2294,7 +2327,188 @@ class ConsoleStore(
         val active = cur.activeSession
         val modelId = cur.selectedModelId ?: active?.model
         if (active != null && modelId != null) {
-            syncSessionModelToHub(active.id, modelId, cur.selectedEffort, mode)
+            syncSessionModelToHub(active.id, cur.selectedProviderId, modelId, cur.selectedEffort, mode)
+        }
+    }
+
+    fun clearProviderFeedback() {
+        _state.update {
+            it.copy(
+                providerDraftProbeResult = null,
+                providerActionError = null,
+                providerActionNotice = null,
+            )
+        }
+    }
+
+    private fun reconcileEnginesAndProviders(
+        providers: List<ProviderInfo>,
+        engines: List<EngineInfo>,
+        notice: String? = null,
+        draftProbeResult: ProviderInfo? = null,
+    ) {
+        _state.update { s ->
+            val nextEngines = if (engines.isNotEmpty()) engines else s.engines
+            val currentEngine = nextEngines.firstOrNull { it.id == s.selectedEngineId }
+            val stillValid = currentEngine?.models?.any {
+                it.id == s.selectedModelId &&
+                    (s.selectedProviderId.isNullOrBlank() || it.providerId == s.selectedProviderId)
+            } == true
+            val fallbackModel = if (stillValid || s.activeSessionId != null) {
+                null
+            } else {
+                currentEngine?.draftDefaultModel()
+            }
+            s.copy(
+                providers = providers,
+                engines = nextEngines,
+                providersBusy = false,
+                providerProbingId = null,
+                providerDraftProbeResult = draftProbeResult ?: s.providerDraftProbeResult,
+                providerActionError = null,
+                providerActionNotice = notice,
+                selectedProviderId = if (fallbackModel != null) fallbackModel.providerId else s.selectedProviderId,
+                selectedModelId = if (fallbackModel != null) fallbackModel.id else s.selectedModelId,
+            )
+        }
+    }
+
+    fun refreshProviders(providerId: String? = null) {
+        if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) return
+        _state.update {
+            it.copy(
+                providersBusy = providerId == null,
+                providerProbingId = providerId,
+                providerActionError = null,
+                providerActionNotice = null,
+            )
+        }
+        scope.launch {
+            try {
+                val res = rpc.probeProvider(providerId = providerId)
+                val label = res.provider?.let { p ->
+                    if (p.healthy) {
+                        "已刷新 ${p.name}：发现 ${p.models.size} 个可用模型"
+                    } else {
+                        "${p.name} 未就绪：${p.error ?: "请检查服务状态与密钥"}"
+                    }
+                } ?: "已刷新当前主机的模型服务列表"
+                reconcileEnginesAndProviders(res.providers, res.engines, notice = label)
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(
+                        providersBusy = false,
+                        providerProbingId = null,
+                        providerActionError = t.message ?: "刷新模型服务失败",
+                    )
+                }
+            }
+        }
+    }
+
+    fun probeProviderDraft(input: ProviderConfigInput) {
+        if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) return
+        _state.update {
+            it.copy(
+                providerProbingId = input.id ?: "draft",
+                providerDraftProbeResult = null,
+                providerActionError = null,
+                providerActionNotice = null,
+            )
+        }
+        scope.launch {
+            try {
+                val res = rpc.probeProvider(provider = input)
+                _state.update {
+                    it.copy(
+                        providerProbingId = null,
+                        providerDraftProbeResult = res.provider,
+                        providerActionError = null,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(
+                        providerProbingId = null,
+                        providerDraftProbeResult = null,
+                        providerActionError = t.message ?: "连接测试失败",
+                    )
+                }
+            }
+        }
+    }
+
+    fun upsertProvider(input: ProviderConfigInput, onSuccess: () -> Unit = {}) {
+        if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) return
+        _state.update {
+            it.copy(
+                providersBusy = true,
+                providerActionError = null,
+                providerActionNotice = null,
+            )
+        }
+        scope.launch {
+            try {
+                val res = rpc.upsertProvider(input)
+                val summary = if (!res.provider.enabled) {
+                    "已停用模型服务「${res.provider.name}」"
+                } else if (res.provider.healthy) {
+                    "已保存「${res.provider.name}」，可用 ${res.provider.models.size} 个模型"
+                } else {
+                    "已保存「${res.provider.name}」（当前离线：${res.provider.error ?: "暂不可连接"}）"
+                }
+                reconcileEnginesAndProviders(
+                    providers = res.providers,
+                    engines = res.engines,
+                    notice = summary,
+                    draftProbeResult = null,
+                )
+                onSuccess()
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(
+                        providersBusy = false,
+                        providerActionError = t.message ?: "保存模型服务失败",
+                    )
+                }
+            }
+        }
+    }
+
+    fun removeProvider(providerId: String) {
+        if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) return
+        val name = _state.value.providers.firstOrNull { it.id == providerId }?.name ?: providerId
+        _state.update {
+            it.copy(
+                providersBusy = true,
+                providerActionError = null,
+                providerActionNotice = null,
+            )
+        }
+        scope.launch {
+            try {
+                val res = rpc.removeProvider(providerId)
+                reconcileEnginesAndProviders(
+                    providers = res.providers,
+                    engines = res.engines,
+                    notice = "已从当前主机移除模型服务「$name」",
+                )
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(
+                        providersBusy = false,
+                        providerActionError = t.message ?: "移除模型服务失败",
+                    )
+                }
+            }
         }
     }
 
@@ -2379,6 +2593,12 @@ class ConsoleStore(
             val resolvedMode = meta?.mode ?: eng?.defaultMode ?: s.selectedMode
             val resolvedEffort = meta?.reasoningEffort ?: eng?.defaultEffort ?: s.selectedEffort
             val resolvedModel = meta?.model ?: eng?.defaultModel ?: s.selectedModelId
+            val resolvedProvider = meta?.providerId
+                ?: eng?.models?.firstOrNull {
+                    !isExternalProviderId(it.providerId) && it.id == resolvedModel
+                }?.providerId
+                ?: eng?.models?.firstOrNull { it.id == resolvedModel }?.providerId
+                ?: s.selectedProviderId
             val alreadyCached = s.transcripts[sessionId]?.let { t -> t.lastSeq >= 0 || t.items.isNotEmpty() } == true
             s.copy(
                 activeSessionId = sessionId,
@@ -2398,6 +2618,7 @@ class ConsoleStore(
                 turnRecoveryBanner = s.turnRecoveryBanner?.takeIf { it.sessionId == sessionId },
                 retryingTurn = false,
                 selectedEngineId = targetEngineId,
+                selectedProviderId = resolvedProvider,
                 selectedModelId = resolvedModel,
                 selectedEffort = resolvedEffort,
                 selectedMode = resolvedMode,
@@ -2848,6 +3069,7 @@ class ConsoleStore(
                 sessionId = sessionId,
                 text = trimmed,
                 images = attached.takeIf { it.isNotEmpty() },
+                providerId = cur.selectedProviderId,
                 modelId = cur.selectedModelId,
                 reasoningEffort = cur.selectedEffort,
                 mode = cur.selectedMode,
@@ -2872,6 +3094,7 @@ class ConsoleStore(
                     sessionId = remapped.id,
                     text = trimmed,
                     images = attached.takeIf { it.isNotEmpty() },
+                    providerId = cur.selectedProviderId,
                     modelId = cur.selectedModelId,
                     reasoningEffort = cur.selectedEffort,
                     mode = cur.selectedMode,
@@ -3348,9 +3571,10 @@ class ConsoleStore(
             val pendingOverride = pendingModelSwitchBySession[snap.session.id]?.second
             val effectiveSession = if (pendingOverride != null) {
                 snap.session.copy(
-                    model = pendingOverride.first,
-                    reasoningEffort = pendingOverride.second,
-                    mode = pendingOverride.third,
+                    providerId = pendingOverride.providerId ?: snap.session.providerId,
+                    model = pendingOverride.modelId,
+                    reasoningEffort = pendingOverride.effort,
+                    mode = pendingOverride.mode,
                 )
             } else {
                 snap.session
@@ -3460,6 +3684,7 @@ class ConsoleStore(
                 sessions = updatedSessions,
                 loadingSessionId = if (s.loadingSessionId == sessionId) null else s.loadingSessionId,
                 selectedEngineId = effectiveSession.engineId,
+                selectedProviderId = effectiveSession.providerId ?: s.selectedProviderId,
                 selectedModelId = effectiveSession.model ?: eng?.defaultModel ?: s.selectedModelId,
                 selectedMode = effectiveSession.mode ?: eng?.defaultMode ?: s.selectedMode,
                 selectedEffort = effectiveSession.reasoningEffort ?: eng?.defaultEffort ?: s.selectedEffort,
