@@ -2181,88 +2181,90 @@ internal fun MermaidDiagramBlockView(
             .testTag("mermaid_diagram_card"),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // Card Header Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Everforest.Bg1.copy(alpha = 0.55f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = headerLabel,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Everforest.CommentGrey,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-
+            // Card Header Bar (exclude chrome labels from parent SelectionContainer drags)
+            androidx.compose.foundation.text.selection.DisableSelection {
                 Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Everforest.Bg1.copy(alpha = 0.55f))
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    if (isSupported) {
-                        MermaidModeToggleChip(
-                            showSource = showSource,
-                            onSelectDiagram = { showSource = false },
-                            onSelectSource = { showSource = true },
-                        )
+                    Text(
+                        text = headerLabel,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Everforest.CommentGrey,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        if (isSupported) {
+                            MermaidModeToggleChip(
+                                showSource = showSource,
+                                onSelectDiagram = { showSource = false },
+                                onSelectSource = { showSource = true },
+                            )
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable { showFullscreen = true }
+                                    .padding(horizontal = 5.dp, vertical = 2.dp)
+                                    .testTag("mermaid_btn_fullscreen"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.OpenInFull,
+                                    contentDescription = "全屏查看",
+                                    tint = Everforest.CommentGrey,
+                                    modifier = Modifier.size(12.dp),
+                                )
+                                Text(
+                                    text = "全屏查看",
+                                    fontSize = 11.sp,
+                                    color = Everforest.CommentGrey,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
-                                .clickable { showFullscreen = true }
+                                .clickable {
+                                    copyTextToClipboard(code)
+                                    copied = true
+                                    scope.launch {
+                                        delay(1_600L)
+                                        copied = false
+                                    }
+                                }
                                 .padding(horizontal = 5.dp, vertical = 2.dp)
-                                .testTag("mermaid_btn_fullscreen"),
+                                .testTag("mermaid_btn_copy"),
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.OpenInFull,
-                                contentDescription = "全屏查看",
-                                tint = Everforest.CommentGrey,
+                                imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                                contentDescription = "复制",
+                                tint = if (copied) Everforest.SoftSage else Everforest.CommentGrey,
                                 modifier = Modifier.size(12.dp),
                             )
                             Text(
-                                text = "全屏查看",
+                                text = if (copied) "已复制" else "复制",
                                 fontSize = 11.sp,
-                                color = Everforest.CommentGrey,
+                                color = if (copied) Everforest.SoftSage else Everforest.CommentGrey,
                                 maxLines = 1,
                             )
                         }
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(3.dp),
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable {
-                                copyTextToClipboard(code)
-                                copied = true
-                                scope.launch {
-                                    delay(1_600L)
-                                    copied = false
-                                }
-                            }
-                            .padding(horizontal = 5.dp, vertical = 2.dp)
-                            .testTag("mermaid_btn_copy"),
-                    ) {
-                        Icon(
-                            imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
-                            contentDescription = "复制",
-                            tint = if (copied) Everforest.SoftSage else Everforest.CommentGrey,
-                            modifier = Modifier.size(12.dp),
-                        )
-                        Text(
-                            text = if (copied) "已复制" else "复制",
-                            fontSize = 11.sp,
-                            color = if (copied) Everforest.SoftSage else Everforest.CommentGrey,
-                            maxLines = 1,
-                        )
                     }
                 }
             }
@@ -2270,7 +2272,9 @@ internal fun MermaidDiagramBlockView(
             HorizontalDivider(color = Everforest.Bg2, thickness = 0.5.dp)
 
             if (!isSupported) {
-                MermaidUnsupportedBanner()
+                androidx.compose.foundation.text.selection.DisableSelection {
+                    MermaidUnsupportedBanner()
+                }
                 MermaidSourceCodeView(code = code)
             } else if (showSource) {
                 MermaidSourceCodeView(code = code)
@@ -2301,11 +2305,16 @@ internal fun MermaidDiagramBlockView(
     }
 
     if (showFullscreen && isSupported) {
-        MermaidFullscreenDialog(
-            diagram = diagram,
-            code = code,
-            onDismiss = { showFullscreen = false },
-        )
+        // Detach from any enclosing message SelectionContainer: Dialog renders in a separate
+        // window/root layout hierarchy, so inheriting a parent LocalSelectionRegistrar crashes
+        // SelectionManager coordinate conversion when interacting with text inside the dialog.
+        androidx.compose.foundation.text.selection.DisableSelection {
+            MermaidFullscreenDialog(
+                diagram = diagram,
+                code = code,
+                onDismiss = { showFullscreen = false },
+            )
+        }
     }
 }
 

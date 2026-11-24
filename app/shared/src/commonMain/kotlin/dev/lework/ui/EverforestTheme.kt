@@ -1,5 +1,6 @@
 package dev.lework.ui
 
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.graphics.Color
 
@@ -65,4 +66,9 @@ internal val EverforestColorScheme = darkColorScheme(
     onSurfaceVariant = Everforest.Grey2,
     outline = Everforest.Bg3,
     error = Everforest.Red,
+)
+
+internal val EverforestTextSelectionColors = TextSelectionColors(
+    handleColor = Everforest.BoldGold,
+    backgroundColor = Everforest.Blue.copy(alpha = 0.34f),
 )

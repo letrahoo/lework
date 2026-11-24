@@ -7,6 +7,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
@@ -82,36 +83,50 @@ internal fun EverforestMarkdownContent(
 ) {
     val blocks = remember(markdown) { parseMarkdownBlocks(markdown) }
 
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
-    ) {
-        for (block in blocks) {
-            MarkdownBlockItemView(block)
+    SelectionContainer {
+        Column(
+            modifier = modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            for (block in blocks) {
+                MarkdownBlockItemView(block, wrapInSelectionContainer = false)
+            }
         }
     }
 }
 
 @Composable
-internal fun MarkdownBlockItemView(block: MdBlock) {
-    when (block) {
-        is MdBlock.Heading -> HeadingBlockView(block)
-        is MdBlock.Paragraph -> ParagraphBlockView(block.text)
-        is MdBlock.CodeFence -> {
-            if (block.lang.trim().lowercase() == "mermaid") {
-                MermaidDiagramBlockView(code = block.code)
-            } else {
-                CodeFenceBlockView(block.lang, block.code)
+internal fun MarkdownBlockItemView(
+    block: MdBlock,
+    wrapInSelectionContainer: Boolean = false,
+) {
+    val renderContent: @Composable () -> Unit = {
+        when (block) {
+            is MdBlock.Heading -> HeadingBlockView(block)
+            is MdBlock.Paragraph -> ParagraphBlockView(block.text)
+            is MdBlock.CodeFence -> {
+                if (block.lang.trim().lowercase() == "mermaid") {
+                    MermaidDiagramBlockView(code = block.code)
+                } else {
+                    CodeFenceBlockView(block.lang, block.code)
+                }
             }
+            is MdBlock.Quote -> QuoteBlockView(block)
+            is MdBlock.ListGroup -> ListGroupBlockView(block.items)
+            is MdBlock.Table -> TableBlockView(block)
+            MdBlock.ThematicBreak -> HorizontalDivider(
+                color = Everforest.Bg2,
+                thickness = 1.dp,
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
         }
-        is MdBlock.Quote -> QuoteBlockView(block)
-        is MdBlock.ListGroup -> ListGroupBlockView(block.items)
-        is MdBlock.Table -> TableBlockView(block)
-        MdBlock.ThematicBreak -> HorizontalDivider(
-            color = Everforest.Bg2,
-            thickness = 1.dp,
-            modifier = Modifier.padding(vertical = 4.dp),
-        )
+    }
+    if (wrapInSelectionContainer && block !is MdBlock.ThematicBreak) {
+        SelectionContainer {
+            renderContent()
+        }
+    } else {
+        renderContent()
     }
 }
 
@@ -527,47 +542,49 @@ internal fun CodeFenceBlockView(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Everforest.Bg1.copy(alpha = 0.55f))
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = if (canFold) "${lang.ifBlank { "code" }} · $totalLines 行" else lang.ifBlank { "code" },
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Everforest.CommentGrey,
-                )
-
+            DisableSelection {
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable {
-                            copyTextToClipboard(code)
-                            copied = true
-                            scope.launch {
-                                delay(1_600L)
-                                copied = false
-                            }
-                        }
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                        .fillMaxWidth()
+                        .background(Everforest.Bg1.copy(alpha = 0.55f))
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Icon(
-                        imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
-                        contentDescription = "复制代码",
-                        tint = if (copied) Everforest.SoftSage else Everforest.CommentGrey,
-                        modifier = Modifier.size(12.5.dp),
-                    )
                     Text(
-                        text = if (copied) "已复制" else "复制",
+                        text = if (canFold) "${lang.ifBlank { "code" }} · $totalLines 行" else lang.ifBlank { "code" },
                         fontSize = 11.sp,
-                        color = if (copied) Everforest.SoftSage else Everforest.CommentGrey,
+                        fontFamily = FontFamily.Monospace,
+                        color = Everforest.CommentGrey,
                     )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable {
+                                copyTextToClipboard(code)
+                                copied = true
+                                scope.launch {
+                                    delay(1_600L)
+                                    copied = false
+                                }
+                            }
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                            contentDescription = "复制代码",
+                            tint = if (copied) Everforest.SoftSage else Everforest.CommentGrey,
+                            modifier = Modifier.size(12.5.dp),
+                        )
+                        Text(
+                            text = if (copied) "已复制" else "复制",
+                            fontSize = 11.sp,
+                            color = if (copied) Everforest.SoftSage else Everforest.CommentGrey,
+                        )
+                    }
                 }
             }
 
@@ -590,19 +607,21 @@ internal fun CodeFenceBlockView(
 
             if (canFold) {
                 HorizontalDivider(color = Everforest.Bg2, thickness = 0.5.dp)
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Everforest.Bg1.copy(alpha = 0.35f))
-                        .clickable { codeExpanded = !codeExpanded }
-                        .padding(vertical = 6.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = if (codeExpanded) "▴ 收起代码" else "▾ 展开全部 $totalLines 行代码",
-                        fontSize = 11.5.sp,
-                        color = Everforest.CommentGrey,
-                    )
+                DisableSelection {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Everforest.Bg1.copy(alpha = 0.35f))
+                            .clickable { codeExpanded = !codeExpanded }
+                            .padding(vertical = 6.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = if (codeExpanded) "▴ 收起代码" else "▾ 展开全部 $totalLines 行代码",
+                            fontSize = 11.5.sp,
+                            color = Everforest.CommentGrey,
+                        )
+                    }
                 }
             }
         }
