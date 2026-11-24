@@ -85,6 +85,7 @@ export interface SessionManagerCallbacks {
 export class SessionManager {
   private readonly adapters = new Map<string, EngineAdapter>()
   private readonly sessions = new Map<string, ManagedSession>()
+  private readonly pendingCloses = new Map<string, Promise<void>>()
   private readonly sleepInhibitor = new SleepInhibitor()
   private readonly checkpoints = new CheckpointManager()
   private readonly metaStore = new SessionMetadataStore()
@@ -159,6 +160,21 @@ export class SessionManager {
     return out
   }
 
+  private trackHandleClose(sessionId: string, handle: ManagedSession['handle'] | undefined): void {
+    if (!handle) return
+    const prev = this.pendingCloses.get(sessionId)
+    const closePromise = Promise.resolve(prev)
+      .catch(() => undefined)
+      .then(() => handle.close())
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.pendingCloses.get(sessionId) === closePromise) {
+          this.pendingCloses.delete(sessionId)
+        }
+      })
+    this.pendingCloses.set(sessionId, closePromise)
+  }
+
   private releaseIdleHostWrapperIfDiskAdvanced(
     sessionId: string,
     diskLastSeq?: number,
@@ -181,7 +197,7 @@ export class SessionManager {
     if (diskProgressed) {
       managed.closed = true
       this.sessions.delete(sessionId)
-      void managed.handle?.close().catch(() => undefined)
+      this.trackHandleClose(sessionId, managed.handle)
       this.hostInspector.retainWatch(sessionId)
     }
   }
@@ -488,7 +504,14 @@ export class SessionManager {
           throw err
         }
 
-        if (!deliveredToTerminal && hostLoaded.session.engineId === 'agy') {
+        const hubOwnsLiveHandle = Boolean(
+          managed && (!managed.handle.isAlive || managed.handle.isAlive()),
+        )
+        if (!deliveredToTerminal && !hubOwnsLiveHandle && hostLoaded.session.engineId === 'agy') {
+          const pendingClose = this.pendingCloses.get(sessionId)
+          if (pendingClose) {
+            await pendingClose
+          }
           // Guardrail: never spawn a shadow `agy --conversation <id>` process if an interactive `agy`
           // terminal already holds `presence/<id>.lock` (spawning a duplicate deadlocks on the lock!).
           const lockCheck = await this.hostInspector.isAgyLockedInInteractiveTerminal(hostEntry.nativeId)
@@ -531,7 +554,7 @@ export class SessionManager {
           }
           if (managed) {
             this.sessions.delete(sessionId)
-            void managed.handle.close().catch(() => {})
+            this.trackHandleClose(sessionId, managed.handle)
             this.hostInspector.retainWatch(sessionId)
           }
           try {
@@ -549,6 +572,10 @@ export class SessionManager {
         }
 
         if (!managed) {
+          const pendingClose = this.pendingCloses.get(sessionId)
+          if (pendingClose) {
+            await pendingClose
+          }
           const decoratedHost = this.metaStore.applyToMeta(hostLoaded.session)
           await this.createSession({
             engineId: hostLoaded.session.engineId,

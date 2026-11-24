@@ -45,6 +45,7 @@ export interface TerminalBridgeOptions {
   homeDir?: string
   runCommand?: TerminalCommandRunner
   isPidAlive?: (pid: number) => boolean
+  selfPid?: number
   it2Bin?: string | null
   tmuxBin?: string | null
   lsofBin?: string | null
@@ -115,6 +116,7 @@ export class TerminalBridge {
   private readonly homeDir: string
   private readonly runCmd: TerminalCommandRunner
   private readonly pidAlive: (pid: number) => boolean
+  private readonly selfPid: number
   private readonly opts: TerminalBridgeOptions
 
   constructor(opts: TerminalBridgeOptions = {}) {
@@ -122,6 +124,7 @@ export class TerminalBridge {
     this.homeDir = opts.homeDir ?? os.homedir()
     this.runCmd = opts.runCommand ?? defaultRunCommand
     this.pidAlive = opts.isPidAlive ?? defaultIsPidAlive
+    this.selfPid = opts.selfPid ?? process.pid
   }
 
   private resolveIt2Bin(): string | null {
@@ -420,8 +423,10 @@ export class TerminalBridge {
     const procs = await this.getAgyTtyProcesses()
     const holder = procs.find(p => p.presenceConvIds.includes(nativeId) && this.pidAlive(p.pid))
     if (holder) {
-      const hostAppHint = await this.detectParentHostApp(holder.pid)
-      return { locked: true, hostAppHint }
+      const ancestry = await this.inspectProcessAncestry(holder.pid)
+      if (!ancestry.ownedBySelf) {
+        return { locked: true, hostAppHint: ancestry.hostAppHint }
+      }
     }
     const lockFile = path.join(this.homeDir, '.gemini', 'antigravity-cli', 'presence', `${nativeId}.lock`)
     if (!fs.existsSync(lockFile)) return { locked: false }
@@ -441,8 +446,11 @@ export class TerminalBridge {
       if (!line.startsWith('p')) continue
       const pid = Number(line.slice(1).trim())
       if (pid > 0 && this.pidAlive(pid)) {
-        const hostAppHint = await this.detectParentHostApp(pid)
-        return { locked: true, hostAppHint }
+        // Never treat Hub's own persistent `agy --input-format stream-json` worker (or any
+        // descendant of this Hub process) as an external interactive terminal holding the lock.
+        const ancestry = await this.inspectProcessAncestry(pid)
+        if (ancestry.ownedBySelf) continue
+        return { locked: true, hostAppHint: ancestry.hostAppHint }
       }
     }
     return { locked: false }
@@ -711,28 +719,42 @@ export class TerminalBridge {
     return sockets
   }
 
-  private async detectParentHostApp(pid: number): Promise<string | undefined> {
+  private async inspectProcessAncestry(
+    pid: number,
+  ): Promise<{ ownedBySelf: boolean; hostAppHint?: string }> {
+    if (pid === this.selfPid) {
+      return { ownedBySelf: true }
+    }
     let cur = pid
-    for (let depth = 0; depth < 5 && cur > 1; depth++) {
+    for (let depth = 0; depth < 6 && cur > 1; depth++) {
       try {
         const out = await this.runCmd('ps', ['-o', 'ppid=,command=', '-p', String(cur)], 1_200)
         const m = out.trim().match(/^(\d+)\s+(.+)$/)
         if (!m) break
         const ppid = Number(m[1]) || 0
         const cmd = m[2]!
-        if (/GoLand\.app/i.test(cmd)) return 'GoLand'
-        if (/DataGrip\.app/i.test(cmd)) return 'DataGrip'
-        if (/IntelliJ IDEA\.app/i.test(cmd)) return 'IntelliJ IDEA'
-        if (/Android Studio\.app/i.test(cmd)) return 'Android Studio'
-        if (/Cursor\.app/i.test(cmd)) return 'Cursor'
-        if (/Visual Studio Code\.app|Code\.app/i.test(cmd)) return 'VS Code'
-        if (/Terminal\.app/i.test(cmd)) return 'macOS Terminal'
+        if (ppid === this.selfPid) {
+          return { ownedBySelf: true }
+        }
+        if (/GoLand\.app/i.test(cmd)) return { ownedBySelf: false, hostAppHint: 'GoLand' }
+        if (/DataGrip\.app/i.test(cmd)) return { ownedBySelf: false, hostAppHint: 'DataGrip' }
+        if (/IntelliJ IDEA\.app/i.test(cmd)) return { ownedBySelf: false, hostAppHint: 'IntelliJ IDEA' }
+        if (/Android Studio\.app/i.test(cmd)) return { ownedBySelf: false, hostAppHint: 'Android Studio' }
+        if (/Cursor\.app/i.test(cmd)) return { ownedBySelf: false, hostAppHint: 'Cursor' }
+        if (/Visual Studio Code\.app|Code\.app/i.test(cmd)) {
+          return { ownedBySelf: false, hostAppHint: 'VS Code' }
+        }
+        if (/Terminal\.app/i.test(cmd)) return { ownedBySelf: false, hostAppHint: 'macOS Terminal' }
         cur = ppid
       } catch {
         break
       }
     }
-    return undefined
+    return { ownedBySelf: false }
+  }
+
+  private async detectParentHostApp(pid: number): Promise<string | undefined> {
+    return (await this.inspectProcessAncestry(pid)).hostAppHint
   }
 
   private async getTopology(includeIt2 = false): Promise<CachedTopology> {
