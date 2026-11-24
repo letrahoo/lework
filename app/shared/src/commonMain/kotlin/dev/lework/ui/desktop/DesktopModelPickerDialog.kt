@@ -3,6 +3,7 @@ package dev.lework.ui.desktop
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -10,6 +11,7 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -42,7 +44,11 @@ import dev.lework.protocol.EngineModelSpec
 import dev.lework.protocol.ReasoningEffort
 import dev.lework.protocol.SessionMode
 import dev.lework.store.canStartTask
+import dev.lework.store.isExternalProvider
+import dev.lework.store.isFavoriteModel
+import dev.lework.store.normalizeModelKey
 import dev.lework.store.readinessLabel
+import dev.lework.store.sourceBadgeLabel
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.*
 
@@ -50,6 +56,8 @@ private data class DesktopPickerModelEntry(
     val engineId: String,
     val engineName: String,
     val spec: EngineModelSpec,
+    val sourceBadge: String?,
+    val hasSameNameCollision: Boolean,
     val isFavorite: Boolean,
 )
 
@@ -74,7 +82,7 @@ internal fun DesktopModelPickerDialog(
     onSelectEngineAndModel: (String, EngineModelSpec?, ReasoningEffort?) -> Unit,
     onSelectEffort: (ReasoningEffort) -> Unit,
     onSelectMode: (SessionMode) -> Unit,
-    onToggleFavoriteModel: (String, String) -> Unit,
+    onToggleFavoriteModel: (engineId: String, modelId: String, providerId: String?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val favSet = remember(state.favoriteModelKeys) { state.favoriteModelKeys.toSet() }
@@ -82,6 +90,7 @@ internal fun DesktopModelPickerDialog(
         mutableStateOf(state.selectedEngineId.ifBlank { state.taskEngines.firstOrNull()?.id.orEmpty() })
     }
     var searchQuery by remember { mutableStateOf("") }
+    var selectedSourceFilter by remember(selectedTab) { mutableStateOf<String?>(null) }
     var expandedMore by remember(selectedTab) { mutableStateOf(false) }
     var showPermissionsMenu by remember { mutableStateOf(false) }
     var previewedEffort by remember { mutableStateOf<ReasoningEffort?>(null) }
@@ -89,19 +98,23 @@ internal fun DesktopModelPickerDialog(
     val searchInteraction = remember { MutableInteractionSource() }
     val searchFocused by searchInteraction.collectIsFocusedAsState()
 
-    val allEntries = remember(state.taskEngines, favSet) {
+    val allEntries = remember(state.taskEngines, state.providers, favSet) {
         buildList {
             for (eng in state.taskEngines) {
                 if (!eng.canStartTask) continue
                 val engLabel = eng.displayName.ifBlank { shortEngineLabel(eng.id) }
+                val countsByNormId = eng.models.groupingBy { normalizeModelKey(it.id) }.eachCount()
                 for (m in eng.models) {
-                    val key = "${eng.id}:${m.id}"
+                    val badge = m.sourceBadgeLabel(eng.models, state.providers)
+                    val collision = (countsByNormId[normalizeModelKey(m.id)] ?: 0) > 1
                     add(
                         DesktopPickerModelEntry(
                             engineId = eng.id,
                             engineName = engLabel,
                             spec = m,
-                            isFavorite = key in favSet,
+                            sourceBadge = badge,
+                            hasSameNameCollision = collision,
+                            isFavorite = isFavoriteModel(favSet, eng.id, m.providerId, m.id),
                         ),
                     )
                 }
@@ -109,21 +122,48 @@ internal fun DesktopModelPickerDialog(
         }
     }
 
+    val engineSourceFilters = remember(allEntries, selectedTab, state.providers) {
+        if (selectedTab == "favorites") {
+            emptyList()
+        } else {
+            val entries = allEntries.filter { it.engineId == selectedTab }
+            val seen = linkedMapOf<String, String>()
+            for (entry in entries) {
+                val pid = entry.spec.providerId
+                val key = if (entry.spec.isExternalProvider()) pid.orEmpty() else "native"
+                if (key !in seen) {
+                    val label = if (key == "native") {
+                        "官方"
+                    } else {
+                        entry.sourceBadge ?: state.providers.firstOrNull { it.id == pid }?.name ?: "代理"
+                    }
+                    seen[key] = label
+                }
+            }
+            if (seen.size > 1) seen.entries.map { it.key to it.value } else emptyList()
+        }
+    }
+
     val isSearching = searchQuery.trim().isNotEmpty()
-    val tabFilteredEntries = remember(allEntries, selectedTab, searchQuery, favSet) {
+    val tabFilteredEntries = remember(allEntries, selectedTab, searchQuery, selectedSourceFilter, favSet) {
         val q = searchQuery.trim().lowercase()
         if (q.isNotEmpty()) {
             allEntries.filter { entry ->
                 entry.spec.name.lowercase().contains(q) ||
                     entry.spec.id.lowercase().contains(q) ||
                     entry.engineName.lowercase().contains(q) ||
-                    entry.engineId.lowercase().contains(q)
+                    entry.engineId.lowercase().contains(q) ||
+                    entry.sourceBadge?.lowercase()?.contains(q) == true ||
+                    entry.spec.providerId?.lowercase()?.contains(q) == true
             }
         } else if (selectedTab == "favorites") {
             allEntries.filter { it.isFavorite }
         } else {
-            allEntries.filter { it.engineId == selectedTab }
-                .sortedByDescending { it.isFavorite }
+            allEntries.filter { entry ->
+                if (entry.engineId != selectedTab) return@filter false
+                val src = selectedSourceFilter ?: return@filter true
+                if (src == "native") !entry.spec.isExternalProvider() else entry.spec.providerId == src
+            }.sortedByDescending { it.isFavorite }
         }
     }
 
@@ -133,9 +173,14 @@ internal fun DesktopModelPickerDialog(
             tabFilteredEntries
         } else {
             val top = tabFilteredEntries.take(defaultLimit).toMutableList()
-            val activeId = state.selectedModelSpec?.id
-            if (activeId != null && top.none { it.spec.id == activeId }) {
-                tabFilteredEntries.firstOrNull { it.spec.id == activeId }?.let { activeEntry ->
+            val activeSpec = state.selectedModelSpec
+            if (
+                activeSpec != null &&
+                top.none { it.spec.id == activeSpec.id && it.spec.providerId == activeSpec.providerId }
+            ) {
+                tabFilteredEntries.firstOrNull {
+                    it.spec.id == activeSpec.id && it.spec.providerId == activeSpec.providerId
+                }?.let { activeEntry ->
                     top[top.lastIndex] = activeEntry
                 }
             }
@@ -417,6 +462,61 @@ internal fun DesktopModelPickerDialog(
                             )
                         }
 
+                        if (!isSearching && engineSourceFilters.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                val allSelected = selectedSourceFilter == null
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = if (allSelected) Everforest.BgGreen else Everforest.Bg0,
+                                    border = BorderStroke(
+                                        0.8.dp,
+                                        if (allSelected) Everforest.Green.copy(alpha = 0.5f) else Everforest.Bg3,
+                                    ),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .clickable { selectedSourceFilter = null }
+                                        .testTag("picker_source_filter_all"),
+                                ) {
+                                    Text(
+                                        text = "全部",
+                                        fontSize = 10.5.sp,
+                                        color = if (allSelected) Everforest.Green else Everforest.Grey1,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp),
+                                    )
+                                }
+                                for ((key, label) in engineSourceFilters) {
+                                    val active = selectedSourceFilter == key
+                                    val accent = if (key == "native") Everforest.Green else Everforest.Aqua
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = if (active) Everforest.Bg2 else Everforest.Bg0,
+                                        border = BorderStroke(
+                                            0.8.dp,
+                                            if (active) accent.copy(alpha = 0.6f) else Everforest.Bg3,
+                                        ),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(999.dp))
+                                            .clickable { selectedSourceFilter = if (active) null else key }
+                                            .testTag("picker_source_filter_$key"),
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            fontSize = 10.5.sp,
+                                            color = if (active) accent else Everforest.Grey1,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.5.dp),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         if (visibleEntries.isEmpty()) {
                             Box(
                                 modifier = Modifier
@@ -451,12 +551,25 @@ internal fun DesktopModelPickerDialog(
                                     items = visibleEntries,
                                     key = { _, entry -> "${entry.engineId}:${entry.spec.providerId}:${entry.spec.id}" },
                                 ) { idx, entry ->
+                                    val activeSpec = state.selectedModelSpec
                                     val isCurrent =
                                         entry.engineId == state.selectedEngineId &&
-                                            entry.spec.id == state.selectedModelSpec?.id
+                                            entry.spec.id == activeSpec?.id &&
+                                            (entry.spec.providerId == activeSpec?.providerId ||
+                                                (activeSpec?.providerId == null && !entry.spec.isExternalProvider()))
                                     val rowHover = remember { MutableInteractionSource() }
                                     val isHovered by rowHover.collectIsHoveredAsState()
                                     val cleanName = entry.spec.name.removeSuffix(" (Proxy)")
+                                    val rowTestTag = if (entry.hasSameNameCollision) {
+                                        "picker_model_${entry.engineId}_${entry.spec.providerId.orEmpty()}_${entry.spec.id}"
+                                    } else {
+                                        "picker_model_${entry.engineId}_${entry.spec.id}"
+                                    }
+                                    val favTestTag = if (entry.hasSameNameCollision) {
+                                        "picker_fav_${entry.engineId}_${entry.spec.providerId.orEmpty()}_${entry.spec.id}"
+                                    } else {
+                                        "picker_fav_${entry.engineId}_${entry.spec.id}"
+                                    }
 
                                     Row(
                                         modifier = Modifier
@@ -478,7 +591,7 @@ internal fun DesktopModelPickerDialog(
                                                 }
                                             }
                                             .padding(horizontal = 9.dp)
-                                            .testTag("picker_model_${entry.engineId}_${entry.spec.id}"),
+                                            .testTag(rowTestTag),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
@@ -498,15 +611,20 @@ internal fun DesktopModelPickerDialog(
                                                 overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.weight(1f, fill = false),
                                             )
-                                            if (entry.spec.providerId == "cpa_local") {
+                                            val badge = entry.sourceBadge
+                                            if (!badge.isNullOrBlank()) {
+                                                val isExternal = entry.spec.isExternalProvider()
                                                 Surface(
                                                     shape = RoundedCornerShape(4.dp),
-                                                    color = Everforest.Bg0,
+                                                    color = if (isExternal) Everforest.Bg0 else Everforest.BgGreen,
+                                                    modifier = Modifier.testTag(
+                                                        "picker_badge_${entry.engineId}_${entry.spec.providerId.orEmpty()}_${entry.spec.id}",
+                                                    ),
                                                 ) {
                                                     Text(
-                                                        text = "代理",
+                                                        text = badge,
                                                         fontSize = 9.5.sp,
-                                                        color = Everforest.Aqua,
+                                                        color = if (isExternal) Everforest.Aqua else Everforest.Green,
                                                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
                                                     )
                                                 }
@@ -516,7 +634,11 @@ internal fun DesktopModelPickerDialog(
                                                     imageVector = Icons.Rounded.Check,
                                                     contentDescription = "已选中",
                                                     tint = Everforest.Green,
-                                                    modifier = Modifier.size(14.5.dp),
+                                                    modifier = Modifier
+                                                        .size(14.5.dp)
+                                                        .testTag(
+                                                            "picker_check_${entry.engineId}_${entry.spec.providerId.orEmpty()}_${entry.spec.id}",
+                                                        ),
                                                 )
                                             }
                                         }
@@ -529,9 +651,13 @@ internal fun DesktopModelPickerDialog(
                                                 modifier = Modifier
                                                     .size(14.5.dp)
                                                     .clickable {
-                                                        onToggleFavoriteModel(entry.engineId, entry.spec.id)
+                                                        onToggleFavoriteModel(
+                                                            entry.engineId,
+                                                            entry.spec.id,
+                                                            entry.spec.providerId,
+                                                        )
                                                     }
-                                                    .testTag("picker_fav_${entry.engineId}_${entry.spec.id}"),
+                                                    .testTag(favTestTag),
                                             )
                                         }
 

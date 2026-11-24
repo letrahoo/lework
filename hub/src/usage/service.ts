@@ -39,6 +39,8 @@ export interface ManagedSessionSnapshot {
 export interface UsageServiceOptions {
   cpaEndpoint: string
   cpaManagementKey?: string
+  getCpaEndpoint?: () => string
+  getCpaApiKey?: () => string | undefined
   homeDir?: string
   claudeConfigDir?: string
   dataDir?: string
@@ -107,6 +109,8 @@ function toUsageTotals(acc: MutableAccumulator): UsageTotals {
 export class UsageService {
   private readonly cpaEndpoint: string
   private readonly cpaManagementKey?: string
+  private readonly getCpaEndpointFn?: () => string
+  private readonly getCpaApiKeyFn?: () => string | undefined
   private readonly dataDir?: string
   private readonly now: () => number
   private readonly scanner: UsageScanner
@@ -116,6 +120,8 @@ export class UsageService {
   constructor(opts: UsageServiceOptions) {
     this.cpaEndpoint = opts.cpaEndpoint.replace(/\/+$/, '')
     this.cpaManagementKey = opts.cpaManagementKey?.trim() || undefined
+    this.getCpaEndpointFn = opts.getCpaEndpoint
+    this.getCpaApiKeyFn = opts.getCpaApiKey
     this.dataDir = opts.dataDir
     this.now = opts.now ?? (() => Date.now())
     this.scanner =
@@ -508,7 +514,7 @@ export class UsageService {
   }
 
   async getProxyUsage(): Promise<ProxyUsageResult> {
-    const endpoint = this.cpaEndpoint
+    const endpoint = (this.getCpaEndpointFn?.() ?? this.cpaEndpoint).replace(/\/+$/, '')
     const managementKey = this.cpaManagementKey
     const managementEnabled = Boolean(managementKey)
 
@@ -519,9 +525,9 @@ export class UsageService {
     // 1. Probe `${cpaEndpoint}/v1/models` (2.5s timeout)
     try {
       const headers: Record<string, string> = {}
-      const envApiKey = process.env.LEWORK_CPA_KEY?.trim()
-      if (envApiKey) {
-        headers.Authorization = `Bearer ${envApiKey}`
+      const apiKey = this.getCpaApiKeyFn?.()?.trim() || process.env.LEWORK_CPA_KEY?.trim()
+      if (apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`
       }
       const res = await this.fetchWithTimeout(`${endpoint}/v1/models`, { headers })
       if (res.ok) {

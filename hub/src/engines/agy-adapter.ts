@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer'
 import crypto from 'node:crypto'
 import type { EngineCapabilities, EngineStatus, ReasoningEffort, SessionMode } from '@lework/protocol'
 import { augmentedPathEnv, findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
+import { isExternalProviderId } from '../registry/provider-adapters.ts'
 import { classifyRawToolCall } from '../storage/host-history.ts'
 import {
   parseAgyModelString,
@@ -60,7 +61,7 @@ export class AgyEngineAdapter implements EngineAdapter {
   }
 
   async openSession(init: EngineSessionInit): Promise<EngineSession> {
-    if (init.providerId === 'cpa_local') {
+    if (isExternalProviderId(init.providerId)) {
       throw new Error('AGY 禁止使用 API 反代，请使用 AGY 官方订阅登录模式。')
     }
     const bin = this.resolveBinary()

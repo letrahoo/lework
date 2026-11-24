@@ -34,6 +34,7 @@ import dev.lework.platform.PairedHost
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.runtimeLogFilePath
+import dev.lework.protocol.ProviderConfigInput
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
@@ -49,6 +50,11 @@ internal fun DesktopSettingsDialog(
     onRenameHost: (hubId: String, newName: String) -> Unit = { _, _ -> },
     onRemoveHost: (String) -> Unit,
     onPairAnotherHost: () -> Unit,
+    onRefreshProviders: (providerId: String?) -> Unit = {},
+    onProbeProviderDraft: (ProviderConfigInput) -> Unit = {},
+    onUpsertProvider: (ProviderConfigInput, onSuccess: () -> Unit) -> Unit = { _, _ -> },
+    onRemoveProvider: (providerId: String) -> Unit = {},
+    onClearProviderFeedback: () -> Unit = {},
     onLogout: () -> Unit,
 ) {
     var copiedFingerprint by remember { mutableStateOf(false) }
@@ -263,7 +269,17 @@ internal fun DesktopSettingsDialog(
                         }
                     }
 
-                    // Section 2: Paired Hosts (Mac + Remote Devbox)
+                    // Section 2: Host-Scoped External Model Providers (CPA / OpenRouter / LiteLLM / Custom)
+                    DesktopProvidersSection(
+                        state = state,
+                        onRefreshProviders = onRefreshProviders,
+                        onProbeDraft = onProbeProviderDraft,
+                        onUpsertProvider = onUpsertProvider,
+                        onRemoveProvider = onRemoveProvider,
+                        onClearFeedback = onClearProviderFeedback,
+                    )
+
+                    // Section 3: Paired Hosts (Mac + Remote Devbox)
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = Everforest.Bg0,

@@ -23,6 +23,7 @@ import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/
 import { formatEngineTurnError } from './engines/network-error.ts'
 import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
+import { isExternalProviderId } from './registry/provider-adapters.ts'
 import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
 import {
   listSessionArtifacts,
@@ -54,6 +55,7 @@ interface QueuedTurnItem {
   rawText: string
   displayUserText: string
   stagedImages: StagedPromptImage[]
+  providerId?: string
   modelId?: string
   reasoningEffort?: ReasoningEffort
   mode?: SessionMode
@@ -72,6 +74,7 @@ interface ManagedSession {
   nativeId?: string
   providerId?: string
   extraEnv?: NodeJS.ProcessEnv
+  pendingProviderReopen?: boolean
 }
 
 export interface SessionManagerCallbacks {
@@ -125,19 +128,26 @@ export class SessionManager {
   }
 
   async listEngines(): Promise<EngineInfo[]> {
-    const cpaModels = this.registry?.getCachedCpaModels() ?? []
     const out: EngineInfo[] = []
     for (const adapter of this.adapters.values()) {
       const status = await adapter.probe()
-      const catalog = status.installed ? await this.hostInspector.getModelsForEngine(adapter.id, cpaModels) : []
-      const models = catalog.filter(m => m.providerId === 'cpa_local' ? cpaModels.includes(m.id) : status.authStatus !== 'required')
-      const hasProxyRoute = models.some(m => m.providerId === 'cpa_local')
+      const externalModels = this.registry?.getExternalModelsForEngine(adapter.id) ?? []
+      const externalKeys = new Set(externalModels.map(m => `${m.providerId}:${m.id}`))
+      const catalog = status.installed
+        ? await this.hostInspector.getModelsForEngine(adapter.id, externalModels, status.authStatus)
+        : []
+      const models = catalog.filter(m =>
+        isExternalProviderId(m.providerId)
+          ? externalKeys.has(`${m.providerId}:${m.id}`)
+          : status.authStatus !== 'required',
+      )
+      const hasExternalRoute = models.some(m => isExternalProviderId(m.providerId))
       const hostDefaults = this.hostInspector.getEngineHostDefaults(adapter.id)
       out.push({
         id: adapter.id,
         displayName: adapter.displayName,
         kind: adapter.kind,
-        status: hasProxyRoute ? { ...status, ready: true } : status,
+        status: hasExternalRoute ? { ...status, ready: true } : status,
         capabilities: adapter.capabilities(),
         models,
         defaultModel: hostDefaults.defaultModel,
@@ -308,6 +318,7 @@ export class SessionManager {
       updatedAt: now,
       lastSeq: lastSeedSeq,
       source: params.fixedSessionId?.startsWith('host:') ? 'host' : 'hub',
+      ...(params.providerId ? { providerId: params.providerId } : {}),
       ...(params.modelId ? { model: params.modelId } : {}),
       ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
       ...(params.mode ? { mode: params.mode } : {}),
@@ -378,6 +389,7 @@ export class SessionManager {
     text: string,
     overrides?: {
       images?: PromptImageAttachment[]
+      providerId?: string
       modelId?: string
       reasoningEffort?: ReasoningEffort
       mode?: SessionMode
@@ -423,6 +435,7 @@ export class SessionManager {
             cwd: restored.sessionCwd,
             workspaces: prevMeta.workspaces,
             title: managed.autoTitle,
+            providerId: prevMeta.providerId ?? managed.providerId,
             modelId: prevMeta.model,
             reasoningEffort: prevMeta.reasoningEffort,
             mode: prevMeta.mode,
@@ -500,10 +513,11 @@ export class SessionManager {
         }
 
         if (deliveredToTerminal) {
-          if (overrides?.modelId || overrides?.reasoningEffort || overrides?.mode) {
+          if (overrides?.providerId || overrides?.modelId || overrides?.reasoningEffort || overrides?.mode) {
             this.metaStore.setSessionPrefs(
               sessionId,
               {
+                providerId: overrides.providerId,
                 model: overrides.modelId,
                 reasoningEffort: overrides.reasoningEffort,
                 mode: overrides.mode,
@@ -541,6 +555,7 @@ export class SessionManager {
             cwd: hostLoaded.session.cwd,
             workspaces: hostLoaded.session.workspaces,
             title: hostLoaded.session.title,
+            providerId: overrides?.providerId ?? decoratedHost.providerId,
             modelId: overrides?.modelId ?? decoratedHost.model,
             reasoningEffort: overrides?.reasoningEffort ?? decoratedHost.reasoningEffort,
             mode: overrides?.mode ?? decoratedHost.mode,
@@ -558,7 +573,7 @@ export class SessionManager {
     if (managed.meta.state === 'waiting_permission') {
       throw new HubRpcError(ErrorCode.Conflict, '当前会话正在等待权限确认，请先完成审批后再发送。')
     }
-    if (overrides?.modelId || overrides?.reasoningEffort || overrides?.mode) {
+    if (overrides?.providerId || overrides?.modelId || overrides?.reasoningEffort || overrides?.mode) {
       const hostAliasId =
         managed.nativeId && !sessionId.startsWith('host:')
           ? `host:${managed.meta.engineId}:${managed.nativeId}`
@@ -571,6 +586,7 @@ export class SessionManager {
       this.metaStore.setSessionPrefs(
         sessionId,
         {
+          providerId: overrides.providerId,
           model: overrides.modelId,
           reasoningEffort: overrides.reasoningEffort,
           mode: overrides.mode,
@@ -593,6 +609,7 @@ export class SessionManager {
         rawText: text,
         displayUserText,
         stagedImages,
+        providerId: overrides?.providerId,
         modelId: overrides?.modelId,
         reasoningEffort: overrides?.reasoningEffort,
         mode: overrides?.mode,
@@ -609,6 +626,7 @@ export class SessionManager {
     }
 
     await this.applyTurnOverrides(managed, {
+      providerId: overrides?.providerId,
       modelId: overrides?.modelId,
       reasoningEffort: overrides?.reasoningEffort,
       mode: overrides?.mode,
@@ -668,11 +686,43 @@ export class SessionManager {
   private async applyTurnOverrides(
     managed: ManagedSession,
     overrides: {
+      providerId?: string
       modelId?: string
       reasoningEffort?: ReasoningEffort
       mode?: SessionMode
     },
   ): Promise<void> {
+    const requestedProvider = overrides.providerId?.trim() || undefined
+    const providerChanged = Boolean(requestedProvider && requestedProvider !== managed.providerId)
+    const needsReopen = providerChanged || Boolean(managed.pendingProviderReopen)
+
+    if (needsReopen) {
+      const nextProvider = requestedProvider ?? managed.providerId
+      const nextModel = overrides.modelId ?? managed.meta.model
+      if (this.registry) {
+        try {
+          managed.extraEnv = this.registry.resolveSessionEnv(
+            managed.meta.engineId,
+            nextProvider,
+            nextModel,
+          )
+        } catch (err) {
+          throw new HubRpcError(
+            ErrorCode.InvalidParams,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      }
+      managed.providerId = nextProvider
+      managed.meta.providerId = nextProvider
+      if (overrides.modelId) managed.meta.model = overrides.modelId
+      if (overrides.reasoningEffort) managed.meta.reasoningEffort = overrides.reasoningEffort
+      if (overrides.mode) managed.meta.mode = overrides.mode
+      managed.pendingProviderReopen = false
+      await this.reopenManagedHandle(managed)
+      return
+    }
+
     if (overrides.modelId && overrides.modelId !== managed.meta.model) {
       if (managed.handle.setModel) {
         await managed.handle.setModel(overrides.modelId).catch(() => undefined)
@@ -770,6 +820,7 @@ export class SessionManager {
           managed.queuedTurns.length > 0 ? managed.queuedTurns.map(q => q.displayUserText) : undefined
         if (nextQueued) {
           void this.applyTurnOverrides(managed, {
+            providerId: nextQueued.providerId,
             modelId: nextQueued.modelId,
             reasoningEffort: nextQueued.reasoningEffort,
             mode: nextQueued.mode,
@@ -912,6 +963,7 @@ export class SessionManager {
     sessionId: string,
     modelId: string,
     opts?: {
+      providerId?: string
       reasoningEffort?: ReasoningEffort
       mode?: SessionMode
     },
@@ -920,6 +972,7 @@ export class SessionManager {
     if (!cleanModel) {
       throw new HubRpcError(ErrorCode.InvalidParams, 'Model ID is required.')
     }
+    const cleanProvider = opts?.providerId?.trim() || undefined
 
     const managed = this.sessions.get(sessionId)
     const hostAliasId =
@@ -936,9 +989,23 @@ export class SessionManager {
       throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
     }
 
+    const engineId = managed?.meta.engineId ?? hostEntry!.meta.engineId
+    let resolvedEnv: NodeJS.ProcessEnv | undefined
+    if (this.registry && cleanProvider !== undefined) {
+      try {
+        resolvedEnv = this.registry.resolveSessionEnv(engineId, cleanProvider, cleanModel)
+      } catch (err) {
+        throw new HubRpcError(
+          ErrorCode.InvalidParams,
+          err instanceof Error ? err.message : String(err),
+        )
+      }
+    }
+
     this.metaStore.setSessionPrefs(
       sessionId,
       {
+        providerId: cleanProvider,
         model: cleanModel,
         reasoningEffort: opts?.reasoningEffort,
         mode: opts?.mode,
@@ -952,18 +1019,40 @@ export class SessionManager {
     )
 
     if (managed) {
-      if (!managed.handle.setModel) {
-        throw new HubRpcError(ErrorCode.EngineError, 'Engine does not support changing models.')
-      }
-      await managed.handle.setModel(cleanModel)
-      managed.meta.model = cleanModel
-      if (opts?.reasoningEffort) {
-        await managed.handle.setEffort?.(opts.reasoningEffort)
-        managed.meta.reasoningEffort = opts.reasoningEffort
-      }
-      if (opts?.mode) {
-        await managed.handle.setMode?.(opts.mode)
-        managed.meta.mode = opts.mode
+      const providerChanged = Boolean(cleanProvider && cleanProvider !== managed.providerId)
+      if (providerChanged) {
+        managed.providerId = cleanProvider
+        managed.meta.providerId = cleanProvider
+        managed.meta.model = cleanModel
+        if (opts?.reasoningEffort) managed.meta.reasoningEffort = opts.reasoningEffort
+        if (opts?.mode) managed.meta.mode = opts.mode
+        if (resolvedEnv) managed.extraEnv = resolvedEnv
+
+        const busy = managed.meta.state === 'running' || managed.meta.state === 'waiting_permission'
+        if (busy) {
+          managed.pendingProviderReopen = true
+        } else {
+          managed.pendingProviderReopen = false
+          await this.reopenManagedHandle(managed)
+        }
+      } else {
+        if (!managed.handle.setModel) {
+          throw new HubRpcError(ErrorCode.EngineError, 'Engine does not support changing models.')
+        }
+        await managed.handle.setModel(cleanModel)
+        managed.meta.model = cleanModel
+        if (cleanProvider) {
+          managed.providerId = cleanProvider
+          managed.meta.providerId = cleanProvider
+        }
+        if (opts?.reasoningEffort) {
+          await managed.handle.setEffort?.(opts.reasoningEffort)
+          managed.meta.reasoningEffort = opts.reasoningEffort
+        }
+        if (opts?.mode) {
+          await managed.handle.setMode?.(opts.mode)
+          managed.meta.mode = opts.mode
+        }
       }
       managed.meta.updatedAt = Date.now()
       managed.meta = this.decorateManagedMeta(managed)
@@ -983,6 +1072,7 @@ export class SessionManager {
 
     const updated = this.metaStore.applyToMeta({
       ...hostEntry!.meta,
+      ...(cleanProvider ? { providerId: cleanProvider } : {}),
       model: cleanModel,
       ...(opts?.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
       ...(opts?.mode ? { mode: opts.mode } : {}),

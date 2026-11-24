@@ -91,18 +91,50 @@ export const SlaveInfo = z.object({
 export type SlaveInfo = z.infer<typeof SlaveInfo>
 
 export const ProviderType = z.enum(['subscription', 'endpoint'])
+export const ProviderAdapterKind = z.enum(['cpa', 'generic'])
+export type ProviderAdapterKind = z.infer<typeof ProviderAdapterKind>
 export const WireApi = z.enum(['openai-chat', 'openai-responses', 'anthropic-messages', 'gemini'])
+export type WireApi = z.infer<typeof WireApi>
+export const ProviderAuthStatus = z.enum(['authenticated', 'required', 'unknown'])
 
 export const ProviderInfo = z.object({
   id: z.string(),
   name: z.string(),
   type: ProviderType,
+  adapter: ProviderAdapterKind.optional(),
   baseUrl: z.string().optional(),
   wireApi: WireApi.optional(),
+  wireApis: z.array(WireApi).optional(),
+  enabledEngines: z.array(z.string()).optional(),
+  enabled: z.boolean().optional(),
+  builtIn: z.boolean().optional(),
+  hasApiKey: z.boolean().optional(),
+  apiKeyEnv: z.string().optional(),
+  manualModels: z.array(z.string()).optional(),
+  selectedModels: z.array(z.string()).optional(),
   healthy: z.boolean(),
+  authStatus: ProviderAuthStatus.optional(),
+  latencyMs: z.number().int().nonnegative().optional(),
+  error: z.string().optional(),
   models: z.array(z.string()),
 })
 export type ProviderInfo = z.infer<typeof ProviderInfo>
+
+export const ProviderConfigInput = z.object({
+  id: z.string().min(1).max(64).optional(),
+  name: z.string().min(1).max(48),
+  adapter: ProviderAdapterKind.optional(),
+  baseUrl: z.string().min(1).max(512),
+  apiKey: z.string().max(512).optional(),
+  clearApiKey: z.boolean().optional(),
+  apiKeyEnv: z.string().max(128).optional(),
+  wireApis: z.array(WireApi).min(1).max(4).optional(),
+  enabledEngines: z.array(z.string().min(1).max(32)).max(16).optional(),
+  enabled: z.boolean().optional(),
+  manualModels: z.array(z.string().min(1).max(160)).max(80).optional(),
+  selectedModels: z.array(z.string().min(1).max(160)).max(120).optional(),
+})
+export type ProviderConfigInput = z.infer<typeof ProviderConfigInput>
 
 export const SessionMode = z.enum([
   'default',
@@ -120,6 +152,7 @@ export const EngineModelSpec = z.object({
   id: z.string(),
   name: z.string(),
   providerId: z.string().optional(),
+  providerName: z.string().optional(),
   efforts: z.array(ReasoningEffort).optional(),
   defaultEffort: ReasoningEffort.optional(),
 })
@@ -238,6 +271,7 @@ export const SessionMeta = z.object({
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
   lastSeq: z.number().int(),
+  providerId: z.string().optional(),
   model: z.string().optional(),
   reasoningEffort: ReasoningEffort.optional(),
   mode: SessionMode.optional(),
@@ -647,6 +681,35 @@ export const Methods = {
     params: z.object({ profile: ProfileInfo }),
     result: z.object({ profiles: z.array(ProfileInfo) }),
   },
+  'provider.list': {
+    params: z.object({}).optional(),
+    result: z.object({ providers: z.array(ProviderInfo), engines: z.array(EngineInfo) }),
+  },
+  'provider.upsert': {
+    params: z.object({ provider: ProviderConfigInput }),
+    result: z.object({
+      provider: ProviderInfo,
+      providers: z.array(ProviderInfo),
+      engines: z.array(EngineInfo),
+    }),
+  },
+  'provider.remove': {
+    params: z.object({ providerId: z.string().min(1).max(64) }),
+    result: z.object({ providers: z.array(ProviderInfo), engines: z.array(EngineInfo) }),
+  },
+  'provider.probe': {
+    params: z
+      .object({
+        providerId: z.string().min(1).max(64).optional(),
+        provider: ProviderConfigInput.optional(),
+      })
+      .optional(),
+    result: z.object({
+      provider: ProviderInfo.optional(),
+      providers: z.array(ProviderInfo),
+      engines: z.array(EngineInfo),
+    }),
+  },
   'engine.list': {
     params: z.object({}).optional(),
     result: z.object({ engines: z.array(EngineInfo) }),
@@ -699,6 +762,7 @@ export const Methods = {
       sessionId: z.string(),
       text: z.string().max(200_000),
       images: z.array(PromptImageAttachment).max(4).optional(),
+      providerId: z.string().optional(),
       modelId: z.string().optional(),
       reasoningEffort: ReasoningEffort.optional(),
       mode: SessionMode.optional(),
@@ -716,6 +780,7 @@ export const Methods = {
   'session.setModel': {
     params: z.object({
       sessionId: z.string(),
+      providerId: z.string().optional(),
       modelId: z.string(),
       reasoningEffort: ReasoningEffort.optional(),
       mode: SessionMode.optional(),

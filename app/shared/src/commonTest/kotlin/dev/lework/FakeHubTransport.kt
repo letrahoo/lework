@@ -76,6 +76,28 @@ class FakeHubTransport : HubTransport {
     var cancelQueuedNotice: String? = null
     var cancelQueuedDelayMs: Long = 0L
     var enginesOverride: List<EngineInfo>? = null
+    var providersList: MutableList<ProviderInfo> = mutableListOf(
+        ProviderInfo(
+            id = "cpa_local",
+            name = "CPA",
+            type = ProviderType.ENDPOINT,
+            adapter = ProviderAdapterKind.CPA,
+            baseUrl = "http://127.0.0.1:8317",
+            wireApi = WireApi.ANTHROPIC_MESSAGES,
+            wireApis = listOf(WireApi.ANTHROPIC_MESSAGES, WireApi.OPENAI_RESPONSES, WireApi.OPENAI_CHAT),
+            enabledEngines = listOf("claude", "codex", "pi"),
+            enabled = true,
+            builtIn = true,
+            hasApiKey = true,
+            healthy = true,
+            authStatus = "authenticated",
+            latencyMs = 12,
+            models = listOf("claude-opus-4-6", "gpt-5.4"),
+        ),
+    )
+    var probeProviderHandler: ((String?, ProviderConfigInput?) -> ProviderInfo)? = null
+    val upsertedProviders = mutableListOf<ProviderConfigInput>()
+    val removedProviderIds = mutableListOf<String>()
     var workspaceFilesList: List<String> = listOf(
         "README.md",
         "hub/src/server.ts",
@@ -222,7 +244,7 @@ class FakeHubTransport : HubTransport {
                     ),
                 ),
             ),
-            providers = emptyList(),
+            providers = providersList.toList(),
             profiles = emptyList(),
         )
 
@@ -314,6 +336,7 @@ class FakeHubTransport : HubTransport {
         sessionId: String,
         text: String,
         images: List<PromptImageAttachment>?,
+        providerId: String?,
         modelId: String?,
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
@@ -329,6 +352,7 @@ class FakeHubTransport : HubTransport {
                 sessionId = sessionId,
                 text = text,
                 images = images,
+                providerId = providerId,
                 modelId = modelId,
                 reasoningEffort = reasoningEffort,
                 mode = mode,
@@ -381,12 +405,14 @@ class FakeHubTransport : HubTransport {
     override suspend fun setSessionModel(
         sessionId: String,
         modelId: String,
+        providerId: String?,
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
     ): SessionMeta {
         setModelCalls.add(
             SessionSetModelParams(
                 sessionId = sessionId,
+                providerId = providerId,
                 modelId = modelId,
                 reasoningEffort = reasoningEffort,
                 mode = mode,
@@ -396,6 +422,7 @@ class FakeHubTransport : HubTransport {
         if (idx < 0) throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Session not found")
         val prev = sessions[idx]
         val updated = prev.copy(
+            providerId = providerId ?: prev.providerId,
             model = modelId,
             reasoningEffort = reasoningEffort ?: prev.reasoningEffort,
             mode = mode ?: prev.mode,
@@ -403,6 +430,102 @@ class FakeHubTransport : HubTransport {
         sessions[idx] = updated
         return updated
     }
+
+    override suspend fun listProviders(): ProviderListResult =
+        ProviderListResult(
+            providers = providersList.toList(),
+            engines = currentEnginesSnapshot(),
+        )
+
+    override suspend fun upsertProvider(input: ProviderConfigInput): ProviderUpsertResult {
+        upsertedProviders.add(input)
+        val id = input.id?.takeIf { it.isNotBlank() }
+            ?: "prov_${input.name.lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_').ifBlank { "custom" }}"
+        val existing = providersList.firstOrNull { it.id == id }
+        val wireApis = input.wireApis?.takeIf { it.isNotEmpty() }
+            ?: existing?.wireApis?.takeIf { it.isNotEmpty() }
+            ?: listOf(WireApi.OPENAI_CHAT, WireApi.OPENAI_RESPONSES)
+        val engines = input.enabledEngines ?: existing?.enabledEngines ?: listOf("claude", "codex", "pi")
+        val enabled = input.enabled ?: existing?.enabled ?: true
+        val models = input.manualModels?.takeIf { it.isNotEmpty() }
+            ?: existing?.models?.takeIf { it.isNotEmpty() }
+            ?: listOf("gpt-5.4", "claude-opus-4-6")
+        val saved = ProviderInfo(
+            id = id,
+            name = input.name.trim(),
+            type = ProviderType.ENDPOINT,
+            adapter = input.adapter ?: existing?.adapter ?: ProviderAdapterKind.GENERIC,
+            baseUrl = input.baseUrl.trim().trimEnd('/'),
+            wireApi = wireApis.firstOrNull(),
+            wireApis = wireApis,
+            enabledEngines = engines,
+            enabled = enabled,
+            builtIn = existing?.builtIn == true,
+            hasApiKey = when {
+                input.clearApiKey == true -> false
+                !input.apiKey.isNullOrBlank() -> true
+                !input.apiKeyEnv.isNullOrBlank() -> true
+                else -> existing?.hasApiKey == true
+            },
+            apiKeyEnv = input.apiKeyEnv ?: existing?.apiKeyEnv,
+            manualModels = input.manualModels ?: existing?.manualModels.orEmpty(),
+            selectedModels = input.selectedModels ?: existing?.selectedModels.orEmpty(),
+            healthy = enabled && models.isNotEmpty(),
+            authStatus = if (enabled) "authenticated" else null,
+            latencyMs = if (enabled) 18 else null,
+            models = if (enabled) models else emptyList(),
+        )
+        val idx = providersList.indexOfFirst { it.id == id }
+        if (idx >= 0) providersList[idx] = saved else providersList.add(saved)
+        return ProviderUpsertResult(
+            provider = saved,
+            providers = providersList.toList(),
+            engines = currentEnginesSnapshot(),
+        )
+    }
+
+    override suspend fun removeProvider(providerId: String): ProviderListResult {
+        removedProviderIds.add(providerId)
+        providersList.removeAll { it.id == providerId }
+        return ProviderListResult(
+            providers = providersList.toList(),
+            engines = currentEnginesSnapshot(),
+        )
+    }
+
+    override suspend fun probeProvider(
+        providerId: String?,
+        provider: ProviderConfigInput?,
+    ): ProviderProbeResult {
+        val custom = probeProviderHandler?.invoke(providerId, provider)
+        val probed = custom ?: when {
+            provider != null -> ProviderInfo(
+                id = provider.id ?: "probe_draft",
+                name = provider.name,
+                type = ProviderType.ENDPOINT,
+                adapter = provider.adapter ?: ProviderAdapterKind.GENERIC,
+                baseUrl = provider.baseUrl.trim().trimEnd('/'),
+                wireApis = provider.wireApis ?: listOf(WireApi.OPENAI_CHAT),
+                enabledEngines = provider.enabledEngines ?: listOf("claude", "codex", "pi"),
+                enabled = true,
+                hasApiKey = !provider.apiKey.isNullOrBlank() || !provider.apiKeyEnv.isNullOrBlank(),
+                healthy = true,
+                authStatus = "authenticated",
+                latencyMs = 15,
+                models = provider.manualModels?.takeIf { it.isNotEmpty() } ?: listOf("gpt-5.4", "claude-opus-4-6"),
+            )
+            providerId != null -> providersList.firstOrNull { it.id == providerId }
+            else -> null
+        }
+        return ProviderProbeResult(
+            provider = probed,
+            providers = providersList.toList(),
+            engines = currentEnginesSnapshot(),
+        )
+    }
+
+    private fun currentEnginesSnapshot(): List<EngineInfo> =
+        customEngines ?: enginesOverride ?: emptyList()
 
     override suspend fun renameSession(sessionId: String, title: String): SessionMeta {
         val idx = sessions.indexOfFirst { it.id == sessionId }

@@ -3,12 +3,15 @@ import os from 'node:os'
 import type {
   AgentEvent,
   EngineModelSpec,
+  EngineStatus,
   ReasoningEffort,
   SessionCancelQueuedResult,
   SessionMeta,
   SessionMode,
   SubagentSummary,
 } from '@lework/protocol'
+import type { ExternalEngineModelEntry } from '../registry/model-registry.ts'
+import { isChatModelId } from '../registry/provider-adapters.ts'
 import {
   extractAgyUserRequests,
   filterAgyQueuedFromHistory,
@@ -191,57 +194,129 @@ export class HostTaskInspector {
     }
   }
 
-  async getModelsForEngine(engineId: string, cpaModels: string[]): Promise<EngineModelSpec[]> {
+  async getModelsForEngine(
+    engineId: string,
+    externalInput: Array<string | ExternalEngineModelEntry>,
+    authStatus?: EngineStatus['authStatus'],
+  ): Promise<EngineModelSpec[]> {
     const stdEfforts: ReasoningEffort[] = ['low', 'medium', 'high']
     const codexEfforts: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh']
 
+    const normalizedExternal: ExternalEngineModelEntry[] = externalInput
+      .map(item =>
+        typeof item === 'string'
+          ? { id: item, providerId: 'cpa_local', providerName: 'CPA' }
+          : item,
+      )
+      .filter(item => isChatModelId(item.id))
+
+    const toExternalSpecs = (efforts: ReasoningEffort[], limit = 160): EngineModelSpec[] => {
+      const seen = new Set<string>()
+      const out: EngineModelSpec[] = []
+      for (const item of normalizedExternal) {
+        const key = `${item.providerId}:${item.id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push({
+          id: item.id,
+          name: item.id,
+          providerId: item.providerId,
+          providerName: item.providerName,
+          efforts,
+          defaultEffort: 'medium',
+        })
+        if (out.length >= limit) break
+      }
+      return out
+    }
+
     if (engineId === 'claude') {
       const claudeCfg = readClaudeLocalSettings(this.homeDir)
-      const combined: EngineModelSpec[] = cpaModels
-        .filter(m => !m.includes('image'))
-        .slice(0, 60)
-        .map(m => ({
-          id: m,
-          name: `${m} (Proxy)`,
-          providerId: 'cpa_local',
-          efforts: stdEfforts,
-          defaultEffort: 'medium' as const,
-        }))
+      const nativeSpecs: EngineModelSpec[] = []
+      const seenNative = new Set<string>()
+      const addNative = (spec: EngineModelSpec) => {
+        const key = spec.id.toLowerCase()
+        if (seenNative.has(key)) return
+        seenNative.add(key)
+        nativeSpecs.push(spec)
+      }
       if (claudeCfg.model) {
-        combined.unshift({
+        addNative({
           id: claudeCfg.model,
           name: claudeCfg.model,
-          providerId: 'sub_claude', // Keep the CLI's own endpoint, including custom/local providers.
+          providerId: 'sub_claude',
+          providerName: '官方',
           efforts: stdEfforts,
           defaultEffort: claudeCfg.effort,
         })
       }
-      return combined
+      if (authStatus === 'authenticated') {
+        addNative({
+          id: 'claude-opus-4-6',
+          name: 'Claude Opus 4.6',
+          providerId: 'sub_claude',
+          providerName: '官方',
+          efforts: stdEfforts,
+          defaultEffort: 'high',
+        })
+        addNative({
+          id: 'claude-sonnet-4-6',
+          name: 'Claude Sonnet 4.6',
+          providerId: 'sub_claude',
+          providerName: '官方',
+          efforts: stdEfforts,
+          defaultEffort: 'medium',
+        })
+        addNative({
+          id: 'claude-haiku-4-5',
+          name: 'Claude Haiku 4.5',
+          providerId: 'sub_claude',
+          providerName: '官方',
+          efforts: stdEfforts,
+          defaultEffort: 'medium',
+        })
+      }
+      return [...nativeSpecs, ...toExternalSpecs(stdEfforts)]
     }
 
     if (engineId === 'codex') {
-      const fromCache = readCodexModelsCache(this.homeDir, codexEfforts)
+      const fromCache = readCodexModelsCache(this.homeDir, codexEfforts).map(m => ({
+        ...m,
+        providerName: m.providerName ?? '官方',
+      }))
       const cfg = readCodexLocalSettings(this.homeDir)
       if (cfg.model && !fromCache.some(m => m.id === cfg.model)) {
-        fromCache.unshift({ id: cfg.model, name: cfg.model, providerId: 'sub_codex', defaultEffort: cfg.effort, efforts: codexEfforts })
+        fromCache.unshift({
+          id: cfg.model,
+          name: cfg.model,
+          providerId: 'sub_codex',
+          providerName: '官方',
+          defaultEffort: cfg.effort,
+          efforts: codexEfforts,
+        })
       }
-      return fromCache
+      return [...fromCache, ...toExternalSpecs(codexEfforts)]
     }
 
     if (engineId === 'agy') {
+      // Compliance guardrail: AGY strictly uses official CLI models and never merges external providers.
       if (this.agyModelsCache) return this.agyModelsCache
       if (this.agyLoading) return this.agyLoading
       this.agyLoading = loadAgyModelsFromCli().then(specs => {
-        if (specs.length) this.agyModelsCache = specs
+        const labeled = specs.map(s => ({ ...s, providerName: s.providerName ?? '官方' }))
+        if (labeled.length) this.agyModelsCache = labeled
         this.agyLoading = null
-        return specs
+        return labeled
       })
       return this.agyLoading
     }
 
     if (engineId === 'pi') {
-      const list = cpaModels.filter(m => !m.includes('image')).slice(0, 18)
-      return list.map(id => ({ id, name: id, providerId: 'cpa_local', efforts: stdEfforts, defaultEffort: 'medium' }))
+      return toExternalSpecs(stdEfforts)
+    }
+
+    if (engineId === 'dsh') {
+      return toExternalSpecs(stdEfforts)
     }
 
     if (engineId !== 'mock') return []

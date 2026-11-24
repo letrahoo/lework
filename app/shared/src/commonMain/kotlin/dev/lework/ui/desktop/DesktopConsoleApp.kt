@@ -673,7 +673,9 @@ internal fun DesktopConsoleApp(
                 },
                 onSelectEffort = store::selectEffort,
                 onSelectMode = store::selectMode,
-                onToggleFavoriteModel = store::toggleFavoriteModel,
+                onToggleFavoriteModel = { engId, modelId, providerId ->
+                    store.toggleFavoriteModel(engId, modelId, providerId)
+                },
                 onDismiss = { showModelPicker = false },
             )
         }
@@ -726,11 +728,19 @@ internal fun DesktopConsoleApp(
         if (showSettingsDialog) {
             DesktopSettingsDialog(
                 state = state,
-                onDismiss = { showSettingsDialog = false },
+                onDismiss = {
+                    store.clearProviderFeedback()
+                    showSettingsDialog = false
+                },
                 onSwitchHost = store::switchPairedHost,
                 onRenameHost = store::renamePairedHost,
                 onRemoveHost = store::removePairedHost,
                 onPairAnotherHost = store::preparePairAnotherHost,
+                onRefreshProviders = store::refreshProviders,
+                onProbeProviderDraft = store::probeProviderDraft,
+                onUpsertProvider = store::upsertProvider,
+                onRemoveProvider = store::removeProvider,
+                onClearProviderFeedback = store::clearProviderFeedback,
                 onLogout = store::logout,
             )
         }

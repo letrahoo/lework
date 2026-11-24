@@ -155,6 +155,7 @@ interface HubTransport {
         sessionId: String,
         text: String,
         images: List<PromptImageAttachment>? = null,
+        providerId: String? = null,
         modelId: String? = null,
         reasoningEffort: ReasoningEffort? = null,
         mode: SessionMode? = null,
@@ -169,9 +170,19 @@ interface HubTransport {
     suspend fun setSessionModel(
         sessionId: String,
         modelId: String,
+        providerId: String? = null,
         reasoningEffort: ReasoningEffort? = null,
         mode: SessionMode? = null,
     ): SessionMeta
+    suspend fun listProviders(): ProviderListResult = ProviderListResult()
+    suspend fun upsertProvider(input: ProviderConfigInput): ProviderUpsertResult {
+        throw UnsupportedOperationException("provider.upsert not implemented in this transport")
+    }
+    suspend fun removeProvider(providerId: String): ProviderListResult = ProviderListResult()
+    suspend fun probeProvider(
+        providerId: String? = null,
+        provider: ProviderConfigInput? = null,
+    ): ProviderProbeResult = ProviderProbeResult()
     suspend fun renameSession(sessionId: String, title: String): SessionMeta
     suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMeta
     suspend fun listArtifacts(sessionId: String): List<ArtifactInfo> = emptyList()
@@ -687,6 +698,7 @@ class HubRpcClient(
         sessionId: String,
         text: String,
         images: List<PromptImageAttachment>?,
+        providerId: String?,
         modelId: String?,
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
@@ -698,6 +710,7 @@ class HubRpcClient(
                     sessionId = sessionId,
                     text = text,
                     images = images,
+                    providerId = providerId,
                     modelId = modelId,
                     reasoningEffort = reasoningEffort,
                     mode = mode,
@@ -728,6 +741,7 @@ class HubRpcClient(
     override suspend fun setSessionModel(
         sessionId: String,
         modelId: String,
+        providerId: String?,
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
     ): SessionMeta =
@@ -736,12 +750,37 @@ class HubRpcClient(
             encodeParams(
                 SessionSetModelParams(
                     sessionId = sessionId,
+                    providerId = providerId,
                     modelId = modelId,
                     reasoningEffort = reasoningEffort,
                     mode = mode,
                 ),
             ),
         ).session
+
+    override suspend fun listProviders(): ProviderListResult =
+        call("provider.list")
+
+    override suspend fun upsertProvider(input: ProviderConfigInput): ProviderUpsertResult =
+        call(
+            "provider.upsert",
+            encodeParams(ProviderUpsertParams(provider = input)),
+        )
+
+    override suspend fun removeProvider(providerId: String): ProviderListResult =
+        call(
+            "provider.remove",
+            encodeParams(ProviderRemoveParams(providerId = providerId)),
+        )
+
+    override suspend fun probeProvider(
+        providerId: String?,
+        provider: ProviderConfigInput?,
+    ): ProviderProbeResult =
+        call(
+            "provider.probe",
+            encodeParams(ProviderProbeParams(providerId = providerId, provider = provider)),
+        )
 
     override suspend fun renameSession(sessionId: String, title: String): SessionMeta =
         call<SessionCreateResult>(
