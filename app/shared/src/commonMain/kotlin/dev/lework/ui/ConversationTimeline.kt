@@ -97,6 +97,7 @@ private fun groupTimelineSegments(
     // Virtualize only genuinely huge multi-screen essays inside LazyColumn.
     val virtualizeMinChars = if (isDesktop) 16_000 else 3_200
     val virtualizeMinBlocks = if (isDesktop) 32 else 10
+    val maxInlineBlocks = if (isDesktop) 64 else 32
 
     val out = mutableListOf<TimelineSegment>()
     val pendingProcess = mutableListOf<ChatTimelineItem>()
@@ -111,10 +112,12 @@ private fun groupTimelineSegments(
     for (item in items) {
         if (item is ChatTimelineItem.Tool || item is ChatTimelineItem.Reasoning) {
             pendingProcess.add(item)
-        } else if (item is ChatTimelineItem.Assistant && item.text.length > virtualizeMinChars) {
+        } else if (item is ChatTimelineItem.Assistant &&
+            (item.text.length > virtualizeMinChars || item.text.count { it == '\n' } >= maxInlineBlocks)
+        ) {
             flushProcess()
             val blocks = parseMarkdownBlocks(item.text)
-            if (blocks.size >= virtualizeMinBlocks) {
+            if (blocks.size > maxInlineBlocks || (item.text.length > virtualizeMinChars && blocks.size >= virtualizeMinBlocks)) {
                 blocks.forEachIndexed { idx, block ->
                     out.add(
                         TimelineSegment.AssistantBlock(
@@ -329,7 +332,15 @@ internal fun ConversationStreamView(
         }
         if (resolvedIdx >= 0) {
             val headerOffset = (if (queuedPrompts.isNotEmpty()) 1 else 0) + (if (showLiveSpinner) 1 else 0)
-            listState.scrollToItem((headerOffset + resolvedIdx).coerceAtLeast(0))
+            val index = headerOffset + resolvedIdx
+            listState.scrollToItem(index)
+            // Reverse layout anchors the bottom of an item. Reveal the start of tall replies.
+            val layout = listState.layoutInfo
+            val itemHeight = layout.visibleItemsInfo.firstOrNull { it.index == index }?.size ?: 0
+            val availableHeight = layout.viewportSize.height - layout.beforeContentPadding - layout.afterContentPadding
+            if (availableHeight > 0 && itemHeight > availableHeight) {
+                listState.scrollToItem(index, itemHeight - availableHeight)
+            }
             onJumpHandled()
         }
     }
@@ -636,7 +647,8 @@ private fun QueuedPromptsCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                    val promptModifier = if (hasLongContent) Modifier.clickable { expanded = !expanded } else Modifier
+                    SelectionContainer(modifier = Modifier.weight(1f).then(promptModifier)) {
                         Text(
                             text = if (prompts.size > 1) "${idx + 1}. $cleanText" else cleanText,
                             fontSize = 13.5.sp,
@@ -881,8 +893,14 @@ private fun MessageTimestampCaption(
     val canCopy = !copyableText.isNullOrBlank()
     if (formatted.isEmpty() && !canCopy) return
 
-    val scope = rememberCoroutineScope()
-    var copied by remember(copyableText) { mutableStateOf(false) }
+    var copies by remember(copyableText) { mutableIntStateOf(0) }
+    val copied = copies != 0
+    LaunchedEffect(copyableText, copies) {
+        if (copied) {
+            delay(1_600L)
+            copies = 0
+        }
+    }
 
     val copyButton: @Composable () -> Unit = {
         if (canCopy) {
@@ -893,11 +911,7 @@ private fun MessageTimestampCaption(
                     .clip(RoundedCornerShape(5.dp))
                     .clickable {
                         copyTextToClipboard(copyableText!!)
-                        copied = true
-                        scope.launch {
-                            delay(1_600L)
-                            copied = false
-                        }
+                        copies++
                     }
                     .padding(horizontal = 4.dp, vertical = 1.dp)
                     .then(if (copyTag != null) Modifier.testTag(copyTag) else Modifier),
@@ -969,7 +983,7 @@ private fun MessageTimelineRow(
             val isDesktop = isDesktopPlatform()
             val hasPreviews = item.imagePreviews.isNotEmpty()
             val isAutoPlaceholderOnly =
-                hasPreviews && Regex("^（已发送\\s*\\d+\\s*张图片）$").matches(item.text.trim())
+                (hasPreviews || item.imageCount > 0) && Regex("^（已发送\\s*\\d+\\s*张图片）$").matches(item.text.trim())
             val bubbleMaxWidth = when {
                 isDesktop && item.imagePreviews.size > 1 -> 460.dp
                 isDesktop && hasPreviews -> 360.dp
@@ -1168,11 +1182,9 @@ internal fun InlineApprovalBanner(
     onRefresh: (() -> Unit)? = null,
     onDecision: (requestId: String, optionId: String?, sessionId: String) -> Unit,
 ) {
-    val nonBlankLines = remember(permission.title) {
-        permission.title.lines().map { it.trim() }.filter { it.isNotEmpty() }
-    }
-    val headerTitle = nonBlankLines.firstOrNull() ?: "需要执行审批"
-    val cmdPreview = if (nonBlankLines.size > 1) nonBlankLines.drop(1).joinToString("\n") else null
+    val lines = remember(permission.title) { permission.title.lines().dropWhile { it.isBlank() } }
+    val headerTitle = lines.firstOrNull()?.trim() ?: "需要执行审批"
+    val cmdPreview = remember(lines) { lines.drop(1).joinToString("\n").takeIf { it.isNotBlank() } }
 
     Surface(
         modifier = Modifier

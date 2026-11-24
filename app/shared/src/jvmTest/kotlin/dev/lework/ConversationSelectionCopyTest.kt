@@ -19,6 +19,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performMouseInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.runComposeUiTest
@@ -209,9 +210,13 @@ class ConversationSelectionCopyTest {
             }
             waitForIdle()
 
+            val firstHeading = onNodeWithText("第 1 节分析", useUnmergedTree = true)
+            firstHeading.assertDoesNotExist()
             onNodeWithTag("msg_copy_assistant_a_huge", useUnmergedTree = true).assertIsDisplayed().performClick()
             waitForIdle()
             assertEquals(hugeMarkdown, JvmPlatformTestHooks.clipboardText)
+            onNodeWithTag("conversation_lazy_list").performScrollToKey("a_huge_b0")
+            firstHeading.assertIsDisplayed()
         }
 
     @Test
@@ -325,10 +330,8 @@ class ConversationSelectionCopyTest {
             }
 
             val copied = capturedSelection.orEmpty()
-            assertTrue(
-                copied.contains("AlphaHeadingToken") && copied.contains("MiddleParagraphToken") && copied.contains("omegaCodeToken"),
-                "Expected drag selection to span heading, paragraph, and code fence; got: <$copied>",
-            )
+            assertEquals(listOf("AlphaHeadingToken", "MiddleParagraphToken with details.", "val omegaCodeToken = 42"),
+                copied.lines().filter { it.isNotBlank() }, "Selected blocks should remain separate when pasted")
             assertFalse(
                 copied.contains("复制"),
                 "Expected DisableSelection to exclude code header copy button label; got: <$copied>",

@@ -84,15 +84,19 @@ internal fun EverforestMarkdownContent(
     val blocks = remember(markdown) { parseMarkdownBlocks(markdown) }
 
     SelectionContainer {
-        Column(
-            modifier = modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(9.dp),
-        ) {
-            for (block in blocks) {
+        Column(modifier = modifier.fillMaxWidth()) {
+            for ((index, block) in blocks.withIndex()) {
+                // Layout spacing alone is lost when Compose joins selected Text nodes.
+                if (index > 0) MarkdownSelectionGap(Modifier.height(9.dp))
                 MarkdownBlockItemView(block, wrapInSelectionContainer = false)
             }
         }
     }
+}
+
+@Composable
+private fun MarkdownSelectionGap(modifier: Modifier) {
+    Text(text = "\n", fontSize = 1.sp, lineHeight = 1.sp, modifier = modifier.width(1.dp))
 }
 
 @Composable
@@ -177,11 +181,9 @@ private fun ParagraphBlockView(text: String) {
 
 @Composable
 private fun ListGroupBlockView(items: List<MdListItem>) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-        for (item in items) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        for ((index, item) in items.withIndex()) {
+            if (index > 0) MarkdownSelectionGap(Modifier.height(5.dp))
             val startPad = (item.indent.coerceIn(0, 4) * 14).dp
             Row(
                 modifier = Modifier

@@ -27,7 +27,6 @@ import dev.lework.platform.copyTextToClipboard
 import dev.lework.store.ConnectionStatus
 import dev.lework.store.TurnRecoveryBannerState
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
  * Shared Everforest Dark network/turn error recovery banner rendered above the composer
@@ -56,9 +55,15 @@ internal fun NetworkErrorRecoveryBanner(
         else -> "将基于当前会话上下文无缝继续上一轮任务"
     }
 
-    val scope = rememberCoroutineScope()
-    var copiedDetail by remember(banner.detail, banner.headline) { mutableStateOf(false) }
     val copyableDetail = banner.detail.ifBlank { banner.headline }
+    var copies by remember(copyableDetail) { mutableIntStateOf(0) }
+    val copiedDetail = copies != 0
+    LaunchedEffect(copyableDetail, copies) {
+        if (copiedDetail) {
+            delay(1_600L)
+            copies = 0
+        }
+    }
 
     Surface(
         shape = RoundedCornerShape(14.dp),
@@ -117,11 +122,7 @@ internal fun NetworkErrorRecoveryBanner(
                         .clip(RoundedCornerShape(6.dp))
                         .clickable {
                             copyTextToClipboard(copyableDetail)
-                            copiedDetail = true
-                            scope.launch {
-                                delay(1_600L)
-                                copiedDetail = false
-                            }
+                            copies++
                         }
                         .testTag("copy_recovery_banner_button"),
                 ) {
