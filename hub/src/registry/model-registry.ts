@@ -234,10 +234,22 @@ export class ModelRegistry {
     return this.getExternalEngineStatus('pi')
   }
 
+  private getEffectiveProviderModels(
+    provider: StoredProviderConfig,
+    probe: ProviderProbeResult | undefined,
+  ): string[] {
+    if (!probe?.healthy || probe.models.length === 0) return []
+    if (!provider.selectedModels || provider.selectedModels.length === 0) {
+      return probe.models
+    }
+    const selectedSet = new Set(provider.selectedModels)
+    return probe.models.filter(m => selectedSet.has(m))
+  }
+
   /**
    * Summarizes readiness across all enabled external providers usable by `engineId` (used by Pi Engine).
    * Preserves exact semantics of single-CPA probe:
-   * - ready=true when >=1 external provider has available chat models
+   * - ready=true when >=1 external provider has available exposed chat models
    * - installed=true, ready=false, authStatus='required' when reachable provider returned 401/403
    * - installed=false, ready=false when no external provider is reachable
    */
@@ -250,7 +262,8 @@ export class ModelRegistry {
     for (const p of matching) {
       const state = this.probeStates.get(p.id)
       if (!state) continue
-      if (state.healthy && state.models.length > 0) {
+      const effective = this.getEffectiveProviderModels(p, state)
+      if (effective.length > 0) {
         anyReady = true
       } else if (state.authStatus === 'required') {
         anyAuthRequired = true
@@ -267,7 +280,7 @@ export class ModelRegistry {
     const cpa = this.providers.find(p => p.id === 'cpa_local')
     if (!cpa || !cpa.enabled) return []
     const state = this.probeStates.get(cpa.id)
-    return state?.healthy ? [...state.models] : []
+    return [...this.getEffectiveProviderModels(cpa, state)]
   }
 
   getExternalModelsForEngine(engineId: string): ExternalEngineModelEntry[] {
@@ -277,15 +290,7 @@ export class ModelRegistry {
       if (!provider.enabled) continue
       if (!provider.enabledEngines.includes(engineId)) continue
       if (!isEngineCompatibleWithWireApis(engineId, provider.wireApis)) continue
-      const probe = this.probeStates.get(provider.id)
-      if (!probe?.healthy || probe.models.length === 0) continue
-      const selectedSet =
-        provider.selectedModels && provider.selectedModels.length > 0
-          ? new Set(provider.selectedModels)
-          : null
-      const exposedModels = selectedSet
-        ? probe.models.filter(m => selectedSet.has(m))
-        : probe.models
+      const exposedModels = this.getEffectiveProviderModels(provider, this.probeStates.get(provider.id))
       for (const modelId of exposedModels) {
         out.push({
           id: modelId,
@@ -566,14 +571,19 @@ export class ModelRegistry {
         return {
           ANTHROPIC_BASE_URL: normalizeBaseUrlForAnthropic(provider.baseUrl),
           ...(effectiveKey ? { ANTHROPIC_API_KEY: effectiveKey } : {}),
-          ANTHROPIC_AUTH_TOKEN: undefined,
+          // Explicitly neutralize ANTHROPIC_AUTH_TOKEN so a stale token in ~/.claude/settings.json
+          // does not override or collide with the selected external provider's API key.
+          ANTHROPIC_AUTH_TOKEN: '',
           ...(chosenModel ? { ANTHROPIC_MODEL: chosenModel } : {}),
         }
       }
       if (engineId === 'codex') {
+        const wireApi = provider.wireApis.includes('openai-responses') ? 'responses' : 'chat'
         return {
           OPENAI_BASE_URL: normalizeBaseUrlForOpenAi(provider.baseUrl),
           ...(effectiveKey ? { OPENAI_API_KEY: effectiveKey } : {}),
+          LEWORK_PROVIDER_NAME: provider.name,
+          LEWORK_CODEX_WIRE_API: wireApi,
         }
       }
       return {}

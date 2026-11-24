@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EngineCapabilities, EngineStatus } from '@lework/protocol'
+import { buildCodexLaunchArgs } from '../src/engines/codex-adapter.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit } from '../src/engines/types.ts'
 import { ModelRegistry } from '../src/registry/model-registry.ts'
 import { isChatModelId, mergeSessionEnv } from '../src/registry/provider-adapters.ts'
@@ -265,7 +266,26 @@ describe('Host-scoped Model Providers & Multi-Engine Merging', () => {
     )
     expect(cpaClaudeEnv.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:8317')
     expect(cpaClaudeEnv.ANTHROPIC_API_KEY).toBe('cpa-yaml-key')
+    expect(cpaClaudeEnv.ANTHROPIC_AUTH_TOKEN).toBe('')
     expect(cpaClaudeEnv.ANTHROPIC_MODEL).toBe('claude-opus-4-6')
+
+    // Codex external provider route injects explicit `-c model_provider=lework_proxy` overrides
+    const cpaCodexEnv = registry.resolveSessionEnv('codex', 'cpa_local', 'gpt-5.4')
+    const codexExternalArgs = buildCodexLaunchArgs(['app-server'], {
+      providerId: 'cpa_local',
+      env: cpaCodexEnv,
+    })
+    expect(codexExternalArgs).toContain('model_provider=lework_proxy')
+    expect(codexExternalArgs).toContain('model_providers.lework_proxy.base_url="http://127.0.0.1:8317/v1"')
+    expect(codexExternalArgs).toContain('model_providers.lework_proxy.env_key="OPENAI_API_KEY"')
+    expect(codexExternalArgs).toContain('model_providers.lework_proxy.wire_api="responses"')
+
+    // Codex official subscription route keeps clean `app-server` args without proxy override
+    const codexOfficialArgs = buildCodexLaunchArgs(['app-server'], {
+      providerId: 'sub_codex',
+      env: registry.resolveSessionEnv('codex', 'sub_codex', 'gpt-5.4'),
+    })
+    expect(codexOfficialArgs).toEqual(['app-server'])
 
     // SessionManager: hot-switch within same provider, graceful reopen with resumeNativeId on cross-provider switch
     const claudeAdapter = new RecordingEngineAdapter('claude', 'Claude Code', {

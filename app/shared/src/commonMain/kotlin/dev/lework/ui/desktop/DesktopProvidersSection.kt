@@ -811,11 +811,11 @@ private fun DesktopProviderEditorDialog(
             baseUrl = cleanUrl,
             apiKey = apiKey.trim().takeIf { it.isNotEmpty() },
             clearApiKey = if (clearApiKey) true else null,
-            apiKeyEnv = apiKeyEnv.trim().takeIf { it.isNotEmpty() },
+            apiKeyEnv = apiKeyEnv.trim(),
             wireApis = selectedWireApis.toList(),
             enabledEngines = selectedEngines.toList(),
             enabled = initial?.enabled ?: true,
-            manualModels = manualList.takeIf { it.isNotEmpty() },
+            manualModels = manualList,
         )
     }
 

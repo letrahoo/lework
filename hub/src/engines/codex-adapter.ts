@@ -3,10 +3,35 @@ import { probeCliAuth } from './cli-auth-status.ts'
 import crypto from 'node:crypto'
 import type { EngineCapabilities, EngineStatus, PermissionOption, SessionMode } from '@lework/protocol'
 import { findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
-import { mergeSessionEnv } from '../registry/provider-adapters.ts'
+import { isExternalProviderId, mergeSessionEnv } from '../registry/provider-adapters.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
+
+export function buildCodexLaunchArgs(
+  baseArgs: string[],
+  init: Pick<EngineSessionInit, 'providerId' | 'env'>,
+): string[] {
+  const baseUrl = init.env?.OPENAI_BASE_URL?.trim()
+  if (!isExternalProviderId(init.providerId) || !baseUrl) {
+    return [...baseArgs]
+  }
+  const providerName = init.env?.LEWORK_PROVIDER_NAME?.trim() || 'External Proxy'
+  const wireApi = init.env?.LEWORK_CODEX_WIRE_API === 'chat' ? 'chat' : 'responses'
+  return [
+    ...baseArgs,
+    '-c',
+    'model_provider=lework_proxy',
+    '-c',
+    `model_providers.lework_proxy.name=${JSON.stringify(providerName)}`,
+    '-c',
+    `model_providers.lework_proxy.base_url=${JSON.stringify(baseUrl)}`,
+    '-c',
+    'model_providers.lework_proxy.env_key="OPENAI_API_KEY"',
+    '-c',
+    `model_providers.lework_proxy.wire_api=${JSON.stringify(wireApi)}`,
+  ]
+}
 
 export interface CodexAdapterOptions {
   binary?: string
@@ -69,10 +94,11 @@ export class CodexEngineAdapter implements EngineAdapter {
   async openSession(init: EngineSessionInit): Promise<EngineSession> {
     const bin = this.resolveBinary()
     if (!bin) throw new Error('codex binary is not available on this host')
+    const baseArgs = this.opts.args ?? ['app-server']
     const session = new CodexAppServerSession(
       init,
       bin,
-      this.opts.args ?? ['app-server'],
+      buildCodexLaunchArgs(baseArgs, init),
     )
     await session.start()
     return session
