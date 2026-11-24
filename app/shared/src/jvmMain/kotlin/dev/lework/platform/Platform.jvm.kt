@@ -55,6 +55,19 @@ object JvmPlatformTestHooks {
     var sshConnectSupported: Boolean = false
     var sshConfigHosts: List<String> = emptyList()
     var nextSshPairingResult: Result<String> = Result.failure(IllegalStateException("No mock SSH pairing configured"))
+    val runtimeLogs = mutableListOf<String>()
+    var fakeRuntimeLogPath: String? = null
+
+    fun recordRuntimeLog(line: String) {
+        synchronized(runtimeLogs) {
+            if (runtimeLogs.size >= 500) {
+                runtimeLogs.removeAt(0)
+            }
+            runtimeLogs.add(line)
+        }
+    }
+
+    fun snapshotRuntimeLogs(): List<String> = synchronized(runtimeLogs) { runtimeLogs.toList() }
 
     fun setForeground(isForeground: Boolean) {
         _foreground.value = isForeground
@@ -108,6 +121,8 @@ object JvmPlatformTestHooks {
         sshConnectSupported = false
         sshConfigHosts = emptyList()
         nextSshPairingResult = Result.failure(IllegalStateException("No mock SSH pairing configured"))
+        synchronized(runtimeLogs) { runtimeLogs.clear() }
+        fakeRuntimeLogPath = null
     }
 }
 
@@ -415,3 +430,14 @@ actual fun dismissNativeKeyboard() {
         JvmPlatformTestHooks.keyboardDismissCount++
     }
 }
+
+actual fun logRuntimeEvent(tag: String, message: String) {
+    if (JvmDesktopRuntime.isEnabled) {
+        JvmDesktopRuntime.logRuntimeEvent(tag, message)
+    } else {
+        JvmPlatformTestHooks.recordRuntimeLog(formatRuntimeLogLine(epochMillis(), tag, message))
+    }
+}
+
+actual fun runtimeLogFilePath(): String? =
+    if (JvmDesktopRuntime.isEnabled) JvmDesktopRuntime.runtimeLogPath() else JvmPlatformTestHooks.fakeRuntimeLogPath

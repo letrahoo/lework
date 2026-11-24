@@ -215,3 +215,7 @@ expect fun requestMultiImagePick(
 expect fun decodeImageBytes(bytes: ByteArray): ImageBitmap?
 expect fun signingExpiryRemainingHours(): Int?
 expect fun dismissNativeKeyboard()
+
+// Cross-platform rolling runtime diagnostic log (secret-free)
+expect fun logRuntimeEvent(tag: String, message: String)
+expect fun runtimeLogFilePath(): String?

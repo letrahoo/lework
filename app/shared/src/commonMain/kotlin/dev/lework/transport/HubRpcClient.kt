@@ -2,6 +2,8 @@ package dev.lework.transport
 
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.isDesktopPlatform
+import dev.lework.platform.logRuntimeEvent
+import dev.lework.platform.redactUrlForLog
 import dev.lework.protocol.*
 import dev.lework.security.HubAttestation
 import dev.lework.security.HubTrust
@@ -249,6 +251,10 @@ class HubRpcClient(
         // Tailscale node); an unpinned responder is only used as fallback and must pass attestation.
         var firstUnpinned: DiscoveredEndpoint? = null
         val requirePinned = HubTrust.pinned().isNotEmpty()
+        logRuntimeEvent(
+            "DISCOVER",
+            "start preferredHubId=${preferredHubId ?: "any"} waitMs=$waitWindowMs candidates=${candidates.size} [${candidates.take(5).joinToString(",") { redactUrlForLog(it) }}]",
+        )
         val probedMutex = Mutex()
         val inFlight = mutableSetOf<String>()
         val succeeded = mutableSetOf<String>()
@@ -362,6 +368,14 @@ class HubRpcClient(
         dynamicCollector?.cancel()
         val allJobs = probedMutex.withLock { jobs.toList() }
         allJobs.forEach { it.cancel() }
+        logRuntimeEvent(
+            "DISCOVER",
+            if (result != null) {
+                "done winner=${redactUrlForLog(result.baseUrl)} hubId=${result.discover.hub.id} hubName=${result.discover.hub.name} oauth=${result.discover.oauthEnabled} tsSameUser=${result.discover.tailscaleSameUser}"
+            } else {
+                "done winner=null preferredHubId=${preferredHubId ?: "any"}"
+            },
+        )
         return result
     }
 
@@ -580,12 +594,14 @@ class HubRpcClient(
         platformName: String,
     ): HubHelloResult {
         disconnect()
-        val session = secureClient.webSocketSession(urlString = hubWsUrlOf(wsUrl))
+        val targetWs = hubWsUrlOf(wsUrl)
+        logRuntimeEvent("WS", "connecting url=${redactUrlForLog(targetWs)} platform=$platformName")
+        val session = secureClient.webSocketSession(urlString = targetWs)
         wsSession = session
         readerJob = scope.launch {
             readLoop(session)
         }
-        return call(
+        val hello = call<HubHelloResult>(
             method = "hub.hello",
             params = encodeParams(
                 HubHelloParams(
@@ -599,6 +615,11 @@ class HubRpcClient(
                 ),
             ),
         )
+        logRuntimeEvent(
+            "WS",
+            "hello ok url=${redactUrlForLog(targetWs)} hubId=${hello.hub.id} hubName=${hello.hub.name} ver=${hello.hub.version}",
+        )
+        return hello
     }
 
     override suspend fun fetchStatus(): HubStatusResult = call("hub.status")
@@ -835,6 +856,9 @@ class HubRpcClient(
 
     override suspend fun disconnect() {
         val s = wsSession
+        if (s != null) {
+            logRuntimeEvent("WS", "disconnect requested (closing active socket)")
+        }
         wsSession = null
         readerJob?.cancel()
         readerJob = null
@@ -855,10 +879,9 @@ class HubRpcClient(
             allocated
         }
         val payload = encodeRpcRequest(id = id, method = method, params = params)
-        try {
+        val resultElem = try {
             session.send(Frame.Text(payload))
-            val resultElem = withTimeout(timeoutMs) { deferred.await() }
-            return decodeResult(resultElem)
+            withTimeout(timeoutMs) { deferred.await() }
         } catch (t: Throwable) {
             pendingMutex.withLock { pending.remove(id) }
             // Ktor's WebSocket channels throw `CancellationException("Channel was cancelled")` when the
@@ -866,12 +889,31 @@ class HubRpcClient(
             if (t is kotlinx.coroutines.CancellationException && !currentCoroutineContext().isActive) {
                 throw t
             }
-            if (t !is RpcCallException && wsSession === session) {
+            if (t is RpcCallException) {
+                logRuntimeEvent("RPC", "error method=$method code=${t.code} msg=${t.message}")
+                throw t
+            }
+            if (wsSession === session) {
+                logRuntimeEvent(
+                    "WS",
+                    "transport error method=$method err=${t::class.simpleName}:${t.message}; closing socket",
+                )
                 wsSession = null
                 runCatching { session.close() }
                 _disconnected.tryEmit(t.message ?: "Connection interrupted")
                 throw IllegalStateException("连接已中断，正在自动重连", t)
             }
+            throw t
+        }
+        // Decode outside the transport-failure block so a response schema mismatch or parse error
+        // NEVER kills a healthy WebSocket or triggers a reconnect storm.
+        return try {
+            decodeResult(resultElem)
+        } catch (t: Throwable) {
+            logRuntimeEvent(
+                "RPC",
+                "decode error method=$method err=${t::class.simpleName}:${t.message} (socket preserved)",
+            )
             throw t
         }
     }
@@ -906,12 +948,14 @@ class HubRpcClient(
             }
             failAllPending("Connection closed by Hub")
             if (wsSession === session) {
+                logRuntimeEvent("WS", "readLoop ended (EOF from Hub); emitting disconnected")
                 wsSession = null
                 _disconnected.tryEmit("Connection closed")
             }
         } catch (ce: kotlinx.coroutines.CancellationException) {
             failAllPending("Connection interrupted")
             if (wsSession === session) {
+                logRuntimeEvent("WS", "readLoop cancelled err=${ce.message}; emitting disconnected")
                 wsSession = null
                 _disconnected.tryEmit(ce.message ?: "Connection interrupted")
             }
@@ -919,6 +963,7 @@ class HubRpcClient(
         } catch (t: Throwable) {
             failAllPending(t.message ?: "WebSocket error")
             if (wsSession === session) {
+                logRuntimeEvent("WS", "readLoop failed err=${t::class.simpleName}:${t.message}; emitting disconnected")
                 wsSession = null
                 _disconnected.tryEmit(t.message ?: "Disconnected")
             }

@@ -18,6 +18,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import dev.lework.protocol.ProtocolJson
@@ -163,12 +164,17 @@ object AndroidPlatformRuntime {
     }
 
     fun onForegroundChanged(isForeground: Boolean) {
+        val prev = foregroundFlow.value
         foregroundFlow.value = isForeground
+        if (prev != isForeground) {
+            logRuntimeEvent("ANDROID", "foreground changed $prev->$isForeground")
+        }
     }
 
     fun onIncomingUri(rawUri: String?) {
         val trimmed = rawUri?.trim().orEmpty()
         if (trimmed.startsWith("lework://", ignoreCase = true)) {
+            logRuntimeEvent("DEEPLINK", "incoming uri=${redactUrlForLog(trimmed)}")
             incomingUriFlow.value = trimmed
         }
     }
@@ -739,6 +745,7 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
 }
 
 actual fun openExternalUrl(url: String) {
+    logRuntimeEvent("EXTERNAL_URL", "open ${redactUrlForLog(url)}")
     val ctx = AndroidPlatformRuntime.appContext ?: return
     runCatching {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
@@ -988,3 +995,29 @@ actual fun listSshConfigHosts(): List<String> = emptyList()
 
 actual suspend fun requestSshHostPairingLink(sshTarget: String): Result<String> =
     Result.failure(UnsupportedOperationException("仅桌面端支持通过本机 SSH 直连远程开发机"))
+
+private val androidRuntimeLogLock = Any()
+private const val ANDROID_MAX_RUNTIME_LOG_BYTES = 2L * 1024L * 1024L
+
+actual fun runtimeLogFilePath(): String? {
+    val ctx = AndroidPlatformRuntime.appContext ?: return null
+    return File(ctx.filesDir, "lework-runtime.log").absolutePath
+}
+
+actual fun logRuntimeEvent(tag: String, message: String) {
+    val safeTag = tag.trim().ifEmpty { "APP" }.take(24)
+    val line = formatRuntimeLogLine(epochMillis(), safeTag, message)
+    runCatching { Log.i("Lework/$safeTag", sanitizeRuntimeLogMessage(message)) }
+    val ctx = AndroidPlatformRuntime.appContext ?: return
+    synchronized(androidRuntimeLogLock) {
+        runCatching {
+            val file = File(ctx.filesDir, "lework-runtime.log")
+            if (file.isFile && file.length() >= ANDROID_MAX_RUNTIME_LOG_BYTES) {
+                val rotated = File(ctx.filesDir, "lework-runtime.log.1")
+                if (rotated.exists()) rotated.delete()
+                file.renameTo(rotated)
+            }
+            file.appendText(line + "\n")
+        }
+    }
+}

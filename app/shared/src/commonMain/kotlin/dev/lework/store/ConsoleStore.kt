@@ -40,6 +40,12 @@ class ConsoleStore(
             "网络已恢复，请基于刚才的进度继续完成上一轮未完成的任务。"
         private const val ERROR_AGGREGATION_WINDOW_MS = 120_000L
         private const val DUPLICATE_ERROR_DEDUP_MS = 2_000L
+        internal const val BONJOUR_AUTO_RETRY_COOLDOWN_MS = 5_000L
+        internal const val MAX_CONSECUTIVE_BONJOUR_AUTO_RETRIES = 3
+        internal const val DESKTOP_MIN_UNFOCUSED_MS_FOR_RESUME = 1_500L
+        internal const val FOREGROUND_RESUME_COOLDOWN_MS = 2_000L
+        internal const val OAUTH_EXPIRED_RETRY_DELAY_MS = 1_500L
+        internal const val MAX_CONSECUTIVE_OAUTH_EXPIRED_RESTARTS = 4
     }
 
     private val initialPrefs = loadSessionPrefs()
@@ -85,6 +91,10 @@ class ConsoleStore(
     private var subagentInspectToken: Long = 0L
     private var subscribedSubagentId: String? = null
     private var cancellingSessionId: String? = null
+    private var lastBonjourAutoRetryMs: Long = 0L
+    private var consecutiveBonjourAutoRetries: Int = 0
+    private var lastBackgroundAtMs: Long = 0L
+    private var lastForegroundResumeAtMs: Long = 0L
 
     private fun switchSubscriptionTo(nextSessionId: String?) {
         val prev = subscribedSessionId
@@ -164,6 +174,7 @@ class ConsoleStore(
         scope.launch {
             observeIncomingPairingUri().collect { uri ->
                 if (!uri.isNullOrBlank()) {
+                    logRuntimeEvent("DEEPLINK", "collect uri=${redactUrlForLog(uri)}")
                     consumeIncomingPairingUri()
                     val sessionLink = parseSessionDeepLink(uri)
                     if (sessionLink != null) {
@@ -177,7 +188,28 @@ class ConsoleStore(
         scope.launch {
             observeBonjourHubUrls().collect { urls ->
                 if (!manualPairingMode && urls.isNotEmpty() && !_state.value.hasEnteredWorkspace && _state.value.connectionStatus == ConnectionStatus.ERROR) {
-                    bootstrapOrConnect()
+                    val nowMs = epochMillis()
+                    if (consecutiveBonjourAutoRetries >= MAX_CONSECUTIVE_BONJOUR_AUTO_RETRIES) {
+                        logRuntimeEvent(
+                            "BONJOUR",
+                            "skip auto-retry cap=$MAX_CONSECUTIVE_BONJOUR_AUTO_RETRIES urls=${urls.size}",
+                        )
+                        return@collect
+                    }
+                    if (lastBonjourAutoRetryMs > 0L && nowMs - lastBonjourAutoRetryMs < BONJOUR_AUTO_RETRY_COOLDOWN_MS) {
+                        logRuntimeEvent(
+                            "BONJOUR",
+                            "skip auto-retry cooldown elapsedMs=${nowMs - lastBonjourAutoRetryMs} urls=${urls.size}",
+                        )
+                        return@collect
+                    }
+                    lastBonjourAutoRetryMs = nowMs
+                    consecutiveBonjourAutoRetries++
+                    logRuntimeEvent(
+                        "BONJOUR",
+                        "auto-retry #$consecutiveBonjourAutoRetries/$MAX_CONSECUTIVE_BONJOUR_AUTO_RETRIES urls=${urls.size}",
+                    )
+                    bootstrapOrConnectInternal(loadActiveHostId(), trigger = "bonjour_auto")
                 }
             }
         }
@@ -186,12 +218,52 @@ class ConsoleStore(
             observeAppForeground().collect { isForeground ->
                 if (!isForeground) {
                     wasBackground = true
+                    lastBackgroundAtMs = epochMillis()
+                    logRuntimeEvent(
+                        "LIFECYCLE",
+                        "foreground=false entered=${_state.value.hasEnteredWorkspace} status=${_state.value.connectionStatus}",
+                    )
                 } else if (wasBackground) {
                     wasBackground = false
-                    if (_state.value.hasEnteredWorkspace) {
+                    val nowMs = epochMillis()
+                    val bgMs = if (lastBackgroundAtMs > 0L) (nowMs - lastBackgroundAtMs).coerceAtLeast(0L) else Long.MAX_VALUE
+                    val sinceLastResumeMs = if (lastForegroundResumeAtMs > 0L) {
+                        (nowMs - lastForegroundResumeAtMs).coerceAtLeast(0L)
+                    } else {
+                        Long.MAX_VALUE
+                    }
+                    val cur = _state.value
+                    if (cur.hasEnteredWorkspace) {
+                        if (isDesktopPlatform() && cur.connectionStatus == ConnectionStatus.CONNECTED) {
+                            if (bgMs < DESKTOP_MIN_UNFOCUSED_MS_FOR_RESUME) {
+                                logRuntimeEvent(
+                                    "LIFECYCLE",
+                                    "foreground=true skip verify (desktop brief focus bounce ${bgMs}ms)",
+                                )
+                                return@collect
+                            }
+                            if (sinceLastResumeMs < FOREGROUND_RESUME_COOLDOWN_MS) {
+                                logRuntimeEvent(
+                                    "LIFECYCLE",
+                                    "foreground=true skip verify (desktop focus cooldown ${sinceLastResumeMs}ms)",
+                                )
+                                return@collect
+                            }
+                        }
+                        lastForegroundResumeAtMs = nowMs
+                        logRuntimeEvent(
+                            "LIFECYCLE",
+                            "foreground=true -> verifyAndResumeForegroundSession bgMs=$bgMs status=${cur.connectionStatus}",
+                        )
                         verifyAndResumeForegroundSession()
-                    } else if (_state.value.tsnetLoggingIn) {
+                    } else if (cur.tsnetLoggingIn) {
+                        logRuntimeEvent("LIFECYCLE", "foreground=true -> checkTsnetAfterForegroundReturn")
                         checkTsnetAfterForegroundReturn()
+                    } else {
+                        logRuntimeEvent(
+                            "LIFECYCLE",
+                            "foreground=true idle entered=false status=${cur.connectionStatus}",
+                        )
                     }
                 }
             }
@@ -201,16 +273,24 @@ class ConsoleStore(
             observeNetworkEpoch().collect { epoch ->
                 if (epoch <= lastSeenEpoch) return@collect
                 lastSeenEpoch = epoch
+                consecutiveBonjourAutoRetries = 0
+                lastBonjourAutoRetryMs = 0L
+                logRuntimeEvent("NET", "networkEpoch=$epoch scheduling handoff")
                 networkHandoffJob?.cancel()
                 networkHandoffJob = scope.launch {
                     delay(650L)
                     val cur = _state.value
-                    if (manualPairingMode || pairingInFlight) return@launch
+                    if (manualPairingMode || pairingInFlight) {
+                        logRuntimeEvent("NET", "handoff skipped manualPairing=$manualPairingMode pairingInFlight=$pairingInFlight")
+                        return@launch
+                    }
                     if (cur.hasEnteredWorkspace && observeAppForeground().value) {
+                        logRuntimeEvent("NET", "handoff -> verifyAndResumeForegroundSession(fromNetworkHandoff=true)")
                         resumeJob?.cancel()
                         verifyAndResumeForegroundSession(fromNetworkHandoff = true)
                     } else if (!cur.hasEnteredWorkspace && cur.connectionStatus == ConnectionStatus.ERROR) {
-                        bootstrapOrConnect()
+                        logRuntimeEvent("NET", "handoff -> bootstrapOrConnect (recovering from ERROR)")
+                        bootstrapOrConnectInternal(loadActiveHostId(), trigger = "network_handoff")
                     }
                 }
             }
@@ -309,6 +389,10 @@ class ConsoleStore(
         scope.launch {
             rpc.disconnected.collect { reason ->
                 val cur = _state.value
+                logRuntimeEvent(
+                    "WS",
+                    "disconnected reason=$reason entered=${cur.hasEnteredWorkspace} status=${cur.connectionStatus} manualPairing=$manualPairingMode fg=${observeAppForeground().value}",
+                )
                 if (!manualPairingMode && cur.hasEnteredWorkspace) {
                     _state.update {
                         it.copy(
@@ -333,10 +417,38 @@ class ConsoleStore(
                 }
             }
         }
-        // State-reactive watchdog: only runs while an active session is RUNNING/WAITING_PERMISSION
-        // (catches missed frames & zombie half-open sockets within 4.5s) or while RECONNECTING in foreground.
+        // State-reactive watchdog & diagnostic transition observer: logs every top-level screen/status/host/session jump
+        // and maintains turn catch-up & background reconnect loops.
         scope.launch {
+            var prevEntered: Boolean? = null
+            var prevStatus: ConnectionStatus? = null
+            var prevHubId: String? = null
+            var prevBaseUrl: String? = null
+            var prevSessionId: String? = null
+            var prevConnErr: String? = null
             _state.collect { st ->
+                val hubId = st.hub?.id
+                if (prevEntered != st.hasEnteredWorkspace ||
+                    prevStatus != st.connectionStatus ||
+                    prevHubId != hubId ||
+                    prevBaseUrl != st.discoveredBaseUrl ||
+                    prevSessionId != st.activeSessionId ||
+                    prevConnErr != st.connectionError
+                ) {
+                    if (prevStatus != null) {
+                        logRuntimeEvent(
+                            "STATE",
+                            "entered=${prevEntered}->${st.hasEnteredWorkspace} status=${prevStatus}->${st.connectionStatus} hub=${hubId ?: "none"} base=${redactUrlForLog(st.discoveredBaseUrl)} sid=${st.activeSessionId ?: "none"} err=${st.connectionError ?: "none"}",
+                        )
+                    }
+                    prevEntered = st.hasEnteredWorkspace
+                    prevStatus = st.connectionStatus
+                    prevHubId = hubId
+                    prevBaseUrl = st.discoveredBaseUrl
+                    prevSessionId = st.activeSessionId
+                    prevConnErr = st.connectionError
+                }
+
                 val activeSess = st.activeSession?.takeIf { it.id == st.activeSessionId }
                 val needTurnWatchdog =
                     st.hasEnteredWorkspace &&
@@ -366,8 +478,9 @@ class ConsoleStore(
                                     lastRealtimeActivityMs = epochMillis()
                                 } catch (ce: CancellationException) {
                                     throw ce
-                                } catch (_: Throwable) {
+                                } catch (t: Throwable) {
                                     // Dead / half-open zombie WebSocket detected during long turn: reconnect immediately!
+                                    logRuntimeEvent("WATCHDOG", "turn catch-up failed sid=$sid err=${t::class.simpleName}:${t.message}; reconnecting")
                                     runCatching { rpc.disconnect() }
                                     _state.update {
                                         it.copy(connectionStatus = ConnectionStatus.RECONNECTING, connectionError = null)
@@ -397,6 +510,7 @@ class ConsoleStore(
                                     break
                                 }
                                 if (observeAppForeground().value && resumeJob?.isActive != true) {
+                                    logRuntimeEvent("RECONNECT", "retry tick failures=$consecutiveReconnectFailures")
                                     verifyAndResumeForegroundSession(fromNetworkHandoff = true)
                                 }
                             }
@@ -457,10 +571,17 @@ class ConsoleStore(
     }
 
     fun bootstrapOrConnect() {
+        consecutiveBonjourAutoRetries = 0
+        lastBonjourAutoRetryMs = 0L
+        bootstrapOrConnectInternal(loadActiveHostId(), trigger = "manual")
+    }
+
+    private fun bootstrapOrConnectInternal(preferredHubId: String?, trigger: String) {
         if (pairingInFlight || _state.value.pendingDeepLinkPairing != null || !observeIncomingPairingUri().value.isNullOrBlank()) {
+            logRuntimeEvent("CONNECT", "bootstrap skipped trigger=$trigger pairingInFlight=$pairingInFlight")
             return
         }
-        bootstrapOrConnectToHost(loadActiveHostId())
+        bootstrapOrConnectToHost(preferredHubId, trigger = trigger)
     }
 
     private fun launchTsnetDiscoveryFeeder(): Job? {
@@ -489,7 +610,7 @@ class ConsoleStore(
         }
     }
 
-    private fun bootstrapOrConnectToHost(preferredHubId: String?) {
+    private fun bootstrapOrConnectToHost(preferredHubId: String?, trigger: String = "manual") {
         manualPairingMode = false
         discoverJob?.cancel()
         oauthPollJob?.cancel()
@@ -497,6 +618,10 @@ class ConsoleStore(
         resumeJob?.cancel()
         startBonjourDiscovery()
         val tsnetActive = isMobileTsnetAvailable() && loadSavedTsnetEnabled()
+        logRuntimeEvent(
+            "CONNECT",
+            "bootstrapOrConnectToHost trigger=$trigger preferredHubId=${preferredHubId ?: "any"} tsnetActive=$tsnetActive",
+        )
         _state.update {
             it.copy(
                 connectionStatus = ConnectionStatus.DISCOVERING,
@@ -1073,6 +1198,9 @@ class ConsoleStore(
 
     fun switchPairedHost(hubId: String) {
         if (hubId == _state.value.hub?.id && _state.value.hasEnteredWorkspace) return
+        logRuntimeEvent("HOST", "switchPairedHost target=$hubId prev=${_state.value.hub?.id ?: "none"}")
+        consecutiveBonjourAutoRetries = 0
+        lastBonjourAutoRetryMs = 0L
         manualPairingMode = false
         discoverJob?.cancel()
         oauthPollJob?.cancel()
@@ -1105,6 +1233,7 @@ class ConsoleStore(
     }
 
     fun preparePairAnotherHost() {
+        logRuntimeEvent("HOST", "preparePairAnotherHost")
         manualPairingMode = true
         discoverJob?.cancel()
         oauthPollJob?.cancel()
@@ -1244,10 +1373,18 @@ class ConsoleStore(
      * - Fail: transitions back to the reconnect / auth screen (`hasEnteredWorkspace = false`).
      */
     fun verifyAndResumeForegroundSession(fromNetworkHandoff: Boolean = false) {
-        if (resumeJob?.isActive == true) return
+        if (resumeJob?.isActive == true) {
+            logRuntimeEvent("RESUME", "skip duplicate verifyAndResumeForegroundSession (already active)")
+            return
+        }
+        logRuntimeEvent(
+            "RESUME",
+            "start fromNetworkHandoff=$fromNetworkHandoff status=${_state.value.connectionStatus} base=${redactUrlForLog(_state.value.discoveredBaseUrl)}",
+        )
         resumeJob = scope.launch {
             val cachedToken = loadSavedAccessToken()
             if (cachedToken.isNullOrBlank()) {
+                logRuntimeEvent("RESUME", "no cached token -> NEEDS_AUTH")
                 _state.update {
                     it.copy(
                         hasEnteredWorkspace = false,
@@ -1259,12 +1396,22 @@ class ConsoleStore(
                 return@launch
             }
 
-            // If we were riding on embedded tsnet (`127.0.0.1:<port>`) and a network handoff just fired
+            // If we were riding on embedded tsnet (`127.0.0.1:<ephemeralPort>`) and a network handoff just fired
             // (e.g., arriving home onto Wi-Fi), check whether a direct LAN endpoint is now reachable
             // so we can upgrade to direct LAN speed seamlessly.
+            // Never misclassify Desktop Local Direct (`127.0.0.1:64450`) or local SSH tunnels as tsnet!
             val currentBase = _state.value.discoveredBaseUrl
+            val normalizedCurrentBase = normalizeHubBaseUrl(currentBase)
+            val isKnownTsnetProxy = _state.value.tsnetStatus.peers.any { peer ->
+                val proxy = peer.localProxyUrl?.let { normalizeHubBaseUrl(it) }.orEmpty()
+                proxy.isNotEmpty() && proxy == normalizedCurrentBase
+            }
+            val isEmbeddedTsnetProxy =
+                normalizedCurrentBase.startsWith("https://127.0.0.1:") &&
+                    normalizedCurrentBase != "https://127.0.0.1:64450" &&
+                    (!isDesktopPlatform() || isKnownTsnetProxy)
             var shouldUpgradeToLan = false
-            if (fromNetworkHandoff && currentBase.startsWith("https://127.0.0.1:")) {
+            if (fromNetworkHandoff && isEmbeddedTsnetProxy) {
                 val lanCandidates = candidateHubHttpUrls().filterNot {
                     it.startsWith("https://127.0.0.1:") || it.startsWith("https://10.0.2.2:") || it.startsWith("https://100.")
                 }
@@ -1276,6 +1423,7 @@ class ConsoleStore(
                         preferredHubId = preferredId,
                     )
                     if (lanHit != null) {
+                        logRuntimeEvent("RESUME", "upgrading embedded tsnet proxy to LAN ${redactUrlForLog(lanHit.baseUrl)}")
                         shouldUpgradeToLan = true
                     }
                 }
@@ -1287,6 +1435,7 @@ class ConsoleStore(
                 try {
                     val liveSessions = withTimeout(fastProbeTimeoutMs) { rpc.listSessions() }
                     consecutiveReconnectFailures = 0
+                    logRuntimeEvent("RESUME", "fast-path ok sessions=${liveSessions.size}")
                     _state.update { it.copy(sessions = liveSessions, connectionError = null) }
                     val activeId = _state.value.activeSessionId
                     if (activeId != null) {
@@ -1294,6 +1443,7 @@ class ConsoleStore(
                     }
                     return@launch
                 } catch (e: RpcCallException) {
+                    logRuntimeEvent("RESUME", "fast-path rpc error code=${e.code} msg=${e.message}")
                     if (e.code == ErrorCode.UNAUTHORIZED) {
                         saveAuthSession(null, null)
                         _state.update {
@@ -1309,7 +1459,8 @@ class ConsoleStore(
                     // Other RPC / zombie-socket failure falls through to full discovery & reconnect
                 } catch (ce: CancellationException) {
                     throw ce
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    logRuntimeEvent("RESUME", "fast-path failed err=${t::class.simpleName}:${t.message}; full reconnect")
                     // Dead socket after network handoff or sleep — fall through to reconnect
                 }
             }
@@ -1336,6 +1487,7 @@ class ConsoleStore(
                 feederJob?.cancel()
             }
             if (found == null) {
+                logRuntimeEvent("RESUME", "discover returned null failures=${consecutiveReconnectFailures + 1}")
                 if (fromNetworkHandoff || _state.value.hasEnteredWorkspace) {
                     // Transient signal drop, Wi-Fi wake delay, or brief Hub daemon restart:
                     // keep `hasEnteredWorkspace = true` with RECONNECTING status so `reconnectRetryJob`
@@ -1394,8 +1546,10 @@ class ConsoleStore(
                 token = resumeToken,
                 isForegroundResume = true,
                 expectedHubId = found.discover.hub.id,
+                deferAuthTransitionOnUnauthorized = found.discover.tailscaleSameUser,
             )
             if (!ok && found.discover.tailscaleSameUser) {
+                logRuntimeEvent("RESUME", "trying Tailscale same-user fallback handshake")
                 val hs = runCatching {
                     rpc.authenticateViaTailscale(found.baseUrl, platformName())
                 }.getOrNull()
@@ -1411,6 +1565,20 @@ class ConsoleStore(
                         expectedHubId = hs.hub.id,
                         expectedFingerprint = hs.fingerprint,
                     )
+                } else if (_state.value.connectionStatus != ConnectionStatus.NEEDS_AUTH &&
+                    (loadHostAccessToken(found.discover.hub.id) ?: loadSavedAccessToken()).isNullOrBlank()
+                ) {
+                    logRuntimeEvent("RESUME", "Tailscale fallback handshake failed with no token -> NEEDS_AUTH")
+                    _state.update {
+                        it.copy(
+                            hasEnteredWorkspace = false,
+                            authUserName = null,
+                            connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                        )
+                    }
+                    if (found.discover.oauthEnabled) {
+                        startOAuthLoginFlow(found.baseUrl, found.wsUrl)
+                    }
                 }
             }
         }
@@ -1419,11 +1587,17 @@ class ConsoleStore(
     fun startOAuthLoginFlow(
         baseUrl: String = _state.value.discoveredBaseUrl,
         wsUrl: String = _state.value.discoveredWsUrl,
+        autoRefreshAttempt: Int = 0,
     ) {
         if (baseUrl.isEmpty()) {
+            logRuntimeEvent("AUTH", "startOAuthLoginFlow baseUrl empty -> bootstrapOrConnect")
             bootstrapOrConnect()
             return
         }
+        logRuntimeEvent(
+            "AUTH",
+            "startOAuthLoginFlow base=${redactUrlForLog(baseUrl)} attempt=$autoRefreshAttempt",
+        )
         oauthPollJob?.cancel()
         val label = _state.value.oauthDisplayName ?: "SSO"
         _state.update {
@@ -1450,6 +1624,7 @@ class ConsoleStore(
                         "ok" -> {
                             val token = poll.accessToken ?: continue
                             val userName = poll.user?.name ?: "Owner"
+                            logRuntimeEvent("AUTH", "oauth poll ok user=$userName")
                             saveAuthSession(token, userName)
                             _state.update {
                                 it.copy(
@@ -1462,6 +1637,7 @@ class ConsoleStore(
                             break
                         }
                         "forbidden" -> {
+                            logRuntimeEvent("AUTH", "oauth poll forbidden")
                             _state.update {
                                 it.copy(
                                     authStatusText = "当前账号 (${poll.name ?: ""}) 无权访问此主机",
@@ -1470,7 +1646,18 @@ class ConsoleStore(
                             break
                         }
                         "expired" -> {
-                            startOAuthLoginFlow(baseUrl, wsUrl)
+                            logRuntimeEvent("AUTH", "oauth poll expired attempt=$autoRefreshAttempt")
+                            if (autoRefreshAttempt >= MAX_CONSECUTIVE_OAUTH_EXPIRED_RESTARTS) {
+                                _state.update {
+                                    it.copy(
+                                        oauthChallenge = null,
+                                        authStatusText = "授权码多次过期，请点击下方重试重新获取",
+                                    )
+                                }
+                            } else {
+                                delay(OAUTH_EXPIRED_RETRY_DELAY_MS)
+                                startOAuthLoginFlow(baseUrl, wsUrl, autoRefreshAttempt + 1)
+                            }
                             break
                         }
                     }
@@ -1478,6 +1665,7 @@ class ConsoleStore(
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
+                logRuntimeEvent("AUTH", "startOAuthLoginFlow failed err=${t::class.simpleName}:${t.message}")
                 _state.update {
                     it.copy(authStatusText = "授权请求失败: ${t.message}")
                 }
@@ -1488,15 +1676,18 @@ class ConsoleStore(
     fun launchOAuthApp() {
         val challenge = _state.value.oauthChallenge ?: return
         val target = challenge.appLaunchUrl.ifBlank { challenge.verifyUrl }
+        logRuntimeEvent("AUTH", "launchOAuthApp target=${redactUrlForLog(target)}")
         if (isTrustedOAuthUrl(target, _state.value.oauthProvider)) openExternalUrl(target)
     }
 
     fun openOAuthBrowserFallback() {
         val challenge = _state.value.oauthChallenge ?: return
+        logRuntimeEvent("AUTH", "openOAuthBrowserFallback target=${redactUrlForLog(challenge.verifyUrl)}")
         if (isTrustedOAuthUrl(challenge.verifyUrl, _state.value.oauthProvider)) openExternalUrl(challenge.verifyUrl)
     }
 
     fun logout() {
+        logRuntimeEvent("AUTH", "logout invoked")
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
@@ -1548,7 +1739,12 @@ class ConsoleStore(
         isForegroundResume: Boolean = false,
         expectedHubId: String? = null,
         expectedFingerprint: String? = null,
+        deferAuthTransitionOnUnauthorized: Boolean = false,
     ): Boolean {
+        logRuntimeEvent(
+            "CONNECT",
+            "connectWithToken ws=${redactUrlForLog(wsUrl)} resume=$isForegroundResume expectedHubId=${expectedHubId ?: "any"}",
+        )
         _state.update {
             it.copy(
                 connectionStatus = if (isForegroundResume) ConnectionStatus.RECONNECTING else ConnectionStatus.CONNECTING,
@@ -1652,7 +1848,13 @@ class ConsoleStore(
 
             manualPairingMode = false
             consecutiveReconnectFailures = 0
+            consecutiveBonjourAutoRetries = 0
+            lastBonjourAutoRetryMs = 0L
             lastRealtimeActivityMs = epochMillis()
+            logRuntimeEvent(
+                "CONNECT",
+                "connected ok hubId=${status.hub.id} hubName=${status.hub.name} sessions=${sessions.size} engines=${status.engines.size} activeSid=${resolvedActiveId ?: "none"}",
+            )
             _state.update {
                 it.copy(
                     hasEnteredWorkspace = true,
@@ -1691,21 +1893,29 @@ class ConsoleStore(
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
+            logRuntimeEvent(
+                "CONNECT",
+                "connectWithToken failed ws=${redactUrlForLog(wsUrl)} resume=$isForegroundResume err=${t::class.simpleName}:${t.message}",
+            )
             if (t is RpcCallException && t.code == ErrorCode.UNAUTHORIZED) {
                 targetHubId?.let { saveHostAccessToken(it, null) }
                 if (targetHubId == null || targetHubId == loadActiveHostId()) {
                     saveAuthSession(null, null)
                 }
-                _state.update {
-                    it.copy(
-                        hasEnteredWorkspace = false,
-                        authUserName = null,
-                        connectionStatus = ConnectionStatus.NEEDS_AUTH,
-                        connectionError = null,
-                    )
-                }
-                if (isForegroundResume && _state.value.oauthEnabled) {
-                    startOAuthLoginFlow(_state.value.discoveredBaseUrl, wsUrl)
+                if (deferAuthTransitionOnUnauthorized) {
+                    logRuntimeEvent("AUTH", "token unauthorized; deferring NEEDS_AUTH for Tailscale same-user fallback")
+                } else {
+                    _state.update {
+                        it.copy(
+                            hasEnteredWorkspace = false,
+                            authUserName = null,
+                            connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                            connectionError = null,
+                        )
+                    }
+                    if (isForegroundResume && _state.value.oauthEnabled) {
+                        startOAuthLoginFlow(_state.value.discoveredBaseUrl, wsUrl)
+                    }
                 }
             } else if (isForegroundResume && _state.value.hasEnteredWorkspace && t !is HubTrustException) {
                 // Transient socket / Hub-restart failure while already authenticated in workspace:
@@ -2164,6 +2374,7 @@ class ConsoleStore(
     }
 
     fun selectSession(sessionId: String) {
+        logRuntimeEvent("SESSION", "selectSession sid=$sessionId prev=${_state.value.activeSessionId ?: "none"}")
         userManuallyPickedModel = false
         userManuallyPickedEffort = false
         userManuallyPickedMode = false
