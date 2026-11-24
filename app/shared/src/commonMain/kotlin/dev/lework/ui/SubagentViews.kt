@@ -134,7 +134,9 @@ internal fun SubagentStatusStrip(
         ) {
             // Compact single-row header with quick-access mini chips when collapsed
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 28.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {

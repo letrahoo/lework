@@ -55,6 +55,8 @@ const CANCEL_WATERMARK_TTL_MS = 90_000
 const CANCEL_POLL_GRACE_MS = 1_800
 const CANCEL_SETTLE_WINDOW_MS = 3_000
 const AGY_TERMINAL_IDLE_FILE_MS = 4_000
+const TERMINAL_ACTIVE_LEASE_MS = 3_500
+const LIVE_STATUS_HOLD_MS = 3_200
 
 interface HostCancelWatermark {
   cancelledAt: number
@@ -71,6 +73,9 @@ interface WatchedHostSession {
   lastEmittedSeq: number
   lastState: string
   lastLiveStatus?: string
+  lastNonEmptyLiveStatus?: string
+  lastNonEmptyLiveStatusAt: number
+  terminalActiveUntil: number
   lastQueuedKey: string
   lastSubagentsKey: string
   lastTerminalPollAt: number
@@ -354,9 +359,23 @@ export class HostTaskInspector {
         ...(prev.meta.workspaces ?? []),
         ...(entry.meta.workspaces ?? []),
       ])
-      const isActive = entry.meta.state === 'running' || entry.meta.state === 'waiting_permission'
+      const activeWatch = this.watched.get(id)
+      const hasCancelWm = this.cancelledWatermarks.has(id)
+      let preservedState = entry.meta.state
+      if (activeWatch && !hasCancelWm) {
+        if (activeWatch.activePermEvent) {
+          preservedState = 'waiting_permission'
+        } else if (
+          preservedState === 'idle' &&
+          (activeWatch.terminalActiveUntil > now || activeWatch.pendingPromptUntil > now)
+        ) {
+          preservedState = 'running'
+        }
+      }
+      const isActive = preservedState === 'running' || preservedState === 'waiting_permission'
       entry.meta = {
         ...entry.meta,
+        state: preservedState,
         cwd: mergedWorkspaces[0] ?? entry.meta.cwd,
         workspaces: mergedWorkspaces.length > 0 ? mergedWorkspaces : entry.meta.workspaces,
         model: prev.meta.model ?? entry.meta.model,
@@ -515,7 +534,10 @@ export class HostTaskInspector {
     return undefined
   }
 
-  readHostSessionEvents(sessionId: string): { session: SessionMeta; events: AgentEvent[] } | null {
+  readHostSessionEvents(
+    sessionId: string,
+    opts?: { includeTerminalLease?: boolean },
+  ): { session: SessionMeta; events: AgentEvent[] } | null {
     const entry = this.getHostSession(sessionId)
     if (!entry) return null
 
@@ -613,6 +635,14 @@ export class HostTaskInspector {
       } else if (liveState === 'idle') {
         liveState = 'running'
       }
+    }
+    if (
+      opts?.includeTerminalLease !== false &&
+      activeWatch &&
+      liveState === 'idle' &&
+      activeWatch.terminalActiveUntil > Date.now()
+    ) {
+      liveState = 'running'
     }
     if (activeWatch?.activePermEvent) {
       liveState = 'waiting_permission'
@@ -955,6 +985,9 @@ export class HostTaskInspector {
         }
         w.lastState = 'idle'
         w.lastLiveStatus = undefined
+        w.lastNonEmptyLiveStatus = undefined
+        w.lastNonEmptyLiveStatusAt = 0
+        w.terminalActiveUntil = 0
         w.lastQueuedKey = ''
       }
 
@@ -1140,6 +1173,9 @@ export class HostTaskInspector {
       lastEmittedSeq: snap.session.lastSeq,
       lastState: snap.session.state,
       lastLiveStatus: snap.session.liveStatusText,
+      lastNonEmptyLiveStatus: snap.session.liveStatusText,
+      lastNonEmptyLiveStatusAt: snap.session.liveStatusText ? Date.now() : 0,
+      terminalActiveUntil: 0,
       lastQueuedKey: (snap.session.queuedPrompts ?? []).join('\u0000'),
       lastSubagentsKey: buildSubagentsKey(snap.session.subagents),
       lastTerminalPollAt: 0,
@@ -1349,7 +1385,8 @@ export class HostTaskInspector {
       // Re-read canonical transcript state after async terminal inspection so an already-finished
       // (`idle`) transcript is never reverted back to `running`, and any post-cancel new user turn
       // clears the cancel watermark immediately.
-      const freshTranscriptState = this.readHostSessionEvents(sessionId)?.session.state ?? entry.meta.state
+      const freshTranscriptState =
+        this.readHostSessionEvents(sessionId, { includeTerminalLease: false })?.session.state ?? entry.meta.state
       const nowPoll = Date.now()
       let activeWm = this.cancelledWatermarks.get(sessionId)
       if (activeWm && nowPoll - activeWm.cancelledAt > CANCEL_WATERMARK_TTL_MS) {
@@ -1406,6 +1443,9 @@ export class HostTaskInspector {
 
       if (perm) {
         w.consecutiveIdleTerminalPolls = 0
+        w.terminalActiveUntil = nowPoll + TERMINAL_ACTIVE_LEASE_MS
+        w.lastNonEmptyLiveStatus = undefined
+        w.lastNonEmptyLiveStatusAt = 0
         entry.meta = {
           ...entry.meta,
           state: 'waiting_permission',
@@ -1468,6 +1508,9 @@ export class HostTaskInspector {
 
       if (activeWm) {
         w.consecutiveIdleTerminalPolls = 0
+        w.terminalActiveUntil = 0
+        w.lastNonEmptyLiveStatus = undefined
+        w.lastNonEmptyLiveStatusAt = 0
         const nextState: SessionMeta['state'] = 'idle'
         if (
           w.lastLiveStatus !== undefined ||
@@ -1530,7 +1573,36 @@ export class HostTaskInspector {
               ? 'running'
               : 'idle'
 
-      const effectiveLiveStatus = nextState === 'running' ? spinner : undefined
+      // Hold a short lease when the live terminal explicitly confirms activity (`spinner` / `esc to cancel`)
+      // so the 350ms file poll and 2.5s global scan do not bounce `running <-> idle` between terminal polls.
+      if (nextState === 'running' && (Boolean(spinner) || hasCancelHint)) {
+        w.terminalActiveUntil = nowPoll + TERMINAL_ACTIVE_LEASE_MS
+      } else {
+        w.terminalActiveUntil = 0
+      }
+
+      let effectiveLiveStatus: string | undefined
+      if (nextState === 'running') {
+        if (spinner) {
+          w.lastNonEmptyLiveStatus = spinner
+          w.lastNonEmptyLiveStatusAt = nowPoll
+          effectiveLiveStatus = spinner
+        } else if (
+          w.lastNonEmptyLiveStatus &&
+          nowPoll - w.lastNonEmptyLiveStatusAt < LIVE_STATUS_HOLD_MS
+        ) {
+          effectiveLiveStatus = w.lastNonEmptyLiveStatus
+        } else {
+          w.lastNonEmptyLiveStatus = undefined
+          w.lastNonEmptyLiveStatusAt = 0
+          effectiveLiveStatus = undefined
+        }
+      } else {
+        w.lastNonEmptyLiveStatus = undefined
+        w.lastNonEmptyLiveStatusAt = 0
+        effectiveLiveStatus = undefined
+      }
+
       if (
         effectiveLiveStatus !== w.lastLiveStatus ||
         nextState !== w.lastState ||
