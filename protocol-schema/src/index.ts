@@ -561,6 +561,56 @@ export const SessionCancelQueuedResultSchema = z.object({
 })
 export type SessionCancelQueuedResult = z.infer<typeof SessionCancelQueuedResultSchema>
 
+// ---------------------------------------------------------------------------
+// Cross-engine full-text conversation search models
+// ---------------------------------------------------------------------------
+
+export const SearchRoleFilter = z.enum(['all', 'user', 'assistant'])
+export type SearchRoleFilter = z.infer<typeof SearchRoleFilter>
+
+export const SessionSearchMatch = z.object({
+  seq: z.number().int().nonnegative(),
+  role: z.enum(['user', 'assistant']),
+  ts: z.number().int(),
+  snippet: z.string(),
+  matchStart: z.number().int().nonnegative(),
+  matchEnd: z.number().int().nonnegative(),
+})
+export type SessionSearchMatch = z.infer<typeof SessionSearchMatch>
+
+export const SessionSearchHit = z.object({
+  sessionId: z.string(),
+  engineId: z.string(),
+  title: z.string(),
+  cwd: z.string(),
+  updatedAt: z.number().int(),
+  archived: z.boolean().optional(),
+  matchCount: z.number().int().nonnegative(),
+  matches: z.array(SessionSearchMatch),
+})
+export type SessionSearchHit = z.infer<typeof SessionSearchHit>
+
+export const SessionSearchParamsSchema = z.object({
+  query: z.string().max(300),
+  sessionId: z.string().min(1).max(256).optional(),
+  engineId: z.string().min(1).max(32).optional(),
+  role: SearchRoleFilter.optional(),
+  cwd: z.string().min(1).max(4096).optional(),
+  includeArchived: z.boolean().optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+  matchesPerSession: z.number().int().min(1).max(50).optional(),
+})
+export type SessionSearchParams = z.infer<typeof SessionSearchParamsSchema>
+
+export const SessionSearchResult = z.object({
+  query: z.string(),
+  hits: z.array(SessionSearchHit),
+  indexedSessions: z.number().int().nonnegative(),
+  totalSessions: z.number().int().nonnegative(),
+  indexing: z.boolean(),
+})
+export type SessionSearchResult = z.infer<typeof SessionSearchResult>
+
 export const Methods = {
   'hub.hello': {
     params: z.object({ protocolVersion: z.number().int(), token: z.string().min(8).max(1024), client: ClientInfo }),
@@ -623,6 +673,10 @@ export const Methods = {
   'session.list': {
     params: z.object({ engineId: z.string().optional() }).optional(),
     result: z.object({ sessions: z.array(SessionMeta) }),
+  },
+  'session.search': {
+    params: SessionSearchParamsSchema,
+    result: SessionSearchResult,
   },
   'session.create': {
     params: z.object({
@@ -695,6 +749,7 @@ export const Methods = {
       sessionId: z.string(),
       afterSeq: z.number().int().min(-1),
       beforeSeq: z.number().int().optional(),
+      aroundSeq: z.number().int().min(0).optional(),
       limit: z.number().int().min(1).max(2000).optional(),
     }),
     result: z.object({
@@ -703,6 +758,7 @@ export const Methods = {
       truncated: z.boolean(),
       earliestSeq: z.number().int().optional(),
       hasMoreBefore: z.boolean().optional(),
+      hasMoreAfter: z.boolean().optional(),
     }),
   },
   'stream.unsubscribe': {

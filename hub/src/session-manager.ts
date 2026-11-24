@@ -15,6 +15,8 @@ import {
   type SessionCancelQueuedResult,
   type SessionMeta,
   type SessionMode,
+  type SessionSearchParams,
+  type SessionSearchResult,
   type SessionWorktreeInfo,
 } from '@lework/protocol'
 import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/types.ts'
@@ -35,6 +37,7 @@ import {
   sweepExpiredArchivedAttachments,
 } from './storage/attachment-store.ts'
 import { HostTaskInspector, TerminalApprovalError } from './storage/host-history.ts'
+import { ConversationSearchIndex, type SearchableSessionSource } from './storage/search-index.ts'
 import { SessionMetadataStore } from './storage/session-metadata.ts'
 import {
   CheckpointManager,
@@ -83,6 +86,7 @@ export class SessionManager {
   private readonly checkpoints = new CheckpointManager()
   private readonly metaStore = new SessionMetadataStore()
   private readonly hostInspector: HostTaskInspector
+  private readonly searchIndex = new ConversationSearchIndex()
   private archivedAttachmentSweepTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
@@ -1161,16 +1165,61 @@ export class SessionManager {
     return readSessionArtifact(ctx, artifactId)
   }
 
+  private collectSearchableSources(): SearchableSessionSource[] {
+    const out: SearchableSessionSource[] = []
+    for (const managed of this.sessions.values()) {
+      const meta = this.decorateManagedMeta(managed)
+      out.push({
+        meta,
+        fileMtimeMs: meta.updatedAt,
+        fileSize: managed.events.length,
+        loadEvents: () => managed.events,
+      })
+    }
+    const hostSessions = this.hostInspector
+      .discoverHostSessions()
+      .filter(s => !this.isSupersededByHubSession(s.id))
+    for (const hostMeta of hostSessions) {
+      const entry = this.hostInspector.getHostSession(hostMeta.id)
+      let fileMtimeMs = hostMeta.updatedAt
+      let fileSize = 0
+      if (entry?.filePath) {
+        try {
+          const st = fs.statSync(entry.filePath)
+          fileMtimeMs = st.mtimeMs
+          fileSize = st.size
+        } catch {
+          // ignore disappeared file
+        }
+      }
+      const decorated = this.metaStore.applyToMeta(hostMeta)
+      out.push({
+        meta: decorated,
+        filePath: entry?.filePath,
+        fileMtimeMs,
+        fileSize,
+        loadEvents: () => this.hostInspector.readHostSessionEvents(hostMeta.id)?.events ?? [],
+      })
+    }
+    return out
+  }
+
+  searchSessions(params: SessionSearchParams): SessionSearchResult {
+    const sources = this.collectSearchableSources()
+    return this.searchIndex.search(params, sources)
+  }
+
   subscribeSnapshot(
     sessionId: string,
     afterSeq: number,
-    opts?: { beforeSeq?: number; limit?: number },
+    opts?: { beforeSeq?: number; aroundSeq?: number; limit?: number },
   ): {
     session: SessionMeta
     events: AgentEvent[]
     truncated: boolean
     earliestSeq: number
     hasMoreBefore: boolean
+    hasMoreAfter: boolean
   } {
     let managed = this.sessions.get(sessionId)
     if (managed && sessionId.startsWith('host:')) {
@@ -1195,7 +1244,10 @@ export class SessionManager {
         const baseSeq = hostData.events[0]?.seq ?? 0
         const decoratedSession = this.metaStore.applyToMeta(hostData.session)
         const sliced = sliceSessionWindow(decoratedSession, hostData.events, afterSeq, baseSeq, opts)
-        const activePerm = opts?.beforeSeq === undefined ? this.hostInspector.getActiveHostPermission(sessionId) : null
+        const activePerm =
+          opts?.beforeSeq === undefined && !sliced.hasMoreAfter
+            ? this.hostInspector.getActiveHostPermission(sessionId)
+            : null
         if (activePerm) {
           sliced.events = [...sliced.events, activePerm]
         }
@@ -1227,6 +1279,7 @@ export class SessionManager {
   startGlobalHostMonitor(): void {
     this.hostInspector.startGlobalMonitor()
     this.sweepArchivedAttachments()
+    this.searchIndex.scheduleBackgroundSync(this.collectSearchableSources(), 2_500)
     if (!this.archivedAttachmentSweepTimer) {
       this.archivedAttachmentSweepTimer = setInterval(
         () => {
@@ -1248,6 +1301,7 @@ export class SessionManager {
 
   async closeAll(): Promise<void> {
     this.stopGlobalHostMonitor()
+    this.searchIndex.close()
     this.sleepInhibitor.dispose()
     const all = [...this.sessions.values()]
     this.sessions.clear()
@@ -1321,13 +1375,14 @@ function sliceSessionWindow(
   allEvents: AgentEvent[],
   afterSeq: number,
   baseSeq: number,
-  opts?: { beforeSeq?: number; limit?: number },
+  opts?: { beforeSeq?: number; aroundSeq?: number; limit?: number },
 ): {
   session: SessionMeta
   events: AgentEvent[]
   truncated: boolean
   earliestSeq: number
   hasMoreBefore: boolean
+  hasMoreAfter: boolean
 } {
   if (allEvents.length === 0) {
     return {
@@ -1336,6 +1391,36 @@ function sliceSessionWindow(
       truncated: false,
       earliestSeq: 0,
       hasMoreBefore: false,
+      hasMoreAfter: false,
+    }
+  }
+
+  // 0. Jump-to-message slice (`aroundSeq` provided) — used by global / in-session search jump
+  if (typeof opts?.aroundSeq === 'number') {
+    const targetSeq = opts.aroundSeq
+    let targetIdx = allEvents.findIndex(ev => ev.seq >= targetSeq)
+    if (targetIdx < 0) targetIdx = allEvents.length - 1
+    const windowLimit = Math.max(80, opts.limit ?? 260)
+    const beforeBudget = Math.min(80, Math.floor(windowLimit * 0.35))
+    let startIdx = Math.max(0, targetIdx - beforeBudget)
+    startIdx = snapToTurnBoundary(allEvents, startIdx)
+    // Prefer including through the latest event when within a reasonable tail cap so live streaming keeps working seamlessly
+    const maxTailInclude = Math.max(windowLimit, 500)
+    const endIdx =
+      allEvents.length - startIdx <= maxTailInclude
+        ? allEvents.length
+        : Math.min(allEvents.length, startIdx + Math.max(windowLimit, 360))
+    const page = allEvents.slice(startIdx, endIdx)
+    const earliestSeq = page[0]?.seq ?? allEvents[0]!.seq
+    const hasMoreBefore = startIdx > 0 || earliestSeq > allEvents[0]!.seq
+    const hasMoreAfter = endIdx < allEvents.length
+    return {
+      session,
+      events: page,
+      truncated: hasMoreBefore || hasMoreAfter,
+      earliestSeq,
+      hasMoreBefore,
+      hasMoreAfter,
     }
   }
 
@@ -1350,6 +1435,7 @@ function sliceSessionWindow(
         truncated: false,
         earliestSeq: allEvents[0]!.seq,
         hasMoreBefore: false,
+        hasMoreAfter: false,
       }
     }
     const maxCount = opts.limit ?? 220
@@ -1364,6 +1450,7 @@ function sliceSessionWindow(
       truncated: hasMoreBefore,
       earliestSeq,
       hasMoreBefore,
+      hasMoreAfter: false,
     }
   }
 
@@ -1380,6 +1467,7 @@ function sliceSessionWindow(
       truncated: hasMoreBefore,
       earliestSeq,
       hasMoreBefore,
+      hasMoreAfter: false,
     }
   }
 
@@ -1394,6 +1482,7 @@ function sliceSessionWindow(
     truncated,
     earliestSeq,
     hasMoreBefore,
+    hasMoreAfter: false,
   }
 }
 

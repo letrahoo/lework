@@ -43,6 +43,8 @@ fun ConsoleApp(
     autoBootstrap: Boolean = true,
     openSettingsSignal: Int = 0,
     toggleSidebarSignal: Int = 0,
+    openGlobalSearchSignal: Int = 0,
+    openInSessionFindSignal: Int = 0,
 ) {
     val scope = rememberCoroutineScope()
     val store = remember(externalStore) { externalStore ?: ConsoleStore(scope) }
@@ -66,6 +68,8 @@ fun ConsoleApp(
                     state = state,
                     openSettingsSignal = openSettingsSignal,
                     toggleSidebarSignal = toggleSidebarSignal,
+                    openGlobalSearchSignal = openGlobalSearchSignal,
+                    openInSessionFindSignal = openInSessionFindSignal,
                 )
             } else {
                 MobileConsoleApp(

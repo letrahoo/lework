@@ -875,6 +875,7 @@ export class HubServer {
             'usage.stats.v1',
             'session.organize.v1',
             'feature.artifacts.v1',
+            'feature.search.v1',
           ],
         }
       }
@@ -917,6 +918,19 @@ export class HubServer {
       case 'session.list': {
         const p = (params ?? {}) as { engineId?: string }
         return { sessions: this.sessionManager.listSessions(p.engineId) }
+      }
+      case 'session.search': {
+        const p = params as {
+          query: string
+          sessionId?: string
+          engineId?: string
+          role?: 'all' | 'user' | 'assistant'
+          cwd?: string
+          includeArchived?: boolean
+          limit?: number
+          matchesPerSession?: number
+        }
+        return this.sessionManager.searchSessions(p)
       }
       case 'session.create': {
         const p = params as {
@@ -1008,16 +1022,23 @@ export class HubServer {
         return this.sessionManager.readArtifact(p.sessionId, p.artifactId)
       }
       case 'stream.subscribe': {
-        const p = params as { sessionId: string; afterSeq: number; beforeSeq?: number; limit?: number }
+        const p = params as {
+          sessionId: string
+          afterSeq: number
+          beforeSeq?: number
+          aroundSeq?: number
+          limit?: number
+        }
         if (!conn.subscribedSessions.has(p.sessionId)) {
           conn.subscribedSessions.add(p.sessionId)
           this.sessionManager.retainHostWatch(p.sessionId)
         }
         const snap = this.sessionManager.subscribeSnapshot(p.sessionId, p.afterSeq, {
           beforeSeq: p.beforeSeq,
+          aroundSeq: p.aroundSeq,
           limit: p.limit,
         })
-        if (p.beforeSeq === undefined) {
+        if (p.beforeSeq === undefined && p.aroundSeq === undefined) {
           // Non-blocking terminal inspection: return transcript immediately (~1-15ms) and push any
           // live terminal status / permission dialog asynchronously via WebSocket notifications.
           void this.sessionManager.syncHostTerminalNow(p.sessionId).catch(() => {})

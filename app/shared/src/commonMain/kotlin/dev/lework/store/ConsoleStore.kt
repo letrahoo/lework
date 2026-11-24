@@ -3110,7 +3110,7 @@ class ConsoleStore(
     private suspend fun subscribeAndCatchUp(sessionId: String) {
         val reqToken = subscribeSeqToken
         val existing = _state.value.transcripts[sessionId]
-        var isInitialLoad = existing == null || existing.lastSeq < 0
+        var isInitialLoad = existing == null || existing.lastSeq < 0 || existing.hasMoreAfter
         var snap = rpc.subscribeSession(
             sessionId = sessionId,
             afterSeq = if (isInitialLoad) -1 else existing!!.lastSeq,
@@ -3168,6 +3168,7 @@ class ConsoleStore(
                 built.copy(
                     earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
                     hasMoreBefore = snap.hasMoreBefore == true,
+                    hasMoreAfter = snap.hasMoreAfter == true,
                     loadingOlder = false,
                     pendingPermissions = mergedPerms,
                 )
@@ -3286,6 +3287,7 @@ class ConsoleStore(
                 return@update s
             }
             val prev = s.transcripts[event.sessionId] ?: SessionTranscript()
+            if (prev.hasMoreAfter) return@update s
             val next = reduceTranscript(prev, event)
             val isActiveTarget = event.sessionId == s.activeSessionId
             val clearErr = if (isActiveTarget &&
@@ -3811,6 +3813,435 @@ class ConsoleStore(
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-Engine Full-Text Conversation Search (⇧⌘F) & In-Session Find (⌘F)
+    // -----------------------------------------------------------------------
+
+    private var globalSearchJob: Job? = null
+    private var inSessionFindJob: Job? = null
+    private var jumpLoadJob: Job? = null
+
+    fun searchConversations(
+        query: String = _state.value.searchQuery,
+        engineFilter: String? = _state.value.searchEngineFilter,
+        roleFilter: SearchRoleFilter = _state.value.searchRoleFilter,
+        scopeCurrentWorkspace: Boolean = _state.value.searchScopeCurrentWorkspace,
+        includeArchived: Boolean = _state.value.searchIncludeArchived,
+        immediate: Boolean = false,
+    ) {
+        val trimmed = query.trim()
+        globalSearchJob?.cancel()
+        _state.update {
+            it.copy(
+                searchQuery = query,
+                searchEngineFilter = engineFilter,
+                searchRoleFilter = roleFilter,
+                searchScopeCurrentWorkspace = scopeCurrentWorkspace,
+                searchIncludeArchived = includeArchived,
+                searchLoading = trimmed.isNotEmpty(),
+                searchError = null,
+                searchHits = if (trimmed.isEmpty()) emptyList() else it.searchHits,
+            )
+        }
+        if (trimmed.isEmpty()) return
+
+        globalSearchJob = scope.launch {
+            if (!immediate) delay(180L)
+            executeGlobalSearch(
+                trimmed = trimmed,
+                engineFilter = engineFilter,
+                roleFilter = roleFilter,
+                scopeCurrentWorkspace = scopeCurrentWorkspace,
+                includeArchived = includeArchived,
+                allowIndexingFollowUp = true,
+            )
+        }
+    }
+
+    private suspend fun executeGlobalSearch(
+        trimmed: String,
+        engineFilter: String?,
+        roleFilter: SearchRoleFilter,
+        scopeCurrentWorkspace: Boolean,
+        includeArchived: Boolean,
+        allowIndexingFollowUp: Boolean,
+    ) {
+        val cur = _state.value
+        val cwdScope = if (scopeCurrentWorkspace) {
+            cur.activeSession?.cwd?.takeIf { it.isNotBlank() }
+                ?: cur.selectedWorkspacePath.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
+        runCatching {
+            rpc.searchSessions(
+                SessionSearchParams(
+                    query = trimmed,
+                    engineId = engineFilter,
+                    role = roleFilter,
+                    cwd = cwdScope,
+                    includeArchived = includeArchived,
+                    limit = 30,
+                    matchesPerSession = 3,
+                ),
+            )
+        }.onSuccess { res ->
+            if (_state.value.searchQuery.trim() != trimmed) return@onSuccess
+            _state.update {
+                it.copy(
+                    searchLoading = false,
+                    searchError = null,
+                    searchHits = res.hits,
+                    searchIndexedSessions = res.indexedSessions,
+                    searchTotalSessions = res.totalSessions,
+                    searchIndexing = res.indexing,
+                )
+            }
+            if (res.indexing && allowIndexingFollowUp) {
+                delay(850L)
+                if (_state.value.searchQuery.trim() == trimmed) {
+                    executeGlobalSearch(
+                        trimmed = trimmed,
+                        engineFilter = engineFilter,
+                        roleFilter = roleFilter,
+                        scopeCurrentWorkspace = scopeCurrentWorkspace,
+                        includeArchived = includeArchived,
+                        allowIndexingFollowUp = false,
+                    )
+                }
+            }
+        }.onFailure { err ->
+            if (err is CancellationException) throw err
+            if (_state.value.searchQuery.trim() != trimmed) return@onFailure
+            _state.update {
+                it.copy(
+                    searchLoading = false,
+                    searchError = err.message ?: "检索历史对话失败，请稍后重试",
+                )
+            }
+        }
+    }
+
+    fun jumpToSearchHit(
+        sessionId: String,
+        targetSeq: Int,
+        keepFindOpen: Boolean = false,
+    ) {
+        if (sessionId.isBlank()) return
+        val switchingSession = _state.value.activeSessionId != sessionId
+        jumpLoadJob?.cancel()
+
+        val existing = _state.value.transcripts[sessionId]
+        val hasLoadedRange = existing != null &&
+            existing.items.isNotEmpty() &&
+            existing.earliestSeq != null &&
+            targetSeq >= existing.earliestSeq &&
+            targetSeq <= existing.lastSeq
+
+        if (switchingSession) {
+            userManuallyPickedModel = false
+            userManuallyPickedEffort = false
+            userManuallyPickedMode = false
+            switchSubscriptionTo(sessionId)
+        }
+
+        val meta = _state.value.sessions.firstOrNull { it.id == sessionId }
+        _state.update { s ->
+            val targetEngineId = meta?.engineId ?: s.selectedEngineId
+            val eng = s.engines.firstOrNull { it.id == targetEngineId }
+            val nextNonce = s.pendingJumpNonce + 1L
+            s.copy(
+                activeSessionId = sessionId,
+                loadingSessionId = if (hasLoadedRange) null else sessionId,
+                checkpoints = if (switchingSession) emptyList() else s.checkpoints,
+                activeSessionUsage = if (switchingSession) null else s.activeSessionUsage,
+                activeSessionArtifacts = if (switchingSession) emptyList() else s.activeSessionArtifacts,
+                openedArtifact = if (switchingSession) null else s.openedArtifact,
+                artifactError = if (switchingSession) null else s.artifactError,
+                selectedEngineId = targetEngineId,
+                selectedModelId = if (switchingSession) (meta?.model ?: eng?.defaultModel ?: s.selectedModelId) else s.selectedModelId,
+                selectedEffort = if (switchingSession) (meta?.reasoningEffort ?: eng?.defaultEffort ?: s.selectedEffort) else s.selectedEffort,
+                selectedMode = if (switchingSession) (meta?.mode ?: eng?.defaultMode ?: s.selectedMode) else s.selectedMode,
+                selectedWorkspacePath = if (switchingSession) (meta?.cwd ?: s.selectedWorkspacePath) else s.selectedWorkspacePath,
+                currentBrowsePath = if (switchingSession) (meta?.cwd ?: s.currentBrowsePath) else s.currentBrowsePath,
+                currentDiffWorkspacePath = if (switchingSession) (meta?.cwd ?: s.selectedWorkspacePath) else s.currentDiffWorkspacePath,
+                pendingJumpSeq = if (hasLoadedRange) targetSeq else null,
+                pendingJumpNonce = if (hasLoadedRange) nextNonce else s.pendingJumpNonce,
+                highlightedSeq = targetSeq,
+                inSessionFindOpen = if (keepFindOpen && !switchingSession) s.inSessionFindOpen else false,
+                inSessionFindQuery = if (keepFindOpen && !switchingSession) s.inSessionFindQuery else "",
+                inSessionFindMatches = if (keepFindOpen && !switchingSession) s.inSessionFindMatches else emptyList(),
+                inSessionFindActiveIndex = if (keepFindOpen && !switchingSession) s.inSessionFindActiveIndex else 0,
+            )
+        }
+
+        if (hasLoadedRange) {
+            if (switchingSession) {
+                scope.launch {
+                    runCatching { subscribeAndCatchUp(sessionId) }
+                    refreshSessionArtifacts(sessionId)
+                }
+            }
+            return
+        }
+
+        val reqToken = subscribeSeqToken
+        jumpLoadJob = scope.launch {
+            try {
+                val snap = rpc.subscribeSession(
+                    sessionId = sessionId,
+                    afterSeq = -1,
+                    aroundSeq = targetSeq,
+                    limit = 260,
+                )
+                if (_state.value.activeSessionId != sessionId || reqToken != subscribeSeqToken) {
+                    return@launch
+                }
+                val built = reduceTranscriptBatch(SessionTranscript(), snap.events).copy(
+                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                    hasMoreBefore = snap.hasMoreBefore == true,
+                    hasMoreAfter = snap.hasMoreAfter == true,
+                    loadingOlder = false,
+                )
+                _state.update { s ->
+                    if (s.activeSessionId != sessionId) return@update s
+                    val updatedSessions = if (s.sessions.any { it.id == snap.session.id }) {
+                        s.sessions.map { if (it.id == snap.session.id) snap.session else it }
+                    } else {
+                        listOf(snap.session) + s.sessions
+                    }
+                    s.copy(
+                        sessions = updatedSessions,
+                        loadingSessionId = if (s.loadingSessionId == sessionId) null else s.loadingSessionId,
+                        transcripts = s.transcripts + (sessionId to built),
+                        pendingJumpSeq = targetSeq,
+                        pendingJumpNonce = s.pendingJumpNonce + 1L,
+                        highlightedSeq = targetSeq,
+                    )
+                }
+                if (switchingSession) {
+                    refreshSessionArtifacts(sessionId)
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                _state.update { s ->
+                    if (s.loadingSessionId == sessionId) s.copy(loadingSessionId = null) else s
+                }
+            }
+        }
+    }
+
+    fun jumpBackToLatest(sessionId: String = _state.value.activeSessionId ?: "") {
+        if (sessionId.isBlank()) return
+        jumpLoadJob?.cancel()
+        val reqToken = subscribeSeqToken
+        jumpLoadJob = scope.launch {
+            runCatching {
+                val snap = rpc.subscribeSession(
+                    sessionId = sessionId,
+                    afterSeq = -1,
+                    limit = 220,
+                )
+                if (_state.value.activeSessionId != sessionId || reqToken != subscribeSeqToken) {
+                    return@runCatching
+                }
+                val built = reduceTranscriptBatch(SessionTranscript(), snap.events).copy(
+                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                    hasMoreBefore = snap.hasMoreBefore == true,
+                    hasMoreAfter = false,
+                    loadingOlder = false,
+                )
+                _state.update { s ->
+                    if (s.activeSessionId != sessionId) return@update s
+                    s.copy(
+                        transcripts = s.transcripts + (sessionId to built),
+                        pendingJumpSeq = null,
+                        highlightedSeq = null,
+                    )
+                }
+            }
+        }
+    }
+
+    fun consumePendingJump() {
+        if (_state.value.pendingJumpSeq != null) {
+            _state.update { it.copy(pendingJumpSeq = null) }
+        }
+    }
+
+    fun clearHighlightedSeq() {
+        if (_state.value.highlightedSeq != null && !_state.value.inSessionFindOpen) {
+            _state.update { it.copy(highlightedSeq = null) }
+        }
+    }
+
+    fun openInSessionFind() {
+        val sid = _state.value.activeSessionId ?: return
+        _state.update { it.copy(inSessionFindOpen = true) }
+        val existingQuery = _state.value.inSessionFindQuery
+        if (existingQuery.isNotBlank()) {
+            updateInSessionFindQuery(existingQuery, targetSessionId = sid)
+        }
+    }
+
+    fun closeInSessionFind() {
+        inSessionFindJob?.cancel()
+        _state.update {
+            it.copy(
+                inSessionFindOpen = false,
+                inSessionFindQuery = "",
+                inSessionFindMatches = emptyList(),
+                inSessionFindActiveIndex = 0,
+                inSessionFindLoading = false,
+                highlightedSeq = null,
+            )
+        }
+    }
+
+    fun updateInSessionFindQuery(
+        query: String,
+        targetSessionId: String? = _state.value.activeSessionId,
+    ) {
+        val sid = targetSessionId ?: return
+        inSessionFindJob?.cancel()
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            _state.update {
+                it.copy(
+                    inSessionFindOpen = true,
+                    inSessionFindQuery = query,
+                    inSessionFindMatches = emptyList(),
+                    inSessionFindActiveIndex = 0,
+                    inSessionFindLoading = false,
+                    highlightedSeq = null,
+                )
+            }
+            return
+        }
+
+        // 1. Instant local match scan over already-loaded transcript items (0ms feedback)
+        val localMatches = findLocalTranscriptMatches(_state.value.transcripts[sid], trimmed)
+        val initialIdx = if (localMatches.isNotEmpty()) localMatches.lastIndex else 0
+        val initialTarget = localMatches.getOrNull(initialIdx)
+        _state.update { s ->
+            s.copy(
+                inSessionFindOpen = true,
+                inSessionFindQuery = query,
+                inSessionFindMatches = localMatches,
+                inSessionFindActiveIndex = initialIdx,
+                inSessionFindLoading = true,
+                pendingJumpSeq = initialTarget?.seq ?: s.pendingJumpSeq,
+                pendingJumpNonce = if (initialTarget != null) s.pendingJumpNonce + 1L else s.pendingJumpNonce,
+                highlightedSeq = initialTarget?.seq,
+            )
+        }
+
+        // 2. Full-history RPC match scan via Hub FTS5 index (discovers older un-paginated turns too!)
+        inSessionFindJob = scope.launch {
+            delay(140L)
+            runCatching {
+                rpc.searchSessions(
+                    SessionSearchParams(
+                        query = trimmed,
+                        sessionId = sid,
+                        role = SearchRoleFilter.ALL,
+                        includeArchived = true,
+                        limit = 1,
+                        matchesPerSession = 50,
+                    ),
+                )
+            }.onSuccess { res ->
+                val cur = _state.value
+                if (!cur.inSessionFindOpen || cur.activeSessionId != sid || cur.inSessionFindQuery.trim() != trimmed) {
+                    return@onSuccess
+                }
+                val remoteMatches = res.hits.firstOrNull()?.matches.orEmpty()
+                val merged = if (remoteMatches.isNotEmpty()) remoteMatches else localMatches
+                val currentSeq = cur.highlightedSeq
+                val nextIdx = when {
+                    merged.isEmpty() -> 0
+                    currentSeq != null -> merged.indexOfFirst { it.seq == currentSeq }.takeIf { it >= 0 } ?: merged.lastIndex
+                    else -> merged.lastIndex
+                }
+                val activeMatch = merged.getOrNull(nextIdx)
+                val shouldJump = activeMatch != null && activeMatch.seq != currentSeq
+                _state.update { s ->
+                    s.copy(
+                        inSessionFindMatches = merged,
+                        inSessionFindActiveIndex = nextIdx,
+                        inSessionFindLoading = false,
+                        highlightedSeq = activeMatch?.seq,
+                    )
+                }
+                if (shouldJump) {
+                    jumpToSearchHit(sid, activeMatch!!.seq, keepFindOpen = true)
+                }
+            }.onFailure { err ->
+                if (err is CancellationException) throw err
+                _state.update { s ->
+                    if (s.inSessionFindQuery.trim() == trimmed) s.copy(inSessionFindLoading = false) else s
+                }
+            }
+        }
+    }
+
+    fun navigateInSessionFind(delta: Int) {
+        val cur = _state.value
+        val sid = cur.activeSessionId ?: return
+        val matches = cur.inSessionFindMatches
+        if (matches.isEmpty()) return
+        val size = matches.size
+        val nextIdx = ((cur.inSessionFindActiveIndex + delta) % size + size) % size
+        val target = matches[nextIdx]
+        _state.update {
+            it.copy(
+                inSessionFindActiveIndex = nextIdx,
+                highlightedSeq = target.seq,
+            )
+        }
+        jumpToSearchHit(sid, target.seq, keepFindOpen = true)
+    }
+
+    private fun findLocalTranscriptMatches(
+        transcript: SessionTranscript?,
+        trimmedQuery: String,
+    ): List<SessionSearchMatch> {
+        if (transcript == null || transcript.items.isEmpty()) return emptyList()
+        val terms = trimmedQuery.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (terms.isEmpty()) return emptyList()
+        val lowerTerms = terms.map { it.lowercase() }
+        val out = mutableListOf<SessionSearchMatch>()
+        for (item in transcript.items) {
+            val (role, rawText) = when (item) {
+                is ChatTimelineItem.User -> SearchMatchRole.USER to item.text
+                is ChatTimelineItem.Assistant -> SearchMatchRole.ASSISTANT to item.text
+                else -> continue
+            }
+            if (item.seq < 0) continue
+            val lower = rawText.lowercase()
+            if (!lowerTerms.all { it in lower }) continue
+            val collapsed = rawText.replace(Regex("\\s+"), " ").trim()
+            val idx = collapsed.lowercase().indexOf(lowerTerms.first()).coerceAtLeast(0)
+            val start = (idx - 24).coerceAtLeast(0)
+            val end = (start + 120).coerceAtMost(collapsed.length)
+            val snippet = collapsed.substring(start, end)
+            val mStart = (idx - start).coerceIn(0, snippet.length)
+            val mEnd = (mStart + lowerTerms.first().length).coerceIn(mStart, snippet.length)
+            out.add(
+                SessionSearchMatch(
+                    seq = item.seq,
+                    role = role,
+                    ts = item.ts,
+                    snippet = snippet,
+                    matchStart = mStart,
+                    matchEnd = mEnd,
+                ),
+            )
+        }
+        return out.sortedBy { it.seq }
     }
 }
 

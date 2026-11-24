@@ -28,6 +28,7 @@ data class PendingDeepLinkPairing(
 sealed interface ChatTimelineItem {
     val id: String
     val ts: Long
+    val seq: Int
 
     data class User(
         override val id: String,
@@ -35,18 +36,21 @@ sealed interface ChatTimelineItem {
         val imageCount: Int = 0,
         val imagePreviews: List<String> = emptyList(),
         override val ts: Long = 0L,
+        override val seq: Int = -1,
     ) : ChatTimelineItem
 
     data class Reasoning(
         override val id: String,
         val text: String,
         override val ts: Long = 0L,
+        override val seq: Int = -1,
     ) : ChatTimelineItem
 
     data class Assistant(
         override val id: String,
         val text: String,
         override val ts: Long = 0L,
+        override val seq: Int = -1,
     ) : ChatTimelineItem
 
     data class Tool(
@@ -57,6 +61,7 @@ sealed interface ChatTimelineItem {
         val input: String? = null,
         val output: String? = null,
         override val ts: Long = 0L,
+        override val seq: Int = -1,
     ) : ChatTimelineItem
 
     data class Notice(
@@ -65,6 +70,7 @@ sealed interface ChatTimelineItem {
         val isError: Boolean = false,
         val repeatCount: Int = 1,
         override val ts: Long = 0L,
+        override val seq: Int = -1,
     ) : ChatTimelineItem
 }
 
@@ -126,6 +132,7 @@ data class SessionTranscript(
     val earliestSeq: Int? = null,
     val lastSeq: Int = -1,
     val hasMoreBefore: Boolean = false,
+    val hasMoreAfter: Boolean = false,
     val loadingOlder: Boolean = false,
     val items: List<ChatTimelineItem> = emptyList(),
     val pendingPermissions: List<AgentEvent.PermissionRequested> = emptyList(),
@@ -255,6 +262,26 @@ data class ConsoleUiState(
     val artifactsLoading: Boolean = false,
     val openedArtifact: ArtifactContentResult? = null,
     val artifactError: String? = null,
+    // Desktop Global Full-Text Search (⇧⌘F) & In-Session Find (⌘F)
+    val searchQuery: String = "",
+    val searchEngineFilter: String? = null,
+    val searchRoleFilter: SearchRoleFilter = SearchRoleFilter.ALL,
+    val searchScopeCurrentWorkspace: Boolean = false,
+    val searchIncludeArchived: Boolean = false,
+    val searchLoading: Boolean = false,
+    val searchError: String? = null,
+    val searchHits: List<SessionSearchHit> = emptyList(),
+    val searchIndexedSessions: Int = 0,
+    val searchTotalSessions: Int = 0,
+    val searchIndexing: Boolean = false,
+    val pendingJumpSeq: Int? = null,
+    val pendingJumpNonce: Long = 0L,
+    val highlightedSeq: Int? = null,
+    val inSessionFindOpen: Boolean = false,
+    val inSessionFindQuery: String = "",
+    val inSessionFindMatches: List<SessionSearchMatch> = emptyList(),
+    val inSessionFindActiveIndex: Int = 0,
+    val inSessionFindLoading: Boolean = false,
 ) {
     val activeHostDisplayName: String
         get() = pairedHosts.firstOrNull { it.hubId == hub?.id }?.displayName
@@ -437,6 +464,7 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
                     imageCount = event.imageCount ?: event.imagePreviews?.size ?: 0,
                     imagePreviews = event.imagePreviews.orEmpty(),
                     ts = event.ts,
+                    seq = event.seq,
                 ),
             )
         }
@@ -449,7 +477,14 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
                     ts = if (event.ts > 0L) maxOf(prev.ts, event.ts) else prev.ts,
                 )
             } else {
-                items.add(ChatTimelineItem.Reasoning(id = event.messageId, text = event.text, ts = event.ts))
+                items.add(
+                    ChatTimelineItem.Reasoning(
+                        id = event.messageId,
+                        text = event.text,
+                        ts = event.ts,
+                        seq = event.seq,
+                    ),
+                )
             }
         }
         is AgentEvent.AssistantDelta -> {
@@ -461,7 +496,14 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
                     ts = if (event.ts > 0L) maxOf(prev.ts, event.ts) else prev.ts,
                 )
             } else {
-                items.add(ChatTimelineItem.Assistant(id = event.messageId, text = event.text, ts = event.ts))
+                items.add(
+                    ChatTimelineItem.Assistant(
+                        id = event.messageId,
+                        text = event.text,
+                        ts = event.ts,
+                        seq = event.seq,
+                    ),
+                )
             }
         }
         is AgentEvent.ToolCall -> {
@@ -474,6 +516,7 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
                 input = event.input,
                 output = event.output,
                 ts = event.ts,
+                seq = event.seq,
             )
             if (idx >= 0) items[idx] = toolItem else items.add(toolItem)
         }
@@ -582,6 +625,7 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
                         imageCount = event.imageCount ?: event.imagePreviews?.size ?: 0,
                         imagePreviews = event.imagePreviews.orEmpty(),
                         ts = event.ts,
+                        seq = event.seq,
                     ),
                 )
             }
@@ -595,7 +639,14 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
                     )
                 } else {
                     reasoningIdxById[event.messageId] = items.size
-                    items.add(ChatTimelineItem.Reasoning(id = event.messageId, text = event.text, ts = event.ts))
+                    items.add(
+                        ChatTimelineItem.Reasoning(
+                            id = event.messageId,
+                            text = event.text,
+                            ts = event.ts,
+                            seq = event.seq,
+                        ),
+                    )
                 }
             }
             is AgentEvent.AssistantDelta -> {
@@ -608,7 +659,14 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
                     )
                 } else {
                     assistantIdxById[event.messageId] = items.size
-                    items.add(ChatTimelineItem.Assistant(id = event.messageId, text = event.text, ts = event.ts))
+                    items.add(
+                        ChatTimelineItem.Assistant(
+                            id = event.messageId,
+                            text = event.text,
+                            ts = event.ts,
+                            seq = event.seq,
+                        ),
+                    )
                 }
             }
             is AgentEvent.ToolCall -> {
@@ -620,6 +678,7 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
                     input = event.input,
                     output = event.output,
                     ts = event.ts,
+                    seq = event.seq,
                 )
                 val idx = toolIdxById[event.toolCallId]
                 if (idx != null) {
@@ -705,6 +764,7 @@ private fun appendOrCollapseErrorNotice(
             isError = true,
             repeatCount = 1,
             ts = event.ts,
+            seq = event.seq,
         ),
     )
 }

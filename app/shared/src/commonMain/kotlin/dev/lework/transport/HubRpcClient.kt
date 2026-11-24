@@ -177,10 +177,14 @@ interface HubTransport {
         throw UnsupportedOperationException("artifact.read not implemented in this transport")
     }
 
+    suspend fun searchSessions(params: SessionSearchParams): SessionSearchResult =
+        SessionSearchResult(query = params.query)
+
     suspend fun subscribeSession(
         sessionId: String,
         afterSeq: Int,
         beforeSeq: Int? = null,
+        aroundSeq: Int? = null,
         limit: Int? = null,
     ): StreamSubscribeResult
 
@@ -742,10 +746,17 @@ class HubRpcClient(
             encodeParams(ArtifactReadParams(sessionId = sessionId, artifactId = artifactId)),
         )
 
+    override suspend fun searchSessions(params: SessionSearchParams): SessionSearchResult =
+        call(
+            "session.search",
+            encodeParams(params),
+        )
+
     override suspend fun subscribeSession(
         sessionId: String,
         afterSeq: Int,
         beforeSeq: Int?,
+        aroundSeq: Int?,
         limit: Int?,
     ): StreamSubscribeResult =
         call(
@@ -755,6 +766,7 @@ class HubRpcClient(
                     sessionId = sessionId,
                     afterSeq = afterSeq,
                     beforeSeq = beforeSeq,
+                    aroundSeq = aroundSeq,
                     limit = limit,
                 ),
             ),
