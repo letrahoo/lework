@@ -40,15 +40,28 @@ internal fun DesktopConsoleApp(
     state: ConsoleUiState,
     openSettingsSignal: Int = 0,
     toggleSidebarSignal: Int = 0,
+    openGlobalSearchSignal: Int = 0,
+    openInSessionFindSignal: Int = 0,
 ) {
     var showModelPicker by remember { mutableStateOf(false) }
     var showWorkspaceDialog by remember { mutableStateOf(false) }
     var showUsageDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var showGlobalSearchDialog by remember { mutableStateOf(false) }
     var activeInspectorTab by remember { mutableStateOf<DesktopInspectorTab?>(null) }
     var sidebarExpanded by remember { mutableStateOf(true) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
     var promptText by remember { mutableStateOf("") }
+
+    fun openGlobalSearchPalette(prefill: String? = null) {
+        val nextQuery = prefill?.trim()
+            ?: state.drawerSearchQuery.trim().takeIf { it.isNotEmpty() }
+            ?: state.searchQuery
+        showGlobalSearchDialog = true
+        if (nextQuery.isNotBlank()) {
+            store.searchConversations(query = nextQuery, immediate = true)
+        }
+    }
 
     LaunchedEffect(openSettingsSignal) {
         if (openSettingsSignal > 0 && state.hasEnteredWorkspace) {
@@ -59,6 +72,22 @@ internal fun DesktopConsoleApp(
     LaunchedEffect(toggleSidebarSignal) {
         if (toggleSidebarSignal > 0 && state.hasEnteredWorkspace) {
             sidebarExpanded = !sidebarExpanded
+        }
+    }
+
+    LaunchedEffect(openGlobalSearchSignal) {
+        if (openGlobalSearchSignal > 0 && state.hasEnteredWorkspace) {
+            openGlobalSearchPalette()
+        }
+    }
+
+    LaunchedEffect(openInSessionFindSignal) {
+        if (openInSessionFindSignal > 0 && state.hasEnteredWorkspace) {
+            if (state.activeSessionId != null) {
+                store.openInSessionFind()
+            } else {
+                openGlobalSearchPalette()
+            }
         }
     }
 
@@ -94,9 +123,25 @@ internal fun DesktopConsoleApp(
                 .background(Everforest.Bg0)
                 .onPreviewKeyEvent { ev ->
                     if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    if (ev.key == Key.Escape && state.inSessionFindOpen) {
+                        store.closeInSessionFind()
+                        return@onPreviewKeyEvent true
+                    }
                     val cmdOrCtrl = ev.isMetaPressed || ev.isCtrlPressed
                     if (!cmdOrCtrl) return@onPreviewKeyEvent false
                     when {
+                        ev.key == Key.F && ev.isShiftPressed -> {
+                            openGlobalSearchPalette()
+                            true
+                        }
+                        ev.key == Key.F && !ev.isShiftPressed -> {
+                            if (state.activeSessionId != null) {
+                                store.openInSessionFind()
+                            } else {
+                                openGlobalSearchPalette()
+                            }
+                            true
+                        }
                         ev.key == Key.N && !ev.isShiftPressed -> {
                             store.startNewDraftSession()
                             true
@@ -169,6 +214,7 @@ internal fun DesktopConsoleApp(
                             onRenameHost = store::renamePairedHost,
                             onPairAnotherHost = store::preparePairAnotherHost,
                             onSearchQueryChange = store::setDrawerSearchQuery,
+                            onOpenGlobalSearch = { query -> openGlobalSearchPalette(query) },
                             onToggleArchivedView = store::setDrawerShowArchived,
                             onTogglePinSession = store::togglePinSession,
                             onRequestRenameSession = { sess -> renamingSessionId = sess.id },
@@ -332,8 +378,27 @@ internal fun DesktopConsoleApp(
                                         } else {
                                             null
                                         },
+                                        pendingJumpSeq = state.pendingJumpSeq,
+                                        pendingJumpNonce = state.pendingJumpNonce,
+                                        highlightedSeq = state.highlightedSeq,
+                                        keepHighlightPersistent = state.inSessionFindOpen,
+                                        onJumpHandled = store::consumePendingJump,
+                                        onClearHighlight = store::clearHighlightedSeq,
+                                        onJumpToLatest = { store.jumpBackToLatest(activeKey) },
                                     )
                                 }
+                            }
+                            if (state.inSessionFindOpen && state.activeSessionId != null) {
+                                DesktopInSessionFindBar(
+                                    state = state,
+                                    onQueryChange = { q -> store.updateInSessionFindQuery(q) },
+                                    onPrevMatch = { store.navigateInSessionFind(-1) },
+                                    onNextMatch = { store.navigateInSessionFind(+1) },
+                                    onClose = store::closeInSessionFind,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(top = 10.dp, end = 16.dp),
+                                )
                             }
                         }
 
@@ -580,6 +645,26 @@ internal fun DesktopConsoleApp(
         }
 
         // ── Native Desktop Modal Dialogs (Zero Mobile ModalBottomSheets!) ──
+        if (showGlobalSearchDialog) {
+            DesktopSearchDialog(
+                state = state,
+                onSearch = { q, eng, role, curWs, archived, immediate ->
+                    store.searchConversations(
+                        query = q,
+                        engineFilter = eng,
+                        roleFilter = role,
+                        scopeCurrentWorkspace = curWs,
+                        includeArchived = archived,
+                        immediate = immediate,
+                    )
+                },
+                onJumpToHit = { sid, seq ->
+                    store.jumpToSearchHit(sid, seq)
+                },
+                onDismiss = { showGlobalSearchDialog = false },
+            )
+        }
+
         if (showModelPicker) {
             DesktopModelPickerDialog(
                 state = state,

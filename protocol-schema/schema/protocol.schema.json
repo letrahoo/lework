@@ -844,6 +844,268 @@
       ],
       "additionalProperties": false
     },
+    "SearchRoleFilter": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "string",
+      "enum": [
+        "all",
+        "user",
+        "assistant"
+      ]
+    },
+    "SessionSearchMatch": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "user",
+            "assistant"
+          ]
+        },
+        "ts": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "snippet": {
+          "type": "string"
+        },
+        "matchStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "matchEnd": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "seq",
+        "role",
+        "ts",
+        "snippet",
+        "matchStart",
+        "matchEnd"
+      ],
+      "additionalProperties": false
+    },
+    "SessionSearchHit": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "engineId": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "archived": {
+          "type": "boolean"
+        },
+        "matchCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "matches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "seq": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "assistant"
+                ]
+              },
+              "ts": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "snippet": {
+                "type": "string"
+              },
+              "matchStart": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "matchEnd": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "seq",
+              "role",
+              "ts",
+              "snippet",
+              "matchStart",
+              "matchEnd"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "sessionId",
+        "engineId",
+        "title",
+        "cwd",
+        "updatedAt",
+        "matchCount",
+        "matches"
+      ],
+      "additionalProperties": false
+    },
+    "SessionSearchResult": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "hits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sessionId": {
+                "type": "string"
+              },
+              "engineId": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "archived": {
+                "type": "boolean"
+              },
+              "matchCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "matches": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "seq": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "role": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    },
+                    "ts": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "snippet": {
+                      "type": "string"
+                    },
+                    "matchStart": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "matchEnd": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "seq",
+                    "role",
+                    "ts",
+                    "snippet",
+                    "matchStart",
+                    "matchEnd"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "sessionId",
+              "engineId",
+              "title",
+              "cwd",
+              "updatedAt",
+              "matchCount",
+              "matches"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "indexedSessions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "totalSessions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "indexing": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query",
+        "hits",
+        "indexedSessions",
+        "totalSessions",
+        "indexing"
+      ],
+      "additionalProperties": false
+    },
     "UsageTotals": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -3466,6 +3728,178 @@
           "additionalProperties": false
         }
       },
+      "session.search": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "engineId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "all",
+                "user",
+                "assistant"
+              ]
+            },
+            "cwd": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "includeArchived": {
+              "type": "boolean"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "matchesPerSession": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "hits": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "engineId": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "updatedAt": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "archived": {
+                    "type": "boolean"
+                  },
+                  "matchCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "matches": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "seq": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "user",
+                            "assistant"
+                          ]
+                        },
+                        "ts": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "snippet": {
+                          "type": "string"
+                        },
+                        "matchStart": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "matchEnd": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "seq",
+                        "role",
+                        "ts",
+                        "snippet",
+                        "matchStart",
+                        "matchEnd"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "sessionId",
+                  "engineId",
+                  "title",
+                  "cwd",
+                  "updatedAt",
+                  "matchCount",
+                  "matches"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "indexedSessions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "totalSessions": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "indexing": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "query",
+            "hits",
+            "indexedSessions",
+            "totalSessions",
+            "indexing"
+          ],
+          "additionalProperties": false
+        }
+      },
       "session.create": {
         "params": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4961,6 +5395,11 @@
               "minimum": -9007199254740991,
               "maximum": 9007199254740991
             },
+            "aroundSeq": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
             "limit": {
               "type": "integer",
               "minimum": 1,
@@ -5791,6 +6230,9 @@
               "maximum": 9007199254740991
             },
             "hasMoreBefore": {
+              "type": "boolean"
+            },
+            "hasMoreAfter": {
               "type": "boolean"
             }
           },

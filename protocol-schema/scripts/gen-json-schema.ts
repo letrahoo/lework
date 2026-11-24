@@ -18,6 +18,10 @@ import {
   ArtifactSource,
   ArtifactInfo,
   ArtifactContentResult,
+  SearchRoleFilter,
+  SessionSearchMatch,
+  SessionSearchHit,
+  SessionSearchResult,
   UsageTotals,
   UsageSummaryResult,
   UsageQuotaResult,
@@ -57,6 +61,10 @@ const bundle = {
     ArtifactSource: z.toJSONSchema(ArtifactSource),
     ArtifactInfo: z.toJSONSchema(ArtifactInfo),
     ArtifactContentResult: z.toJSONSchema(ArtifactContentResult),
+    SearchRoleFilter: z.toJSONSchema(SearchRoleFilter),
+    SessionSearchMatch: z.toJSONSchema(SessionSearchMatch),
+    SessionSearchHit: z.toJSONSchema(SessionSearchHit),
+    SessionSearchResult: z.toJSONSchema(SessionSearchResult),
     UsageTotals: z.toJSONSchema(UsageTotals),
     UsageSummaryResult: z.toJSONSchema(UsageSummaryResult),
     UsageQuotaResult: z.toJSONSchema(UsageQuotaResult),
@@ -823,10 +831,67 @@ data class ArtifactReadParams(
 )
 
 @Serializable
+enum class SearchRoleFilter {
+    @SerialName("all") ALL,
+    @SerialName("user") USER,
+    @SerialName("assistant") ASSISTANT,
+}
+
+@Serializable
+enum class SearchMatchRole {
+    @SerialName("user") USER,
+    @SerialName("assistant") ASSISTANT,
+}
+
+@Serializable
+data class SessionSearchMatch(
+    val seq: Int,
+    val role: SearchMatchRole,
+    val ts: Long,
+    val snippet: String,
+    val matchStart: Int = 0,
+    val matchEnd: Int = 0,
+)
+
+@Serializable
+data class SessionSearchHit(
+    val sessionId: String,
+    val engineId: String,
+    val title: String,
+    val cwd: String,
+    val updatedAt: Long,
+    val archived: Boolean? = null,
+    val matchCount: Int = 0,
+    val matches: List<SessionSearchMatch> = emptyList(),
+)
+
+@Serializable
+data class SessionSearchParams(
+    val query: String,
+    val sessionId: String? = null,
+    val engineId: String? = null,
+    val role: SearchRoleFilter? = null,
+    val cwd: String? = null,
+    val includeArchived: Boolean? = null,
+    val limit: Int? = null,
+    val matchesPerSession: Int? = null,
+)
+
+@Serializable
+data class SessionSearchResult(
+    val query: String,
+    val hits: List<SessionSearchHit> = emptyList(),
+    val indexedSessions: Int = 0,
+    val totalSessions: Int = 0,
+    val indexing: Boolean = false,
+)
+
+@Serializable
 data class StreamSubscribeParams(
     val sessionId: String,
     val afterSeq: Int,
     val beforeSeq: Int? = null,
+    val aroundSeq: Int? = null,
     val limit: Int? = null,
 )
 
@@ -837,6 +902,7 @@ data class StreamSubscribeResult(
     val truncated: Boolean,
     val earliestSeq: Int? = null,
     val hasMoreBefore: Boolean? = null,
+    val hasMoreAfter: Boolean? = null,
 )
 
 @Serializable

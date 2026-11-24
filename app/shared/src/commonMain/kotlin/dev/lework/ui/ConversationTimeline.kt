@@ -55,17 +55,20 @@ import kotlinx.coroutines.launch
 private sealed interface TimelineSegment {
     val key: String
     val contentType: String
+    val seq: Int
     val tightBottomSpacing: Boolean get() = false
 
     data class Single(val item: ChatTimelineItem) : TimelineSegment {
         override val key: String = "${item.id}_${item::class.simpleName}"
         override val contentType: String = "single_${item::class.simpleName}"
+        override val seq: Int = item.seq
     }
 
     data class AssistantBlock(
         override val key: String,
         val messageId: String,
         val timestampMs: Long,
+        override val seq: Int,
         val block: MdBlock,
         val isLastBlockOfMessage: Boolean,
     ) : TimelineSegment {
@@ -76,6 +79,7 @@ private sealed interface TimelineSegment {
     data class ProcessTrace(val steps: List<ChatTimelineItem>) : TimelineSegment {
         override val key: String = "trace_${steps.first().id}"
         override val contentType: String = "process_trace"
+        override val seq: Int = steps.firstOrNull()?.seq ?: -1
     }
 }
 
@@ -106,6 +110,7 @@ private fun groupTimelineSegments(items: List<ChatTimelineItem>): List<TimelineS
                             key = "${item.id}_b$idx",
                             messageId = item.id,
                             timestampMs = item.ts,
+                            seq = item.seq,
                             block = block,
                             isLastBlockOfMessage = idx == blocks.lastIndex,
                         ),
@@ -138,6 +143,13 @@ internal fun ConversationStreamView(
     listTestTag: String = "conversation_lazy_list",
     onOpenPlanArtifact: (() -> Unit)? = null,
     onApprovePlan: (() -> Unit)? = null,
+    pendingJumpSeq: Int? = null,
+    pendingJumpNonce: Long = 0L,
+    highlightedSeq: Int? = null,
+    keepHighlightPersistent: Boolean = false,
+    onJumpHandled: () -> Unit = {},
+    onClearHighlight: () -> Unit = {},
+    onJumpToLatest: (() -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     val isUserDragging by listState.interactionSource.collectIsDraggedAsState()
@@ -205,6 +217,35 @@ internal fun ConversationStreamView(
         }
     }
 
+    LaunchedEffect(pendingJumpNonce, pendingJumpSeq, reversedSegments.size) {
+        val targetSeq = pendingJumpSeq ?: return@LaunchedEffect
+        if (reversedSegments.isEmpty()) return@LaunchedEffect
+        // Prefer exact seq match (for multi-block Assistant messages, pick the start of the reply which is the highest reversed index);
+        // otherwise pick the closest indexed segment so jumps always land right on context.
+        val exactIdx = reversedSegments.indexOfLast { it.seq == targetSeq }
+        val resolvedIdx = if (exactIdx >= 0) {
+            exactIdx
+        } else {
+            reversedSegments.withIndex()
+                .filter { it.value.seq >= 0 }
+                .minByOrNull { kotlin.math.abs(it.value.seq - targetSeq) }
+                ?.index ?: -1
+        }
+        if (resolvedIdx >= 0) {
+            val headerOffset = (if (queuedPrompts.isNotEmpty()) 1 else 0) + (if (showLiveSpinner) 1 else 0)
+            listState.scrollToItem((headerOffset + resolvedIdx).coerceAtLeast(0))
+            onJumpHandled()
+        }
+    }
+
+    LaunchedEffect(highlightedSeq, keepHighlightPersistent) {
+        if (highlightedSeq != null && !keepHighlightPersistent) {
+            delay(2_400L)
+            onClearHighlight()
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         state = listState,
         reverseLayout = true,
@@ -250,7 +291,24 @@ internal fun ConversationStreamView(
                 segment.tightBottomSpacing -> 9.dp
                 else -> 12.dp
             }
-            Box(modifier = Modifier.fillMaxWidth().padding(bottom = bottomPad)) {
+            val isHighlighted = highlightedSeq != null && segment.seq >= 0 && segment.seq == highlightedSeq
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = bottomPad)
+                    .then(
+                        if (isHighlighted) {
+                            Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Everforest.BoldGold.copy(alpha = 0.09f))
+                                .border(1.dp, Everforest.BoldGold.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                                .testTag("timeline_highlighted_segment_${segment.seq}")
+                        } else {
+                            Modifier
+                        },
+                    ),
+            ) {
                 when (segment) {
                     is TimelineSegment.ProcessTrace -> ClaudeProcessTraceView(
                         steps = segment.steps,
@@ -354,6 +412,40 @@ internal fun ConversationStreamView(
                 }
             }
         }
+    }
+    if (transcript.hasMoreAfter && onJumpToLatest != null) {
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = Everforest.Bg2,
+            border = BorderStroke(1.dp, Everforest.BoldGold.copy(alpha = 0.6f)),
+            shadowElevation = 6.dp,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 14.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .clickable(onClick = onJumpToLatest)
+                .testTag("timeline_btn_jump_latest"),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.ArrowDownward,
+                    contentDescription = null,
+                    tint = Everforest.BoldGold,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    text = "回到最新消息",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Everforest.Fg,
+                )
+            }
+        }
+    }
     }
 }
 

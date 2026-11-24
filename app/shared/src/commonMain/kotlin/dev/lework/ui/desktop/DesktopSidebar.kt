@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -60,6 +61,7 @@ internal fun DesktopSidebar(
     onRenameHost: (hubId: String, newName: String) -> Unit = { _, _ -> },
     onPairAnotherHost: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
+    onOpenGlobalSearch: (initialQuery: String) -> Unit = {},
     onToggleArchivedView: (Boolean) -> Unit,
     onTogglePinSession: (String) -> Unit,
     onRequestRenameSession: (SessionMeta) -> Unit,
@@ -332,7 +334,13 @@ internal fun DesktopSidebar(
                             interactionSource = searchInteraction,
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions = KeyboardActions(onSearch = {}),
+                            keyboardActions = KeyboardActions(
+                                onSearch = {
+                                    if (state.drawerSearchQuery.trim().isNotEmpty()) {
+                                        onOpenGlobalSearch(state.drawerSearchQuery.trim())
+                                    }
+                                },
+                            ),
                             textStyle = TextStyle(
                                 fontSize = 12.sp,
                                 lineHeight = 16.sp,
@@ -694,6 +702,52 @@ internal fun DesktopSidebar(
                             onRename = { onRequestRenameSession(sess) },
                             onToggleArchive = { onToggleArchiveSession(sess.id, !sess.archived) },
                         )
+                    }
+                }
+            }
+            val sidebarQuery = state.drawerSearchQuery.trim()
+            if (sidebarQuery.length >= 2) {
+                item(key = "sidebar_fulltext_search_bridge") {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Everforest.Bg1,
+                        border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp, bottom = 4.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onOpenGlobalSearch(sidebarQuery) }
+                            .testTag("sidebar_btn_fulltext_search"),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Search,
+                                contentDescription = null,
+                                tint = Everforest.Green,
+                                modifier = Modifier.size(14.dp),
+                            )
+                            Text(
+                                text = "全文搜索「$sidebarQuery」",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.Fg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "⇧⌘F",
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Everforest.BoldGold,
+                            )
+                        }
                     }
                 }
             }

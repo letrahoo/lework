@@ -55,6 +55,8 @@ fun main(args: Array<String>) {
         val uiState by store.state.collectAsState()
         var openSettingsSignal by remember { mutableIntStateOf(0) }
         var toggleSidebarSignal by remember { mutableIntStateOf(0) }
+        var openGlobalSearchSignal by remember { mutableIntStateOf(0) }
+        var openInSessionFindSignal by remember { mutableIntStateOf(0) }
         val hostTitle = uiState.hub?.let {
             uiState.activeHostDisplayName.takeIf { name -> name.isNotBlank() }
         }?.let { "Lework — $it" } ?: "Lework"
@@ -111,6 +113,17 @@ fun main(args: Array<String>) {
                     )
                     Separator()
                     Item(
+                        text = "全文搜索历史对话…",
+                        shortcut = KeyShortcut(Key.F, meta = true, shift = true),
+                        onClick = { openGlobalSearchSignal++ },
+                    )
+                    Item(
+                        text = "在当前会话中查找…",
+                        shortcut = KeyShortcut(Key.F, meta = true),
+                        onClick = { openInSessionFindSignal++ },
+                    )
+                    Separator()
+                    Item(
                         text = "设置…",
                         shortcut = KeyShortcut(Key.Comma, meta = true),
                         onClick = { openSettingsSignal++ },
@@ -145,6 +158,8 @@ fun main(args: Array<String>) {
                 externalStore = store,
                 openSettingsSignal = openSettingsSignal,
                 toggleSidebarSignal = toggleSidebarSignal,
+                openGlobalSearchSignal = openGlobalSearchSignal,
+                openInSessionFindSignal = openInSessionFindSignal,
             )
         }
     }

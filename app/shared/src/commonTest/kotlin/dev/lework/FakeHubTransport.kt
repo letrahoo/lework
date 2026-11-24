@@ -443,10 +443,127 @@ class FakeHubTransport : HubTransport {
         artifactContents[sessionId to artifactId]
             ?: throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Artifact not found: $artifactId")
 
+    override suspend fun searchSessions(params: SessionSearchParams): SessionSearchResult {
+        val raw = params.query.trim()
+        if (raw.isEmpty()) {
+            return SessionSearchResult(
+                query = "",
+                hits = emptyList(),
+                indexedSessions = sessions.size,
+                totalSessions = sessions.size,
+                indexing = false,
+            )
+        }
+        val terms = raw.split(Regex("\\s+")).filter { it.isNotBlank() }
+        val lowerTerms = terms.map { it.lowercase() }
+        val roleFilter = params.role ?: SearchRoleFilter.ALL
+        val includeArchived = params.includeArchived == true || !params.sessionId.isNullOrBlank()
+        val matchesLimit = params.matchesPerSession ?: if (!params.sessionId.isNullOrBlank()) 50 else 3
+
+        val hits = mutableListOf<SessionSearchHit>()
+        for (meta in sessions) {
+            if (params.sessionId != null && meta.id != params.sessionId) continue
+            if (params.engineId != null && meta.engineId != params.engineId) continue
+            if (!includeArchived && meta.archived) continue
+            if (params.cwd != null && meta.cwd != params.cwd) continue
+
+            val events = sessionEventsMap[meta.id].orEmpty()
+            val msgs = mutableListOf<Triple<Int, SearchMatchRole, Pair<Long, String>>>()
+            val assistantAccum = linkedMapOf<String, Triple<Int, Long, StringBuilder>>()
+            for (ev in events) {
+                when (ev) {
+                    is AgentEvent.UserMessage -> {
+                        msgs.add(Triple(ev.seq, SearchMatchRole.USER, ev.ts to ev.text))
+                    }
+                    is AgentEvent.AssistantDelta -> {
+                        val existing = assistantAccum[ev.messageId]
+                        if (existing != null) {
+                            existing.third.append(ev.text)
+                        } else {
+                            assistantAccum[ev.messageId] = Triple(ev.seq, ev.ts, StringBuilder(ev.text))
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+            for ((seq, ts, sb) in assistantAccum.values) {
+                msgs.add(Triple(seq, SearchMatchRole.ASSISTANT, ts to sb.toString()))
+            }
+
+            val matched = msgs.filter { (_, role, pair) ->
+                val roleOk = when (roleFilter) {
+                    SearchRoleFilter.ALL -> true
+                    SearchRoleFilter.USER -> role == SearchMatchRole.USER
+                    SearchRoleFilter.ASSISTANT -> role == SearchMatchRole.ASSISTANT
+                }
+                if (!roleOk) return@filter false
+                val lower = pair.second.lowercase()
+                lowerTerms.all { it in lower }
+            }.sortedWith(
+                if (params.sessionId != null) {
+                    compareBy { it.first }
+                } else {
+                    compareByDescending<Triple<Int, SearchMatchRole, Pair<Long, String>>> {
+                        if (it.second == SearchMatchRole.USER) 1 else 0
+                    }.thenByDescending { it.first }
+                },
+            )
+
+            val titleMatch = params.sessionId == null && roleFilter == SearchRoleFilter.ALL &&
+                lowerTerms.all { it in "${meta.title} ${meta.cwd}".lowercase() }
+            if (matched.isEmpty() && !titleMatch) continue
+
+            val matchItems = matched.take(matchesLimit).map { (seq, role, pair) ->
+                val text = pair.second.replace(Regex("\\s+"), " ").trim()
+                val idx = text.lowercase().indexOf(lowerTerms.first()).coerceAtLeast(0)
+                val end = (idx + lowerTerms.first().length).coerceAtMost(text.length)
+                SessionSearchMatch(
+                    seq = seq,
+                    role = role,
+                    ts = pair.first,
+                    snippet = text.take(140),
+                    matchStart = idx.coerceAtMost(text.take(140).length),
+                    matchEnd = end.coerceAtMost(text.take(140).length),
+                )
+            }.ifEmpty {
+                listOf(
+                    SessionSearchMatch(
+                        seq = 0,
+                        role = SearchMatchRole.USER,
+                        ts = meta.updatedAt,
+                        snippet = "${meta.title} · ${meta.cwd}",
+                        matchStart = 0,
+                        matchEnd = 0,
+                    ),
+                )
+            }
+            hits.add(
+                SessionSearchHit(
+                    sessionId = meta.id,
+                    engineId = meta.engineId,
+                    title = meta.title,
+                    cwd = meta.cwd,
+                    updatedAt = meta.updatedAt,
+                    archived = meta.archived,
+                    matchCount = maxOf(matched.size, 1),
+                    matches = matchItems,
+                ),
+            )
+        }
+        return SessionSearchResult(
+            query = raw,
+            hits = hits.sortedByDescending { it.updatedAt }.take(params.limit ?: 30),
+            indexedSessions = sessions.size,
+            totalSessions = sessions.size,
+            indexing = false,
+        )
+    }
+
     override suspend fun subscribeSession(
         sessionId: String,
         afterSeq: Int,
         beforeSeq: Int?,
+        aroundSeq: Int?,
         limit: Int?,
     ): StreamSubscribeResult {
         subscribeSessionCount++
@@ -488,6 +605,27 @@ class FakeHubTransport : HubTransport {
                 truncated = false,
                 earliestSeq = 0,
                 hasMoreBefore = false,
+                hasMoreAfter = false,
+            )
+        }
+
+        if (aroundSeq != null) {
+            val targetIdx = all.indexOfFirst { it.seq >= aroundSeq }.let { if (it < 0) all.lastIndex else it }
+            val pageSize = (limit ?: 260).coerceAtLeast(20)
+            val start = (targetIdx - (pageSize / 3)).coerceAtLeast(0)
+            val end = if (all.size - start <= maxOf(pageSize, 500)) {
+                all.size
+            } else {
+                (start + pageSize).coerceAtMost(all.size)
+            }
+            val slice = all.subList(start, end)
+            return StreamSubscribeResult(
+                session = meta.copy(lastSeq = all.last().seq),
+                events = slice,
+                truncated = start > 0 || end < all.size,
+                earliestSeq = slice.firstOrNull()?.seq ?: all.first().seq,
+                hasMoreBefore = start > 0,
+                hasMoreAfter = end < all.size,
             )
         }
 

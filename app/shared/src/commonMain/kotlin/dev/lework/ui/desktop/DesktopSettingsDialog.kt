@@ -427,6 +427,7 @@ internal fun DesktopSettingsDialog(
                                 color = Everforest.Fg,
                             )
                             DesktopShortcutRow("新建会话", "⌘N", "收起 / 展开侧边栏", "⌘B")
+                            DesktopShortcutRow("全局搜索历史对话", "⇧⌘F", "当前会话内查找", "⌘F")
                             DesktopShortcutRow("切换引擎与模型", "⌘K", "查看代码变更与快照", "⇧⌘D")
                             DesktopShortcutRow("刷新会话列表", "⌘R", "打开设置", "⌘,")
                             DesktopShortcutRow("发送消息", "Enter", "输入框换行", "Shift+Enter")
