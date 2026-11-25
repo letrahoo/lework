@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
@@ -62,7 +63,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.lework.platform.copyTextToClipboard
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -2165,8 +2165,14 @@ internal fun MermaidDiagramBlockView(
     val isSupported = diagram !is MermaidDiagram.Unsupported
     var showSource by remember(isSupported) { mutableStateOf(!isSupported) }
     var showFullscreen by remember { mutableStateOf(false) }
-    var copied by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    var copies by remember(code) { mutableIntStateOf(0) }
+    val copied = copies != 0
+    LaunchedEffect(code, copies) {
+        if (copied) {
+            delay(1_600L)
+            copies = 0
+        }
+    }
 
     val headerLabel = remember(diagram.kind, isSupported) {
         if (isSupported) "mermaid · ${diagram.kind.displayName}" else "mermaid"
@@ -2182,7 +2188,7 @@ internal fun MermaidDiagramBlockView(
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // Card Header Bar (exclude chrome labels from parent SelectionContainer drags)
-            androidx.compose.foundation.text.selection.DisableSelection {
+            DisableSelection {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2242,11 +2248,8 @@ internal fun MermaidDiagramBlockView(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
                                 .clickable {
-                                    copyTextToClipboard(code)
-                                    copied = true
-                                    scope.launch {
-                                        delay(1_600L)
-                                        copied = false
+                                    if (copyTextToClipboard(code)) {
+                                        copies++
                                     }
                                 }
                                 .padding(horizontal = 5.dp, vertical = 2.dp)
@@ -2272,31 +2275,33 @@ internal fun MermaidDiagramBlockView(
             HorizontalDivider(color = Everforest.Bg2, thickness = 0.5.dp)
 
             if (!isSupported) {
-                androidx.compose.foundation.text.selection.DisableSelection {
+                DisableSelection {
                     MermaidUnsupportedBanner()
                 }
                 MermaidSourceCodeView(code = code)
             } else if (showSource) {
                 MermaidSourceCodeView(code = code)
             } else {
-                BoxWithConstraints(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("mermaid_canvas"),
-                ) {
-                    val viewportWidth = maxWidth
-                    Box(
+                DisableSelection {
+                    BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
+                            .testTag("mermaid_canvas"),
                     ) {
+                        val viewportWidth = maxWidth
                         Box(
                             modifier = Modifier
-                                .widthIn(min = viewportWidth)
-                                .padding(horizontal = 8.dp, vertical = 10.dp),
-                            contentAlignment = Alignment.Center,
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                         ) {
-                            MermaidDiagramRenderer(diagram = diagram, zoom = 1f)
+                            Box(
+                                modifier = Modifier
+                                    .widthIn(min = viewportWidth)
+                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                MermaidDiagramRenderer(diagram = diagram, zoom = 1f)
+                            }
                         }
                     }
                 }
@@ -2308,7 +2313,7 @@ internal fun MermaidDiagramBlockView(
         // Detach from any enclosing message SelectionContainer: Dialog renders in a separate
         // window/root layout hierarchy, so inheriting a parent LocalSelectionRegistrar crashes
         // SelectionManager coordinate conversion when interacting with text inside the dialog.
-        androidx.compose.foundation.text.selection.DisableSelection {
+        DisableSelection {
             MermaidFullscreenDialog(
                 diagram = diagram,
                 code = code,
@@ -2422,8 +2427,14 @@ private fun MermaidFullscreenDialog(
     onDismiss: () -> Unit,
 ) {
     var zoom by remember { mutableStateOf(1.0f) }
-    var copied by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    var copies by remember(code) { mutableIntStateOf(0) }
+    val copied = copies != 0
+    LaunchedEffect(code, copies) {
+        if (copied) {
+            delay(1_600L)
+            copies = 0
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -2532,11 +2543,8 @@ private fun MermaidFullscreenDialog(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable {
-                                    copyTextToClipboard(code)
-                                    copied = true
-                                    scope.launch {
-                                        delay(1_600L)
-                                        copied = false
+                                    if (copyTextToClipboard(code)) {
+                                        copies++
                                     }
                                 },
                         ) {

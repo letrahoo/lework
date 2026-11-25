@@ -52,7 +52,9 @@ import dev.lework.protocol.*
 import dev.lework.store.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 @OptIn(ExperimentalMaterial3Api::class)
 private sealed interface TimelineSegment {
@@ -334,8 +336,16 @@ internal fun ConversationStreamView(
             val headerOffset = (if (queuedPrompts.isNotEmpty()) 1 else 0) + (if (showLiveSpinner) 1 else 0)
             val index = headerOffset + resolvedIdx
             listState.scrollToItem(index)
-            // Reverse layout anchors the bottom of an item. Reveal the start of tall replies.
-            val layout = listState.layoutInfo
+            // Reverse layout anchors the bottom of an item. Wait for layout if needed, then reveal the start of tall replies.
+            var layout = listState.layoutInfo
+            if (layout.viewportSize.height <= 0 || layout.visibleItemsInfo.none { it.index == index }) {
+                layout = withTimeoutOrNull(300L) {
+                    snapshotFlow { listState.layoutInfo }
+                        .first { info ->
+                            info.viewportSize.height > 0 && info.visibleItemsInfo.any { it.index == index }
+                        }
+                } ?: listState.layoutInfo
+            }
             val itemHeight = layout.visibleItemsInfo.firstOrNull { it.index == index }?.size ?: 0
             val availableHeight = layout.viewportSize.height - layout.beforeContentPadding - layout.afterContentPadding
             if (availableHeight > 0 && itemHeight > availableHeight) {
@@ -647,8 +657,15 @@ private fun QueuedPromptsCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    val promptModifier = if (hasLongContent) Modifier.clickable { expanded = !expanded } else Modifier
-                    SelectionContainer(modifier = Modifier.weight(1f).then(promptModifier)) {
+                    val expandOnTapModifier = if (hasLongContent && !isExpanded) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { expanded = true }
+                    } else {
+                        Modifier
+                    }
+                    SelectionContainer(modifier = Modifier.weight(1f).then(expandOnTapModifier)) {
                         Text(
                             text = if (prompts.size > 1) "${idx + 1}. $cleanText" else cleanText,
                             fontSize = 13.5.sp,
@@ -857,19 +874,22 @@ private fun PlanCard(
                     }
                 }
             }
-            for (e in entries) {
-                val (icon, tint) = when (e.status) {
-                    "completed" -> Icons.Rounded.CheckCircle to Everforest.Green
-                    "in_progress" -> Icons.Rounded.Autorenew to Everforest.Yellow
-                    else -> Icons.Rounded.RadioButtonUnchecked to Everforest.Grey0
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
-                    SelectionContainer {
-                        Text(e.content, fontSize = 12.sp, color = Everforest.Fg)
+            SelectionContainer {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    for ((index, e) in entries.withIndex()) {
+                        if (index > 0) MarkdownSelectionSeparator("\n", Modifier.height(6.dp).width(1.dp))
+                        val (icon, tint) = when (e.status) {
+                            "completed" -> Icons.Rounded.CheckCircle to Everforest.Green
+                            "in_progress" -> Icons.Rounded.Autorenew to Everforest.Yellow
+                            else -> Icons.Rounded.RadioButtonUnchecked to Everforest.Grey0
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+                            Text(e.content, fontSize = 12.sp, color = Everforest.Fg)
+                        }
                     }
                 }
             }
@@ -910,8 +930,9 @@ private fun MessageTimestampCaption(
                 modifier = Modifier
                     .clip(RoundedCornerShape(5.dp))
                     .clickable {
-                        copyTextToClipboard(copyableText!!)
-                        copies++
+                        if (copyTextToClipboard(copyableText!!)) {
+                            copies++
+                        }
                     }
                     .padding(horizontal = 4.dp, vertical = 1.dp)
                     .then(if (copyTag != null) Modifier.testTag(copyTag) else Modifier),
@@ -971,6 +992,8 @@ private fun MessageTimestampCaption(
     }
 }
 
+private val AUTO_IMAGE_PLACEHOLDER_REGEX = Regex("^（已发送\\s*\\d+\\s*张图片）$")
+
 @Composable
 private fun MessageTimelineRow(
     item: ChatTimelineItem,
@@ -983,7 +1006,7 @@ private fun MessageTimelineRow(
             val isDesktop = isDesktopPlatform()
             val hasPreviews = item.imagePreviews.isNotEmpty()
             val isAutoPlaceholderOnly =
-                (hasPreviews || item.imageCount > 0) && Regex("^（已发送\\s*\\d+\\s*张图片）$").matches(item.text.trim())
+                (hasPreviews || item.imageCount > 0) && AUTO_IMAGE_PLACEHOLDER_REGEX.matches(item.text.trim())
             val bubbleMaxWidth = when {
                 isDesktop && item.imagePreviews.size > 1 -> 460.dp
                 isDesktop && hasPreviews -> 360.dp
@@ -1184,7 +1207,13 @@ internal fun InlineApprovalBanner(
 ) {
     val lines = remember(permission.title) { permission.title.lines().dropWhile { it.isBlank() } }
     val headerTitle = lines.firstOrNull()?.trim() ?: "需要执行审批"
-    val cmdPreview = remember(lines) { lines.drop(1).joinToString("\n").takeIf { it.isNotBlank() } }
+    val cmdPreview = remember(lines) {
+        lines.drop(1)
+            .dropWhile { it.isBlank() }
+            .dropLastWhile { it.isBlank() }
+            .joinToString("\n")
+            .takeIf { it.isNotBlank() }
+    }
 
     Surface(
         modifier = Modifier

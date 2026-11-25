@@ -583,12 +583,11 @@ object JvmDesktopRuntime {
         }
     }
 
-    fun copyToClipboard(text: String) {
+    fun copyToClipboard(text: String): Boolean =
         runCatching {
             val selection = StringSelection(text)
             Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, selection)
-        }
-    }
+        }.isSuccess
 
     fun readFromClipboard(): String? = runCatching {
         val cb = Toolkit.getDefaultToolkit().systemClipboard

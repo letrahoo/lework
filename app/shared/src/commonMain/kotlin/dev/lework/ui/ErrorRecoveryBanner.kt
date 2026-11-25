@@ -121,8 +121,9 @@ internal fun NetworkErrorRecoveryBanner(
                         .size(24.dp)
                         .clip(RoundedCornerShape(6.dp))
                         .clickable {
-                            copyTextToClipboard(copyableDetail)
-                            copies++
+                            if (copyTextToClipboard(copyableDetail)) {
+                                copies++
+                            }
                         }
                         .testTag("copy_recovery_banner_button"),
                 ) {

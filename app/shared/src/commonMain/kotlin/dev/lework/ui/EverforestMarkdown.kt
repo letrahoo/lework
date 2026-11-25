@@ -23,11 +23,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -47,7 +49,6 @@ import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.openExternalUrl
 import dev.lework.security.isSafeExternalLink
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 internal enum class MdTableAlign {
     START,
@@ -87,7 +88,7 @@ internal fun EverforestMarkdownContent(
         Column(modifier = modifier.fillMaxWidth()) {
             for ((index, block) in blocks.withIndex()) {
                 // Layout spacing alone is lost when Compose joins selected Text nodes.
-                if (index > 0) MarkdownSelectionGap(Modifier.height(9.dp))
+                if (index > 0) MarkdownSelectionSeparator("\n", Modifier.height(9.dp).width(1.dp))
                 MarkdownBlockItemView(block, wrapInSelectionContainer = false)
             }
         }
@@ -95,8 +96,18 @@ internal fun EverforestMarkdownContent(
 }
 
 @Composable
-private fun MarkdownSelectionGap(modifier: Modifier) {
-    Text(text = "\n", fontSize = 1.sp, lineHeight = 1.sp, modifier = modifier.width(1.dp))
+internal fun MarkdownSelectionSeparator(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = text,
+        fontSize = 1.sp,
+        lineHeight = 1.sp,
+        modifier = modifier
+            .drawWithContent {}
+            .clearAndSetSemantics {},
+    )
 }
 
 @Composable
@@ -183,7 +194,7 @@ private fun ParagraphBlockView(text: String) {
 private fun ListGroupBlockView(items: List<MdListItem>) {
     Column(modifier = Modifier.fillMaxWidth()) {
         for ((index, item) in items.withIndex()) {
-            if (index > 0) MarkdownSelectionGap(Modifier.height(5.dp))
+            if (index > 0) MarkdownSelectionSeparator("\n", Modifier.height(5.dp).width(1.dp))
             val startPad = (item.indent.coerceIn(0, 4) * 14).dp
             Row(
                 modifier = Modifier
@@ -208,8 +219,9 @@ private fun ListGroupBlockView(items: List<MdListItem>) {
                             fontSize = 14.5.sp,
                             lineHeight = 23.sp,
                             color = Everforest.CommentGrey,
-                            modifier = Modifier.widthIn(min = 22.dp).padding(end = 5.dp),
+                            modifier = Modifier.widthIn(min = 22.dp),
                         )
+                        MarkdownSelectionSeparator(" ", Modifier.width(5.dp).height(1.dp))
                     }
                     else -> {
                         Text(
@@ -218,8 +230,8 @@ private fun ListGroupBlockView(items: List<MdListItem>) {
                             lineHeight = 23.sp,
                             fontWeight = FontWeight.Bold,
                             color = Everforest.CommentGrey,
-                            modifier = Modifier.padding(end = 8.dp),
                         )
+                        MarkdownSelectionSeparator(" ", Modifier.width(8.dp).height(1.dp))
                     }
                 }
 
@@ -260,7 +272,6 @@ private fun QuoteBlockView(quote: MdBlock.Quote) {
         )
         Column(
             modifier = Modifier.padding(start = 11.dp, top = 2.dp, bottom = 2.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (quote.alertKind != null) {
                 Text(
@@ -269,6 +280,9 @@ private fun QuoteBlockView(quote: MdBlock.Quote) {
                     fontWeight = FontWeight.SemiBold,
                     color = if (accent == Everforest.Bg4) Everforest.CommentGrey else accent,
                 )
+                if (quote.lines.isNotEmpty()) {
+                    MarkdownSelectionSeparator("\n", Modifier.height(4.dp).width(1.dp))
+                }
             }
             val joined = quote.lines.joinToString("\n")
             val annotated = remember(joined) {
@@ -370,8 +384,9 @@ private fun TableBlockView(table: MdBlock.Table) {
                         }
                     },
                     content = {
-                        // Row 0: Headers
+                        // Row 0: Headers (emit invisible TSV/newline separators between cells in composition order)
                         for (c in 0 until colCount) {
+                            if (c > 0) MarkdownSelectionSeparator("\t")
                             val align = table.alignments.getOrElse(c) { MdTableAlign.START }
                             val cellText = table.headers.getOrElse(c) { "" }
                             val annotated = remember(cellText) {
@@ -396,6 +411,7 @@ private fun TableBlockView(table: MdBlock.Table) {
                         // Rows 1..N: Body cells
                         table.rows.forEachIndexed { rIdx, row ->
                             for (c in 0 until colCount) {
+                                MarkdownSelectionSeparator(if (c == 0) "\n" else "\t")
                                 val align = table.alignments.getOrElse(c) { MdTableAlign.START }
                                 val cellText = row.getOrElse(c) { "" }
                                 val annotated = remember(cellText) {
@@ -422,12 +438,14 @@ private fun TableBlockView(table: MdBlock.Table) {
                     val minColW = 40.dp.roundToPx()
                     val maxColW = 284.dp.roundToPx()
                     val minRowH = 32.dp.roundToPx()
+                    val totalCells = rowCount * colCount
 
-                    // Step 1: query each cell's single-line intrinsic width (does not consume measure())
+                    // Step 1: query each cell's single-line intrinsic width (cells occupy even indices 2 * cellIdx)
                     val colWidths = IntArray(colCount) { minColW }
                     for (r in 0 until rowCount) {
                         for (c in 0 until colCount) {
-                            val intrinsicW = measurables[r * colCount + c].maxIntrinsicWidth(Constraints.Infinity)
+                            val cellIdx = r * colCount + c
+                            val intrinsicW = measurables[cellIdx * 2].maxIntrinsicWidth(Constraints.Infinity)
                             val desired = (intrinsicW + padH * 2).coerceIn(minColW, maxColW)
                             if (desired > colWidths[c]) colWidths[c] = desired
                         }
@@ -455,16 +473,20 @@ private fun TableBlockView(table: MdBlock.Table) {
                     }
 
                     // Step 3: measure each cell ONCE at its exact column inner width so wrapping & alignment are exact
-                    val placeables = Array(measurables.size) { idx ->
-                        val c = idx % colCount
+                    val cellPlaceables = Array(totalCells) { cellIdx ->
+                        val c = cellIdx % colCount
                         val innerW = (colWidths[c] - padH * 2).coerceAtLeast(1)
-                        measurables[idx].measure(Constraints(minWidth = innerW, maxWidth = innerW))
+                        measurables[cellIdx * 2].measure(Constraints(minWidth = innerW, maxWidth = innerW))
+                    }
+                    val sepConstraints = Constraints.fixed(1, 1)
+                    val sepPlaceables = Array((totalCells - 1).coerceAtLeast(0)) { sepIdx ->
+                        measurables[sepIdx * 2 + 1].measure(sepConstraints)
                     }
 
                     val rowHeights = IntArray(rowCount) { minRowH }
                     for (r in 0 until rowCount) {
                         for (c in 0 until colCount) {
-                            val p = placeables[r * colCount + c]
+                            val p = cellPlaceables[r * colCount + c]
                             val h = p.height + padV * 2
                             if (h > rowHeights[r]) rowHeights[r] = h
                         }
@@ -487,8 +509,13 @@ private fun TableBlockView(table: MdBlock.Table) {
                     layout(totalWidth, totalHeight) {
                         for (r in 0 until rowCount) {
                             for (c in 0 until colCount) {
-                                val p = placeables[r * colCount + c]
-                                p.placeRelative(colX[c] + padH, rowY[r] + padV)
+                                val cellIdx = r * colCount + c
+                                if (cellIdx > 0) {
+                                    val sepX = if (c > 0) colX[c] else 0
+                                    val sepY = if (c > 0) rowY[r] + padV else rowY[r]
+                                    sepPlaceables[cellIdx - 1].placeRelative(sepX, sepY)
+                                }
+                                cellPlaceables[cellIdx].placeRelative(colX[c] + padH, rowY[r] + padV)
                             }
                         }
                     }
@@ -512,8 +539,14 @@ internal fun CodeFenceBlockView(
     lang: String,
     code: String,
 ) {
-    val scope = rememberCoroutineScope()
-    var copied by remember { mutableStateOf(false) }
+    var copies by remember(code) { mutableIntStateOf(0) }
+    val copied = copies != 0
+    LaunchedEffect(code, copies) {
+        if (copied) {
+            delay(1_600L)
+            copies = 0
+        }
+    }
     var codeExpanded by remember(code) { mutableStateOf(false) }
     val (totalLines, previewCode) = remember(code) {
         var nlCount = 1
@@ -566,11 +599,8 @@ internal fun CodeFenceBlockView(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
                             .clickable {
-                                copyTextToClipboard(code)
-                                copied = true
-                                scope.launch {
-                                    delay(1_600L)
-                                    copied = false
+                                if (copyTextToClipboard(code)) {
+                                    copies++
                                 }
                             }
                             .padding(horizontal = 6.dp, vertical = 2.dp),

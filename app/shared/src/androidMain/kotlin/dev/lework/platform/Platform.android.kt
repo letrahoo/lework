@@ -755,10 +755,12 @@ actual fun openExternalUrl(url: String) {
     }
 }
 
-actual fun copyTextToClipboard(text: String) {
-    val ctx = AndroidPlatformRuntime.appContext ?: return
-    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    cm.setPrimaryClip(ClipData.newPlainText("Lework", text))
+actual fun copyTextToClipboard(text: String): Boolean {
+    val ctx = AndroidPlatformRuntime.appContext ?: return false
+    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return false
+    return runCatching {
+        cm.setPrimaryClip(ClipData.newPlainText("Lework", text))
+    }.isSuccess
 }
 
 actual fun loadPinnedHubFingerprints(): Set<String> {
