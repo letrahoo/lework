@@ -311,22 +311,20 @@ internal fun ArtifactsInspectorSheet(
                         }
                     }
                 } else if (art.mimeType.contains("markdown", ignoreCase = true)) {
-                    SelectionContainer {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .padding(14.dp),
-                        ) {
-                            EverforestMarkdownContent(markdown = opened.content)
-                            if (opened.truncated) {
-                                Spacer(Modifier.height(10.dp))
-                                Text(
-                                    text = "… 内容较长，已展示前 128 KB",
-                                    fontSize = 11.sp,
-                                    color = Everforest.CommentGrey,
-                                )
-                            }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                            .padding(14.dp),
+                    ) {
+                        EverforestMarkdownContent(markdown = opened.content)
+                        if (opened.truncated) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                text = "… 内容较长，已展示前 128 KB",
+                                fontSize = 11.sp,
+                                color = Everforest.CommentGrey,
+                            )
                         }
                     }
                 } else {

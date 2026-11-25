@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CompareArrows
 import androidx.compose.material.icons.rounded.Close
@@ -463,13 +464,14 @@ internal fun DesktopConsoleApp(
                                         tint = Everforest.BoldGold,
                                         modifier = Modifier.size(16.dp),
                                     )
-                                    Text(
-                                        text = state.promptNoticeText.orEmpty(),
-                                        fontSize = 12.5.sp,
-                                        lineHeight = 17.sp,
-                                        color = Everforest.Fg,
-                                        modifier = Modifier.weight(1f),
-                                    )
+                                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = state.promptNoticeText.orEmpty(),
+                                            fontSize = 12.5.sp,
+                                            lineHeight = 17.sp,
+                                            color = Everforest.Fg,
+                                        )
+                                    }
                                     Icon(
                                         imageVector = Icons.Rounded.Close,
                                         contentDescription = "关闭提示",
@@ -513,13 +515,14 @@ internal fun DesktopConsoleApp(
                                         tint = Everforest.Red,
                                         modifier = Modifier.size(16.dp),
                                     )
-                                    Text(
-                                        text = state.promptErrorText.orEmpty(),
-                                        fontSize = 12.5.sp,
-                                        lineHeight = 17.sp,
-                                        color = Everforest.Fg,
-                                        modifier = Modifier.weight(1f),
-                                    )
+                                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = state.promptErrorText.orEmpty(),
+                                            fontSize = 12.5.sp,
+                                            lineHeight = 17.sp,
+                                            color = Everforest.Fg,
+                                        )
+                                    }
                                     Icon(
                                         imageVector = Icons.Rounded.Close,
                                         contentDescription = "关闭提示",

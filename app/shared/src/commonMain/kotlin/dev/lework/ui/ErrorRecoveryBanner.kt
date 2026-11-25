@@ -4,13 +4,16 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.WifiOff
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -20,8 +23,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lework.platform.copyTextToClipboard
 import dev.lework.store.ConnectionStatus
 import dev.lework.store.TurnRecoveryBannerState
+import kotlinx.coroutines.delay
 
 /**
  * Shared Everforest Dark network/turn error recovery banner rendered above the composer
@@ -48,6 +53,16 @@ internal fun NetworkErrorRecoveryBanner(
         hasUnsentDraft -> "已保留上一条未发送内容，重试将原样发送"
         needsReconnect -> "网络恢复后点击将自动重连并继续上一轮任务"
         else -> "将基于当前会话上下文无缝继续上一轮任务"
+    }
+
+    val copyableDetail = banner.detail.ifBlank { banner.headline }
+    var copies by remember(copyableDetail) { mutableIntStateOf(0) }
+    val copiedDetail = copies != 0
+    LaunchedEffect(copyableDetail, copies) {
+        if (copiedDetail) {
+            delay(1_600L)
+            copies = 0
+        }
     }
 
     Surface(
@@ -105,6 +120,25 @@ internal fun NetworkErrorRecoveryBanner(
                     modifier = Modifier
                         .size(24.dp)
                         .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            if (copyTextToClipboard(copyableDetail)) {
+                                copies++
+                            }
+                        }
+                        .testTag("copy_recovery_banner_button"),
+                ) {
+                    Icon(
+                        imageVector = if (copiedDetail) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                        contentDescription = "复制异常详情",
+                        tint = if (copiedDetail) Everforest.SoftSage else Everforest.Grey2,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(RoundedCornerShape(6.dp))
                         .clickable(onClick = onDismiss)
                         .testTag("dismiss_recovery_banner_button"),
                 ) {
@@ -118,14 +152,16 @@ internal fun NetworkErrorRecoveryBanner(
             }
 
             if (banner.detail.isNotBlank()) {
-                Text(
-                    text = banner.detail,
-                    fontSize = 12.sp,
-                    lineHeight = 16.5.sp,
-                    color = Everforest.Fg.copy(alpha = 0.92f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                SelectionContainer {
+                    Text(
+                        text = banner.detail,
+                        fontSize = 12.sp,
+                        lineHeight = 16.5.sp,
+                        color = Everforest.Fg.copy(alpha = 0.92f),
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
 
             Row(

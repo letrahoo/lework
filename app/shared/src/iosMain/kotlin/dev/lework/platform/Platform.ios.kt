@@ -634,9 +634,10 @@ actual fun openExternalUrl(url: String) {
     )
 }
 
-actual fun copyTextToClipboard(text: String) {
-    UIPasteboard.generalPasteboard.string = text
-}
+actual fun copyTextToClipboard(text: String): Boolean =
+    runCatching {
+        UIPasteboard.generalPasteboard.string = text
+    }.isSuccess
 
 private fun iosTsnetStateDir(): String {
     val dirs = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true)

@@ -7,6 +7,8 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.CompareArrows
 import androidx.compose.material.icons.rounded.*
@@ -58,24 +60,26 @@ fun ConsoleApp(
     }
 
     MaterialTheme(colorScheme = EverforestColorScheme) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Everforest.Bg0,
-        ) {
-            if (isDesktop) {
-                DesktopConsoleApp(
-                    store = store,
-                    state = state,
-                    openSettingsSignal = openSettingsSignal,
-                    toggleSidebarSignal = toggleSidebarSignal,
-                    openGlobalSearchSignal = openGlobalSearchSignal,
-                    openInSessionFindSignal = openInSessionFindSignal,
-                )
-            } else {
-                MobileConsoleApp(
-                    store = store,
-                    state = state,
-                )
+        CompositionLocalProvider(LocalTextSelectionColors provides EverforestTextSelectionColors) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Everforest.Bg0,
+            ) {
+                if (isDesktop) {
+                    DesktopConsoleApp(
+                        store = store,
+                        state = state,
+                        openSettingsSignal = openSettingsSignal,
+                        toggleSidebarSignal = toggleSidebarSignal,
+                        openGlobalSearchSignal = openGlobalSearchSignal,
+                        openInSessionFindSignal = openInSessionFindSignal,
+                    )
+                } else {
+                    MobileConsoleApp(
+                        store = store,
+                        state = state,
+                    )
+                }
             }
         }
     }
@@ -443,13 +447,14 @@ private fun MobileConsoleApp(
                                 tint = Everforest.BoldGold,
                                 modifier = Modifier.size(16.dp),
                             )
-                            Text(
-                                text = state.promptNoticeText.orEmpty(),
-                                fontSize = 12.5.sp,
-                                lineHeight = 17.sp,
-                                color = Everforest.Fg,
-                                modifier = Modifier.weight(1f),
-                            )
+                            SelectionContainer(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = state.promptNoticeText.orEmpty(),
+                                    fontSize = 12.5.sp,
+                                    lineHeight = 17.sp,
+                                    color = Everforest.Fg,
+                                )
+                            }
                             Icon(
                                 imageVector = Icons.Rounded.Close,
                                 contentDescription = "关闭提示",
@@ -496,13 +501,14 @@ private fun MobileConsoleApp(
                                 tint = Everforest.Red,
                                 modifier = Modifier.size(16.dp),
                             )
-                            Text(
-                                text = state.promptErrorText.orEmpty(),
-                                fontSize = 12.5.sp,
-                                lineHeight = 17.sp,
-                                color = Everforest.Fg,
-                                modifier = Modifier.weight(1f),
-                            )
+                            SelectionContainer(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = state.promptErrorText.orEmpty(),
+                                    fontSize = 12.5.sp,
+                                    lineHeight = 17.sp,
+                                    color = Everforest.Fg,
+                                )
+                            }
                             Icon(
                                 imageVector = Icons.Rounded.Close,
                                 contentDescription = "关闭提示",

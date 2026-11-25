@@ -32,6 +32,7 @@ object JvmPlatformTestHooks {
     var pinnedFingerprints: Set<String> = emptySet()
     var bonjourStartedCount: Int = 0
     var clipboardText: String = ""
+    var clipboardWriteSucceeds: Boolean = true
     val openedUrls = mutableListOf<String>()
 
     var tsnetAvailable: Boolean = false
@@ -99,6 +100,7 @@ object JvmPlatformTestHooks {
         pinnedFingerprints = emptySet()
         bonjourStartedCount = 0
         clipboardText = ""
+        clipboardWriteSucceeds = true
         openedUrls.clear()
         tsnetAvailable = false
         tsnetEnabled = false
@@ -239,13 +241,15 @@ actual fun openExternalUrl(url: String) {
     }
 }
 
-actual fun copyTextToClipboard(text: String) {
+actual fun copyTextToClipboard(text: String): Boolean =
     if (JvmDesktopRuntime.isEnabled) {
         JvmDesktopRuntime.copyToClipboard(text)
-    } else {
+    } else if (JvmPlatformTestHooks.clipboardWriteSucceeds) {
         JvmPlatformTestHooks.clipboardText = text
+        true
+    } else {
+        false
     }
-}
 
 actual fun readTextFromClipboard(): String? =
     if (JvmDesktopRuntime.isEnabled) {

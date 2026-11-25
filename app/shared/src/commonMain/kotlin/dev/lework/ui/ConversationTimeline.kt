@@ -43,6 +43,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.appVersionLabel
+import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.epochMillis
 import dev.lework.platform.isDesktopPlatform
 import dev.lework.platform.loadSavedRelayUrls
@@ -51,7 +52,9 @@ import dev.lework.protocol.*
 import dev.lework.store.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 @OptIn(ExperimentalMaterial3Api::class)
 private sealed interface TimelineSegment {
@@ -69,6 +72,7 @@ private sealed interface TimelineSegment {
     data class AssistantBlock(
         override val key: String,
         val messageId: String,
+        val fullText: String,
         val timestampMs: Long,
         override val seq: Int,
         val block: MdBlock,
@@ -85,8 +89,18 @@ private sealed interface TimelineSegment {
     }
 }
 
-private fun groupTimelineSegments(items: List<ChatTimelineItem>): List<TimelineSegment> {
+private fun groupTimelineSegments(
+    items: List<ChatTimelineItem>,
+    isDesktop: Boolean,
+): List<TimelineSegment> {
     if (items.isEmpty()) return emptyList()
+    // Keep normal & medium-long Assistant replies in a single unified SelectionContainer so
+    // drag-selection spans headings, paragraphs, lists, tables, and code blocks seamlessly.
+    // Virtualize only genuinely huge multi-screen essays inside LazyColumn.
+    val virtualizeMinChars = if (isDesktop) 16_000 else 3_200
+    val virtualizeMinBlocks = if (isDesktop) 32 else 10
+    val maxInlineBlocks = if (isDesktop) 64 else 32
+
     val out = mutableListOf<TimelineSegment>()
     val pendingProcess = mutableListOf<ChatTimelineItem>()
 
@@ -100,17 +114,18 @@ private fun groupTimelineSegments(items: List<ChatTimelineItem>): List<TimelineS
     for (item in items) {
         if (item is ChatTimelineItem.Tool || item is ChatTimelineItem.Reasoning) {
             pendingProcess.add(item)
-        } else if (item is ChatTimelineItem.Assistant && item.text.length > 480) {
+        } else if (item is ChatTimelineItem.Assistant &&
+            (item.text.length > virtualizeMinChars || item.text.count { it == '\n' } >= maxInlineBlocks)
+        ) {
             flushProcess()
-            // Virtualize multi-block Assistant responses directly inside LazyColumn so Skia/Compose
-            // only measures & shapes the blocks currently visible in the mobile viewport!
             val blocks = parseMarkdownBlocks(item.text)
-            if (blocks.size >= 3) {
+            if (blocks.size > maxInlineBlocks || (item.text.length > virtualizeMinChars && blocks.size >= virtualizeMinBlocks)) {
                 blocks.forEachIndexed { idx, block ->
                     out.add(
                         TimelineSegment.AssistantBlock(
                             key = "${item.id}_b$idx",
                             messageId = item.id,
+                            fullText = item.text,
                             timestampMs = item.ts,
                             seq = item.seq,
                             block = block,
@@ -160,7 +175,8 @@ internal fun ConversationStreamView(
             onDismissKeyboard()
         }
     }
-    val segments = remember(transcript.items) { groupTimelineSegments(transcript.items) }
+    val isDesktop = isDesktopPlatform()
+    val segments = remember(transcript.items, isDesktop) { groupTimelineSegments(transcript.items, isDesktop) }
     val reversedSegments = remember(segments) { segments.asReversed() }
     val latestErrorNoticeId = remember(transcript.items) {
         transcript.items.lastOrNull { it is ChatTimelineItem.Notice && it.isError }?.id
@@ -318,7 +334,23 @@ internal fun ConversationStreamView(
         }
         if (resolvedIdx >= 0) {
             val headerOffset = (if (queuedPrompts.isNotEmpty()) 1 else 0) + (if (showLiveSpinner) 1 else 0)
-            listState.scrollToItem((headerOffset + resolvedIdx).coerceAtLeast(0))
+            val index = headerOffset + resolvedIdx
+            listState.scrollToItem(index)
+            // Reverse layout anchors the bottom of an item. Wait for layout if needed, then reveal the start of tall replies.
+            var layout = listState.layoutInfo
+            if (layout.viewportSize.height <= 0 || layout.visibleItemsInfo.none { it.index == index }) {
+                layout = withTimeoutOrNull(300L) {
+                    snapshotFlow { listState.layoutInfo }
+                        .first { info ->
+                            info.viewportSize.height > 0 && info.visibleItemsInfo.any { it.index == index }
+                        }
+                } ?: listState.layoutInfo
+            }
+            val itemHeight = layout.visibleItemsInfo.firstOrNull { it.index == index }?.size ?: 0
+            val availableHeight = layout.viewportSize.height - layout.beforeContentPadding - layout.afterContentPadding
+            if (availableHeight > 0 && itemHeight > availableHeight) {
+                listState.scrollToItem(index, itemHeight - availableHeight)
+            }
             onJumpHandled()
         }
     }
@@ -336,10 +368,16 @@ internal fun ConversationStreamView(
         reverseLayout = true,
         modifier = Modifier
             .fillMaxSize()
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() },
-            ) { onDismissKeyboard() }
+            .then(
+                if (!isDesktop) {
+                    Modifier.clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                    ) { onDismissKeyboard() }
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 16.dp)
             .testTag(listTestTag),
         contentPadding = PaddingValues(vertical = 12.dp),
@@ -402,17 +440,19 @@ internal fun ConversationStreamView(
                     is TimelineSegment.AssistantBlock -> {
                         if (segment.isLastBlockOfMessage) {
                             Column(modifier = Modifier.fillMaxWidth()) {
-                                MarkdownBlockItemView(segment.block)
+                                MarkdownBlockItemView(segment.block, wrapInSelectionContainer = true)
                                 MessageTimestampCaption(
                                     prefix = "回复",
                                     timestampMs = segment.timestampMs,
                                     nowMs = nowMs,
                                     alignEnd = false,
                                     tag = "msg_time_assistant_${segment.messageId}",
+                                    copyableText = segment.fullText.takeIf { it.isNotBlank() },
+                                    copyTag = "msg_copy_assistant_${segment.messageId}",
                                 )
                             }
                         } else {
-                            MarkdownBlockItemView(segment.block)
+                            MarkdownBlockItemView(segment.block, wrapInSelectionContainer = true)
                         }
                     }
                     is TimelineSegment.Single -> MessageTimelineRow(
@@ -617,26 +657,24 @@ private fun QueuedPromptsCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(
-                        text = if (prompts.size > 1) "${idx + 1}. $cleanText" else cleanText,
-                        fontSize = 13.5.sp,
-                        lineHeight = 19.sp,
-                        maxLines = if (isExpanded) 12 else 2,
-                        overflow = TextOverflow.Ellipsis,
-                        color = Everforest.Fg,
-                        modifier = Modifier
-                            .weight(1f)
-                            .then(
-                                if (hasLongContent) {
-                                    Modifier.clickable(
-                                        interactionSource = remember { MutableInteractionSource() },
-                                        indication = null,
-                                    ) { expanded = !expanded }
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                    )
+                    val expandOnTapModifier = if (hasLongContent && !isExpanded) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { expanded = true }
+                    } else {
+                        Modifier
+                    }
+                    SelectionContainer(modifier = Modifier.weight(1f).then(expandOnTapModifier)) {
+                        Text(
+                            text = if (prompts.size > 1) "${idx + 1}. $cleanText" else cleanText,
+                            fontSize = 13.5.sp,
+                            lineHeight = 19.sp,
+                            maxLines = if (isExpanded) 12 else 2,
+                            overflow = TextOverflow.Ellipsis,
+                            color = Everforest.Fg,
+                        )
+                    }
                     Surface(
                         shape = CircleShape,
                         color = Everforest.Bg2,
@@ -836,18 +874,23 @@ private fun PlanCard(
                     }
                 }
             }
-            for (e in entries) {
-                val (icon, tint) = when (e.status) {
-                    "completed" -> Icons.Rounded.CheckCircle to Everforest.Green
-                    "in_progress" -> Icons.Rounded.Autorenew to Everforest.Yellow
-                    else -> Icons.Rounded.RadioButtonUnchecked to Everforest.Grey0
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
-                    Text(e.content, fontSize = 12.sp, color = Everforest.Fg)
+            SelectionContainer {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    for ((index, e) in entries.withIndex()) {
+                        if (index > 0) MarkdownSelectionSeparator("\n", Modifier.height(6.dp).width(1.dp))
+                        val (icon, tint) = when (e.status) {
+                            "completed" -> Icons.Rounded.CheckCircle to Everforest.Green
+                            "in_progress" -> Icons.Rounded.Autorenew to Everforest.Yellow
+                            else -> Icons.Rounded.RadioButtonUnchecked to Everforest.Grey0
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
+                            Text(e.content, fontSize = 12.sp, color = Everforest.Fg)
+                        }
+                    }
                 }
             }
         }
@@ -861,11 +904,55 @@ private fun MessageTimestampCaption(
     nowMs: Long,
     alignEnd: Boolean,
     tag: String,
+    copyableText: String? = null,
+    copyTag: String? = null,
 ) {
     val formatted = remember(timestampMs, nowMs) {
         formatMessageTimestamp(epochMs = timestampMs, nowMs = nowMs)
     }
-    if (formatted.isEmpty()) return
+    val canCopy = !copyableText.isNullOrBlank()
+    if (formatted.isEmpty() && !canCopy) return
+
+    var copies by remember(copyableText) { mutableIntStateOf(0) }
+    val copied = copies != 0
+    LaunchedEffect(copyableText, copies) {
+        if (copied) {
+            delay(1_600L)
+            copies = 0
+        }
+    }
+
+    val copyButton: @Composable () -> Unit = {
+        if (canCopy) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(5.dp))
+                    .clickable {
+                        if (copyTextToClipboard(copyableText!!)) {
+                            copies++
+                        }
+                    }
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+                    .then(if (copyTag != null) Modifier.testTag(copyTag) else Modifier),
+            ) {
+                Icon(
+                    imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
+                    contentDescription = "复制消息",
+                    tint = if (copied) Everforest.SoftSage else Everforest.Grey0.copy(alpha = 0.85f),
+                    modifier = Modifier.size(11.dp),
+                )
+                Text(
+                    text = if (copied) "已复制" else "复制",
+                    fontSize = 10.5.sp,
+                    lineHeight = 14.sp,
+                    color = if (copied) Everforest.SoftSage else Everforest.Grey0.copy(alpha = 0.85f),
+                )
+            }
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -874,18 +961,38 @@ private fun MessageTimestampCaption(
                 start = if (alignEnd) 0.dp else 2.dp,
                 end = if (alignEnd) 4.dp else 0.dp,
             ),
-        horizontalArrangement = if (alignEnd) Arrangement.End else Arrangement.Start,
+        horizontalArrangement = if (alignEnd) Arrangement.spacedBy(8.dp, Alignment.End) else Arrangement.spacedBy(8.dp, Alignment.Start),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "$prefix $formatted",
-            fontSize = 10.5.sp,
-            lineHeight = 14.sp,
-            fontFamily = FontFamily.Monospace,
-            color = Everforest.Grey0.copy(alpha = 0.85f),
-            modifier = Modifier.testTag(tag),
-        )
+        if (alignEnd) {
+            copyButton()
+            if (formatted.isNotEmpty()) {
+                Text(
+                    text = "$prefix $formatted",
+                    fontSize = 10.5.sp,
+                    lineHeight = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Everforest.Grey0.copy(alpha = 0.85f),
+                    modifier = Modifier.testTag(tag),
+                )
+            }
+        } else {
+            if (formatted.isNotEmpty()) {
+                Text(
+                    text = "$prefix $formatted",
+                    fontSize = 10.5.sp,
+                    lineHeight = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Everforest.Grey0.copy(alpha = 0.85f),
+                    modifier = Modifier.testTag(tag),
+                )
+            }
+            copyButton()
+        }
     }
 }
+
+private val AUTO_IMAGE_PLACEHOLDER_REGEX = Regex("^（已发送\\s*\\d+\\s*张图片）$")
 
 @Composable
 private fun MessageTimelineRow(
@@ -899,7 +1006,7 @@ private fun MessageTimelineRow(
             val isDesktop = isDesktopPlatform()
             val hasPreviews = item.imagePreviews.isNotEmpty()
             val isAutoPlaceholderOnly =
-                hasPreviews && Regex("^（已发送\\s*\\d+\\s*张图片）$").matches(item.text.trim())
+                (hasPreviews || item.imageCount > 0) && AUTO_IMAGE_PLACEHOLDER_REGEX.matches(item.text.trim())
             val bubbleMaxWidth = when {
                 isDesktop && item.imagePreviews.size > 1 -> 460.dp
                 isDesktop && hasPreviews -> 360.dp
@@ -1003,6 +1110,8 @@ private fun MessageTimelineRow(
                     nowMs = nowMs,
                     alignEnd = true,
                     tag = "msg_time_user_${item.id}",
+                    copyableText = if (!isAutoPlaceholderOnly && item.text.isNotBlank()) item.text else null,
+                    copyTag = "msg_copy_user_${item.id}",
                 )
             }
 
@@ -1029,6 +1138,8 @@ private fun MessageTimelineRow(
                     nowMs = nowMs,
                     alignEnd = false,
                     tag = "msg_time_assistant_${item.id}",
+                    copyableText = item.text.takeIf { it.isNotBlank() },
+                    copyTag = "msg_copy_assistant_${item.id}",
                 )
             }
         }
@@ -1058,13 +1169,14 @@ private fun MessageTimelineRow(
                         tint = if (item.isError) Everforest.Red else Everforest.Grey2,
                         modifier = Modifier.size(16.dp),
                     )
-                    Text(
-                        text = item.text,
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp,
-                        color = if (item.isError) Everforest.Red else Everforest.Fg,
-                        modifier = Modifier.weight(1f),
-                    )
+                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = item.text,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = if (item.isError) Everforest.Red else Everforest.Fg,
+                        )
+                    }
                     if (onInlineRetry != null) {
                         TextButton(
                             onClick = onInlineRetry,
@@ -1093,11 +1205,15 @@ internal fun InlineApprovalBanner(
     onRefresh: (() -> Unit)? = null,
     onDecision: (requestId: String, optionId: String?, sessionId: String) -> Unit,
 ) {
-    val nonBlankLines = remember(permission.title) {
-        permission.title.lines().map { it.trim() }.filter { it.isNotEmpty() }
+    val lines = remember(permission.title) { permission.title.lines().dropWhile { it.isBlank() } }
+    val headerTitle = lines.firstOrNull()?.trim() ?: "需要执行审批"
+    val cmdPreview = remember(lines) {
+        lines.drop(1)
+            .dropWhile { it.isBlank() }
+            .dropLastWhile { it.isBlank() }
+            .joinToString("\n")
+            .takeIf { it.isNotBlank() }
     }
-    val headerTitle = nonBlankLines.firstOrNull() ?: "需要执行审批"
-    val cmdPreview = if (nonBlankLines.size > 1) nonBlankLines.drop(1).joinToString("\n") else null
 
     Surface(
         modifier = Modifier
@@ -1148,12 +1264,14 @@ internal fun InlineApprovalBanner(
             }
             if (!cmdPreview.isNullOrBlank()) {
                 if (permission.options.isEmpty()) {
-                    Text(
-                        text = cmdPreview,
-                        fontSize = 12.5.sp,
-                        lineHeight = 18.sp,
-                        color = Everforest.Fg,
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = cmdPreview,
+                            fontSize = 12.5.sp,
+                            lineHeight = 18.sp,
+                            color = Everforest.Fg,
+                        )
+                    }
                 } else {
                     val highlightedCmd = remember(cmdPreview) { highlightEverforestCode(cmdPreview, "zsh") }
                     Surface(
@@ -1162,26 +1280,30 @@ internal fun InlineApprovalBanner(
                         border = BorderStroke(1.dp, Everforest.Bg3),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(
-                            text = highlightedCmd,
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = Everforest.Fg,
-                            maxLines = 4,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                        )
+                        SelectionContainer {
+                            Text(
+                                text = highlightedCmd,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Everforest.Fg,
+                                maxLines = 4,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            )
+                        }
                     }
                 }
             }
             if (!errorText.isNullOrBlank()) {
-                Text(
-                    text = errorText,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp,
-                    color = Everforest.Red,
-                )
+                SelectionContainer {
+                    Text(
+                        text = errorText,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp,
+                        color = Everforest.Red,
+                    )
+                }
             }
             if (permission.options.isNotEmpty()) {
                 Row(
