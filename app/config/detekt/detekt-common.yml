@@ -1,0 +1,22 @@
+# KMP purity rules for `shared/src/commonMain` and `shared/src/commonTest`.
+# Keeps common code free of JVM-, Android-, and Apple-only imports.
+
+build:
+  maxIssues: 0
+
+lework:
+  active: false
+
+style:
+  active: true
+  ForbiddenImport:
+    active: true
+    imports:
+      - value: 'java.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without JVM-only APIs; bridge platform capabilities via dev.lework.platform expect/actual.'
+      - value: 'javax.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without JVM-only APIs; bridge platform capabilities via dev.lework.platform expect/actual.'
+      - value: 'android.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without Android-only APIs.'
+      - value: 'platform.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without Apple/Native-only APIs.'
