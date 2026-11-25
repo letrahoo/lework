@@ -42,6 +42,8 @@ import java.util.concurrent.TimeUnit
 import kotlin.io.encoding.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -49,7 +51,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -397,10 +398,9 @@ object JvmDesktopRuntime {
         val activeHostEndpoints = activeHostId?.let { id ->
             pairedHosts.firstOrNull { it.hubId == id }?.endpoints
         }.orEmpty()
-        val targetingLocalMac = !localLoopbackUrl.isNullOrBlank() &&
-            (activeHostId == null || activeHostId == localHubId)
-        val ordered = if (targetingLocalMac) {
-            listOf(localLoopbackUrl!!) +
+        val loopback = localLoopbackUrl?.takeIf { it.isNotBlank() }
+        val ordered = if (loopback != null && (activeHostId == null || activeHostId == localHubId)) {
+            listOf(loopback) +
                 activeHostEndpoints +
                 tunnelUrls +
                 combinedDiscoveredUrls +
@@ -862,74 +862,128 @@ object JvmDesktopRuntime {
             SkiaImage.makeFromEncoded(effectiveBytes)
         }
 
-        val thumbB64 = runCatching {
-            val maxThumb = 220
-            val scale = minOf(maxThumb.toFloat() / skiaImg.width.toFloat(), maxThumb.toFloat() / skiaImg.height.toFloat(), 1f)
-            val tw = (skiaImg.width * scale).toInt().coerceAtLeast(1)
-            val th = (skiaImg.height * scale).toInt().coerceAtLeast(1)
-            val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(tw, th))
-            surface.canvas.drawImageRect(
-                skiaImg,
-                Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
-                Rect.makeWH(tw.toFloat(), th.toFloat()),
-            )
-            val snapshot = surface.makeImageSnapshot()
-            val encoded = snapshot.encodeToData(EncodedImageFormat.JPEG, 72) ?: snapshot.encodeToData(EncodedImageFormat.PNG)
-            encoded?.bytes?.let { Base64.encode(it) }
-        }.getOrNull()
-
-        // Downscale oversized images (or normalize non-web MIME formats) so base64 stays comfortably within protocol 1MB limit
-        val isWebMime = effectiveMime in WEB_SAFE_IMAGE_MIMES
-        fun renderScaledSnapshot(maxDim: Int): SkiaImage {
-            val scale = minOf(maxDim.toFloat() / skiaImg.width.toFloat(), maxDim.toFloat() / skiaImg.height.toFloat(), 1f)
-            val w = (skiaImg.width * scale).toInt().coerceAtLeast(1)
-            val h = (skiaImg.height * scale).toInt().coerceAtLeast(1)
-            val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(w, h))
-            surface.canvas.drawImageRect(
-                skiaImg,
-                Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
-                Rect.makeWH(w.toFloat(), h.toFloat()),
-            )
-            return surface.makeImageSnapshot()
-        }
-
-        val (finalMime, finalBytes) = if (isWebMime && effectiveBytes.size <= 700_000) {
-            effectiveMime to effectiveBytes
-        } else if (!isWebMime && effectiveBytes.size <= 700_000) {
-            val snapshot = renderScaledSnapshot(1600)
-            val pngData = snapshot.encodeToData(EncodedImageFormat.PNG)
-            if (pngData != null && pngData.bytes.size <= 700_000) {
-                "image/png" to pngData.bytes
-            } else {
-                val jpgData = snapshot.encodeToData(EncodedImageFormat.JPEG, 82) ?: return null
-                "image/jpeg" to jpgData.bytes
-            }
-        } else {
-            var encodedBytes: ByteArray? = null
-            var lastDim = -1
-            var cachedSnapshot: SkiaImage? = null
-            for ((dim, quality) in listOf(1600 to 82, 1600 to 65, 1280 to 58, 1024 to 48)) {
-                val snap = if (dim == lastDim && cachedSnapshot != null) {
-                    cachedSnapshot
-                } else {
-                    lastDim = dim
-                    renderScaledSnapshot(dim).also { cachedSnapshot = it }
+        try {
+            val thumbB64 = runCatching {
+                val maxThumb = 220
+                val scale = minOf(maxThumb.toFloat() / skiaImg.width.toFloat(), maxThumb.toFloat() / skiaImg.height.toFloat(), 1f)
+                val tw = (skiaImg.width * scale).toInt().coerceAtLeast(1)
+                val th = (skiaImg.height * scale).toInt().coerceAtLeast(1)
+                val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(tw, th))
+                try {
+                    surface.canvas.drawImageRect(
+                        skiaImg,
+                        Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
+                        Rect.makeWH(tw.toFloat(), th.toFloat()),
+                    )
+                    val snapshot = surface.makeImageSnapshot()
+                    try {
+                        val encoded = snapshot.encodeToData(EncodedImageFormat.JPEG, 72)
+                            ?: snapshot.encodeToData(EncodedImageFormat.PNG)
+                        if (encoded != null) {
+                            try {
+                                Base64.encode(encoded.bytes)
+                            } finally {
+                                encoded.close()
+                            }
+                        } else {
+                            null
+                        }
+                    } finally {
+                        snapshot.close()
+                    }
+                } finally {
+                    surface.close()
                 }
-                val candidate = snap.encodeToData(EncodedImageFormat.JPEG, quality)?.bytes ?: continue
-                encodedBytes = candidate
-                if (candidate.size <= 700_000) break
-            }
-            val finalJpg = encodedBytes ?: return null
-            "image/jpeg" to finalJpg
-        }
+            }.getOrNull()
 
-        val cleanName = fileName.trim().ifEmpty { "clipboard.png" }.take(120)
-        PickedImagePayload(
-            fileName = cleanName,
-            mimeType = finalMime,
-            dataBase64 = Base64.encode(finalBytes),
-            thumbnailBase64 = thumbB64,
-        )
+            // Downscale oversized images (or normalize non-web MIME formats) so base64 stays comfortably within protocol 1MB limit
+            val isWebMime = effectiveMime in WEB_SAFE_IMAGE_MIMES
+            fun renderScaledSnapshot(maxDim: Int): SkiaImage {
+                val scale = minOf(maxDim.toFloat() / skiaImg.width.toFloat(), maxDim.toFloat() / skiaImg.height.toFloat(), 1f)
+                val w = (skiaImg.width * scale).toInt().coerceAtLeast(1)
+                val h = (skiaImg.height * scale).toInt().coerceAtLeast(1)
+                val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(w, h))
+                return try {
+                    surface.canvas.drawImageRect(
+                        skiaImg,
+                        Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
+                        Rect.makeWH(w.toFloat(), h.toFloat()),
+                    )
+                    surface.makeImageSnapshot()
+                } finally {
+                    surface.close()
+                }
+            }
+
+            val (finalMime, finalBytes) = if (isWebMime && effectiveBytes.size <= 700_000) {
+                effectiveMime to effectiveBytes
+            } else if (!isWebMime && effectiveBytes.size <= 700_000) {
+                val snapshot = renderScaledSnapshot(1600)
+                try {
+                    val pngData = snapshot.encodeToData(EncodedImageFormat.PNG)
+                    val pngBytes = if (pngData != null) {
+                        try {
+                            pngData.bytes
+                        } finally {
+                            pngData.close()
+                        }
+                    } else {
+                        null
+                    }
+                    if (pngBytes != null && pngBytes.size <= 700_000) {
+                        "image/png" to pngBytes
+                    } else {
+                        val jpgData = snapshot.encodeToData(EncodedImageFormat.JPEG, 82) ?: return null
+                        val jpgBytes = try {
+                            jpgData.bytes
+                        } finally {
+                            jpgData.close()
+                        }
+                        "image/jpeg" to jpgBytes
+                    }
+                } finally {
+                    snapshot.close()
+                }
+            } else {
+                var encodedBytes: ByteArray? = null
+                var lastDim = -1
+                var cachedSnapshot: SkiaImage? = null
+                try {
+                    for ((dim, quality) in listOf(1600 to 82, 1600 to 65, 1280 to 58, 1024 to 48)) {
+                        val snap = if (dim == lastDim && cachedSnapshot != null) {
+                            cachedSnapshot
+                        } else {
+                            cachedSnapshot?.close()
+                            cachedSnapshot = null
+                            lastDim = dim
+                            renderScaledSnapshot(dim).also { cachedSnapshot = it }
+                        }
+                        val dataObj = snap.encodeToData(EncodedImageFormat.JPEG, quality) ?: continue
+                        val candidate = try {
+                            dataObj.bytes
+                        } finally {
+                            dataObj.close()
+                        }
+                        encodedBytes = candidate
+                        if (candidate.size <= 700_000) break
+                    }
+                } finally {
+                    cachedSnapshot?.close()
+                }
+                val finalJpg = encodedBytes ?: return null
+                "image/jpeg" to finalJpg
+            }
+
+            val cleanName = fileName.trim().ifEmpty { "clipboard.png" }.take(120)
+            PickedImagePayload(
+                fileName = cleanName,
+                mimeType = finalMime,
+                dataBase64 = Base64.encode(finalBytes),
+                thumbnailBase64 = thumbB64,
+            )
+        } finally {
+            skiaImg.close()
+        }
     }.getOrNull()
 
     // --- SSH Config Discovery & One-Click Remote Devbox Pairing ---
@@ -1018,6 +1072,8 @@ object JvmDesktopRuntime {
 
         val proc = try {
             ProcessBuilder(sshCmd).start()
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             return@withContext Result.failure(IllegalStateException("无法启动本机 ssh 命令: ${t.message}"))
         }
@@ -1055,7 +1111,7 @@ object JvmDesktopRuntime {
      * if firewalled (e.g. behind an SSH jump host), automatically opens a local `ssh -N -L` port forward
      * and prepends `https://127.0.0.1:<localPort>` into the signed fingerprint payload!
      */
-    private fun ensureDirectOrSshTunneledLink(
+    private suspend fun ensureDirectOrSshTunneledLink(
         hostPart: String,
         customSshPort: Int?,
         deepLink: String,
@@ -1111,7 +1167,7 @@ object JvmDesktopRuntime {
             val deadline = System.currentTimeMillis() + 5_000L
             while (System.currentTimeMillis() < deadline && tunnelProc.isAlive) {
                 if (isTcpReachable("127.0.0.1", freePort, 250)) break
-                Thread.sleep(120L)
+                delay(120L)
             }
             if (!tunnelProc.isAlive) return@runCatching deepLink
             sshTunnelProcesses[tunnelKey] = freePort to tunnelProc

@@ -1,6 +1,7 @@
 # Global Detekt rules for all Lework Kotlin modules (`shared`, `androidApp`, `desktopApp`).
-# Uses explicit opt-in (`buildUponDefaultConfig = false`) so only high-signal architectural
-# and safety rules fail builds without noisy formatting churn on existing code.
+# Curated industry-standard Kotlin + Coroutines + Compose Multiplatform + KMP AST rules.
+# Uses explicit opt-in (`buildUponDefaultConfig = false`) with `maxIssues: 0`; every enabled
+# rule below executes cleanly in syntax/AST mode (zero inert type-resolution-only entries).
 
 build:
   maxIssues: 0
@@ -12,9 +13,132 @@ lework:
     includes:
       - '**/src/iosMain/**'
       - '**/src/ios*Test/**'
+  IosMainThreadUiKit:
+    active: true
+    includes:
+      - '**/src/iosMain/**'
+  KmpCommonPlatformApi:
+    active: false
+  SuspendCatchSwallowsCancellation:
+    active: true
+    excludes:
+      - '**/src/*Test/**'
+  SuspendBlockingSleep:
+    active: true
+    excludes:
+      - '**/src/*Test/**'
+  UnsafeNonNullAssertion:
+    active: true
+    excludes:
+      - '**/src/*Test/**'
+  ComposeNestedSelectionContainer:
+    active: true
+    excludes:
+      - '**/src/*Test/**'
+  ComposeMutableCollectionState:
+    active: true
+    excludes:
+      - '**/src/*Test/**'
+
+coroutines:
+  active: true
+  GlobalCoroutineUsage:
+    active: true
+
+empty-blocks:
+  active: true
+  EmptyCatchBlock:
+    active: true
+    allowedExceptionNameRegex: '_|(ignore|expected).*'
+  EmptyClassBlock:
+    active: true
+  EmptyDefaultConstructor:
+    active: true
+  EmptyDoWhileBlock:
+    active: true
+  EmptyElseBlock:
+    active: true
+  EmptyFinallyBlock:
+    active: true
+  EmptyForBlock:
+    active: true
+  EmptyFunctionBlock:
+    active: true
+    ignoreOverridden: true
+  EmptyIfBlock:
+    active: true
+  EmptyInitBlock:
+    active: true
+  EmptyKtFile:
+    active: true
+  EmptySecondaryConstructor:
+    active: true
+  EmptyTryBlock:
+    active: true
+  EmptyWhenBlock:
+    active: true
+  EmptyWhileBlock:
+    active: true
+
+exceptions:
+  active: true
+  ExceptionRaisedInUnexpectedLocation:
+    active: true
+  InstanceOfCheckForException:
+    active: true
+  NotImplementedDeclaration:
+    active: true
+  ObjectExtendsThrowable:
+    active: true
+  PrintStackTrace:
+    active: true
+  RethrowCaughtException:
+    active: true
+  ReturnFromFinally:
+    active: true
+  ThrowingExceptionFromFinally:
+    active: true
+  ThrowingNewInstanceOfSameException:
+    active: true
+
+performance:
+  active: true
+  ArrayPrimitive:
+    active: true
+  ForEachOnRange:
+    active: true
+  UnnecessaryTemporaryInstantiation:
+    active: true
+
+potential-bugs:
+  active: true
+  EqualsAlwaysReturnsTrueOrFalse:
+    active: true
+  EqualsWithHashCodeExist:
+    active: true
+  InvalidRange:
+    active: true
+  IteratorHasNextCallsNextMethod:
+    active: true
+  IteratorNotThrowingNoSuchElementException:
+    active: true
+  MissingPackageDeclaration:
+    active: true
+  UnconditionalJumpStatementInLoop:
+    active: true
+  UnreachableCode:
+    active: true
+  UselessPostfixExpression:
+    active: true
+  WrongEqualsTypeParameter:
+    active: true
 
 style:
   active: true
+  CollapsibleIfStatements:
+    active: true
+  EqualsNullCall:
+    active: true
   ForbiddenImport:
     active: true
     imports:
@@ -24,6 +148,66 @@ style:
         reason: 'Kotlin/Native cannot type-check Objective-C variadic args; use logRuntimeEvent (or println inside IosRuntimeLogger).'
       - value: 'platform.Foundation.stringWithFormat'
         reason: 'Kotlin/Native cannot type-check Objective-C variadic %@ args; format strings in Kotlin instead.'
+      - value: 'platform.Foundation.localizedStringWithFormat'
+        reason: 'Kotlin/Native cannot type-check Objective-C variadic %@ args; format strings in Kotlin instead.'
+      - value: 'platform.CoreFoundation.CFStringCreateWithFormat'
+        reason: 'Kotlin/Native cannot type-check C variadic args; format strings in Kotlin instead.'
+      - value: 'platform.posix.printf'
+        reason: 'Avoid C variadic printf in iOS Kotlin; use logRuntimeEvent or println.'
+      - value: 'platform.posix.sprintf'
+        reason: 'Avoid C variadic sprintf in iOS Kotlin; format strings in Kotlin.'
+      - value: 'platform.posix.snprintf'
+        reason: 'Avoid C variadic snprintf in iOS Kotlin; format strings in Kotlin.'
+      - value: 'platform.posix.fprintf'
+        reason: 'Avoid C variadic fprintf in iOS Kotlin; use fputs with Kotlin-formatted strings.'
+      - value: 'kotlinx.coroutines.GlobalScope'
+        reason: 'Avoid GlobalScope; use structured CoroutineScope bound to component lifecycle.'
+      - value: 'java.text.SimpleDateFormat'
+        reason: 'SimpleDateFormat is not thread-safe and locale-sensitive; use localDateTimeParts() or java.time.'
+  MayBeConst:
+    active: true
+  ModifierOrder:
+    active: true
+  NoTabs:
+    active: true
+  PreferToOverPairSyntax:
+    active: true
+  RedundantVisibilityModifierRule:
+    active: true
+  TrailingWhitespace:
+    active: true
+    excludes:
+      - '**/protocol/ProtocolModels.kt'
+  UnnecessaryAnnotationUseSiteTarget:
+    active: true
+  UnnecessaryBackticks:
+    active: true
+  UnnecessaryInheritance:
+    active: true
+  UnusedImports:
+    active: true
+  UnusedPrivateClass:
+    active: true
+  UnusedPrivateMember:
+    active: true
+    ignoreAnnotated:
+      - 'Preview'
+  UnusedPrivateProperty:
+    active: true
+  UseArrayLiteralsInAnnotations:
+    active: true
+  UseCheckNotNull:
+    active: true
+  UseCheckOrError:
+    active: true
+  UseEmptyCounterpart:
+    active: true
+  UseRequire:
+    active: true
+  UseRequireNotNull:
+    active: true
+  VarCouldBeVal:
+    active: true
   WildcardImport:
     active: true
     # Prevent bypassing ForbiddenImport in iOS code via `import platform.Foundation.*`.

@@ -11,6 +11,13 @@ class LeworkRuleSetProvider : RuleSetProvider {
         ruleSetId,
         listOf(
             IosUnsafeVariadicCallRule(config),
+            IosMainThreadUiKitRule(config),
+            KmpCommonPlatformApiRule(config),
+            SuspendCatchSwallowsCancellationRule(config),
+            SuspendBlockingSleepRule(config),
+            UnsafeNonNullAssertionRule(config),
+            ComposeNestedSelectionContainerRule(config),
+            ComposeMutableCollectionStateRule(config),
         ),
     )
 }

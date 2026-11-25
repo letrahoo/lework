@@ -257,7 +257,7 @@ class RuntimeLogAndLoopGuardTest {
             override suspend fun listSessions(engineId: String?): List<SessionMeta> {
                 if (failNextListSessions) {
                     failNextListSessions = false
-                    throw IllegalStateException("Socket stale")
+                    error("Socket stale")
                 }
                 return base.listSessions(engineId)
             }

@@ -59,10 +59,11 @@ object HubTrust {
 
     fun recordObserved(host: String, port: Int, fingerprint: String) {
         val key = hostPortKey(host, port)
+        val fp = fingerprint.lowercase()
         while (true) {
             val cur = observedRef.load()
-            if (cur[key] == fingerprint) return
-            if (observedRef.compareAndSet(cur, cur + (key to fingerprint.lowercase()))) return
+            if (cur[key] == fp) return
+            if (observedRef.compareAndSet(cur, cur + (key to fp))) return
         }
     }
 

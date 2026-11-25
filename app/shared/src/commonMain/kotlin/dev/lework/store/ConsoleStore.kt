@@ -153,10 +153,11 @@ class ConsoleStore(
             scope.launch {
                 runCatching {
                     val existing = _state.value.transcripts[sid]
-                    val isInitial = existing == null || existing.lastSeq < 0
+                    val existingLastSeq = existing?.lastSeq
+                    val isInitial = existingLastSeq == null || existingLastSeq < 0
                     val snap = rpc.subscribeSession(
                         sessionId = sid,
-                        afterSeq = if (isInitial) -1 else existing!!.lastSeq,
+                        afterSeq = if (isInitial) -1 else existingLastSeq,
                         limit = if (isInitial) 120 else null,
                     )
                     _state.update { s ->
@@ -980,10 +981,10 @@ class ConsoleStore(
             }
 
             val existingToken = loadHostAccessToken(chosen.discover.hub.id) ?: loadSavedAccessToken()
-            if (!existingToken.isNullOrBlank()) {
-                if (connectWithToken(chosen.wsUrl, existingToken, expectedHubId = chosen.discover.hub.id)) {
-                    return@launch
-                }
+            if (!existingToken.isNullOrBlank() &&
+                connectWithToken(chosen.wsUrl, existingToken, expectedHubId = chosen.discover.hub.id)
+            ) {
+                return@launch
             }
 
             _state.update {
@@ -1911,12 +1912,12 @@ class ConsoleStore(
             true
         } catch (ce: CancellationException) {
             throw ce
-        } catch (t: Throwable) {
+        } catch (e: RpcCallException) {
             logRuntimeEvent(
                 "CONNECT",
-                "connectWithToken failed ws=${redactUrlForLog(wsUrl)} resume=$isForegroundResume err=${t::class.simpleName}:${t.message}",
+                "connectWithToken failed ws=${redactUrlForLog(wsUrl)} resume=$isForegroundResume err=${e::class.simpleName}:${e.message}",
             )
-            if (t is RpcCallException && t.code == ErrorCode.UNAUTHORIZED) {
+            if (e.code == ErrorCode.UNAUTHORIZED) {
                 targetHubId?.let { saveHostAccessToken(it, null) }
                 if (targetHubId == null || targetHubId == loadActiveHostId()) {
                     saveAuthSession(null, null)
@@ -1936,48 +1937,72 @@ class ConsoleStore(
                         startOAuthLoginFlow(_state.value.discoveredBaseUrl, wsUrl)
                     }
                 }
-            } else if (isForegroundResume && _state.value.hasEnteredWorkspace && t !is HubTrustException) {
-                // Transient socket / Hub-restart failure while already authenticated in workspace:
-                // keep `hasEnteredWorkspace = true` + `RECONNECTING` so `reconnectRetryJob` auto-recovers!
-                consecutiveReconnectFailures++
-                val shouldSurfaceBanner =
-                    activeUserSendOrRetryDepth == 0 &&
-                        (consecutiveReconnectFailures >= 2 || _state.value.turnRecoveryBanner != null)
-                val rawErr = t.message?.takeIf { it.isNotBlank() } ?: "网络连接中断，重连主机未成功"
-                _state.update { s ->
-                    val nextBanner = if (shouldSurfaceBanner) {
-                        buildTurnRecoveryBanner(
-                            previous = s.turnRecoveryBanner,
-                            sessionId = s.activeSessionId,
-                            rawMessage = rawErr,
-                            nowMs = epochMillis(),
-                            forceNetworkError = true,
-                            canResumePreviousTurn = s.activeSessionId != null ||
-                                !s.turnRecoveryBanner?.failedPromptText.isNullOrBlank(),
-                        )
-                    } else {
-                        s.turnRecoveryBanner
-                    }
-                    s.copy(
-                        connectionStatus = ConnectionStatus.RECONNECTING,
-                        connectionError = "连接中断，正在自动重连…",
-                        turnRecoveryBanner = nextBanner,
-                    )
-                }
             } else {
-                _state.update {
-                    it.copy(
-                        hasEnteredWorkspace = false,
-                        connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = if (isForegroundResume) {
-                            "唤醒重连未通过: ${t.message ?: "请检查网络后重试"}"
-                        } else {
-                            t.message ?: "连接失败"
-                        },
-                    )
-                }
+                handleConnectFailure(isForegroundResume = isForegroundResume, err = e, allowTransientReconnect = true)
             }
             false
+        } catch (e: HubTrustException) {
+            logRuntimeEvent(
+                "CONNECT",
+                "connectWithToken failed ws=${redactUrlForLog(wsUrl)} resume=$isForegroundResume err=${e::class.simpleName}:${e.message}",
+            )
+            handleConnectFailure(isForegroundResume = isForegroundResume, err = e, allowTransientReconnect = false)
+            false
+        } catch (t: Throwable) {
+            logRuntimeEvent(
+                "CONNECT",
+                "connectWithToken failed ws=${redactUrlForLog(wsUrl)} resume=$isForegroundResume err=${t::class.simpleName}:${t.message}",
+            )
+            handleConnectFailure(isForegroundResume = isForegroundResume, err = t, allowTransientReconnect = true)
+            false
+        }
+    }
+
+    private fun handleConnectFailure(
+        isForegroundResume: Boolean,
+        err: Throwable,
+        allowTransientReconnect: Boolean,
+    ) {
+        if (allowTransientReconnect && isForegroundResume && _state.value.hasEnteredWorkspace) {
+            // Transient socket / Hub-restart failure while already authenticated in workspace:
+            // keep `hasEnteredWorkspace = true` + `RECONNECTING` so `reconnectRetryJob` auto-recovers!
+            consecutiveReconnectFailures++
+            val shouldSurfaceBanner =
+                activeUserSendOrRetryDepth == 0 &&
+                    (consecutiveReconnectFailures >= 2 || _state.value.turnRecoveryBanner != null)
+            val rawErr = err.message?.takeIf { it.isNotBlank() } ?: "网络连接中断，重连主机未成功"
+            _state.update { s ->
+                val nextBanner = if (shouldSurfaceBanner) {
+                    buildTurnRecoveryBanner(
+                        previous = s.turnRecoveryBanner,
+                        sessionId = s.activeSessionId,
+                        rawMessage = rawErr,
+                        nowMs = epochMillis(),
+                        forceNetworkError = true,
+                        canResumePreviousTurn = s.activeSessionId != null ||
+                            !s.turnRecoveryBanner?.failedPromptText.isNullOrBlank(),
+                    )
+                } else {
+                    s.turnRecoveryBanner
+                }
+                s.copy(
+                    connectionStatus = ConnectionStatus.RECONNECTING,
+                    connectionError = "连接中断，正在自动重连…",
+                    turnRecoveryBanner = nextBanner,
+                )
+            }
+        } else {
+            _state.update {
+                it.copy(
+                    hasEnteredWorkspace = false,
+                    connectionStatus = ConnectionStatus.ERROR,
+                    connectionError = if (isForegroundResume) {
+                        "唤醒重连未通过: ${err.message ?: "请检查网络后重试"}"
+                    } else {
+                        err.message ?: "连接失败"
+                    },
+                )
+            }
         }
     }
 
@@ -2148,6 +2173,8 @@ class ConsoleStore(
                         )
                     }
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (_: Throwable) {
                 // Keep optimistic UI selection; next `session.prompt` also sends explicit overrides.
             } finally {
@@ -2634,6 +2661,8 @@ class ConsoleStore(
         scope.launch {
             try {
                 subscribeAndCatchUp(sessionId)
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (_: Throwable) {
                 // Keep UI responsive even if initial subscribe fails transiently
             } finally {
@@ -2694,6 +2723,12 @@ class ConsoleStore(
                     )
                     s.copy(transcripts = s.transcripts + (sessionId to merged))
                 }
+            } catch (ce: CancellationException) {
+                _state.update { s ->
+                    val latest = s.transcripts[sessionId] ?: return@update s
+                    s.copy(transcripts = s.transcripts + (sessionId to latest.copy(loadingOlder = false)))
+                }
+                throw ce
             } catch (_: Throwable) {
                 _state.update { s ->
                     val latest = s.transcripts[sessionId] ?: return@update s
@@ -2928,7 +2963,7 @@ class ConsoleStore(
         val withinWindow =
             previous != null &&
                 (previous.lastErrorAtMs == 0L || (nowMs - previous.lastErrorAtMs) in 0L..ERROR_AGGREGATION_WINDOW_MS)
-        val nextCount = if (sameContext && withinWindow) previous!!.errorCount + 1 else 1
+        val nextCount = if (previous != null && sameContext && withinWindow) previous.errorCount + 1 else 1
 
         val effectiveFailedPrompt = failedPromptText?.takeIf { it.isNotBlank() }
             ?: if (preserveUnsentOnSameContext && sameContext) previous?.failedPromptText else null
@@ -3040,7 +3075,7 @@ class ConsoleStore(
                 "当前主机没有可用于此任务的引擎，请检查安装和授权后重新连接。"
             }
             val cwd = cur.selectedWorkspacePath.ifEmpty {
-                cur.workspaces.firstOrNull()?.path ?: throw IllegalStateException("未找到可用工作区目录")
+                cur.workspaces.firstOrNull()?.path ?: error("未找到可用工作区目录")
             }
             val allWs = (listOf(cwd) + cur.selectedExtraWorkspaces).filter { it.isNotBlank() }.distinct()
             val created = rpc.createSession(
@@ -3137,9 +3172,16 @@ class ConsoleStore(
                 }
                 val sentSessionId = try {
                     dispatchPromptRpc(trimmed, attached)
+                } catch (ce: CancellationException) {
+                    if (!isActive) throw ce
+                    if (ensureConnectedForSend(forceReconnect = true)) {
+                        dispatchPromptRpc(trimmed, attached)
+                    } else {
+                        throw ce
+                    }
+                } catch (e: RpcCallException) {
+                    throw e
                 } catch (firstErr: Throwable) {
-                    if (firstErr is CancellationException && !isActive) throw firstErr
-                    if (firstErr is RpcCallException) throw firstErr
                     // Socket dropped right as the user tapped Send: reconnect once and retry transparently!
                     if (ensureConnectedForSend(forceReconnect = true)) {
                         dispatchPromptRpc(trimmed, attached)
@@ -3160,6 +3202,15 @@ class ConsoleStore(
                     failedImages = attached,
                     forceNetworkError = true,
                 )
+            } catch (e: RpcCallException) {
+                val errMsg = e.message.takeIf { it.isNotBlank() } ?: "消息发送未成功，请检查连接后重试"
+                recordTurnError(
+                    sessionId = _state.value.activeSessionId,
+                    rawMessage = errMsg,
+                    failedPromptText = trimmed.takeIf { it.isNotEmpty() },
+                    failedImages = attached,
+                    forceNetworkError = false,
+                )
             } catch (t: Throwable) {
                 val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "消息发送未成功，请检查连接后重试"
                 recordTurnError(
@@ -3167,7 +3218,7 @@ class ConsoleStore(
                     rawMessage = errMsg,
                     failedPromptText = trimmed.takeIf { it.isNotEmpty() },
                     failedImages = attached,
-                    forceNetworkError = t !is RpcCallException,
+                    forceNetworkError = true,
                 )
             }
         }
@@ -3224,9 +3275,16 @@ class ConsoleStore(
 
                 val sentSessionId = try {
                     dispatchPromptRpc(promptToSend, imagesToSend)
+                } catch (ce: CancellationException) {
+                    if (!isActive) throw ce
+                    if (ensureConnectedForSend(forceReconnect = true)) {
+                        dispatchPromptRpc(promptToSend, imagesToSend)
+                    } else {
+                        throw ce
+                    }
+                } catch (e: RpcCallException) {
+                    throw e
                 } catch (firstErr: Throwable) {
-                    if (firstErr is CancellationException && !isActive) throw firstErr
-                    if (firstErr is RpcCallException) throw firstErr
                     if (ensureConnectedForSend(forceReconnect = true)) {
                         dispatchPromptRpc(promptToSend, imagesToSend)
                     } else {
@@ -3260,6 +3318,16 @@ class ConsoleStore(
                     preserveUnsentOnSameContext = hasUnsentPrompt,
                     forceNetworkError = true,
                 )
+            } catch (e: RpcCallException) {
+                val errMsg = e.message.takeIf { it.isNotBlank() } ?: "重试发送失败，请检查网络连接"
+                recordTurnError(
+                    sessionId = _state.value.activeSessionId ?: activeSid,
+                    rawMessage = errMsg,
+                    failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
+                    failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
+                    preserveUnsentOnSameContext = hasUnsentPrompt,
+                    forceNetworkError = false,
+                )
             } catch (t: Throwable) {
                 val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "重试发送失败，请检查网络连接"
                 recordTurnError(
@@ -3268,7 +3336,7 @@ class ConsoleStore(
                     failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                     failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
                     preserveUnsentOnSameContext = hasUnsentPrompt,
-                    forceNetworkError = t !is RpcCallException,
+                    forceNetworkError = true,
                 )
             } finally {
                 _state.update { it.copy(retryingTurn = false) }
@@ -3414,6 +3482,8 @@ class ConsoleStore(
                         },
                     )
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (t: Throwable) {
                 val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "请检查连接后重试"
                 _state.update { s ->
@@ -3480,6 +3550,9 @@ class ConsoleStore(
                         transcripts = updatedTranscripts,
                     )
                 }
+            } catch (ce: CancellationException) {
+                _state.update { it.copy(submittingApprovalRequestId = null) }
+                throw ce
             } catch (t: Throwable) {
                 val msg = t.message?.takeIf { it.isNotBlank() } ?: "审批提交未成功，正在同步最新终端状态…"
                 _state.update {
@@ -3544,17 +3617,23 @@ class ConsoleStore(
     private suspend fun subscribeAndCatchUp(sessionId: String) {
         val reqToken = subscribeSeqToken
         val existing = _state.value.transcripts[sessionId]
-        var isInitialLoad = existing == null || existing.lastSeq < 0 || existing.hasMoreAfter
+        val existingLastSeq = existing?.lastSeq
+        val initialAfterSeq = if (existingLastSeq == null || existingLastSeq < 0 || existing.hasMoreAfter) {
+            -1
+        } else {
+            existingLastSeq
+        }
+        var isInitialLoad = initialAfterSeq < 0
         var snap = rpc.subscribeSession(
             sessionId = sessionId,
-            afterSeq = if (isInitialLoad) -1 else existing!!.lastSeq,
+            afterSeq = initialAfterSeq,
             limit = if (isInitialLoad) 220 else null,
         )
 
         // If Hub restarted or handed a `host:*` session back to disk transcript inspection with a lower
         // `lastSeq` than the client's cached `lastSeq`, reload the authoritative tail window immediately
         // so new events are never masked by a stale high-water mark.
-        if (!isInitialLoad && snap.session.lastSeq >= 0 && snap.session.lastSeq < existing!!.lastSeq) {
+        if (!isInitialLoad && existingLastSeq != null && snap.session.lastSeq >= 0 && snap.session.lastSeq < existingLastSeq) {
             isInitialLoad = true
             snap = rpc.subscribeSession(
                 sessionId = sessionId,
@@ -4605,7 +4684,6 @@ class ConsoleStore(
                     else -> merged.lastIndex
                 }
                 val activeMatch = merged.getOrNull(nextIdx)
-                val shouldJump = activeMatch != null && activeMatch.seq != currentSeq
                 _state.update { s ->
                     s.copy(
                         inSessionFindMatches = merged,
@@ -4614,8 +4692,8 @@ class ConsoleStore(
                         highlightedSeq = activeMatch?.seq,
                     )
                 }
-                if (shouldJump) {
-                    jumpToSearchHit(sid, activeMatch!!.seq, keepFindOpen = true)
+                if (activeMatch != null && activeMatch.seq != currentSeq) {
+                    jumpToSearchHit(sid, activeMatch.seq, keepFindOpen = true)
                 }
             }.onFailure { err ->
                 if (err is CancellationException) throw err

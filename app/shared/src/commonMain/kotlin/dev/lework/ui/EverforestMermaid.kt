@@ -3364,7 +3364,6 @@ private fun MermaidSequenceCanvas(
             // 2. Vertical lifelines
             val boxH = min(layout.headerHeight, 38f)
             val boxInsetBottom = (layout.headerHeight - boxH) * 0.5f
-            val lifelineEndPx = layout.lifelineBottomY.dp.toPx()
             for (p in diagram.participants) {
                 val x = (layout.participantX[p.id] ?: continue).dp.toPx()
                 val startYDp = if (p.isActor) {

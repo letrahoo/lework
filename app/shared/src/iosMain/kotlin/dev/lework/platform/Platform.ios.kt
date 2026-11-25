@@ -179,6 +179,10 @@ object IosNativeBridge {
         return id
     }
 
+    internal fun cancelTsnetCallback(reqId: Long) {
+        pendingTsnet.remove(reqId)
+    }
+
     internal fun allocQrCallback(cb: (String?) -> Unit): Long {
         val id = nextReqId++
         pendingQr[id] = cb
@@ -268,9 +272,15 @@ private object IosKeychain {
             0,
             kCFTypeDictionaryKeyCallBacks.ptr,
             kCFTypeDictionaryValueCallBacks.ptr,
-        )
+        ) ?: return null
         val svc = CFStringCreateWithCString(null, SERVICE, kCFStringEncodingUTF8)
         val acc = CFStringCreateWithCString(null, account, kCFStringEncodingUTF8)
+        if (svc == null || acc == null) {
+            if (svc != null) CFRelease(svc)
+            if (acc != null) CFRelease(acc)
+            CFRelease(dict)
+            return null
+        }
         CFDictionaryAddValue(dict, kSecClass, kSecClassGenericPassword)
         CFDictionaryAddValue(dict, kSecAttrService, svc)
         CFDictionaryAddValue(dict, kSecAttrAccount, acc)
@@ -627,11 +637,13 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
 actual fun openExternalUrl(url: String) {
     logRuntimeEvent("EXTERNAL_URL", "open ${redactUrlForLog(url)}")
     val nsUrl = NSURL.URLWithString(url) ?: return
-    UIApplication.sharedApplication.openURL(
-        nsUrl,
-        options = emptyMap<Any?, Any>(),
-        completionHandler = null,
-    )
+    dispatch_async(dispatch_get_main_queue()) {
+        UIApplication.sharedApplication.openURL(
+            nsUrl,
+            options = emptyMap<Any?, Any>(),
+            completionHandler = null,
+        )
+    }
 }
 
 actual fun copyTextToClipboard(text: String): Boolean =
@@ -695,10 +707,18 @@ actual suspend fun startMobileTsnet(controlUrl: String?): MobileTsnetStatus {
     val host = iosTsnetHostname()
     val ctrl = (controlUrl ?: loadSavedTsnetControlUrl()).orEmpty()
     val raw = suspendCancellableCoroutine<String> { cont ->
+        var reqId: Long? = null
+        cont.invokeOnCancellation {
+            dispatch_async(dispatch_get_main_queue()) {
+                reqId?.let { IosNativeBridge.cancelTsnetCallback(it) }
+            }
+        }
         dispatch_async(dispatch_get_main_queue()) {
+            if (!cont.isActive) return@dispatch_async
             val id = IosNativeBridge.allocTsnetCallback { json ->
                 if (cont.isActive) cont.resume(json)
             }
+            reqId = id
             d.tsnetStart(stateDir, host, ctrl, "", id)
         }
     }
@@ -709,10 +729,18 @@ actual suspend fun queryMobileTsnetStatus(): MobileTsnetStatus {
     val d = IosNativeBridge.delegate
         ?: return MobileTsnetStatus(available = false, backendState = "Unavailable")
     val raw = suspendCancellableCoroutine<String> { cont ->
+        var reqId: Long? = null
+        cont.invokeOnCancellation {
+            dispatch_async(dispatch_get_main_queue()) {
+                reqId?.let { IosNativeBridge.cancelTsnetCallback(it) }
+            }
+        }
         dispatch_async(dispatch_get_main_queue()) {
+            if (!cont.isActive) return@dispatch_async
             val id = IosNativeBridge.allocTsnetCallback { json ->
                 if (cont.isActive) cont.resume(json)
             }
+            reqId = id
             d.tsnetStatus(id)
         }
     }
@@ -727,13 +755,25 @@ actual suspend fun loginMobileTsnet(controlUrl: String?, authKey: String?): Mobi
     val ctrl = (controlUrl ?: loadSavedTsnetControlUrl()).orEmpty()
     val key = authKey.orEmpty()
     val raw = suspendCancellableCoroutine<String> { cont ->
+        var startReqId: Long? = null
+        var loginReqId: Long? = null
+        cont.invokeOnCancellation {
+            dispatch_async(dispatch_get_main_queue()) {
+                startReqId?.let { IosNativeBridge.cancelTsnetCallback(it) }
+                loginReqId?.let { IosNativeBridge.cancelTsnetCallback(it) }
+            }
+        }
         dispatch_async(dispatch_get_main_queue()) {
+            if (!cont.isActive) return@dispatch_async
             val startId = IosNativeBridge.allocTsnetCallback { _ ->
+                if (!cont.isActive) return@allocTsnetCallback
                 val loginId = IosNativeBridge.allocTsnetCallback { json ->
                     if (cont.isActive) cont.resume(json)
                 }
+                loginReqId = loginId
                 d.tsnetLogin(ctrl, key, loginId)
             }
+            startReqId = startId
             d.tsnetStart(stateDir, host, ctrl, key, startId)
         }
     }
@@ -744,10 +784,18 @@ actual suspend fun logoutMobileTsnet(): MobileTsnetStatus {
     val d = IosNativeBridge.delegate
         ?: return MobileTsnetStatus(available = false, backendState = "Unavailable")
     val raw = suspendCancellableCoroutine<String> { cont ->
+        var reqId: Long? = null
+        cont.invokeOnCancellation {
+            dispatch_async(dispatch_get_main_queue()) {
+                reqId?.let { IosNativeBridge.cancelTsnetCallback(it) }
+            }
+        }
         dispatch_async(dispatch_get_main_queue()) {
+            if (!cont.isActive) return@dispatch_async
             val id = IosNativeBridge.allocTsnetCallback { json ->
                 if (cont.isActive) cont.resume(json)
             }
+            reqId = id
             d.tsnetLogout(id)
         }
     }
@@ -855,8 +903,14 @@ actual fun requestMultiImagePick(
     }
 }
 
-actual fun decodeImageBytes(bytes: ByteArray): ImageBitmap? =
-    runCatching { SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
+actual fun decodeImageBytes(bytes: ByteArray): ImageBitmap? = runCatching {
+    val img = SkiaImage.makeFromEncoded(bytes)
+    try {
+        img.toComposeImageBitmap()
+    } finally {
+        img.close()
+    }
+}.getOrNull()
 
 actual fun signingExpiryRemainingHours(): Int? {
     val path = NSBundle.mainBundle.pathForResource("embedded", ofType = "mobileprovision") ?: return null
@@ -964,59 +1018,95 @@ private fun encodeIosClipboardImage(
     val rawBytes = data.bytes?.reinterpret<ByteVar>()?.readBytes(len) ?: return@runCatching null
 
     val skiaImg = SkiaImage.makeFromEncoded(rawBytes)
-    val thumbB64 = runCatching {
-        val maxThumb = 520
-        val scale = minOf(maxThumb.toFloat() / skiaImg.width.toFloat(), maxThumb.toFloat() / skiaImg.height.toFloat(), 1f)
-        val tw = (skiaImg.width * scale).toInt().coerceAtLeast(1)
-        val th = (skiaImg.height * scale).toInt().coerceAtLeast(1)
-        val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(tw, th))
-        surface.canvas.drawImageRect(
-            skiaImg,
-            Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
-            Rect.makeWH(tw.toFloat(), th.toFloat()),
-        )
-        val snapshot = surface.makeImageSnapshot()
-        val encoded = snapshot.encodeToData(EncodedImageFormat.JPEG, 72) ?: snapshot.encodeToData(EncodedImageFormat.PNG)
-        encoded?.bytes?.let { Base64.encode(it) }?.takeIf { it.length <= 240_000 }
-    }.getOrNull()
-
-    val (finalMime, finalBytes) = if (rawBytes.size <= 700_000) {
-        rawMime to rawBytes
-    } else {
-        var encodedBytes: ByteArray? = null
-        var lastDim = -1
-        var cachedSnapshot: SkiaImage? = null
-        for ((dim, quality) in listOf(1600 to 82, 1600 to 65, 1280 to 58, 1024 to 48)) {
-            val snap = if (dim == lastDim && cachedSnapshot != null) {
-                cachedSnapshot
-            } else {
-                lastDim = dim
-                val scale = minOf(dim.toFloat() / skiaImg.width.toFloat(), dim.toFloat() / skiaImg.height.toFloat(), 1f)
-                val w = (skiaImg.width * scale).toInt().coerceAtLeast(1)
-                val h = (skiaImg.height * scale).toInt().coerceAtLeast(1)
-                val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(w, h))
+    try {
+        val thumbB64 = runCatching {
+            val maxThumb = 520
+            val scale = minOf(maxThumb.toFloat() / skiaImg.width.toFloat(), maxThumb.toFloat() / skiaImg.height.toFloat(), 1f)
+            val tw = (skiaImg.width * scale).toInt().coerceAtLeast(1)
+            val th = (skiaImg.height * scale).toInt().coerceAtLeast(1)
+            val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(tw, th))
+            try {
                 surface.canvas.drawImageRect(
                     skiaImg,
                     Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
-                    Rect.makeWH(w.toFloat(), h.toFloat()),
+                    Rect.makeWH(tw.toFloat(), th.toFloat()),
                 )
-                surface.makeImageSnapshot().also { cachedSnapshot = it }
+                val snapshot = surface.makeImageSnapshot()
+                try {
+                    val encoded = snapshot.encodeToData(EncodedImageFormat.JPEG, 72)
+                        ?: snapshot.encodeToData(EncodedImageFormat.PNG)
+                    if (encoded != null) {
+                        try {
+                            Base64.encode(encoded.bytes).takeIf { it.length <= 240_000 }
+                        } finally {
+                            encoded.close()
+                        }
+                    } else {
+                        null
+                    }
+                } finally {
+                    snapshot.close()
+                }
+            } finally {
+                surface.close()
             }
-            val candidate = snap.encodeToData(EncodedImageFormat.JPEG, quality)?.bytes ?: continue
-            encodedBytes = candidate
-            if (candidate.size <= 700_000) break
-        }
-        val finalJpg = encodedBytes ?: return@runCatching null
-        "image/jpeg" to finalJpg
-    }
+        }.getOrNull()
 
-    val finalExt = if (finalMime == "image/png") "png" else "jpg"
-    PickedImagePayload(
-        fileName = "clipboard_${ts}_$index.$finalExt",
-        mimeType = finalMime,
-        dataBase64 = Base64.encode(finalBytes),
-        thumbnailBase64 = thumbB64,
-    )
+        val (finalMime, finalBytes) = if (rawBytes.size <= 700_000) {
+            rawMime to rawBytes
+        } else {
+            var encodedBytes: ByteArray? = null
+            var lastDim = -1
+            var cachedSnapshot: SkiaImage? = null
+            try {
+                for ((dim, quality) in listOf(1600 to 82, 1600 to 65, 1280 to 58, 1024 to 48)) {
+                    val snap = if (dim == lastDim && cachedSnapshot != null) {
+                        cachedSnapshot
+                    } else {
+                        cachedSnapshot?.close()
+                        cachedSnapshot = null
+                        lastDim = dim
+                        val scale = minOf(dim.toFloat() / skiaImg.width.toFloat(), dim.toFloat() / skiaImg.height.toFloat(), 1f)
+                        val w = (skiaImg.width * scale).toInt().coerceAtLeast(1)
+                        val h = (skiaImg.height * scale).toInt().coerceAtLeast(1)
+                        val surface = SkiaSurface.makeRaster(ImageInfo.makeN32Premul(w, h))
+                        try {
+                            surface.canvas.drawImageRect(
+                                skiaImg,
+                                Rect.makeWH(skiaImg.width.toFloat(), skiaImg.height.toFloat()),
+                                Rect.makeWH(w.toFloat(), h.toFloat()),
+                            )
+                            surface.makeImageSnapshot().also { cachedSnapshot = it }
+                        } finally {
+                            surface.close()
+                        }
+                    }
+                    val dataObj = snap.encodeToData(EncodedImageFormat.JPEG, quality) ?: continue
+                    val candidate = try {
+                        dataObj.bytes
+                    } finally {
+                        dataObj.close()
+                    }
+                    encodedBytes = candidate
+                    if (candidate.size <= 700_000) break
+                }
+            } finally {
+                cachedSnapshot?.close()
+            }
+            val finalJpg = encodedBytes ?: return@runCatching null
+            "image/jpeg" to finalJpg
+        }
+
+        val finalExt = if (finalMime == "image/png") "png" else "jpg"
+        PickedImagePayload(
+            fileName = "clipboard_${ts}_$index.$finalExt",
+            mimeType = finalMime,
+            dataBase64 = Base64.encode(finalBytes),
+            thumbnailBase64 = thumbB64,
+        )
+    } finally {
+        skiaImg.close()
+    }
 }.getOrNull()
 
 actual fun canConnectViaSsh(): Boolean = false

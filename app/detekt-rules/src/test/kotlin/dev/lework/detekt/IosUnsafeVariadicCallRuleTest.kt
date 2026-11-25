@@ -106,6 +106,24 @@ class IosUnsafeVariadicCallRuleTest {
     }
 
     @Test
+    fun `reports CFStringCreateWithFormat and POSIX variadic calls`() {
+        val code = """
+            package dev.lework.platform
+            import platform.CoreFoundation.CFStringCreateWithFormat
+            import platform.posix.snprintf
+
+            fun bad() {
+                CFStringCreateWithFormat(null, null, null)
+                snprintf(null, 0u, "%s")
+                platform.posix.printf("%s")
+            }
+        """.trimIndent()
+
+        val findings = rule.lint(code)
+        assertEquals(3, findings.size)
+    }
+
+    @Test
     fun `ignores comments, string literals, and safe println logging`() {
         val code = """
             package dev.lework.platform

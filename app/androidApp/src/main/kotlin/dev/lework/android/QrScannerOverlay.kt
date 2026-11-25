@@ -19,7 +19,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -41,7 +40,6 @@ internal fun QrScannerOverlay(
     onScanned: (String) -> Unit,
     onCancel: () -> Unit,
 ) {
-    val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val finished = remember { AtomicBoolean(false) }
     var statusText by remember { mutableStateOf("对准电脑终端 lework pair 生成的二维码") }
