@@ -77,7 +77,6 @@ import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSFileSize
-import platform.Foundation.NSLog
 import platform.Foundation.NSNetService
 import platform.Foundation.NSNetServiceBrowser
 import platform.Foundation.NSNetServiceBrowserDelegateProtocol
@@ -1040,7 +1039,7 @@ private object IosRuntimeLogger {
         val safeTag = tag.trim().ifEmpty { "APP" }.take(24)
         val clean = sanitizeRuntimeLogMessage(message)
         val line = formatRuntimeLogLine(epochMillis(), safeTag, clean)
-        NSLog("%@", "[Lework/$safeTag] $clean")
+        println("[Lework/$safeTag] $clean")
         val path = logPath() ?: return
         dispatch_async(queue) {
             runCatching {

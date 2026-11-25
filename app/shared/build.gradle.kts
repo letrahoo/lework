@@ -79,3 +79,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 }
+
+tasks.named("check") {
+    dependsOn(
+        rootProject.tasks.named("detekt"),
+        rootProject.tasks.named("detektCommonMain"),
+    )
+}

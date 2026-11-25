@@ -1,0 +1,33 @@
+# Global Detekt rules for all Lework Kotlin modules (`shared`, `androidApp`, `desktopApp`).
+# Uses explicit opt-in (`buildUponDefaultConfig = false`) so only high-signal architectural
+# and safety rules fail builds without noisy formatting churn on existing code.
+
+build:
+  maxIssues: 0
+
+lework:
+  active: true
+  IosUnsafeVariadicCall:
+    active: true
+    includes:
+      - '**/src/iosMain/**'
+      - '**/src/ios*Test/**'
+
+style:
+  active: true
+  ForbiddenImport:
+    active: true
+    imports:
+      - value: 'platform.Foundation.NSLog'
+        reason: 'Kotlin/Native cannot type-check Objective-C variadic %@ args; use logRuntimeEvent (or println inside IosRuntimeLogger).'
+      - value: 'platform.Foundation.NSLogv'
+        reason: 'Kotlin/Native cannot type-check Objective-C variadic args; use logRuntimeEvent (or println inside IosRuntimeLogger).'
+      - value: 'platform.Foundation.stringWithFormat'
+        reason: 'Kotlin/Native cannot type-check Objective-C variadic %@ args; format strings in Kotlin instead.'
+  WildcardImport:
+    active: true
+    # Prevent bypassing ForbiddenImport in iOS code via `import platform.Foundation.*`.
+    includes:
+      - '**/src/iosMain/**'
+      - '**/src/ios*Test/**'
+    excludeImports: []
