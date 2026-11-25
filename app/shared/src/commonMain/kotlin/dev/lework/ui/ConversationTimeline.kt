@@ -15,45 +15,33 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import dev.lework.platform.appVersionLabel
 import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.epochMillis
 import dev.lework.platform.isDesktopPlatform
-import dev.lework.platform.loadSavedRelayUrls
 import dev.lework.platform.logRuntimeEvent
 import dev.lework.protocol.*
 import dev.lework.store.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -910,12 +898,13 @@ private fun MessageTimestampCaption(
     val formatted = remember(timestampMs, nowMs) {
         formatMessageTimestamp(epochMs = timestampMs, nowMs = nowMs)
     }
-    val canCopy = !copyableText.isNullOrBlank()
+    val textToCopy = copyableText?.takeIf { it.isNotBlank() }
+    val canCopy = textToCopy != null
     if (formatted.isEmpty() && !canCopy) return
 
-    var copies by remember(copyableText) { mutableIntStateOf(0) }
+    var copies by remember(textToCopy) { mutableIntStateOf(0) }
     val copied = copies != 0
-    LaunchedEffect(copyableText, copies) {
+    LaunchedEffect(textToCopy, copies) {
         if (copied) {
             delay(1_600L)
             copies = 0
@@ -923,14 +912,14 @@ private fun MessageTimestampCaption(
     }
 
     val copyButton: @Composable () -> Unit = {
-        if (canCopy) {
+        if (textToCopy != null) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
                 modifier = Modifier
                     .clip(RoundedCornerShape(5.dp))
                     .clickable {
-                        if (copyTextToClipboard(copyableText!!)) {
+                        if (copyTextToClipboard(textToCopy)) {
                             copies++
                         }
                     }

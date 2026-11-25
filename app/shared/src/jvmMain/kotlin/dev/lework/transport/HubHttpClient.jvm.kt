@@ -67,10 +67,8 @@ class HubPinningTrustManager(private val pinnedOnly: Boolean) : X509ExtendedTrus
     private fun verify(chain: Array<out X509Certificate>?, host: String?, port: Int) {
         val leaf = chain?.firstOrNull() ?: throw CertificateException("Empty certificate chain")
         val fp = MessageDigest.getInstance("SHA-256").digest(leaf.encoded).toHex()
-        if (pinnedOnly) {
-            if (!HubTrust.isPinned(fp)) {
-                throw CertificateException("Hub certificate $fp is not pinned")
-            }
+        if (pinnedOnly && !HubTrust.isPinned(fp)) {
+            throw CertificateException("Hub certificate $fp is not pinned")
         }
         if (host != null && port > 0) HubTrust.recordObserved(host, port, fp)
     }

@@ -1,11 +1,27 @@
 # KMP purity rules for `shared/src/commonMain` and `shared/src/commonTest`.
-# Keeps common code free of JVM-, Android-, and Apple-only imports.
+# Keeps shared multiplatform code strictly free of JVM-, Android-, Apple-, and Skia-only APIs.
 
 build:
   maxIssues: 0
 
 lework:
-  active: false
+  active: true
+  IosUnsafeVariadicCall:
+    active: false
+  IosMainThreadUiKit:
+    active: false
+  KmpCommonPlatformApi:
+    active: true
+  SuspendCatchSwallowsCancellation:
+    active: false
+  SuspendBlockingSleep:
+    active: false
+  UnsafeNonNullAssertion:
+    active: false
+  ComposeNestedSelectionContainer:
+    active: false
+  ComposeMutableCollectionState:
+    active: false
 
 style:
   active: true
@@ -16,7 +32,29 @@ style:
         reason: 'commonMain/commonTest must stay KMP-pure without JVM-only APIs; bridge platform capabilities via dev.lework.platform expect/actual.'
       - value: 'javax.*'
         reason: 'commonMain/commonTest must stay KMP-pure without JVM-only APIs; bridge platform capabilities via dev.lework.platform expect/actual.'
+      - value: 'sun.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without internal JDK APIs.'
+      - value: 'com.sun.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without internal JDK APIs.'
       - value: 'android.*'
         reason: 'commonMain/commonTest must stay KMP-pure without Android-only APIs.'
+      - value: 'androidx.activity.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without Android Activity APIs.'
+      - value: 'dalvik.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without Android Dalvik APIs.'
       - value: 'platform.*'
         reason: 'commonMain/commonTest must stay KMP-pure without Apple/Native-only APIs.'
+      - value: 'kotlinx.cinterop.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without Kotlin/Native cinterop APIs.'
+      - value: 'objcnames.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without Objective-C interop APIs.'
+      - value: 'kotlin.native.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without Kotlin/Native-only APIs.'
+      - value: 'kotlin.jvm.*'
+        reason: 'commonMain/commonTest must stay KMP-pure without JVM-only annotations (use kotlin.concurrent.Volatile/atomics).'
+      - value: 'org.jetbrains.skia.*'
+        reason: 'Keep direct Skia native handles in platform actuals rather than commonMain.'
+      - value: 'org.jetbrains.skiko.*'
+        reason: 'Keep direct Skiko engine APIs in platform actuals rather than commonMain.'
+      - value: 'kotlinx.coroutines.runBlocking'
+        reason: 'Avoid runBlocking in KMP common code; it deadlocks mobile UI threads and breaks non-blocking targets.'

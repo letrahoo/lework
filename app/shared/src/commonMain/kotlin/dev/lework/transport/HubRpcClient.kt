@@ -411,6 +411,9 @@ class HubRpcClient(
                 wsUrl = hubWsUrlOf(normalized),
                 discover = info.copy(relayUrls = emptyList()),
             )
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            if (!currentCoroutineContext().isActive) throw ce
+            null
         } catch (_: Throwable) {
             null
         }
@@ -431,7 +434,7 @@ class HubRpcClient(
         }
         val body = res.bodyAsText()
         if (!res.status.isSuccess()) {
-            throw IllegalStateException("身份授权初始化失败: $body")
+            error("身份授权初始化失败: $body")
         }
         val result = ProtocolJson.decodeFromString(OAuthStartResult.serializer(), body)
         pendingMutex.withLock {
@@ -489,7 +492,7 @@ class HubRpcClient(
             throw IllegalStateException("无法连接主机进行身份校验: ${t.message ?: "网络错误"}", t)
         }
         if (res.status.value >= 500) {
-            throw IllegalStateException("主机服务正在重启或暂时不可用 (HTTP ${res.status.value})")
+            error("主机服务正在重启或暂时不可用 (HTTP ${res.status.value})")
         }
         if (!res.status.isSuccess()) {
             throw HubTrustException("主机身份校验未通过（令牌不被该主机认可），已阻止发送令牌")
@@ -922,7 +925,7 @@ class HubRpcClient(
         params: JsonElement? = null,
         timeoutMs: Long = 20_000L,
     ): R {
-        val session = wsSession ?: throw IllegalStateException("Not connected to Hub")
+        val session = wsSession ?: error("Not connected to Hub")
         val deferred = CompletableDeferred<JsonElement?>()
         val id = pendingMutex.withLock {
             val allocated = nextId++
@@ -933,28 +936,20 @@ class HubRpcClient(
         val resultElem = try {
             session.send(Frame.Text(payload))
             withTimeout(timeoutMs) { deferred.await() }
-        } catch (t: Throwable) {
-            pendingMutex.withLock { pending.remove(id) }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
             // Ktor's WebSocket channels throw `CancellationException("Channel was cancelled")` when the
             // underlying socket closes even while the caller coroutine is still active.
-            if (t is kotlinx.coroutines.CancellationException && !currentCoroutineContext().isActive) {
-                throw t
+            if (!currentCoroutineContext().isActive) {
+                pendingMutex.withLock { pending.remove(id) }
+                throw ce
             }
-            if (t is RpcCallException) {
-                logRuntimeEvent("RPC", "error method=$method code=${t.code} msg=${t.message}")
-                throw t
-            }
-            if (wsSession === session) {
-                logRuntimeEvent(
-                    "WS",
-                    "transport error method=$method err=${t::class.simpleName}:${t.message}; closing socket",
-                )
-                wsSession = null
-                runCatching { session.close() }
-                _disconnected.tryEmit(t.message ?: "Connection interrupted")
-                throw IllegalStateException("连接已中断，正在自动重连", t)
-            }
-            throw t
+            handleCallTransportFailure(session, id, method, ce)
+        } catch (e: RpcCallException) {
+            pendingMutex.withLock { pending.remove(id) }
+            logRuntimeEvent("RPC", "error method=$method code=${e.code} msg=${e.message}")
+            throw e
+        } catch (t: Throwable) {
+            handleCallTransportFailure(session, id, method, t)
         }
         // Decode outside the transport-failure block so a response schema mismatch or parse error
         // NEVER kills a healthy WebSocket or triggers a reconnect storm.
@@ -967,6 +962,26 @@ class HubRpcClient(
             )
             throw t
         }
+    }
+
+    private suspend fun handleCallTransportFailure(
+        session: DefaultClientWebSocketSession,
+        id: Int,
+        method: String,
+        t: Throwable,
+    ): Nothing {
+        pendingMutex.withLock { pending.remove(id) }
+        if (wsSession === session) {
+            logRuntimeEvent(
+                "WS",
+                "transport error method=$method err=${t::class.simpleName}:${t.message}; closing socket",
+            )
+            wsSession = null
+            runCatching { session.close() }
+            _disconnected.tryEmit(t.message ?: "Connection interrupted")
+            throw IllegalStateException("连接已中断，正在自动重连", t)
+        }
+        throw t
     }
 
     private suspend fun readLoop(session: DefaultClientWebSocketSession) {

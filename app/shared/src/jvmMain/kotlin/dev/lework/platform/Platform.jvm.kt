@@ -423,8 +423,14 @@ actual fun requestMultiImagePick(
     }
 }
 
-actual fun decodeImageBytes(bytes: ByteArray): ImageBitmap? =
-    runCatching { SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap() }.getOrNull()
+actual fun decodeImageBytes(bytes: ByteArray): ImageBitmap? = runCatching {
+    val img = SkiaImage.makeFromEncoded(bytes)
+    try {
+        img.toComposeImageBitmap()
+    } finally {
+        img.close()
+    }
+}.getOrNull()
 
 actual fun signingExpiryRemainingHours(): Int? =
     if (JvmDesktopRuntime.isEnabled) null else JvmPlatformTestHooks.signingExpiryHours

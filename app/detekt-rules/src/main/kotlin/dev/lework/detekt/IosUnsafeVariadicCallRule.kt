@@ -15,16 +15,17 @@ import org.jetbrains.kotlin.psi.KtSafeQualifiedExpression
 import org.jetbrains.kotlin.psi.KtTreeVisitorVoid
 
 /**
- * Prevents calling Objective-C / Foundation C-variadic formatting APIs from Kotlin/Native iOS code.
+ * Prevents calling Objective-C / Foundation / POSIX C-variadic formatting APIs from Kotlin/Native iOS code.
  *
- * Kotlin/Native cannot type-check `%@` format arguments across an Objective-C variadic boundary,
- * which can crash at runtime (e.g. `NSLog("%@", kotlinString)` during launch).
+ * Kotlin/Native cannot type-check `%@` or C-vararg format arguments across an Objective-C/C variadic
+ * boundary, which can crash at runtime (e.g. `NSLog("%@", kotlinString)` during launch).
  */
 class IosUnsafeVariadicCallRule(config: Config = Config.empty) : Rule(config) {
     override val issue: Issue = Issue(
         id = "IosUnsafeVariadicCall",
         severity = Severity.Defect,
-        description = "Avoid calling Objective-C Foundation variadic APIs (NSLog, NSLogv, NSString.stringWithFormat) " +
+        description = "Avoid calling Objective-C Foundation or POSIX C-variadic APIs " +
+            "(NSLog, NSLogv, NSString.stringWithFormat, CFStringCreateWithFormat, printf/sprintf/snprintf) " +
             "from iOS Kotlin; use logRuntimeEvent (or println inside IosRuntimeLogger) or format strings in Kotlin.",
         debt = Debt.FIVE_MINS,
     )
@@ -67,9 +68,19 @@ class IosUnsafeVariadicCallRule(config: Config = Config.empty) : Rule(config) {
                                 (!isQualifiedSelector || receiverText == "platform.Foundation" || receiverText?.endsWith(".Foundation") == true) ->
                                 "Do not call Foundation '$calleeName' in iOS Kotlin; use logRuntimeEvent (or println inside IosRuntimeLogger)."
 
-                            calleeName == "stringWithFormat" &&
+                            calleeName in FORBIDDEN_STRING_FORMAT_METHODS &&
                                 (!isQualifiedSelector || receiverText in nsStringAliases || receiverText?.endsWith(".NSString") == true) ->
-                                "Do not call Foundation 'NSString.stringWithFormat' in iOS Kotlin; format strings in Kotlin instead."
+                                "Do not call Foundation 'NSString.$calleeName' in iOS Kotlin; format strings in Kotlin instead."
+
+                            calleeName in FORBIDDEN_C_VARIADICS &&
+                                (
+                                    !isQualifiedSelector ||
+                                        receiverText == "platform.CoreFoundation" ||
+                                        receiverText?.endsWith(".CoreFoundation") == true ||
+                                        receiverText == "platform.posix" ||
+                                        receiverText?.endsWith(".posix") == true
+                                    ) ->
+                                "Do not call native C-variadic '$calleeName' in iOS Kotlin; format strings in Kotlin instead."
 
                             else -> null
                         }
@@ -96,10 +107,27 @@ class IosUnsafeVariadicCallRule(config: Config = Config.empty) : Rule(config) {
             "platform.Foundation.NSLog",
             "platform.Foundation.NSLogv",
             "platform.Foundation.stringWithFormat",
+            "platform.Foundation.localizedStringWithFormat",
+            "platform.CoreFoundation.CFStringCreateWithFormat",
+            "platform.posix.printf",
+            "platform.posix.sprintf",
+            "platform.posix.snprintf",
+            "platform.posix.fprintf",
         )
         val FORBIDDEN_LOGGER_CALLS = setOf(
             "NSLog",
             "NSLogv",
+        )
+        val FORBIDDEN_STRING_FORMAT_METHODS = setOf(
+            "stringWithFormat",
+            "localizedStringWithFormat",
+        )
+        val FORBIDDEN_C_VARIADICS = setOf(
+            "CFStringCreateWithFormat",
+            "printf",
+            "sprintf",
+            "snprintf",
+            "fprintf",
         )
     }
 }

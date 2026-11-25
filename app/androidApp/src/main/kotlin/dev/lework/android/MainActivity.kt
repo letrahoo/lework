@@ -262,38 +262,41 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
             BitmapFactory.decodeStream(it, null, decodeOpts)
         } ?: return null
 
-        fun encodeWithinLimit(src: Bitmap, maxDim: Int, quality: Int): String {
-            val longest = maxOf(src.width, src.height)
-            val working = if (longest > maxDim && longest > 0) {
-                val ratio = maxDim.toFloat() / longest.toFloat()
-                val w = (src.width * ratio).toInt().coerceAtLeast(1)
-                val h = (src.height * ratio).toInt().coerceAtLeast(1)
-                Bitmap.createScaledBitmap(src, w, h, true)
-            } else {
-                src
+        try {
+            fun encodeWithinLimit(src: Bitmap, maxDim: Int, quality: Int): String {
+                val longest = maxOf(src.width, src.height)
+                val working = if (longest > maxDim && longest > 0) {
+                    val ratio = maxDim.toFloat() / longest.toFloat()
+                    val w = (src.width * ratio).toInt().coerceAtLeast(1)
+                    val h = (src.height * ratio).toInt().coerceAtLeast(1)
+                    Bitmap.createScaledBitmap(src, w, h, true)
+                } else {
+                    src
+                }
+                val out = ByteArrayOutputStream()
+                working.compress(Bitmap.CompressFormat.JPEG, quality, out)
+                if (working !== src) working.recycle()
+                return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
             }
-            val out = ByteArrayOutputStream()
-            working.compress(Bitmap.CompressFormat.JPEG, quality, out)
-            if (working !== src) working.recycle()
-            return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-        }
 
-        // Guarantee Base64 payload fits comfortably inside protocol PromptImageAttachment 1_000_000 cap
-        var b64 = ""
-        for ((dim, q) in listOf(1280 to 78, 1280 to 60, 1024 to 52, 800 to 45)) {
-            b64 = encodeWithinLimit(decoded, dim, q)
-            if (b64.length <= 900_000) break
-        }
-        val thumbB64 = encodeWithinLimit(decoded, 520, 68).takeIf { it.length <= 240_000 }
-        decoded.recycle()
-        if (b64.isEmpty() || b64.length > 990_000) return null
+            // Guarantee Base64 payload fits comfortably inside protocol PromptImageAttachment 1_000_000 cap
+            var b64 = ""
+            for ((dim, q) in listOf(1280 to 78, 1280 to 60, 1024 to 52, 800 to 45)) {
+                b64 = encodeWithinLimit(decoded, dim, q)
+                if (b64.length <= 900_000) break
+            }
+            val thumbB64 = encodeWithinLimit(decoded, 520, 68).takeIf { it.length <= 240_000 }
+            if (b64.isEmpty() || b64.length > 990_000) return null
 
-        PickedImagePayload(
-            fileName = if (fileName.contains('.')) fileName else "$fileName.jpg",
-            mimeType = "image/jpeg",
-            dataBase64 = b64,
-            thumbnailBase64 = thumbB64,
-        )
+            PickedImagePayload(
+                fileName = if (fileName.contains('.')) fileName else "$fileName.jpg",
+                mimeType = "image/jpeg",
+                dataBase64 = b64,
+                thumbnailBase64 = thumbB64,
+            )
+        } finally {
+            decoded.recycle()
+        }
     }.getOrNull()
 
     private fun resolveDisplayName(uri: Uri): String? = runCatching {
