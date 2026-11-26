@@ -248,6 +248,17 @@ internal fun effortToWire(e: ReasoningEffort): String = when (e) {
     ReasoningEffort.MAX -> "max"
 }
 
+internal fun reasoningEffortOrder(effort: ReasoningEffort): Int = when (effort) {
+    ReasoningEffort.LOW -> 0
+    ReasoningEffort.MEDIUM -> 1
+    ReasoningEffort.HIGH -> 2
+    ReasoningEffort.XHIGH -> 3
+    ReasoningEffort.MAX -> 4
+}
+
+internal fun sortedReasoningEfforts(efforts: List<ReasoningEffort>): List<ReasoningEffort> =
+    efforts.distinct().sortedBy(::reasoningEffortOrder)
+
 internal fun parseMode(raw: String): SessionMode = when (raw.lowercase()) {
     "auto" -> SessionMode.AUTO
     "acceptedits", "auto-edit", "auto_edit" -> SessionMode.ACCEPT_EDITS
@@ -444,7 +455,9 @@ data class ConsoleUiState(
         }
 
     val availableEfforts: List<ReasoningEffort>
-        get() = selectedModelSpec?.efforts?.ifEmpty { null }
+        get() = selectedModelSpec?.efforts
+            ?.let(::sortedReasoningEfforts)
+            ?.ifEmpty { null }
             ?: listOf(ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH)
 
     val availableModes: List<SessionMode>

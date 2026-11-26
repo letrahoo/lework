@@ -34,6 +34,19 @@ export function normalizeHostMode(raw: unknown, fallback: SessionMode = 'default
   }
 }
 
+export const REASONING_EFFORT_ORDER: readonly ReasoningEffort[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+]
+
+export function sortReasoningEfforts(efforts: Iterable<ReasoningEffort>): ReasoningEffort[] {
+  const unique = new Set<ReasoningEffort>(efforts)
+  return REASONING_EFFORT_ORDER.filter(level => unique.has(level))
+}
+
 export function normalizeHostEffort(raw: unknown, fallback: ReasoningEffort = 'medium'): ReasoningEffort {
   if (typeof raw !== 'string') return fallback
   switch (raw.trim().toLowerCase()) {
@@ -159,6 +172,7 @@ export function readCodexModelsCache(homeDir: string, efforts: ReasoningEffort[]
     const data = JSON.parse(fs.readFileSync(p, 'utf8')) as {
       models?: Array<{ slug?: string; id?: string; display_name?: string }>
     }
+    const sortedEfforts = sortReasoningEfforts(efforts)
     const out: EngineModelSpec[] = []
     for (const m of (data.models ?? []).slice(0, 15)) {
       const id = m.slug ?? m.id
@@ -167,7 +181,7 @@ export function readCodexModelsCache(homeDir: string, efforts: ReasoningEffort[]
         id,
         name: m.display_name ?? id,
         providerId: 'sub_codex',
-        efforts,
+        efforts: sortedEfforts,
         defaultEffort: 'high',
       })
     }
@@ -187,6 +201,43 @@ export function setCachedAgyCatalog(models: EngineModelSpec[] | null): void {
   cachedAgyCatalog = models
 }
 
+export function parseAgyModelsCliOutput(stdout: string): EngineModelSpec[] {
+  const grouped = new Map<
+    string,
+    { name: string; efforts: Set<ReasoningEffort>; firstEffort?: ReasoningEffort }
+  >()
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z0-9_.-]{1,128})\t([^\t]{1,256})$/)
+    if (!match) continue
+    const wireId = match[1]!
+    const rawLabel = match[2]!
+    const suffixMatch = wireId.match(/-(low|medium|high|xhigh|max)$/)
+    const effort = suffixMatch?.[1] as ReasoningEffort | undefined
+    const baseId = effort ? wireId.slice(0, -(effort.length + 1)) : wireId
+    const cleanName = rawLabel.replace(/\s*\((Low|Medium|High|XHigh|Max)\)\s*$/i, '').trim()
+    const item = grouped.get(baseId) ?? {
+      name: cleanName,
+      efforts: new Set<ReasoningEffort>(),
+      firstEffort: undefined,
+    }
+    if (effort) {
+      if (!item.firstEffort) item.firstEffort = effort
+      item.efforts.add(effort)
+    }
+    grouped.set(baseId, item)
+  }
+  return [...grouped.entries()].map(([id, info]) => {
+    const efforts = sortReasoningEfforts(info.efforts)
+    return {
+      id,
+      name: info.name,
+      providerId: 'sub_agy',
+      efforts: efforts.length > 0 ? efforts : undefined,
+      defaultEffort: efforts.includes('high') ? 'high' : (info.firstEffort ?? efforts[0]),
+    }
+  })
+}
+
 export async function loadAgyModelsFromCli(): Promise<EngineModelSpec[]> {
   const bin = findExecutable('agy')
   if (!bin) return []
@@ -196,30 +247,7 @@ export async function loadAgyModelsFromCli(): Promise<EngineModelSpec[]> {
       maxBuffer: 512 * 1024,
       encoding: 'utf8',
     })
-    const grouped = new Map<string, { name: string; efforts: Set<ReasoningEffort> }>()
-    for (const line of stdout.split(/\r?\n/)) {
-      const match = line.match(/^([A-Za-z0-9_.-]{1,128})\t([^\t]{1,256})$/)
-      if (!match) continue
-      const wireId = match[1]!
-      const rawLabel = match[2]!
-      const suffixMatch = wireId.match(/-(low|medium|high|xhigh|max)$/)
-      const effort = suffixMatch?.[1] as ReasoningEffort | undefined
-      const baseId = effort ? wireId.slice(0, -(effort.length + 1)) : wireId
-      const cleanName = rawLabel.replace(/\s*\((Low|Medium|High|XHigh|Max)\)\s*$/i, '').trim()
-      const item = grouped.get(baseId) ?? { name: cleanName, efforts: new Set<ReasoningEffort>() }
-      if (effort) item.efforts.add(effort)
-      grouped.set(baseId, item)
-    }
-    const specs: EngineModelSpec[] = [...grouped.entries()].map(([id, info]) => {
-      const efforts = [...info.efforts]
-      return {
-        id,
-        name: info.name,
-        providerId: 'sub_agy',
-        efforts: efforts.length > 0 ? efforts : undefined,
-        defaultEffort: efforts.includes('high') ? 'high' : efforts[0],
-      }
-    })
+    const specs = parseAgyModelsCliOutput(stdout)
     if (specs.length > 0) {
       cachedAgyCatalog = specs
       return specs
