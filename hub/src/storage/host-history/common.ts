@@ -12,6 +12,8 @@ export interface HostTranscriptEntry {
 export interface CachedTranscript {
   mtimeMs: number
   size: number
+  auxMtimeMs?: number
+  auxSize?: number
   events: AgentEvent[]
   extraWorkspaces: string[]
   isRunning: boolean

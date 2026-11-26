@@ -863,6 +863,88 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
     )
 }
 
+/**
+ * Merges a reverse-paginated older transcript slice (`olderItems`, all strictly older than `currentItems`)
+ * in front of `currentItems`.
+ *
+ * Unlike naive ID-based deduplication (which discards the entire prefix of a streaming `Assistant` or
+ * `Reasoning` message whenever a pagination boundary cuts mid-message), split items sharing the same ID
+ * with `older.seq < existing.seq` are stitched back together (`older.text + existing.text`) in their
+ * earliest chronological slot, matching full-stream `reduceTranscriptBatch` output.
+ */
+fun mergePrependedOlderItems(
+    olderItems: List<ChatTimelineItem>,
+    currentItems: List<ChatTimelineItem>,
+): List<ChatTimelineItem> {
+    if (olderItems.isEmpty()) return currentItems
+    if (currentItems.isEmpty()) return olderItems
+
+    val currentByKey = HashMap<String, Pair<Int, ChatTimelineItem>>(currentItems.size)
+    currentItems.forEachIndexed { idx, item ->
+        currentByKey["${item.id}_${item::class.simpleName}"] = idx to item
+    }
+
+    val consumedCurrentIndices = HashSet<Int>()
+    val mergedOlder = ArrayList<ChatTimelineItem>(olderItems.size)
+
+    for (older in olderItems) {
+        val key = "${older.id}_${older::class.simpleName}"
+        val match = currentByKey[key]
+        if (match == null) {
+            mergedOlder.add(older)
+            continue
+        }
+        val (curIdx, existing) = match
+        when {
+            older is ChatTimelineItem.Assistant && existing is ChatTimelineItem.Assistant -> {
+                consumedCurrentIndices.add(curIdx)
+                if (older.seq < existing.seq) {
+                    mergedOlder.add(
+                        older.copy(
+                            text = older.text + existing.text,
+                            ts = maxOf(older.ts, existing.ts),
+                        ),
+                    )
+                } else {
+                    mergedOlder.add(existing)
+                }
+            }
+            older is ChatTimelineItem.Reasoning && existing is ChatTimelineItem.Reasoning -> {
+                consumedCurrentIndices.add(curIdx)
+                if (older.seq < existing.seq) {
+                    mergedOlder.add(
+                        older.copy(
+                            text = older.text + existing.text,
+                            ts = maxOf(older.ts, existing.ts),
+                        ),
+                    )
+                } else {
+                    mergedOlder.add(existing)
+                }
+            }
+            older is ChatTimelineItem.Tool && existing is ChatTimelineItem.Tool -> {
+                consumedCurrentIndices.add(curIdx)
+                mergedOlder.add(
+                    older.copy(
+                        title = existing.title.ifBlank { older.title },
+                        status = existing.status,
+                        input = older.input ?: existing.input,
+                        output = existing.output ?: older.output,
+                        ts = maxOf(older.ts, existing.ts),
+                        seq = minOf(older.seq, existing.seq),
+                    ),
+                )
+            }
+            else -> {
+                // User / Notice with identical ID: keep the existing item in its current slot.
+            }
+        }
+    }
+
+    val remainingCurrent = currentItems.filterIndexed { idx, _ -> idx !in consumedCurrentIndices }
+    return mergedOlder + remainingCurrent
+}
+
 private val REPEAT_SUFFIX_REGEX = Regex("\\s*\\(×\\d+\\)$")
 private val ERROR_VOLATILE_TOKEN_REGEX = Regex("\\b([0-9a-f]{8,}|\\d+)\\b", RegexOption.IGNORE_CASE)
 

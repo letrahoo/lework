@@ -2714,10 +2714,7 @@ class ConsoleStore(
                 val olderReduced = reduceTranscriptBatch(SessionTranscript(), snap.events)
                 _state.update { s ->
                     val latest = s.transcripts[sessionId] ?: SessionTranscript()
-                    val existingKeys = latest.items.map { "${it.id}_${it::class.simpleName}" }.toHashSet()
-                    val nonDupOlder = olderReduced.items.filterNot {
-                        "${it.id}_${it::class.simpleName}" in existingKeys
-                    }
+                    val mergedItems = mergePrependedOlderItems(olderReduced.items, latest.items)
                     val newEarliest = snap.earliestSeq
                         ?: snap.events.firstOrNull()?.seq
                         ?: latest.earliestSeq
@@ -2725,7 +2722,7 @@ class ConsoleStore(
                         earliestSeq = newEarliest,
                         hasMoreBefore = snap.hasMoreBefore == true && snap.events.isNotEmpty(),
                         loadingOlder = false,
-                        items = nonDupOlder + latest.items,
+                        items = mergedItems,
                     )
                     s.copy(transcripts = s.transcripts + (sessionId to merged))
                 }

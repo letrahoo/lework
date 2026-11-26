@@ -568,6 +568,57 @@ export function inferAgySubagentActivity(
   return subagentActivity(agyTailSignal(tailLines), mtimeMs, lastType === 'USER_INPUT' ? undefined : lastToolActivity)
 }
 
+const AGY_TRUNCATED_MARKER_RE = /<truncated\s+\d+\s+bytes>/i
+
+export function resolveAgyFullTranscriptPath(transcriptFilePath: string): string | undefined {
+  if (path.basename(transcriptFilePath) !== 'transcript.jsonl') return undefined
+  const candidate = path.join(path.dirname(transcriptFilePath), 'transcript_full.jsonl')
+  try {
+    return fs.existsSync(candidate) ? candidate : undefined
+  } catch {
+    return undefined
+  }
+}
+
+interface AgyRawStepRecord {
+  step_index?: number
+  type?: string
+  status?: string
+  created_at?: string
+  content?: string
+  thinking?: string
+  truncated_fields?: string[]
+  input_tokens?: number
+  output_tokens?: number
+  media?: AgyMediaItem[]
+  tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown; args?: unknown }>
+}
+
+function loadAgyFullStepsIndex(fullFilePath: string): {
+  byStepIndex: Map<number, AgyRawStepRecord>
+  byLineIndex: Map<number, AgyRawStepRecord>
+} {
+  const byStepIndex = new Map<number, AgyRawStepRecord>()
+  const byLineIndex = new Map<number, AgyRawStepRecord>()
+  try {
+    const fullLines = readFullSessionLines(fullFilePath)
+    for (let idx = 0; idx < fullLines.length; idx++) {
+      try {
+        const rec = JSON.parse(fullLines[idx]!) as AgyRawStepRecord
+        byLineIndex.set(idx, rec)
+        if (typeof rec.step_index === 'number') {
+          byStepIndex.set(rec.step_index, rec)
+        }
+      } catch {
+        // ignore malformed line in full transcript
+      }
+    }
+  } catch {
+    // ignore unreadable full transcript
+  }
+  return { byStepIndex, byLineIndex }
+}
+
 export function parseAgyTranscript(
   sessionId: string,
   filePath: string,
@@ -582,6 +633,44 @@ export function parseAgyTranscript(
   let latestModelRaw: string | undefined
   const recentUserTexts: string[] = []
   const lines = readFullSessionLines(filePath)
+  let fullStepsIndex: ReturnType<typeof loadAgyFullStepsIndex> | null | undefined
+  const hydrateTruncatedRecord = (o: AgyRawStepRecord, lineIdx: number): AgyRawStepRecord => {
+    const hasTruncatedFields = Array.isArray(o.truncated_fields) && o.truncated_fields.length > 0
+    const contentHasMarker =
+      (o.type === 'PLANNER_RESPONSE' || o.type === 'USER_INPUT') &&
+      typeof o.content === 'string' &&
+      AGY_TRUNCATED_MARKER_RE.test(o.content)
+    if (!hasTruncatedFields && !contentHasMarker) return o
+
+    if (fullStepsIndex === undefined) {
+      const fullPath = resolveAgyFullTranscriptPath(filePath)
+      fullStepsIndex = fullPath ? loadAgyFullStepsIndex(fullPath) : null
+    }
+    if (!fullStepsIndex) return o
+
+    const fullRec =
+      (typeof o.step_index === 'number' ? fullStepsIndex.byStepIndex.get(o.step_index) : undefined) ??
+      fullStepsIndex.byLineIndex.get(lineIdx)
+    if (!fullRec || (o.type && fullRec.type && fullRec.type !== o.type)) return o
+
+    const next: AgyRawStepRecord = { ...o }
+    const fieldSet = new Set(Array.isArray(o.truncated_fields) ? o.truncated_fields : [])
+    if (
+      (fieldSet.has('content') || contentHasMarker) &&
+      typeof fullRec.content === 'string' &&
+      fullRec.content.length > 0
+    ) {
+      next.content = fullRec.content
+    }
+    if (
+      fieldSet.has('thinking') &&
+      typeof fullRec.thinking === 'string' &&
+      fullRec.thinking.length > 0
+    ) {
+      next.thinking = fullRec.thinking
+    }
+    return next
+  }
   let seq = 0
   const failOpenTools = (ts: number, output = '已停止') => {
     for (const callId of pendingToolIds) {
@@ -598,20 +687,11 @@ export function parseAgyTranscript(
     }
     pendingToolIds = []
   }
-  for (const line of lines) {
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx]!
     try {
-      const o = JSON.parse(line) as {
-        step_index?: number
-        type?: string
-        status?: string
-        created_at?: string
-        content?: string
-        thinking?: string
-        input_tokens?: number
-        output_tokens?: number
-        media?: AgyMediaItem[]
-        tool_calls?: Array<{ id?: string; name?: string; arguments?: unknown; args?: unknown }>
-      }
+      const parsed = JSON.parse(line) as AgyRawStepRecord
+      const o = hydrateTruncatedRecord(parsed, lineIdx)
       const ts = o.created_at ? Date.parse(o.created_at) || Date.now() : Date.now()
       const upperStatus = typeof o.status === 'string' ? o.status.toUpperCase() : ''
       const upperType = typeof o.type === 'string' ? o.type.toUpperCase() : ''
