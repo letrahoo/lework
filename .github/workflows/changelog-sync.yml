@@ -1,0 +1,109 @@
+name: Sync Bilingual Changelog
+
+on:
+  workflow_run:
+    workflows:
+      - 'Release Android & Desktop'
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: changelog-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Update CHANGELOG.md & CHANGELOG.zh-CN.md
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout latest main with full history & tags
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.CHANGELOG_PR_TOKEN || github.token }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Sync missing release tags into bilingual changelogs
+        id: sync
+        env:
+          GH_TOKEN: ${{ secrets.CHANGELOG_PR_TOKEN || github.token }}
+        run: |
+          node scripts/update-changelog.mjs --write --github-output
+          node scripts/update-changelog.mjs --check --strict-tags
+
+      - name: Push rolling branch and open/update PR
+        if: steps.sync.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CHANGELOG_PR_TOKEN || github.token }}
+          HAS_CUSTOM_TOKEN: ${{ secrets.CHANGELOG_PR_TOKEN != '' }}
+          ADDED_TAGS: ${{ steps.sync.outputs.added_tags }}
+          LATEST_TAG: ${{ steps.sync.outputs.latest_tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          BRANCH="docs/changelog-sync"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$BRANCH"
+          git add CHANGELOG.md CHANGELOG.zh-CN.md
+          git commit -m "docs(changelog): sync bilingual CHANGELOG through ${LATEST_TAG} [skip release]"
+          git push --force origin "$BRANCH"
+
+          PR_TITLE="docs(changelog): sync bilingual CHANGELOG through ${LATEST_TAG} [skip release]"
+          cat > pr-body.md <<EOF
+          ## Summary
+
+          Automatically synced newly published release tag(s) into both \`CHANGELOG.md\` and \`CHANGELOG.zh-CN.md\`:
+
+          - **Added tags**: \`${ADDED_TAGS}\`
+          - **Latest documented release**: \`${LATEST_TAG}\`
+
+          > This PR only touches Markdown changelog files (\`*.md\`) and carries \`[skip release]\`, so merging it will not trigger a new release build. Feel free to polish wording before merging.
+
+          <!-- [changelog-sync-bot] -->
+          EOF
+
+          EXISTING_PR="$(gh pr list --state open --head "$BRANCH" --base main --json number --jq '.[0].number // empty' || true)"
+          if [[ -n "$EXISTING_PR" ]]; then
+            gh pr edit "$EXISTING_PR" --title "$PR_TITLE" --body-file pr-body.md
+            echo "Updated existing changelog PR #${EXISTING_PR}"
+            echo "Updated changelog PR #${EXISTING_PR} for tags: \`${ADDED_TAGS}\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if PR_URL="$(gh pr create --base main --head "$BRANCH" --title "$PR_TITLE" --body-file pr-body.md 2>pr-error.log)"; then
+            echo "Created changelog PR: $PR_URL"
+            echo "Created changelog PR: ${PR_URL} (tags: \`${ADDED_TAGS}\`)." >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$HAS_CUSTOM_TOKEN" != "true" ]]; then
+              echo "::notice::PR was created using default GITHUB_TOKEN. To have required CI checks trigger automatically on bot PRs, configure a repository secret named CHANGELOG_PR_TOKEN (fine-grained PAT with Contents & Pull requests: Read/Write)."
+            fi
+          else
+            ERR_MSG="$(cat pr-error.log)"
+            echo "::warning::Branch '${BRANCH}' was pushed successfully, but automatic PR creation failed: ${ERR_MSG}"
+            COMPARE_URL="https://github.com/${REPO}/compare/main...${BRANCH}?expand=1"
+            cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Changelog branch updated, manual PR creation needed
+
+          Branch \`${BRANCH}\` has been updated with release tags \`${ADDED_TAGS}\`, but GitHub Actions could not open the PR automatically:
+
+          \`\`\`
+          ${ERR_MSG}
+          \`\`\`
+
+          - **One-click PR link**: ${COMPARE_URL}
+          - **Permanent fix**: Enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**, or add a fine-grained PAT secret \`CHANGELOG_PR_TOKEN\` (\`Contents: Read & write\`, \`Pull requests: Read & write\`) so bot PRs also auto-trigger required CI checks.
+          EOF
+          fi

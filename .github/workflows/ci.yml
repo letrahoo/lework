@@ -52,6 +52,9 @@ jobs:
       - name: Verify unified version consistency
         run: node scripts/resolve-version.mjs --check
 
+      - name: Verify bilingual CHANGELOG structure & parity
+        run: node scripts/update-changelog.mjs --check
+
       - name: Verify protocol schema codegen & zero drift
         run: |
           pnpm --filter @lework/protocol gen

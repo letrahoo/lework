@@ -16,6 +16,8 @@
     "desktop": "./app/gradlew -p ./app :desktopApp:run",
     "desktop:install": "bash ./scripts/desktop-install.sh",
     "desktop:dmg": "./app/gradlew -p ./app :desktopApp:packageDmg",
+    "changelog:check": "node scripts/update-changelog.mjs --check",
+    "changelog:sync": "node scripts/update-changelog.mjs --write",
     "install:cli": "node ./hub/bin/hub.js install-cli"
   },
   "engines": {

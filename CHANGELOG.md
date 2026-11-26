@@ -12,6 +12,173 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [v0.8.10] - 2026-11-26
+
+### Fixed
+- **Preserve Split Streaming Replies Across Pagination & Hydrate AGY Full Transcript** ([#36](https://github.com/letrahoo/lework/pull/36)):
+  - Expanded Hub's per-session in-memory event buffer (`MAX_EVENTS_PER_SESSION`) from `5,000` to `20,000` and updated `sliceSessionWindow` (`snapStartToIntactItems` / `snapEndToIntactItems`) so initial loads, reverse pagination (`beforeSeq`), and search-jump slices (`aroundSeq`) never cut through the middle of a streaming `message.assistant.delta` / `reasoning.delta` or `tool.call` / `tool.update` sequence.
+  - Replaced drop-by-ID deduplication in `ConsoleStore.loadOlderHistory` with `mergePrependedOlderItems`, losslessly stitching split Assistant/Reasoning/Tool items across page boundaries while remaining idempotent on retries.
+  - Added lazy hydration from AGY's companion `transcript_full.jsonl` whenever `transcript.jsonl` contains `truncated_fields` or `<truncated N bytes>` placeholders, and included full-transcript mtime/size in host-history cache keys.
+
+---
+
+## [v0.8.9] - 2026-11-26
+
+### Fixed
+- **Desktop Composer `Shift + Enter` Newline, Search Term Highlighting & Auto-Select on Reopen** ([#35](https://github.com/letrahoo/lework/pull/35)):
+  - Fixed `Shift + Enter` (and `Option/Alt + Enter`) failing to insert newlines in Compose Desktop (`DesktopComposer` & `SessionComposer`) via `TextFieldValue` selection insertion while respecting active IME composition and keeping plain `Enter` for submission.
+  - Added shared `SearchHighlight.kt` (`LocalSearchHighlightQuery` / `LocalSearchHighlightPrimary`) to highlight matched search terms in `DesktopSearchDialog` (snippets, session titles, workspace names) and inline across jumped timeline messages (`ConversationTimeline` + `EverforestMarkdown` headings, paragraphs, lists, quotes, tables, code fences, and user bubbles) using Everforest gold primary/secondary contrast.
+  - Reopening Global Search (`⇧⌘F`) or In-Session Find (`⌘F`) now auto-selects the previous non-empty query so typing immediately replaces it.
+
+---
+
+## [v0.8.8] - 2026-11-26
+
+### Added
+- **AGY-Style Live Execution Steps Tree & Inline Clickable SubAgent Cards** ([#33](https://github.com/letrahoo/lework/pull/33)):
+  - Extended `PlanEntryStatus` (`skipped`, `failed`), `SubagentSummary` (`parentId`, `depth`, `stepsDone`, `stepsTotal`), and `stream.subscribe` (`latestPlan`) across `protocol-schema`, `hub`, and KMP clients.
+  - Added unified `hub/src/storage/host-history/plan-steps.ts` mapping AGY `update_steps`, Claude `TodoWrite` / `TaskCreate` / `TaskUpdate`, and Codex `update_plan` to `plan.updated` events, and fixed `parseLiveSpinnerLine` to skip multiline tree glyphs and accurately capture live step counters.
+  - Added bottom-anchored `ExecutionStepsCard` (fixing inverted `PlanCard` placement in `LazyColumn(reverseLayout = true)`) with live spinner, step progress bar, tree indentation, and automatic collapse upon completion.
+  - Promoted `invoke_subagent` / `Task` / `Agent` / `swarm` / `run_workflow` calls into inline clickable `InlineSubagentDispatchCard` timeline entries linked directly to `SubagentInspectorDialog`, and surfaced step progress, elapsed duration, and nesting depth in `SubagentStatusStrip` and inspector views.
+
+---
+
+## [v0.8.7] - 2026-11-26
+
+### Added
+- **Native Cross-Platform LaTeX Inline & Block Math Rendering** ([#34](https://github.com/letrahoo/lework/pull/34)):
+  - Added pure KMP `EverforestMath.kt` integrated into `EverforestMarkdown.kt` with zero WebView overhead and full drag-selection compatibility across Desktop, Android, and iOS.
+  - Renders inline math (`$...$`, `\(...\)`, single-line `$$...$$`) in paragraphs, headings, lists, quotes, and table cells — supporting Greek letters, operators/arrows, blackboard-bold symbols, upright math functions, native super/subscripts, compact fractions, and roots while protecting code spans, escaped `\$`, and currency/environment tokens (`$50`, `$200`).
+  - Renders block math (`$$...$$`, `\[...\]`) in Everforest Dark cards with stacked fractions (`\frac`), big operators with centered limits (`\sum` / `\prod` / `\int`), overline roots (`\sqrt`), `cases` / `pmatrix` / `bmatrix` / `aligned` environments, horizontal scrolling, and a one-click **Copy LaTeX** button.
+
+---
+
+## [v0.8.6] - 2026-11-26
+
+### Added
+- **Android `tsnet` Forwarder & Native Dial Diagnostics** ([#30](https://github.com/letrahoo/lework/pull/30)):
+  - Correlated `preamble.accept/reject`, `dial.start`, and dial results by anonymous local port in the Android client-only `tsnet` forwarder, exposing sanitized `LeworkTsDiag` logcat telemetry and wiring Android unit tests into CI.
+
+### Fixed
+- **Host Session Workspace Fallback, Symlinked `$HOME` & Claude Turn-2 Self-Lock** ([#31](https://github.com/letrahoo/lework/pull/31)):
+  - Filtered filesystem root (`/`) from host workspace discovery, handled symlinked `$HOME` paths (e.g., `/home/<user> -> /data00/home/<user>`), safely fell back unusable root/generic `host:*` session `cwd`s to allowed `workspaceRoots` while preserving strict sandbox rejection with actionable CLI guidance for real out-of-root projects, and avoided spurious `checkpoint.list` errors on read-only host sessions.
+  - Ignored Hub's own `claude-agent-acp` / `claude-agent-sdk` subprocesses (`ownedBySelf`, `sdk-*`, non-TTY) in `TerminalBridge` so Turn 2+ on materialized `host:claude:*` sessions no longer fails with false `unreachable_terminal` (`-32003`).
+
+---
+
+## [v0.8.5] - 2026-11-26
+
+### Added
+- **System-Wide macOS `⌃⌘E` Window Toggle & Universal `Esc` Modal Dismissal** ([#32](https://github.com/letrahoo/lework/pull/32)):
+  - Bundled a permissionless Carbon/AppKit JNI bridge (`libLeworkMacHotkey.dylib`) registering `Ctrl + Cmd + E` (`⌃⌘E`) to show, hide, or activate Lework across English & Chinese IMEs, alongside Dock reopen, `⌘W` hide-to-background, clean `⌘Q` quit, deep-link auto-show, and MenuBar fallback.
+  - Added KMP-pure LIFO `ModalEscapeDispatcher` and `Modifier.dialogEscapeDismiss` wired across Desktop Window preview key events and all modal dialogs/overlays (Settings, Workspace, Usage, Inspector, Model Picker, Global Search, Subagent Inspector, Provider Editor/Filter, Image Lightbox, Mermaid Fullscreen, Rename, Deep-Link Pairing, In-Session Find Bar) so pressing `Esc` reliably closes the topmost layer even without text focus.
+
+---
+
+## [v0.8.4] - 2026-11-25
+
+### Changed
+- **Expanded Detekt / KMP Static Lint Governance & Cross-Platform Hardening** ([#29](https://github.com/letrahoo/lework/pull/29)):
+  - Expanded Detekt static analysis (`maxIssues: 0`) to 8 custom AST rules under `lework:` (`IosUnsafeVariadicCall`, `IosMainThreadUiKit`, `KmpCommonPlatformApi`, `SuspendCatchSwallowsCancellation`, `SuspendBlockingSleep`, `UnsafeNonNullAssertion`, `ComposeNestedSelectionContainer`, `ComposeMutableCollectionState`).
+  - Resolved 100+ lint and cross-platform reliability issues across iOS (`CFRelease` null guards, main-queue UIKit dispatch, deterministic Skia resource `.close()`, `invokeOnCancellation`), JVM Desktop (suspending direct/SSH retries without `Thread.sleep`, Skia resource close), Android (`Bitmap` recycling), and `commonMain` (eliminating production `!!`, preserving `CancellationException`, normalizing TLS fingerprint casing).
+  - Synced baseline cross-platform version metadata to `0.8.4`.
+
+---
+
+## [v0.8.3] - 2026-11-25
+
+### Added
+- **Free Conversation Text Selection & One-Click Message Copy** ([#28](https://github.com/letrahoo/lework/pull/28)):
+  - Restored free drag-to-select text selection across Assistant Markdown replies (headings, paragraphs, lists, quotes, tables, code blocks) and conversation notice/error/approval/plan/queue banners with Everforest Dark `LocalTextSelectionColors`, wrapping code headers and Mermaid chrome in `DisableSelection` to keep copied text clean.
+  - Raised Markdown virtualization thresholds (`16,000` chars / `32` blocks on Desktop; `3,200` chars / `10` blocks on Mobile) and removed Desktop `LazyColumn` click interception so multi-paragraph drag selection remains uninterrupted.
+  - Added one-click **Copy** buttons alongside timestamps on User messages, Assistant replies, virtualized long replies, and `NetworkErrorRecoveryBanner`.
+
+---
+
+## [v0.8.2] - 2026-11-25
+
+### Fixed
+- **iOS Launch Crash from Native Variadic `NSLog` & Detekt AST Guardrails** ([#27](https://github.com/letrahoo/lework/pull/27)):
+  - Replaced Foundation variadic `NSLog("%@", ...)` calls in iOS runtime logging with Kotlin `println` while retaining sanitized rolling `lework-runtime.log` file logging.
+  - Integrated Detekt (`detektAll`, `detektCommonMain`, and custom AST rule `lework:IosUnsafeVariadicCall`) into Gradle and CI to permanently prevent unsafe iOS variadic calls and non-KMP imports in `commonMain`.
+
+---
+
+## [v0.8.1] - 2026-11-24
+
+### Fixed
+- **AGY Turn-2+ Presence Lock Self-Lock False Positive** ([#26](https://github.com/letrahoo/lework/pull/26)):
+  - Skipped external-terminal lock rejection when Hub already owns a live managed AGY worker, tracked async `pendingCloses` before respawning, and added `inspectProcessAncestry()` so Hub's own direct/descendant `agy --input-format stream-json` workers are never mistaken for external IDE terminals while keeping genuine external lock protection intact.
+
+---
+
+## [v0.8.0] - 2026-11-24
+
+### Added
+- **Host-Scoped Model Providers, CPA Plugin, Model Curation & Same-Name Disambiguation** ([#25](https://github.com/letrahoo/lework/pull/25)):
+  - Introduced a pluggable `ProviderAdapter` architecture (`hub/src/registry/provider-adapters.ts`) with per-host isolated `<LEWORK_HOME>/providers.json` storage and `provider.list` / `provider.upsert` / `provider.remove` / `provider.probe` RPCs:
+    - **CPA plugin (`cpa`)**: zero-config auto-discovery of local `:8317` / `cpa-config.yaml` / `LEWORK_CPA_KEY` with latency probing and Usage statistics linkage.
+    - **Generic adapter (`generic`)**: supports OpenAI / Anthropic / Ollama-compatible gateways (OpenRouter, LiteLLM, New-API, Ollama, custom proxies) with `0600` key storage (`hasApiKey`-only RPC), `apiKeyEnv`, and `manualModels` fallback.
+  - Merged official and protocol-compatible external chat models per engine (`claude`, `codex`, `pi`; `agy` remains strictly official-only) with seamless in-session cross-provider switching and isolated environment-variable injection/cleanup.
+  - Upgraded end-to-end model identity to `(engineId, providerId, modelId)` across Protocol, Hub, and KMP clients with source chips, natural sorting, per-provider model curation filtering, and a new **Model Providers (Current Host)** management panel in Desktop Settings (`DesktopProvidersSection.kt`).
+
+---
+
+## [v0.7.15] - 2026-11-24
+
+### Added
+- **Cross-Engine Full-Text Conversation Search (`⇧⌘F`) & In-Session Find (`⌘F`)** ([#22](https://github.com/letrahoo/lework/pull/22)):
+  - Added `session.search` RPC, `stream.subscribe` `aroundSeq` / `hasMoreAfter` historical windowing, and `feature.search.v1` capability.
+  - Implemented an incremental, zero-dependency Node 22 `node:sqlite` FTS5 (`trigram`) search index (`~/.lework/search-index.db`) with CJK short-query fallback and noise filtering.
+  - Added Desktop `⇧⌘F` Global Search Palette (`DesktopSearchDialog`), Sidebar quick-search bridge, `⌘F` In-Session Find Bar (`DesktopInSessionFindBar`), matched-message jump highlight, and a floating **Jump to Latest** pill.
+- **Host Engine Readiness-Driven Task Creation** ([#24](https://github.com/letrahoo/lework/pull/24)):
+  - Derived Desktop and Mobile task creation engines, search/favorites, and draft defaults directly from the connected Hub's installed CLI entrypoints and non-interactive authorization status, blocking unauthenticated routes and removing simulated fallback messages.
+
+### Fixed
+- **Chat Timeline Vertical Bounce & Host Session State Oscillation** ([#23](https://github.com/letrahoo/lework/pull/23)):
+  - Pinned `ClaudeLiveSpinnerRow` to a single-line fixed `28.dp` height and stabilized collapsed trace/subagent row heights in `LazyColumn(reverseLayout = true)`.
+  - Added a `3.5s` `terminalActiveUntil` lease and `3.2s` `liveStatusText` hold hysteresis in `host-history.ts` to eliminate `350ms / 1400ms / 2500ms` state ping-pong.
+  - Hardened auto-scroll and reverse-pagination guards, scoped background warm-session usage/artifact refreshes to the active session, and added anomaly-only `[TIMELINE]` diagnostics.
+
+---
+
+## [v0.7.14] - 2026-11-24
+
+### Fixed
+- **Strict TCP Tailscale Loopback WhoIs & Fallback Hub Probing** ([#20](https://github.com/letrahoo/lework/pull/20)):
+  - Restricted loopback `WhoIs` verification strictly to TCP socket mappings, refreshed the active Tailscale account UID on every authentication check (preventing stale UID reuse across account switches), and continued probing fallback peers when initial hubs cannot authenticate under the same account while preserving saved-token connections.
+
+---
+
+## [v0.7.13] - 2026-11-24
+
+### Added
+- **Cross-Platform Secret-Free Runtime Diagnostic Logs** ([#21](https://github.com/letrahoo/lework/pull/21)):
+  - Added unified token/secret-redacted rolling diagnostic logging (`RuntimeLog.kt`) across Desktop (`~/.lework/desktop/runtime.log`, Settings copy-path row, and uncaught crash logger), iOS (`Documents/lework-runtime.log`), Android (`filesDir/lework-runtime.log`), and Hub (`[lework-ws]` structured lifecycle logs).
+
+### Fixed
+- **Reconnect & Redirect Loop Guards** ([#21](https://github.com/letrahoo/lework/pull/21)):
+  - Prevented RPC decode errors from tearing down healthy WebSocket connections, stopped misclassifying Desktop Local Direct (`127.0.0.1`) as embedded `tsnet`, added Bonjour auto-retry cooldown/cap, debounced brief Desktop window focus flickers, capped expired OAuth restarts, and deferred `NEEDS_AUTH` transitions during `tailscaleSameUser` fallback.
+
+---
+
+## [v0.7.12] - 2026-11-24
+
+### Changed
+- **Active-First SubAgent Ordering & Collapsible History** ([#18](https://github.com/letrahoo/lework/pull/18)):
+  - Prioritized running, waiting-approval, and unconfirmed SubAgents by default across Desktop and Mobile while moving completed runs into a collapsible history section; aligned Hub explicit-finish vs silent-timeout classification and summary retention caps.
+
+---
+
+## [v0.7.11] - 2026-11-24
+
+### Fixed
+- **macOS `Tailscale.app` Netstack Loopback WhoIs & Multi-Peer `tsnet` Probe Starvation** ([#19](https://github.com/letrahoo/lework/pull/19)):
+  - Added `tailscale whois --json` verification for `127.0.0.1` / `::1` userspace `netstack` proxy connections in `system-tailscale` mode (fixing `tailscaleSameUser: false` / `403` on macOS hosts) and corrected IPv6 ULA formatting.
+  - Raised OkHttp `maxRequestsPerHost` and iOS `HTTPMaximumConnectionsPerHost` to `32` to eliminate `127.0.0.1:<port>` slot starvation across multi-node Tailnets, added `prioritizeTsnetPeers` to probe paired and desktop/server hosts ahead of mobile peers, and wired sandbox paths + `NetMon.InjectEvent()`.
+
+---
+
 ## [v0.7.10] - 2026-11-24
 
 > Consolidated milestone release ([#16](https://github.com/letrahoo/lework/pull/16)).
@@ -128,7 +295,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
-[Unreleased]: https://github.com/letrahoo/lework/compare/v0.7.10...HEAD
+[Unreleased]: https://github.com/letrahoo/lework/compare/v0.8.10...HEAD
+[v0.8.10]: https://github.com/letrahoo/lework/compare/v0.8.9...v0.8.10
+[v0.8.9]: https://github.com/letrahoo/lework/compare/v0.8.8...v0.8.9
+[v0.8.8]: https://github.com/letrahoo/lework/compare/v0.8.7...v0.8.8
+[v0.8.7]: https://github.com/letrahoo/lework/compare/v0.8.6...v0.8.7
+[v0.8.6]: https://github.com/letrahoo/lework/compare/v0.8.5...v0.8.6
+[v0.8.5]: https://github.com/letrahoo/lework/compare/v0.8.4...v0.8.5
+[v0.8.4]: https://github.com/letrahoo/lework/compare/v0.8.3...v0.8.4
+[v0.8.3]: https://github.com/letrahoo/lework/compare/v0.8.2...v0.8.3
+[v0.8.2]: https://github.com/letrahoo/lework/compare/v0.8.1...v0.8.2
+[v0.8.1]: https://github.com/letrahoo/lework/compare/v0.8.0...v0.8.1
+[v0.8.0]: https://github.com/letrahoo/lework/compare/v0.7.15...v0.8.0
+[v0.7.15]: https://github.com/letrahoo/lework/compare/v0.7.14...v0.7.15
+[v0.7.14]: https://github.com/letrahoo/lework/compare/v0.7.13...v0.7.14
+[v0.7.13]: https://github.com/letrahoo/lework/compare/v0.7.12...v0.7.13
+[v0.7.12]: https://github.com/letrahoo/lework/compare/v0.7.11...v0.7.12
+[v0.7.11]: https://github.com/letrahoo/lework/compare/v0.7.10...v0.7.11
 [v0.7.10]: https://github.com/letrahoo/lework/compare/v0.7.9...v0.7.10
 [v0.7.9]: https://github.com/letrahoo/lework/compare/v0.7.8...v0.7.9
 [v0.7.8]: https://github.com/letrahoo/lework/compare/v0.7.7...v0.7.8

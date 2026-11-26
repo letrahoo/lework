@@ -88,3 +88,4 @@ Lework 经常由多个 AI 会话或 git worktree 并行迭代。**开工前**与
    ```
    若修改了 `commonMain` UI/平台桥接或 Gradle 配置，建议同步验证 `:androidApp:assembleDebug`（及 macOS 上的 `:shared:compileKotlinIosSimulatorArm64`）。
 5. **分支纪律**：严禁直接推送 `main` 或覆盖他人分支；rebase 更新己方分支时使用 `git push --force-with-lease`。
+6. **双语 Changelog 同步**：常规功能/修复 PR **不要**各自去改 `CHANGELOG.md` / `CHANGELOG.zh-CN.md`（避免并行 PR 争抢 `Unreleased` 同一行且合入前无法预知最终 tag）。每次 `Release Android & Desktop` 发版后，`.github/workflows/changelog-sync.yml` 会自动运行 `node scripts/update-changelog.mjs --write` 并在独立的滚动分支 `docs/changelog-sync` 同步双语条目（带 `[skip release]`，不触发空发版）；本地亦可随时执行 `pnpm changelog:sync` / `pnpm changelog:check`。
