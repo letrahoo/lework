@@ -362,7 +362,21 @@ export class HubServer {
     addDir(process.cwd())
 
     const home = os.homedir()
-    const projectParentDirs = this.config.workspaceRoots.filter(r => r !== home)
+    let realHome = home
+    try {
+      realHome = fs.realpathSync(home)
+    } catch {
+      // ignore
+    }
+    const isHomeRoot = (r: string): boolean => {
+      if (r === home || r === realHome) return true
+      try {
+        return fs.realpathSync(r) === realHome
+      } catch {
+        return false
+      }
+    }
+    const projectParentDirs = this.config.workspaceRoots.filter(r => !isHomeRoot(r))
 
     for (const parent of projectParentDirs) {
       try {
