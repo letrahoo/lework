@@ -51,7 +51,7 @@ import {
   restoreSessionWorktreeIfNeeded,
 } from './storage/workspace-fs.ts'
 
-const MAX_EVENTS_PER_SESSION = 5_000
+const MAX_EVENTS_PER_SESSION = 20_000
 
 interface QueuedTurnItem {
   turnId: string
@@ -1584,7 +1584,7 @@ export class SessionManager {
   }
 }
 
-function sliceSessionWindow(
+export function sliceSessionWindow(
   session: SessionMeta,
   allEvents: AgentEvent[],
   afterSeq: number,
@@ -1618,13 +1618,15 @@ function sliceSessionWindow(
     const windowLimit = Math.max(80, opts.limit ?? 260)
     const beforeBudget = Math.min(80, Math.floor(windowLimit * 0.35))
     let startIdx = Math.max(0, targetIdx - beforeBudget)
-    startIdx = snapToTurnBoundary(allEvents, startIdx)
     // Prefer including through the latest event when within a reasonable tail cap so live streaming keeps working seamlessly
     const maxTailInclude = Math.max(windowLimit, 500)
-    const endIdx =
+    let endIdx =
       allEvents.length - startIdx <= maxTailInclude
         ? allEvents.length
         : Math.min(allEvents.length, startIdx + Math.max(windowLimit, 360))
+    startIdx = snapStartToIntactItems(allEvents, startIdx, endIdx)
+    startIdx = snapToTurnBoundary(allEvents, startIdx)
+    endIdx = snapEndToIntactItems(allEvents, startIdx, endIdx)
     const page = allEvents.slice(startIdx, endIdx)
     const earliestSeq = page[0]?.seq ?? allEvents[0]!.seq
     const hasMoreBefore = startIdx > 0 || earliestSeq > allEvents[0]!.seq
@@ -1657,6 +1659,7 @@ function sliceSessionWindow(
     }
     const maxCount = opts.limit ?? 220
     let startIdx = Math.max(0, older.length - maxCount)
+    startIdx = snapStartToIntactItems(older, startIdx, older.length)
     startIdx = snapToTurnBoundary(older, startIdx)
     const page = older.slice(startIdx)
     const earliestSeq = page[0]?.seq ?? allEvents[0]!.seq
@@ -1674,6 +1677,7 @@ function sliceSessionWindow(
   // 2. Initial paged open (`afterSeq === -1` and `limit` specified)
   if (afterSeq === -1 && typeof opts?.limit === 'number' && allEvents.length > opts.limit) {
     let startIdx = Math.max(0, allEvents.length - opts.limit)
+    startIdx = snapStartToIntactItems(allEvents, startIdx, allEvents.length)
     startIdx = snapToTurnBoundary(allEvents, startIdx)
     const page = allEvents.slice(startIdx)
     const earliestSeq = page[0]?.seq ?? 0
@@ -1705,6 +1709,116 @@ function sliceSessionWindow(
     hasMoreAfter: false,
     ...(latestPlan ? { latestPlan } : {}),
   }
+}
+
+/**
+ * Walks `startIdx` backward so a paged slice never begins in the middle of a streaming
+ * `message.assistant.delta` / `reasoning.delta` run (shared `messageId`) or an orphaned
+ * `tool.update` whose `tool.call` lives just before the boundary.
+ */
+function snapStartToIntactItems(
+  events: AgentEvent[],
+  initialIdx: number,
+  endExclusive = events.length,
+): number {
+  if (initialIdx <= 0 || endExclusive <= 0) return 0
+  let startIdx = Math.min(initialIdx, endExclusive - 1)
+  const MAX_BACKTRACK = 4_000
+  const minAllowed = Math.max(0, initialIdx - MAX_BACKTRACK)
+
+  const seenMessageIds = new Set<string>()
+  const seenToolCalls = new Set<string>()
+  const neededToolCalls = new Set<string>()
+
+  const collectRange = (from: number, to: number) => {
+    for (let i = from; i < to; i++) {
+      const ev = events[i]
+      if (!ev) continue
+      if (ev.type === 'message.assistant.delta' || ev.type === 'reasoning.delta') {
+        seenMessageIds.add(ev.messageId)
+      } else if (ev.type === 'tool.call') {
+        seenToolCalls.add(ev.toolCallId)
+        neededToolCalls.delete(ev.toolCallId)
+      } else if (ev.type === 'tool.update') {
+        if (!seenToolCalls.has(ev.toolCallId)) {
+          neededToolCalls.add(ev.toolCallId)
+        }
+      }
+    }
+  }
+
+  collectRange(startIdx, endExclusive)
+
+  while (startIdx > minAllowed && (seenMessageIds.size > 0 || neededToolCalls.size > 0)) {
+    let nextStart = startIdx
+    for (let i = startIdx - 1; i >= minAllowed; i--) {
+      const ev = events[i]
+      if (!ev) continue
+      if (
+        (ev.type === 'message.assistant.delta' || ev.type === 'reasoning.delta') &&
+        seenMessageIds.has(ev.messageId)
+      ) {
+        nextStart = i
+      } else if (ev.type === 'tool.call' && neededToolCalls.has(ev.toolCallId)) {
+        nextStart = i
+      }
+    }
+    if (nextStart === startIdx) break
+    const prevStart = startIdx
+    startIdx = nextStart
+    collectRange(startIdx, prevStart)
+  }
+
+  return startIdx
+}
+
+/**
+ * Walks `endExclusive` forward for `aroundSeq` middle windows so a streaming reply or tool
+ * opened inside `[startIdx, endExclusive)` is not cut mid-message at the trailing edge.
+ */
+function snapEndToIntactItems(
+  events: AgentEvent[],
+  startIdx: number,
+  initialEndExclusive: number,
+): number {
+  if (initialEndExclusive >= events.length) return events.length
+  let endIdx = Math.max(startIdx, initialEndExclusive)
+  const MAX_FORWARD = 2_000
+  const maxAllowed = Math.min(events.length, initialEndExclusive + MAX_FORWARD)
+
+  const activeMessageIds = new Set<string>()
+  const openToolCalls = new Set<string>()
+  for (let i = startIdx; i < endIdx; i++) {
+    const ev = events[i]
+    if (!ev) continue
+    if (ev.type === 'message.assistant.delta' || ev.type === 'reasoning.delta') {
+      activeMessageIds.add(ev.messageId)
+    } else if (ev.type === 'tool.call') {
+      openToolCalls.add(ev.toolCallId)
+    } else if (ev.type === 'tool.update') {
+      openToolCalls.delete(ev.toolCallId)
+    }
+  }
+
+  while (endIdx < maxAllowed) {
+    const ev = events[endIdx]
+    if (!ev) break
+    if (
+      (ev.type === 'message.assistant.delta' || ev.type === 'reasoning.delta') &&
+      activeMessageIds.has(ev.messageId)
+    ) {
+      endIdx++
+      continue
+    }
+    if (ev.type === 'tool.update' && openToolCalls.has(ev.toolCallId)) {
+      openToolCalls.delete(ev.toolCallId)
+      endIdx++
+      continue
+    }
+    break
+  }
+
+  return endIdx
 }
 
 function snapToTurnBoundary(events: AgentEvent[], initialIdx: number): number {

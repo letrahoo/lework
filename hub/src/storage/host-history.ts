@@ -17,6 +17,7 @@ import {
   filterAgyQueuedFromHistory,
   inferAgySubagentActivity,
   parseAgyTranscript,
+  resolveAgyFullTranscriptPath,
   resolveAgyQueuedPrompts,
   resolveAgySubagentEntry,
   scanAgySessions,
@@ -528,10 +529,30 @@ export class HostTaskInspector {
     if (mtimeMs <= wm.mtimeMs && size === wm.size) {
       return true
     }
+    let auxMtimeMs: number | undefined
+    let auxSize: number | undefined
+    if (entry.meta.engineId === 'agy') {
+      const fullPath = resolveAgyFullTranscriptPath(entry.filePath)
+      if (fullPath) {
+        try {
+          const fullSt = fs.statSync(fullPath)
+          auxMtimeMs = fullSt.mtimeMs
+          auxSize = fullSt.size
+        } catch {
+          // ignore transient stat error
+        }
+      }
+    }
     const cached = this.transcriptCache.get(sessionId)
     let events: AgentEvent[]
     let parsedRunning: boolean
-    if (cached && cached.mtimeMs === mtimeMs && cached.size === size) {
+    if (
+      cached &&
+      cached.mtimeMs === mtimeMs &&
+      cached.size === size &&
+      cached.auxMtimeMs === auxMtimeMs &&
+      cached.auxSize === auxSize
+    ) {
       events = cached.events
       parsedRunning = cached.isRunning
     } else {
@@ -541,6 +562,8 @@ export class HostTaskInspector {
       this.transcriptCache.set(sessionId, {
         mtimeMs,
         size,
+        auxMtimeMs,
+        auxSize,
         events: parsed.events,
         extraWorkspaces: parsed.workspaces,
         isRunning: parsed.isRunning,
@@ -590,6 +613,20 @@ export class HostTaskInspector {
     } catch {
       return null
     }
+    let auxMtimeMs: number | undefined
+    let auxSize: number | undefined
+    if (entry.meta.engineId === 'agy') {
+      const fullPath = resolveAgyFullTranscriptPath(entry.filePath)
+      if (fullPath) {
+        try {
+          const fullSt = fs.statSync(fullPath)
+          auxMtimeMs = fullSt.mtimeMs
+          auxSize = fullSt.size
+        } catch {
+          // ignore transient stat error on sibling full log
+        }
+      }
+    }
 
     const cached = this.transcriptCache.get(sessionId)
     let events: AgentEvent[]
@@ -601,7 +638,13 @@ export class HostTaskInspector {
     let recentUserTexts: string[] | undefined
     let parsedModel: string | undefined
     let parsedEffort: ReasoningEffort | undefined
-    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+    if (
+      cached &&
+      cached.mtimeMs === st.mtimeMs &&
+      cached.size === st.size &&
+      cached.auxMtimeMs === auxMtimeMs &&
+      cached.auxSize === auxSize
+    ) {
       events = cached.events
       extraWorkspaces = cached.extraWorkspaces
       parsedRunning = cached.isRunning
@@ -625,6 +668,8 @@ export class HostTaskInspector {
       this.transcriptCache.set(sessionId, {
         mtimeMs: st.mtimeMs,
         size: st.size,
+        auxMtimeMs,
+        auxSize,
         events,
         extraWorkspaces,
         isRunning: parsedRunning,
