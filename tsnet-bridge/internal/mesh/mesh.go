@@ -25,15 +25,16 @@ import (
 // Config configures either a Host tsnet node (when HubUpstreamAddr != "")
 // or a Mobile/Client tsnet node (when HubUpstreamAddr == "").
 type Config struct {
-	StateDir        string `json:"stateDir"`
-	Hostname        string `json:"hostname"`
-	ControlURL      string `json:"controlUrl,omitempty"`
-	AuthKey         string `json:"authKey,omitempty"`
-	HubUpstreamAddr string `json:"hubUpstreamAddr,omitempty"`
-	HubPort         int    `json:"hubPort,omitempty"`
-	ForwarderSecret string                         `json:"-"`
-	OnNetworkChange func(dns, interfaces string)   `json:"-"`
-	VerboseLog      bool                           `json:"verboseLog,omitempty"`
+	StateDir        string                       `json:"stateDir"`
+	Hostname        string                       `json:"hostname"`
+	ControlURL      string                       `json:"controlUrl,omitempty"`
+	AuthKey         string                       `json:"authKey,omitempty"`
+	HubUpstreamAddr string                       `json:"hubUpstreamAddr,omitempty"`
+	HubPort         int                          `json:"hubPort,omitempty"`
+	ForwarderSecret string                       `json:"-"`
+	OnNetworkChange func(dns, interfaces string) `json:"-"`
+	VerboseLog      bool                         `json:"verboseLog,omitempty"`
+	ForwarderDiag   io.Writer                    `json:"-"` // Android launcher only; must support concurrent writes.
 }
 
 type PeerCandidate struct {
@@ -110,9 +111,11 @@ type RawTailnetStatus struct {
 }
 
 type realTsnetBackend struct {
-	srv     *tsnet.Server
-	mu      sync.Mutex
-	authURL string
+	srv         *tsnet.Server
+	mu          sync.Mutex
+	authURL     string
+	diagEnabled bool
+	diagStatus  atomic.Pointer[forwarderStatus]
 }
 
 func prepareSandboxEnv(stateDir string) {
@@ -157,7 +160,7 @@ func newRealTsnetBackend(cfg Config) (*realTsnetBackend, error) {
 		Ephemeral:  false,
 		Logf:       logf,
 	}
-	b := &realTsnetBackend{srv: srv}
+	b := &realTsnetBackend{srv: srv, diagEnabled: cfg.ForwarderDiag != nil}
 	return b, nil
 }
 
@@ -219,6 +222,9 @@ func (b *realTsnetBackend) QueryStatus(ctx context.Context) (*RawTailnetStatus, 
 	st, err := lc.Status(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if b.diagEnabled {
+		b.diagStatus.Store(projectForwarderStatus(st, time.Now()))
 	}
 	b.mu.Lock()
 	cachedAuthURL := b.authURL
@@ -698,6 +704,7 @@ func (m *Manager) serveForwarder(f *localForwarder) {
 			b := m.backend
 			hubPort := m.cfg.HubPort
 			fwdSecret := m.cfg.ForwarderSecret
+			diag := m.cfg.ForwarderDiag
 			m.mu.Unlock()
 			if b == nil {
 				return
@@ -708,17 +715,31 @@ func (m *Manager) serveForwarder(f *localForwarder) {
 			if fwdSecret != "" {
 				expected := []byte("LEWORK-FWD " + fwdSecret + "\n")
 				buf := make([]byte, len(expected))
-				_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+				start := time.Now()
+				_ = c.SetReadDeadline(start.Add(2 * time.Second))
 				_, rErr := io.ReadFull(c, buf)
 				_ = c.SetReadDeadline(time.Time{})
 				if rErr != nil || subtle.ConstantTimeCompare(buf, expected) != 1 {
+					if diag != nil {
+						emitForwarderEvent(diag, f.port, "preamble.reject", time.Since(start))
+					}
 					return
 				}
+				if diag != nil {
+					emitForwarderEvent(diag, f.port, "preamble.accept", time.Since(start))
+				}
 			}
-			dialCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			target := net.JoinHostPort(f.peerIP, strconv.Itoa(hubPort))
+			if diag != nil {
+				emitForwarderEvent(diag, f.port, "dial.start", 0)
+			}
+			start := time.Now()
+			dialCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			tsConn, err := b.Dial(dialCtx, "tcp", target)
 			cancel()
+			if diag != nil {
+				emitDialResult(diag, b, f, err, time.Since(start))
+			}
 			if err != nil {
 				return
 			}

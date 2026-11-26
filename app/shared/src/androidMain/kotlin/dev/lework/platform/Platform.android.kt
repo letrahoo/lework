@@ -330,8 +330,6 @@ private object AndroidTsnetDaemon {
     private var proc: Process? = null
     private var controlPort: Int = 0
     private var secret: String = ""
-    @Volatile
-    private var lastStderr: String = ""
 
     @Serializable
     private data class ConfigurePayload(
@@ -446,7 +444,6 @@ private object AndroidTsnetDaemon {
             }
 
             val caBundle = exportSystemCaBundle(ctx)
-            lastStderr = ""
             val pb = ProcessBuilder(cmd).apply {
                 environment()["LEWORK_TSNET_SECRET"] = newSecret
                 environment()["LEWORK_FORWARDER_SECRET"] = newForwarderSecret
@@ -458,12 +455,11 @@ private object AndroidTsnetDaemon {
             }
 
             val started = runCatching { pb.start() }.getOrNull() ?: return@withContext false
-            // Capture stderr lines asynchronously for diagnostics
+            // Bridge stderr can contain credentials; never retain it or pass it through to the UI.
             Thread {
                 runCatching {
-                    started.errorStream.bufferedReader().forEachLine { line ->
-                        val t = line.trim()
-                        if (t.isNotEmpty()) lastStderr = t.take(240)
+                    started.errorStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line -> forwarderDiagnosticMessage(line)?.let { Log.i("LeworkTsDiag", it) } }
                     }
                 }
             }.apply { isDaemon = true }.start()
@@ -502,8 +498,6 @@ private object AndroidTsnetDaemon {
             true
         }
     }
-
-    fun lastErrorDetail(): String? = lastStderr.takeIf { it.isNotBlank() }
 
     suspend fun stopAndPurgeState() = mutex.withLock {
         withContext(Dispatchers.IO) {
@@ -569,7 +563,7 @@ private object AndroidTsnetDaemon {
             return MobileTsnetStatus(
                 available = isAvailable(),
                 backendState = if (isAvailable()) "Error" else "Unavailable",
-                error = if (isAvailable()) (lastErrorDetail() ?: "Failed to start embedded tsnet daemon") else null,
+                error = if (isAvailable()) "Failed to start embedded tsnet daemon" else null,
             )
         }
         if (!controlUrl.isNullOrBlank() || !authKey.isNullOrBlank()) {

@@ -98,8 +98,8 @@ jobs:
       - name: Run KMP state-machine, TLS pinning & Compose UI tests
         run: xvfb-run -a ./app/gradlew -p ./app :shared:jvmTest :desktopApp:compileKotlinJvm --no-daemon
 
-      - name: Assemble Android Debug APK
-        run: ./app/gradlew -p ./app :androidApp:assembleDebug --no-daemon
+      - name: Run Android unit tests and assemble Debug APK
+        run: ./app/gradlew -p ./app :shared:testDebugUnitTest :androidApp:assembleDebug --no-daemon
 
   ios-compile:
     name: iOS KMP Framework & Native Bridge Link (macOS)
