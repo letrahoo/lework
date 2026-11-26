@@ -1,13 +1,16 @@
 package dev.lework.desktop
 
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyShortcut
 import androidx.compose.ui.unit.DpSize
@@ -24,9 +27,14 @@ import dev.lework.platform.runtimeLogFilePath
 import dev.lework.store.ConsoleStore
 import dev.lework.ui.ConsoleApp
 import dev.lework.ui.rememberLeworkBrandPainter
+import java.awt.Desktop
 import java.awt.Dimension
+import java.awt.Frame
+import java.awt.desktop.AppReopenedEvent
+import java.awt.desktop.AppReopenedListener
 import java.awt.event.WindowEvent
 import java.awt.event.WindowFocusListener
+import javax.swing.SwingUtilities
 
 fun main(args: Array<String>) {
     System.setProperty("apple.awt.application.name", "Lework")
@@ -52,10 +60,16 @@ fun main(args: Array<String>) {
         val appScope = rememberCoroutineScope()
         val store = remember { ConsoleStore(appScope) }
         val uiState by store.state.collectAsState()
+        val incomingPairingUri by JvmDesktopRuntime.incomingPairingUri.collectAsState()
+        var isWindowVisible by remember { mutableStateOf(true) }
+        var globalHotkeyActive by remember { mutableStateOf(false) }
         var openSettingsSignal by remember { mutableIntStateOf(0) }
         var toggleSidebarSignal by remember { mutableIntStateOf(0) }
         var openGlobalSearchSignal by remember { mutableIntStateOf(0) }
         var openInSessionFindSignal by remember { mutableIntStateOf(0) }
+        val toggleDebouncer = remember { ToggleHotkeyDebouncer() }
+        var windowRef by remember { mutableStateOf<ComposeWindow?>(null) }
+
         val hostTitle = uiState.hub?.let {
             uiState.activeHostDisplayName.takeIf { name -> name.isNotBlank() }
         }?.let { "Lework — $it" } ?: "Lework"
@@ -66,17 +80,148 @@ fun main(args: Array<String>) {
         )
         val appIcon = rememberLeworkBrandPainter()
 
+        fun showAndFocusWindow(reason: String) {
+            logRuntimeEvent("WINDOW", "show requested reason=$reason")
+            isWindowVisible = true
+            val awtWindow = windowRef
+            if (awtWindow != null) {
+                if ((awtWindow.extendedState and Frame.ICONIFIED) != 0) {
+                    awtWindow.extendedState = awtWindow.extendedState and Frame.ICONIFIED.inv()
+                }
+                if (!awtWindow.isVisible) {
+                    awtWindow.isVisible = true
+                }
+                awtWindow.toFront()
+                awtWindow.requestFocus()
+            }
+            MacGlobalHotkeyBridge.activateApp()
+            SwingUtilities.invokeLater {
+                val win = windowRef ?: return@invokeLater
+                if (win.isVisible) {
+                    win.toFront()
+                    win.requestFocus()
+                }
+            }
+        }
+
+        fun hideWindow(reason: String, keepComposeVisible: Boolean) {
+            logRuntimeEvent("WINDOW", "hide requested reason=$reason keepComposeVisible=$keepComposeVisible")
+            if (!keepComposeVisible) {
+                isWindowVisible = false
+            }
+            JvmDesktopRuntime.onWindowFocusChanged(false)
+            if (MacGlobalHotkeyBridge.isMacOs && MacGlobalHotkeyBridge.hideApp()) {
+                return
+            }
+            val awtWindow = windowRef ?: return
+            if (keepComposeVisible) {
+                awtWindow.extendedState = awtWindow.extendedState or Frame.ICONIFIED
+            } else {
+                awtWindow.isVisible = false
+            }
+        }
+
+        fun handleToggleWindow(appIsActive: Boolean, appIsHidden: Boolean, source: String) {
+            if (!toggleDebouncer.shouldAccept()) return
+            val awtWindow = windowRef
+            val minimized = awtWindow != null && (awtWindow.extendedState and Frame.ICONIFIED) != 0
+            val visible = isWindowVisible && (awtWindow?.isVisible != false)
+            val action = DesktopWindowTogglePolicy.decide(
+                DesktopWindowSnapshot(
+                    appIsActive = appIsActive,
+                    appIsHidden = appIsHidden,
+                    windowIsVisible = visible,
+                    windowIsMinimized = minimized,
+                ),
+            )
+            when (action) {
+                WindowToggleAction.HIDE -> hideWindow(reason = source, keepComposeVisible = true)
+                WindowToggleAction.SHOW -> showAndFocusWindow(reason = source)
+            }
+        }
+
+        // Bring window to foreground when a pairing deep link (`lework://...`) arrives while hidden.
+        LaunchedEffect(incomingPairingUri) {
+            if (!incomingPairingUri.isNullOrBlank()) {
+                showAndFocusWindow(reason = "deep-link")
+            }
+        }
+
+        DisposableEffect(Unit) {
+            val isMac = MacGlobalHotkeyBridge.isMacOs
+            if (isMac) {
+                MacGlobalHotkeyBridge.registerToggleHotKeyAsync(
+                    onTriggered = { appIsActive, appIsHidden ->
+                        handleToggleWindow(
+                            appIsActive = appIsActive,
+                            appIsHidden = appIsHidden,
+                            source = "hotkey-ctrl-cmd-e",
+                        )
+                    },
+                    onResult = { ok ->
+                        globalHotkeyActive = ok
+                    },
+                )
+            }
+
+            var reopenListener: AppReopenedListener? = null
+            runCatching {
+                if (Desktop.isDesktopSupported()) {
+                    val desktop = Desktop.getDesktop()
+                    if (isMac && desktop.isSupported(Desktop.Action.APP_EVENT_REOPENED)) {
+                        val listener = object : AppReopenedListener {
+                            override fun appReopened(e: AppReopenedEvent?) {
+                                SwingUtilities.invokeLater {
+                                    showAndFocusWindow(reason = "dock-reopen")
+                                }
+                            }
+                        }
+                        desktop.addAppEventListener(listener)
+                        reopenListener = listener
+                    }
+                    if (isMac && desktop.isSupported(Desktop.Action.APP_QUIT_HANDLER)) {
+                        desktop.setQuitHandler { _, response ->
+                            logRuntimeEvent("APP", "macOS quit requested")
+                            MacGlobalHotkeyBridge.unregister()
+                            JvmDesktopRuntime.shutdown()
+                            response.performQuit()
+                        }
+                    }
+                }
+            }
+
+            onDispose {
+                MacGlobalHotkeyBridge.unregister()
+                reopenListener?.let { listener ->
+                    runCatching {
+                        if (Desktop.isDesktopSupported()) {
+                            Desktop.getDesktop().removeAppEventListener(listener)
+                        }
+                    }
+                }
+            }
+        }
+
         Window(
             onCloseRequest = {
-                logRuntimeEvent("APP", "window close requested")
-                JvmDesktopRuntime.shutdown()
-                exitApplication()
+                if (MacGlobalHotkeyBridge.isMacOs) {
+                    // Match macOS WeChat/Slack convention: closing the window hides to Dock so
+                    // `Ctrl + Cmd + E` or clicking the Dock icon brings Lework back immediately.
+                    hideWindow(reason = "close-button", keepComposeVisible = false)
+                } else {
+                    logRuntimeEvent("APP", "window close requested")
+                    MacGlobalHotkeyBridge.unregister()
+                    JvmDesktopRuntime.shutdown()
+                    exitApplication()
+                }
             },
+            visible = isWindowVisible,
             state = windowState,
             title = hostTitle,
             icon = appIcon,
         ) {
             DisposableEffect(window) {
+                windowRef = window
                 window.minimumSize = Dimension(760, 520)
                 val listener = object : WindowFocusListener {
                     override fun windowGainedFocus(e: WindowEvent?) {
@@ -90,6 +235,9 @@ fun main(args: Array<String>) {
                 window.addWindowFocusListener(listener)
                 onDispose {
                     window.removeWindowFocusListener(listener)
+                    if (windowRef === window) {
+                        windowRef = null
+                    }
                 }
             }
 
@@ -149,6 +297,29 @@ fun main(args: Array<String>) {
                                 )
                             }
                         }
+                    }
+                }
+                Menu("窗口") {
+                    // When the macOS Carbon global hotkey is active, omit the AWT menu accelerator
+                    // to prevent double-firing; keep the visual shortcut hint in the label.
+                    Item(
+                        text = if (globalHotkeyActive) "显示 / 隐藏 Lework (⌃⌘E)" else "显示 / 隐藏 Lework",
+                        shortcut = if (globalHotkeyActive) null else KeyShortcut(Key.E, meta = true, ctrl = true),
+                        onClick = {
+                            val focused = windowRef?.isFocused == true
+                            handleToggleWindow(
+                                appIsActive = focused,
+                                appIsHidden = !isWindowVisible,
+                                source = "menu-toggle",
+                            )
+                        },
+                    )
+                    if (MacGlobalHotkeyBridge.isMacOs) {
+                        Item(
+                            text = "关闭窗口到后台",
+                            shortcut = KeyShortcut(Key.W, meta = true),
+                            onClick = { hideWindow(reason = "menu-close-window", keepComposeVisible = false) },
+                        )
                     }
                 }
             }

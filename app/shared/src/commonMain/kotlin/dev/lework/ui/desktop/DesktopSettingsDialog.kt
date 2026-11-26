@@ -442,6 +442,7 @@ internal fun DesktopSettingsDialog(
                                 fontWeight = FontWeight.SemiBold,
                                 color = Everforest.Fg,
                             )
+                            DesktopShortcutRow("全局唤起 / 隐藏窗口", "⌃⌘E", "关闭窗口到后台", "⌘W")
                             DesktopShortcutRow("新建会话", "⌘N", "收起 / 展开侧边栏", "⌘B")
                             DesktopShortcutRow("全局搜索历史对话", "⇧⌘F", "当前会话内查找", "⌘F")
                             DesktopShortcutRow("切换引擎与模型", "⌘K", "查看代码变更与快照", "⇧⌘D")

@@ -1,3 +1,5 @@
+import org.gradle.internal.jvm.Jvm
+import org.gradle.internal.os.OperatingSystem
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -5,6 +7,44 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
+}
+
+val macosNativeResourcesDir = layout.buildDirectory.dir("generated/macosNative")
+val macosHotkeySource = layout.projectDirectory.file("src/native/macos/LeworkMacHotkey.m")
+val macosHotkeyOutput = macosNativeResourcesDir.map { it.file("native/macos/libLeworkMacHotkey.dylib") }
+
+val compileMacosHotkeyBridge by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Compiles the macOS Carbon global hotkey & AppKit JNI bridge into a bundled dylib."
+    onlyIf { OperatingSystem.current().isMacOsX }
+    inputs.file(macosHotkeySource)
+    outputs.file(macosHotkeyOutput)
+    doFirst {
+        val outputFile = macosHotkeyOutput.get().asFile
+        outputFile.parentFile.mkdirs()
+        val javaHome = Jvm.current().javaHome
+        val jniInclude = File(javaHome, "include")
+        val jniDarwinInclude = File(jniInclude, "darwin")
+        commandLine(
+            "clang",
+            "-shared",
+            "-fobjc-arc",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wno-deprecated-declarations",
+            "-I${jniInclude.absolutePath}",
+            "-I${jniDarwinInclude.absolutePath}",
+            "-framework",
+            "Carbon",
+            "-framework",
+            "Cocoa",
+            "-o",
+            outputFile.absolutePath,
+            macosHotkeySource.asFile.absolutePath,
+        )
+    }
 }
 
 kotlin {
@@ -15,12 +55,22 @@ kotlin {
     }
     sourceSets {
         val jvmMain by getting {
+            resources.srcDir(macosNativeResourcesDir)
             dependencies {
                 implementation(project(":shared"))
                 implementation(compose.desktop.currentOs)
             }
         }
+        val jvmTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
     }
+}
+
+tasks.named("jvmProcessResources") {
+    dependsOn(compileMacosHotkeyBridge)
 }
 
 fun resolveRepoVersion(): String {
