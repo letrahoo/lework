@@ -254,6 +254,10 @@ export const SubagentSummary = z.object({
   createdAt: z.number().int().optional(),
   updatedAt: z.number().int(),
   workspace: z.string().optional(),
+  parentId: z.string().optional(),
+  depth: z.number().int().nonnegative().optional(),
+  stepsDone: z.number().int().nonnegative().optional(),
+  stepsTotal: z.number().int().nonnegative().optional(),
 })
 export type SubagentSummary = z.infer<typeof SubagentSummary>
 
@@ -340,10 +344,14 @@ export type PermissionOption = z.infer<typeof PermissionOption>
 export const ToolKind = z.enum(['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'other'])
 export const ToolStatus = z.enum(['pending', 'in_progress', 'completed', 'failed'])
 
+export const PlanEntryStatus = z.enum(['pending', 'in_progress', 'completed', 'skipped', 'failed'])
+export type PlanEntryStatus = z.infer<typeof PlanEntryStatus>
+
 export const PlanEntry = z.object({
   content: z.string(),
-  status: z.enum(['pending', 'in_progress', 'completed']),
+  status: PlanEntryStatus,
 })
+export type PlanEntry = z.infer<typeof PlanEntry>
 
 // ---------------------------------------------------------------------------
 // Usage, context window & subscription quota models
@@ -825,6 +833,7 @@ export const Methods = {
       earliestSeq: z.number().int().optional(),
       hasMoreBefore: z.boolean().optional(),
       hasMoreAfter: z.boolean().optional(),
+      latestPlan: z.array(PlanEntry).optional(),
     }),
   },
   'stream.unsubscribe': {

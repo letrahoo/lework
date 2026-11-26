@@ -19,6 +19,11 @@ import {
   type ParsedHostTranscript,
 } from './common.ts'
 import { readClaudeLocalSettings, resolveClaudeEffectiveModel } from './engine-settings.ts'
+import {
+  ClaudeTaskStepTracker,
+  extractLatestClaudeStepProgress,
+  isPlanStepToolName,
+} from './plan-steps.ts'
 
 export function scanClaudeSessions(
   homeDir: string,
@@ -266,6 +271,7 @@ function buildClaudeSubagentSummary(
   const role = sidecar?.agentType && sidecar.agentType !== title ? sidecar.agentType : undefined
   const workspace = cwd ?? fallbackCwd
   const activity = inferClaudeSubagentActivity(last, mtimeMs)
+  const stepProgress = extractLatestClaudeStepProgress([...first, ...last])
   const subId = `host:claude-subagent:${parentUuid}:${agentStem}`
   const createdAt = Math.floor(birthtimeMs || mtimeMs)
   const updatedAt = Math.floor(mtimeMs)
@@ -279,6 +285,9 @@ function buildClaudeSubagentSummary(
     createdAt,
     updatedAt,
     ...(workspace ? { workspace } : {}),
+    parentId: `host:claude:${parentUuid}`,
+    depth: 1,
+    ...(stepProgress ? { stepsDone: stepProgress.stepsDone, stepsTotal: stepProgress.stepsTotal } : {}),
   }
 
   const entry: HostTranscriptEntry = {
@@ -385,6 +394,8 @@ export function parseClaudeTranscript(
   const events: AgentEvent[] = []
   const workspaces: string[] = []
   const openTools = new Set<string>()
+  const ignoredStepTools = new Set<string>()
+  const stepTracker = new ClaudeTaskStepTracker()
   const queued: string[] = []
   let isRunning = false
   let turnStartedAt: number | undefined
@@ -478,6 +489,12 @@ export function parseClaudeTranscript(
           for (const item of o.message.content as Array<Record<string, unknown>>) {
             if (item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
               const callId = item.tool_use_id
+              if (ignoredStepTools.has(callId)) {
+                ignoredStepTools.delete(callId)
+                const outText = extractClaudeToolResultText(item.content)
+                stepTracker.applyToolResult(callId, outText)
+                continue
+              }
               if (openTools.has(callId)) {
                 openTools.delete(callId)
                 const outText = extractClaudeToolResultText(item.content)
@@ -570,12 +587,27 @@ export function parseClaudeTranscript(
             })
           } else if (part.type === 'tool_use' && typeof part.name === 'string') {
             sawToolUse = true
+            const callId = String(part.id ?? `tc_${seq}`)
+            const stepKind = isPlanStepToolName(part.name)
+            if (stepKind) {
+              ignoredStepTools.add(callId)
+              const entries = stepTracker.applyToolUse(part.name, callId, part.input)
+              if (entries !== null) {
+                events.push({
+                  seq: seq++,
+                  sessionId,
+                  ts,
+                  type: 'plan.updated',
+                  entries,
+                })
+              }
+              continue
+            }
             if (part.input && typeof part.input === 'object') {
               extractProjectRootFromToolInput(part.input as Record<string, unknown>, workspaces)
             }
             const rawInput = part.input ? JSON.stringify(part.input) : undefined
             const normalized = classifyRawToolCall(part.name, rawInput)
-            const callId = String(part.id ?? `tc_${seq}`)
             openTools.add(callId)
             events.push({
               seq: seq++,

@@ -100,7 +100,10 @@ private fun groupTimelineSegments(
     }
 
     for (item in items) {
-        if (item is ChatTimelineItem.Tool || item is ChatTimelineItem.Reasoning) {
+        if (item is ChatTimelineItem.Tool && isSubagentDispatchTool(item)) {
+            flushProcess()
+            out.add(TimelineSegment.Single(item))
+        } else if (item is ChatTimelineItem.Tool || item is ChatTimelineItem.Reasoning) {
             pendingProcess.add(item)
         } else if (item is ChatTimelineItem.Assistant &&
             (item.text.length > virtualizeMinChars || item.text.count { it == '\n' } >= maxInlineBlocks)
@@ -148,6 +151,8 @@ internal fun ConversationStreamView(
     listTestTag: String = "conversation_lazy_list",
     onOpenPlanArtifact: (() -> Unit)? = null,
     onApprovePlan: (() -> Unit)? = null,
+    subagents: List<SubagentSummary> = emptyList(),
+    onOpenSubagent: ((SubagentSummary) -> Unit)? = null,
     pendingJumpSeq: Int? = null,
     pendingJumpNonce: Long = 0L,
     highlightedSeq: Int? = null,
@@ -174,6 +179,8 @@ internal fun ConversationStreamView(
         activeSession.id == sessionKey &&
         activeSession.state == SessionState.RUNNING &&
         transcript.pendingPermissions.isEmpty()
+    val hasPlanSteps = transcript.planEntries.isNotEmpty()
+    val showBottomExecutionWidget = hasPlanSteps || showLiveSpinner
     val queuedPrompts = if (
         activeSession != null &&
         activeSession.id == sessionKey &&
@@ -185,7 +192,7 @@ internal fun ConversationStreamView(
     }
 
     var prevLastSeq by remember(sessionKey) { mutableStateOf(transcript.lastSeq) }
-    var prevSpinnerVisible by remember(sessionKey) { mutableStateOf(showLiveSpinner) }
+    var prevSpinnerVisible by remember(sessionKey) { mutableStateOf(showBottomExecutionWidget) }
     var prevQueuedCount by remember(sessionKey) { mutableStateOf(queuedPrompts.size) }
     var isAutoScrollingToBottom by remember(sessionKey) { mutableStateOf(false) }
 
@@ -195,12 +202,12 @@ internal fun ConversationStreamView(
     //   keeping indices 0..current and ongoing fling velocity 100% untouched (never jumps to top!).
     // - Update previous watermarks BEFORE suspending so rapid streaming deltas never cancel and
     //   replay bottom pins, never fight active user scrolls, and skip no-op scrolls at `(0, 0)`.
-    LaunchedEffect(transcript.lastSeq, showLiveSpinner, queuedPrompts.size) {
+    LaunchedEffect(transcript.lastSeq, showBottomExecutionWidget, queuedPrompts.size) {
         val hasNewTail = transcript.lastSeq > prevLastSeq ||
-            (showLiveSpinner && !prevSpinnerVisible) ||
+            (showBottomExecutionWidget && !prevSpinnerVisible) ||
             queuedPrompts.size > prevQueuedCount
         prevLastSeq = transcript.lastSeq
-        prevSpinnerVisible = showLiveSpinner
+        prevSpinnerVisible = showBottomExecutionWidget
         prevQueuedCount = queuedPrompts.size
 
         if (hasNewTail && !isUserDragging && !listState.isScrollInProgress) {
@@ -321,7 +328,7 @@ internal fun ConversationStreamView(
                 ?.index ?: -1
         }
         if (resolvedIdx >= 0) {
-            val headerOffset = (if (queuedPrompts.isNotEmpty()) 1 else 0) + (if (showLiveSpinner) 1 else 0)
+            val headerOffset = (if (queuedPrompts.isNotEmpty()) 1 else 0) + (if (showBottomExecutionWidget) 1 else 0)
             val index = headerOffset + resolvedIdx
             listState.scrollToItem(index)
             // Reverse layout anchors the bottom of an item. Wait for layout if needed, then reveal the start of tall replies.
@@ -381,7 +388,21 @@ internal fun ConversationStreamView(
             }
         }
 
-        if (showLiveSpinner) {
+        if (hasPlanSteps) {
+            item(key = "execution_steps_card", contentType = "execution_steps") {
+                Box(modifier = Modifier.padding(bottom = if (queuedPrompts.isNotEmpty()) 10.dp else 0.dp)) {
+                    ExecutionStepsCard(
+                        sessionKey = sessionKey,
+                        activeSession = activeSession,
+                        entries = transcript.planEntries,
+                        isSessionRunning = showLiveSpinner,
+                        outputTokens = transcript.outputTokens,
+                        onOpenPlanArtifact = onOpenPlanArtifact,
+                        onApprovePlan = onApprovePlan,
+                    )
+                }
+            }
+        } else if (showLiveSpinner) {
             item(key = "live_spinner_status", contentType = "live_spinner") {
                 Box(modifier = Modifier.padding(bottom = if (queuedPrompts.isNotEmpty()) 10.dp else 0.dp)) {
                     ClaudeLiveSpinnerRow(
@@ -398,7 +419,7 @@ internal fun ConversationStreamView(
             contentType = { it.contentType },
         ) { segment ->
             val bottomPad = when {
-                segment === reversedSegments.firstOrNull() && !showLiveSpinner && queuedPrompts.isEmpty() -> 0.dp
+                segment === reversedSegments.firstOrNull() && !showBottomExecutionWidget && queuedPrompts.isEmpty() -> 0.dp
                 segment.tightBottomSpacing -> 9.dp
                 else -> 12.dp
             }
@@ -446,6 +467,9 @@ internal fun ConversationStreamView(
                     is TimelineSegment.Single -> MessageTimelineRow(
                         item = segment.item,
                         nowMs = nowMs,
+                        isSessionRunning = isSessionRunning,
+                        subagents = subagents,
+                        onOpenSubagent = onOpenSubagent,
                         onInlineRetry = if (
                             showInlineErrorRetry &&
                             !isSessionRunning &&
@@ -458,18 +482,6 @@ internal fun ConversationStreamView(
                         } else {
                             null
                         },
-                    )
-                }
-            }
-        }
-
-        if (transcript.planEntries.isNotEmpty()) {
-            item(key = "plan_card", contentType = "plan_card") {
-                Box(modifier = Modifier.padding(bottom = 12.dp)) {
-                    PlanCard(
-                        entries = transcript.planEntries,
-                        onOpenPlanArtifact = onOpenPlanArtifact,
-                        onApprovePlan = onApprovePlan,
                     )
                 }
             }
@@ -784,108 +796,6 @@ private fun formatCliTokens(tokens: Int): String {
 }
 
 @Composable
-private fun PlanCard(
-    entries: List<PlanEntry>,
-    onOpenPlanArtifact: (() -> Unit)? = null,
-    onApprovePlan: (() -> Unit)? = null,
-) {
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = Everforest.Bg1,
-        border = BorderStroke(1.dp, Everforest.Bg3),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Checklist,
-                        contentDescription = null,
-                        tint = Everforest.Aqua,
-                        modifier = Modifier.size(16.dp),
-                    )
-                    Text(
-                        text = "执行计划",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Everforest.Aqua,
-                    )
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (onOpenPlanArtifact != null) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = Everforest.Bg2,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable { onOpenPlanArtifact() },
-                        ) {
-                            Text(
-                                text = "查看方案",
-                                fontSize = 10.5.sp,
-                                color = Everforest.BoldGold,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                            )
-                        }
-                    }
-                    if (onApprovePlan != null) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = Everforest.BgGreen,
-                            border = BorderStroke(0.8.dp, Everforest.Green.copy(alpha = 0.5f)),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
-                                .clickable { onApprovePlan() }
-                                .testTag("plan_card_approve_btn"),
-                        ) {
-                            Text(
-                                text = "确认执行",
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Everforest.Green,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                            )
-                        }
-                    }
-                }
-            }
-            SelectionContainer {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    for ((index, e) in entries.withIndex()) {
-                        if (index > 0) MarkdownSelectionSeparator("\n", Modifier.height(6.dp).width(1.dp))
-                        val (icon, tint) = when (e.status) {
-                            "completed" -> Icons.Rounded.CheckCircle to Everforest.Green
-                            "in_progress" -> Icons.Rounded.Autorenew to Everforest.Yellow
-                            else -> Icons.Rounded.RadioButtonUnchecked to Everforest.Grey0
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(14.dp))
-                            Text(e.content, fontSize = 12.sp, color = Everforest.Fg)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun MessageTimestampCaption(
     prefix: String,
     timestampMs: Long,
@@ -987,6 +897,9 @@ private val AUTO_IMAGE_PLACEHOLDER_REGEX = Regex("^（已发送\\s*\\d+\\s*张�
 private fun MessageTimelineRow(
     item: ChatTimelineItem,
     nowMs: Long,
+    isSessionRunning: Boolean = false,
+    subagents: List<SubagentSummary> = emptyList(),
+    onOpenSubagent: ((SubagentSummary) -> Unit)? = null,
     onInlineRetry: (() -> Unit)? = null,
 ) {
     when (item) {
@@ -1133,7 +1046,20 @@ private fun MessageTimelineRow(
             }
         }
         is ChatTimelineItem.Tool -> {
-            ClaudeCliToolCallRow(item = item)
+            if (isSubagentDispatchTool(item)) {
+                val meta = remember(item.id, item.title, item.input, item.output) { parseSubagentToolMeta(item) }
+                val matched = remember(item.id, item.ts, meta, subagents) {
+                    matchSubagentForToolCall(item, meta, subagents)
+                }
+                InlineSubagentDispatchCard(
+                    tool = item,
+                    matchedSubagent = matched,
+                    isSessionRunning = isSessionRunning,
+                    onOpenSubagent = onOpenSubagent,
+                )
+            } else {
+                ClaudeCliToolCallRow(item = item, isSessionRunning = isSessionRunning)
+            }
         }
         is ChatTimelineItem.Notice -> {
             val isNetworkNotice = item.isError && isLikelyNetworkError(item.text)

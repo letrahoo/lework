@@ -453,6 +453,10 @@ data class SubagentSummary(
     val createdAt: Long? = null,
     val updatedAt: Long,
     val workspace: String? = null,
+    val parentId: String? = null,
+    val depth: Int? = null,
+    val stepsDone: Int? = null,
+    val stepsTotal: Int? = null,
 )
 
 @Serializable
@@ -980,6 +984,7 @@ data class StreamSubscribeResult(
     val earliestSeq: Int? = null,
     val hasMoreBefore: Boolean? = null,
     val hasMoreAfter: Boolean? = null,
+    val latestPlan: List<PlanEntry>? = null,
 )
 
 @Serializable

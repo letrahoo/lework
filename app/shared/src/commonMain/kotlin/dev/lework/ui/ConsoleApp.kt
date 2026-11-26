@@ -379,6 +379,11 @@ private fun MobileConsoleApp(
                                 } else {
                                     null
                                 },
+                                subagents = activeSubagents,
+                                onOpenSubagent = { sub ->
+                                    dismissKeyboard()
+                                    store.openSubagentInspector(sub)
+                                },
                             )
                         }
                     }

@@ -456,14 +456,21 @@ function collectVirtualArtifacts(ctx: ArtifactSessionContext): VirtualArtifactRe
   }
 
   if (latestPlanEntries.length > 0) {
-    const done = latestPlanEntries.filter(e => e.status === 'completed').length
+    const done = latestPlanEntries.filter(e => e.status === 'completed' || e.status === 'skipped').length
     const total = latestPlanEntries.length
     const lines = [
       '# 执行计划清单',
       '',
       ...latestPlanEntries.map(e => {
-        const mark = e.status === 'completed' ? 'x' : ' '
-        const suffix = e.status === 'in_progress' ? ' *(进行中)*' : ''
+        const mark = e.status === 'completed' ? 'x' : e.status === 'skipped' ? '-' : ' '
+        const suffix =
+          e.status === 'in_progress'
+            ? ' *(进行中)*'
+            : e.status === 'skipped'
+              ? ' *(已跳过)*'
+              : e.status === 'failed'
+                ? ' *(失败)*'
+                : ''
         return `- [${mark}] ${e.content}${suffix}`
       }),
     ]

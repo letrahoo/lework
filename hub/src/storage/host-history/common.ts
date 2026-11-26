@@ -273,7 +273,21 @@ export function classifyRawToolCall(
     return { title: short, kind: 'fetch', input: rawInput }
   }
 
-  if (lower === 'task' || lower === 'agent' || lower === 'invoke_subagent') {
+  if (lower === 'swarm') {
+    return { title: 'Swarm', kind: 'other', input: rawInput }
+  }
+
+  if (lower === 'run_workflow') {
+    return { title: 'Workflow', kind: 'other', input: rawInput }
+  }
+
+  if (
+    lower === 'task' ||
+    lower === 'agent' ||
+    lower === 'invoke_subagent' ||
+    lower === 'define_subagent' ||
+    lower === 'manage_subagents'
+  ) {
     return { title: 'Task', kind: 'other', input: rawInput }
   }
 
@@ -302,6 +316,21 @@ export function describeToolActivity(rawName: string, rawInput?: string): string
   const short = rawName.replace(/^default_api:/, '').trim()
   const lower = short.toLowerCase()
   if (lower === 'send_message') return '回报结果'
+  if (
+    lower === 'update_steps' ||
+    lower === 'todowrite' ||
+    lower === 'todo_write' ||
+    lower === 'taskcreate' ||
+    lower === 'task_create' ||
+    lower === 'taskupdate' ||
+    lower === 'task_update' ||
+    lower === 'update_plan'
+  ) {
+    return '更新执行步骤'
+  }
+  if (lower === 'swarm') return '调度协作集群'
+  if (lower === 'run_workflow') return '执行工作流'
+  if (lower === 'manage_subagents') return '管理子任务'
 
   let argsObj: Record<string, unknown> | undefined
   if (rawInput && rawInput.trim().startsWith('{')) {

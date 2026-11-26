@@ -1029,6 +1029,7 @@ export function resolveApprovalKey(prompt: DetectedTerminalPermission, optionId:
  */
 export function parseLiveSpinnerLine(lines: string[]): string | undefined {
   let contentRowsChecked = 0
+  let totalRowsChecked = 0
   for (let i = lines.length - 1; i >= 0; i--) {
     const trimmed = lines[i]?.trim() ?? ''
     if (!trimmed) continue
@@ -1046,8 +1047,8 @@ export function parseLiveSpinnerLine(lines: string[]): string | undefined {
       continue
     }
 
-    contentRowsChecked++
-    if (contentRowsChecked > 6) {
+    totalRowsChecked++
+    if (totalRowsChecked > 24) {
       break
     }
 
@@ -1061,7 +1062,18 @@ export function parseLiveSpinnerLine(lines: string[]): string | undefined {
       continue
     }
 
-    // 1. Active braille spinner frames (`⣷ Running command...`, `⣟ Thinking...`)
+    // Skip AGY / CLI step-checklist tree rows (`└ ● Step title`, `○ Pending step`, `✓ Done step`)
+    // without exhausting the content row budget so the live spinner header directly above them is found.
+    if (/^[└├│]?\s*[●○✓✔✗✘⊘▸]\s+\S+/.test(trimmed)) {
+      continue
+    }
+
+    contentRowsChecked++
+    if (contentRowsChecked > 6) {
+      break
+    }
+
+    // 1. Active braille spinner frames (`⣷ Running command...`, `⠇ 0/3 steps · Running command... 17s`)
     if (/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣷⣯⣟⡿⢿⣻⣽⣾]\s+\S+/.test(trimmed)) {
       return trimmed.replace(/\s+/g, ' ').slice(0, 120)
     }
