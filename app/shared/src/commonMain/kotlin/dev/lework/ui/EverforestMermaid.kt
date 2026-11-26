@@ -2436,6 +2436,8 @@ private fun MermaidFullscreenDialog(
         }
     }
 
+    ModalEscapeEffect(onDismiss = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -2444,6 +2446,7 @@ private fun MermaidFullscreenDialog(
             color = Everforest.BgDim,
             modifier = Modifier
                 .fillMaxSize()
+                .dialogEscapeDismiss(onDismiss = onDismiss)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
                 .testTag("mermaid_fullscreen_dialog"),
         ) {

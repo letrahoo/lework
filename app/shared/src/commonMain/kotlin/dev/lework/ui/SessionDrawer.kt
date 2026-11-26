@@ -934,6 +934,13 @@ internal fun RenameSessionDialog(
     var draft by remember(session.id, session.title) { mutableStateOf(session.title) }
     val dismissKeyboard = rememberKeyboardDismisser()
 
+    ModalEscapeEffect(
+        onDismiss = {
+            dismissKeyboard()
+            onDismiss()
+        },
+    )
+
     AlertDialog(
         onDismissRequest = {
             dismissKeyboard()
@@ -1060,6 +1067,13 @@ internal fun RenameHostDialog(
 ) {
     var draft by remember(host.hubId, host.displayName) { mutableStateOf(host.displayName) }
     val dismissKeyboard = rememberKeyboardDismisser()
+
+    ModalEscapeEffect(
+        onDismiss = {
+            dismissKeyboard()
+            onDismiss()
+        },
+    )
 
     AlertDialog(
         onDismissRequest = {

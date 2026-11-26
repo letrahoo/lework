@@ -53,6 +53,7 @@ internal fun DesktopConsoleApp(
     var sidebarExpanded by remember { mutableStateOf(true) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
     var promptText by remember { mutableStateOf("") }
+    val escapeDispatcher = LocalModalEscapeDispatcher.current ?: remember { ModalEscapeDispatcher() }
 
     fun openGlobalSearchPalette(prefill: String? = null) {
         val nextQuery = prefill?.trim()
@@ -102,6 +103,11 @@ internal fun DesktopConsoleApp(
         }
     }
 
+    CompositionLocalProvider(LocalModalEscapeDispatcher provides escapeDispatcher) {
+    ModalEscapeEffect(
+        enabled = state.inSessionFindOpen,
+        onDismiss = store::closeInSessionFind,
+    )
     if (!state.hasEnteredWorkspace) {
         DesktopAuthScreen(
             state = state,
@@ -124,9 +130,14 @@ internal fun DesktopConsoleApp(
                 .background(Everforest.Bg0)
                 .onPreviewKeyEvent { ev ->
                     if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                    if (ev.key == Key.Escape && state.inSessionFindOpen) {
-                        store.closeInSessionFind()
-                        return@onPreviewKeyEvent true
+                    if (ev.key == Key.Escape) {
+                        if (escapeDispatcher.dispatchEscape()) {
+                            return@onPreviewKeyEvent true
+                        }
+                        if (state.inSessionFindOpen) {
+                            store.closeInSessionFind()
+                            return@onPreviewKeyEvent true
+                        }
                     }
                     val cmdOrCtrl = ev.isMetaPressed || ev.isCtrlPressed
                     if (!cmdOrCtrl) return@onPreviewKeyEvent false
@@ -782,6 +793,7 @@ internal fun DesktopConsoleApp(
                 store.renameSession(renamingTarget.id, nextTitle)
             },
         )
+    }
     }
 }
 
