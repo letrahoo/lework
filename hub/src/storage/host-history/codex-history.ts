@@ -15,6 +15,7 @@ import {
   type ParsedHostTranscript,
 } from './common.ts'
 import { readCodexLocalSettings } from './engine-settings.ts'
+import { isPlanStepToolName, parsePlanEntriesFromRaw } from './plan-steps.ts'
 
 export function scanCodexSessions(
   homeDir: string,
@@ -181,6 +182,7 @@ export function parseCodexTranscript(
   const events: AgentEvent[] = []
   const workspaces: string[] = []
   const openTools = new Set<string>()
+  const ignoredStepTools = new Set<string>()
   let activeTurn = false
   let turnStartedAt: number | undefined
   const lines = readFullSessionLines(filePath)
@@ -283,6 +285,18 @@ export function parseCodexTranscript(
         const callId = o.payload.call_id ?? `cx_tc_${seq}`
         const rawName = o.payload.name ?? 'tool'
         const rawArgs = o.payload.arguments ?? o.payload.input ?? ''
+        if (isPlanStepToolName(rawName) === 'update_plan') {
+          const entries = parsePlanEntriesFromRaw(rawArgs)
+          ignoredStepTools.add(callId)
+          events.push({
+            seq: seq++,
+            sessionId,
+            ts,
+            type: 'plan.updated',
+            entries,
+          })
+          continue
+        }
         const normalized = classifyRawToolCall(rawName, rawArgs)
         openTools.add(callId)
         events.push({
@@ -301,6 +315,10 @@ export function parseCodexTranscript(
         (o.payload?.type === 'function_call_output' || o.payload?.type === 'custom_tool_call_output')
       ) {
         const callId = o.payload.call_id
+        if (callId && ignoredStepTools.has(callId)) {
+          ignoredStepTools.delete(callId)
+          continue
+        }
         if (callId && openTools.has(callId)) {
           openTools.delete(callId)
           events.push({

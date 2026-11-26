@@ -162,10 +162,12 @@ class ConsoleStore(
                     )
                     _state.update { s ->
                         val nextTranscript = if (isInitial) {
-                            reduceTranscriptBatch(SessionTranscript(), snap.events).copy(
-                                earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
-                                hasMoreBefore = snap.hasMoreBefore == true,
-                            )
+                            reduceTranscriptBatch(SessionTranscript(), snap.events)
+                                .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt)
+                                .copy(
+                                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                                    hasMoreBefore = snap.hasMoreBefore == true,
+                                )
                         } else {
                             reduceTranscriptBatch(s.transcripts[sid] ?: SessionTranscript(), snap.events)
                         }
@@ -3671,6 +3673,7 @@ class ConsoleStore(
             }
             val nextTranscript = if (isInitialLoad) {
                 val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
+                    .withFallbackLatestPlan(snap.latestPlan, effectiveSession.updatedAt)
                 val concurrentPerms = s.transcripts[sessionId]?.pendingPermissions.orEmpty()
                 val mergedPerms = if (built.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }) {
                     built.pendingPermissions
@@ -4097,11 +4100,13 @@ class ConsoleStore(
                     }
                     return@launch
                 }
-                val reduced = reduceTranscriptBatch(SessionTranscript(), snap.events).copy(
-                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
-                    hasMoreBefore = snap.hasMoreBefore == true,
-                    loadingOlder = false,
-                )
+                val reduced = reduceTranscriptBatch(SessionTranscript(), snap.events)
+                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt)
+                    .copy(
+                        earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                        hasMoreBefore = snap.hasMoreBefore == true,
+                        loadingOlder = false,
+                    )
                 _state.update { s ->
                     val currentSub = s.inspectedSubagent?.takeIf { it.id == subagentId } ?: return@update s
                     val fromParent = s.activeSession?.subagents?.firstOrNull { it.id == subagentId }
@@ -4516,12 +4521,14 @@ class ConsoleStore(
                 if (_state.value.activeSessionId != sessionId || reqToken != subscribeSeqToken) {
                     return@launch
                 }
-                val built = reduceTranscriptBatch(SessionTranscript(), snap.events).copy(
-                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
-                    hasMoreBefore = snap.hasMoreBefore == true,
-                    hasMoreAfter = snap.hasMoreAfter == true,
-                    loadingOlder = false,
-                )
+                val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
+                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt)
+                    .copy(
+                        earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                        hasMoreBefore = snap.hasMoreBefore == true,
+                        hasMoreAfter = snap.hasMoreAfter == true,
+                        loadingOlder = false,
+                    )
                 _state.update { s ->
                     if (s.activeSessionId != sessionId) return@update s
                     val updatedSessions = if (s.sessions.any { it.id == snap.session.id }) {
@@ -4565,12 +4572,14 @@ class ConsoleStore(
                 if (_state.value.activeSessionId != sessionId || reqToken != subscribeSeqToken) {
                     return@runCatching
                 }
-                val built = reduceTranscriptBatch(SessionTranscript(), snap.events).copy(
-                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
-                    hasMoreBefore = snap.hasMoreBefore == true,
-                    hasMoreAfter = false,
-                    loadingOlder = false,
-                )
+                val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
+                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt)
+                    .copy(
+                        earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                        hasMoreBefore = snap.hasMoreBefore == true,
+                        hasMoreAfter = false,
+                        loadingOlder = false,
+                    )
                 _state.update { s ->
                     if (s.activeSessionId != sessionId) return@update s
                     s.copy(

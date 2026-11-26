@@ -95,7 +95,10 @@ interface WatchedHostSession {
 function buildSubagentsKey(subagents?: SubagentSummary[]): string {
   if (!subagents || subagents.length === 0) return ''
   return subagents
-    .map(sa => `${sa.id}:${sa.state}:${sa.statusText ?? ''}:${sa.updatedAt}`)
+    .map(
+      sa =>
+        `${sa.id}:${sa.state}:${sa.role ?? ''}:${sa.statusText ?? ''}:${sa.depth ?? 1}:${sa.stepsDone ?? -1}/${sa.stepsTotal ?? -1}:${sa.updatedAt}`,
+    )
     .join('\u0000')
 }
 

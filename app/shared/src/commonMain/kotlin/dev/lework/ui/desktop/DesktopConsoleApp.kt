@@ -390,6 +390,8 @@ internal fun DesktopConsoleApp(
                                         } else {
                                             null
                                         },
+                                        subagents = activeSubagents,
+                                        onOpenSubagent = store::openSubagentInspector,
                                         pendingJumpSeq = state.pendingJumpSeq,
                                         pendingJumpNonce = state.pendingJumpNonce,
                                         highlightedSeq = state.highlightedSeq,

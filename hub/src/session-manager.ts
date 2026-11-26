@@ -10,6 +10,7 @@ import {
   type CheckpointInfo,
   type EngineInfo,
   type ModelOption,
+  type PlanEntry,
   type PromptImageAttachment,
   type ReasoningEffort,
   type SessionCancelQueuedResult,
@@ -40,6 +41,7 @@ import {
 import { HostTaskInspector, TerminalApprovalError } from './storage/host-history.ts'
 import { isFilesystemRoot } from './storage/host-history/common.ts'
 import { ConversationSearchIndex, type SearchableSessionSource } from './storage/search-index.ts'
+import { extractLatestPlanFromEvents } from './storage/host-history/plan-steps.ts'
 import { SessionMetadataStore } from './storage/session-metadata.ts'
 import {
   CheckpointManager,
@@ -1431,6 +1433,7 @@ export class SessionManager {
     earliestSeq: number
     hasMoreBefore: boolean
     hasMoreAfter: boolean
+    latestPlan?: PlanEntry[]
   } {
     let managed = this.sessions.get(sessionId)
     if (managed && sessionId.startsWith('host:')) {
@@ -1594,6 +1597,7 @@ function sliceSessionWindow(
   earliestSeq: number
   hasMoreBefore: boolean
   hasMoreAfter: boolean
+  latestPlan?: PlanEntry[]
 } {
   if (allEvents.length === 0) {
     return {
@@ -1625,6 +1629,7 @@ function sliceSessionWindow(
     const earliestSeq = page[0]?.seq ?? allEvents[0]!.seq
     const hasMoreBefore = startIdx > 0 || earliestSeq > allEvents[0]!.seq
     const hasMoreAfter = endIdx < allEvents.length
+    const latestPlan = !hasMoreAfter ? extractLatestPlanFromEvents(allEvents) : undefined
     return {
       session,
       events: page,
@@ -1632,6 +1637,7 @@ function sliceSessionWindow(
       earliestSeq,
       hasMoreBefore,
       hasMoreAfter,
+      ...(latestPlan ? { latestPlan } : {}),
     }
   }
 
@@ -1672,6 +1678,7 @@ function sliceSessionWindow(
     const page = allEvents.slice(startIdx)
     const earliestSeq = page[0]?.seq ?? 0
     const hasMoreBefore = startIdx > 0
+    const latestPlan = extractLatestPlanFromEvents(allEvents)
     return {
       session,
       events: page,
@@ -1679,6 +1686,7 @@ function sliceSessionWindow(
       earliestSeq,
       hasMoreBefore,
       hasMoreAfter: false,
+      ...(latestPlan ? { latestPlan } : {}),
     }
   }
 
@@ -1687,6 +1695,7 @@ function sliceSessionWindow(
   const events = allEvents.filter(ev => ev.seq > afterSeq)
   const earliestSeq = events[0]?.seq ?? allEvents[0]!.seq
   const hasMoreBefore = afterSeq === -1 ? earliestSeq > allEvents[0]!.seq : false
+  const latestPlan = afterSeq === -1 ? extractLatestPlanFromEvents(allEvents) : undefined
   return {
     session,
     events,
@@ -1694,6 +1703,7 @@ function sliceSessionWindow(
     earliestSeq,
     hasMoreBefore,
     hasMoreAfter: false,
+    ...(latestPlan ? { latestPlan } : {}),
   }
 }
 

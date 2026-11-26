@@ -214,9 +214,23 @@ data class SessionTranscript(
     val items: List<ChatTimelineItem> = emptyList(),
     val pendingPermissions: List<AgentEvent.PermissionRequested> = emptyList(),
     val planEntries: List<PlanEntry> = emptyList(),
+    val planUpdatedAt: Long = 0L,
     val inputTokens: Int = 0,
     val outputTokens: Int = 0,
 )
+
+internal fun PlanEntry.isTerminalStatus(): Boolean =
+    status == "completed" || status == "skipped" || status == "failed"
+
+internal fun SessionTranscript.withFallbackLatestPlan(
+    latestPlan: List<PlanEntry>?,
+    fallbackTs: Long = 0L,
+): SessionTranscript =
+    if (planEntries.isEmpty() && !latestPlan.isNullOrEmpty()) {
+        copy(planEntries = latestPlan, planUpdatedAt = fallbackTs)
+    } else {
+        this
+    }
 
 internal fun parseEffort(raw: String): ReasoningEffort = when (raw.lowercase()) {
     "low" -> ReasoningEffort.LOW
@@ -559,11 +573,16 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
     val items = current.items.toMutableList()
     val perms = current.pendingPermissions.toMutableList()
     var plans = current.planEntries
+    var planUpdatedAt = current.planUpdatedAt
     var inTok = current.inputTokens
     var outTok = current.outputTokens
 
     when (event) {
         is AgentEvent.UserMessage -> {
+            if (plans.isNotEmpty() && plans.all { it.isTerminalStatus() }) {
+                plans = emptyList()
+                planUpdatedAt = 0L
+            }
             items.add(
                 ChatTimelineItem.User(
                     id = event.messageId,
@@ -649,6 +668,7 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
         }
         is AgentEvent.PlanUpdated -> {
             plans = event.entries
+            planUpdatedAt = if (event.entries.isNotEmpty()) event.ts else 0L
         }
         is AgentEvent.Usage -> {
             inTok += event.inputTokens ?: 0
@@ -666,6 +686,7 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
         items = items,
         pendingPermissions = perms,
         planEntries = plans,
+        planUpdatedAt = planUpdatedAt,
         inputTokens = inTok,
         outputTokens = outTok,
     )
@@ -696,6 +717,7 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
     val perms = initial.pendingPermissions.toMutableList()
     var lastSeq = initial.lastSeq
     var plans = initial.planEntries
+    var planUpdatedAt = initial.planUpdatedAt
     var inTok = initial.inputTokens
     var outTok = initial.outputTokens
 
@@ -725,6 +747,10 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
 
         when (event) {
             is AgentEvent.UserMessage -> {
+                if (plans.isNotEmpty() && plans.all { it.isTerminalStatus() }) {
+                    plans = emptyList()
+                    planUpdatedAt = 0L
+                }
                 items.add(
                     ChatTimelineItem.User(
                         id = event.messageId,
@@ -809,6 +835,7 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
             }
             is AgentEvent.PlanUpdated -> {
                 plans = event.entries
+                planUpdatedAt = if (event.entries.isNotEmpty()) event.ts else 0L
             }
             is AgentEvent.Usage -> {
                 inTok += event.inputTokens ?: 0
@@ -829,6 +856,7 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
         items = items,
         pendingPermissions = perms,
         planEntries = plans,
+        planUpdatedAt = planUpdatedAt,
         inputTokens = inTok,
         outputTokens = outTok,
     )

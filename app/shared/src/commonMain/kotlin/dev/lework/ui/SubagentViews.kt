@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AccountTree
@@ -33,11 +34,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import dev.lework.platform.epochMillis
 import dev.lework.protocol.SessionMeta
 import dev.lework.protocol.SessionSource
 import dev.lework.protocol.SessionState
 import dev.lework.protocol.SubagentSummary
+import dev.lework.protocol.ToolStatus
+import dev.lework.store.ChatTimelineItem
 import dev.lework.store.SessionTranscript
+import kotlin.math.abs
 import kotlinx.coroutines.delay
 
 private fun SubagentSummary.isActive(): Boolean =
@@ -59,6 +64,69 @@ private fun SubagentSummary.displayStatusLabel(): String =
         SessionState.CLOSED -> "已结束"
         SessionState.IDLE -> "尚未确认结束"
     }
+
+private fun SubagentSummary.stepProgressLabel(): String? {
+    val total = stepsTotal ?: return null
+    if (total <= 0) return null
+    val done = (stepsDone ?: 0).coerceIn(0, total)
+    return "$done/$total 步"
+}
+
+internal fun formatSubagentDuration(startMs: Long?, endMs: Long, includeZero: Boolean = false): String? {
+    if (startMs == null || startMs <= 0L || endMs <= 0L) return null
+    val sec = ((endMs - startMs) / 1000L).coerceAtLeast(0L)
+    if (sec == 0L && !includeZero) return null
+    return formatStepElapsedSeconds(sec)
+}
+
+internal fun matchSubagentForToolCall(
+    tool: ChatTimelineItem.Tool,
+    meta: ParsedSubagentToolMeta,
+    subagents: List<SubagentSummary>,
+): SubagentSummary? {
+    if (subagents.isEmpty()) return null
+    val refId = meta.referencedId
+    if (!refId.isNullOrBlank()) {
+        subagents.firstOrNull { sub ->
+            sub.id == refId || sub.id.endsWith(":$refId") || sub.id.endsWith(refId)
+        }?.let { return it }
+    }
+    val normTitle = meta.title.trim().lowercase()
+    if (normTitle.length >= 3 && normTitle != "子任务") {
+        subagents.firstOrNull { sub ->
+            sub.title.trim().equals(normTitle, ignoreCase = true) ||
+                sub.role?.trim()?.equals(normTitle, ignoreCase = true) == true
+        }?.let { return it }
+        subagents.firstOrNull { sub ->
+            val st = sub.title.trim().lowercase()
+            st.length >= 4 && (st.contains(normTitle) || normTitle.contains(st))
+        }?.let { return it }
+    }
+    if (tool.ts > 0L) {
+        return subagents
+            .mapNotNull { sub ->
+                val anchor = sub.createdAt ?: return@mapNotNull null
+                val delta = abs(anchor - tool.ts)
+                if (delta <= 15_000L) sub to delta else null
+            }
+            .minByOrNull { it.second }
+            ?.first
+    }
+    return null
+}
+
+@Composable
+private fun rememberLiveSubagentNowMs(active: Boolean, key: String): Long {
+    var nowMs by remember(key) { mutableLongStateOf(epochMillis()) }
+    LaunchedEffect(key, active) {
+        if (!active) return@LaunchedEffect
+        while (true) {
+            delay(1_000L)
+            nowMs = epochMillis()
+        }
+    }
+    return nowMs
+}
 
 @Composable
 private fun SubagentStatusDot(
@@ -246,6 +314,13 @@ private fun SubagentMiniChip(
     onClick: () -> Unit,
 ) {
     val active = subagent.isActive()
+    val nowMs = rememberLiveSubagentNowMs(active, subagent.id)
+    val stepLabel = subagent.stepProgressLabel()
+    val elapsedLabel = formatSubagentDuration(
+        startMs = subagent.createdAt,
+        endMs = if (active) nowMs else subagent.updatedAt,
+        includeZero = active,
+    )
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = if (active) Everforest.Bg2 else Everforest.Bg0,
@@ -272,6 +347,16 @@ private fun SubagentMiniChip(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.widthIn(max = 148.dp),
             )
+            if (stepLabel != null) {
+                Text(
+                    text = stepLabel,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Medium,
+                    color = Everforest.Aqua,
+                    maxLines = 1,
+                )
+            }
             if (!subagent.statusText.isNullOrBlank() || subagent.state != SessionState.RUNNING) {
                 Text(
                     text = "· ${subagent.displayStatusLabel()}",
@@ -280,6 +365,15 @@ private fun SubagentMiniChip(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.widthIn(max = 96.dp),
+                )
+            }
+            if (elapsedLabel != null) {
+                Text(
+                    text = elapsedLabel,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Everforest.CommentGrey,
+                    maxLines = 1,
                 )
             }
         }
@@ -292,83 +386,386 @@ private fun SubagentDetailRow(
     onClick: () -> Unit,
 ) {
     val active = subagent.isActive()
+    val nowMs = rememberLiveSubagentNowMs(active, subagent.id)
+    val stepLabel = subagent.stepProgressLabel()
+    val elapsedLabel = formatSubagentDuration(
+        startMs = subagent.createdAt,
+        endMs = if (active) nowMs else subagent.updatedAt,
+        includeZero = active,
+    )
+    val depth = (subagent.depth ?: 1).coerceAtLeast(1)
+    val nestedIndent = ((depth - 1).coerceAtMost(3) * 14).dp
     val statusColor = when (subagent.state) {
         SessionState.RUNNING, SessionState.WAITING_PERMISSION -> Everforest.SoftSand
         SessionState.ERROR -> Everforest.SoftRed
         else -> Everforest.CommentGrey
     }
 
-    Surface(
-        shape = RoundedCornerShape(9.dp),
-        color = Everforest.Bg0,
-        border = BorderStroke(
-            width = 0.8.dp,
-            color = if (active) Everforest.Orange.copy(alpha = 0.36f) else Everforest.Bg2,
-        ),
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(9.dp))
-            .clickable(onClick = onClick)
-            .testTag("subagent_item_${subagent.id}"),
+            .padding(start = nestedIndent),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Row(
+        if (depth > 1) {
+            Text(
+                text = "└",
+                fontSize = 11.5.sp,
+                fontFamily = FontFamily.Monospace,
+                color = Everforest.Bg4,
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(9.dp),
+            color = Everforest.Bg0,
+            border = BorderStroke(
+                width = 0.8.dp,
+                color = if (active) Everforest.Orange.copy(alpha = 0.36f) else Everforest.Bg2,
+            ),
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .weight(1f)
+                .clip(RoundedCornerShape(9.dp))
+                .clickable(onClick = onClick)
+                .testTag("subagent_item_${subagent.id}"),
         ) {
-            SubagentStatusDot(state = subagent.state, sizeDp = 7)
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                SubagentStatusDot(state = subagent.state, sizeDp = 7)
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    Text(
-                        text = subagent.title,
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Everforest.Fg,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    val role = subagent.role?.trim()?.takeIf { it.isNotEmpty() && it != subagent.title }
-                    if (role != null) {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = Everforest.Bg2,
-                        ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = subagent.title,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Everforest.Fg,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        val role = subagent.role?.trim()?.takeIf { it.isNotEmpty() && it != subagent.title }
+                        if (role != null) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Everforest.Bg2,
+                            ) {
+                                Text(
+                                    text = role,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Everforest.InlineCode,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                )
+                            }
+                        }
+                        if (stepLabel != null) {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Everforest.Aqua.copy(alpha = 0.14f),
+                            ) {
+                                Text(
+                                    text = stepLabel,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Everforest.Aqua,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = subagent.displayStatusLabel(),
+                            fontSize = 11.sp,
+                            color = statusColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (elapsedLabel != null) {
                             Text(
-                                text = role,
-                                fontSize = 10.sp,
+                                text = "· $elapsedLabel",
+                                fontSize = 10.5.sp,
                                 fontFamily = FontFamily.Monospace,
-                                color = Everforest.InlineCode,
+                                color = Everforest.CommentGrey,
                                 maxLines = 1,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
                             )
                         }
                     }
                 }
+
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                    contentDescription = "查看子任务详情",
+                    tint = Everforest.CommentGrey,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * First-class inline timeline card for SubAgent / Swarm / Workflow dispatches so multi-agent
+ * collaboration is visible directly in the conversation stream and clickable into [SubagentInspectorDialog].
+ */
+@Composable
+internal fun InlineSubagentDispatchCard(
+    tool: ChatTimelineItem.Tool,
+    matchedSubagent: SubagentSummary?,
+    isSessionRunning: Boolean,
+    onOpenSubagent: ((SubagentSummary) -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    val meta = remember(tool.id, tool.title, tool.input, tool.output) { parseSubagentToolMeta(tool) }
+    var detailExpanded by remember(tool.id) { mutableStateOf(false) }
+
+    val resolvedState = matchedSubagent?.state ?: when (tool.status) {
+        ToolStatus.COMPLETED -> SessionState.CLOSED
+        ToolStatus.FAILED -> SessionState.ERROR
+        ToolStatus.IN_PROGRESS, ToolStatus.PENDING ->
+            if (isSessionRunning) SessionState.RUNNING else SessionState.CLOSED
+    }
+    val active = resolvedState == SessionState.RUNNING || resolvedState == SessionState.WAITING_PERMISSION
+    val nowMs = rememberLiveSubagentNowMs(active, tool.id)
+    val startMs = matchedSubagent?.createdAt ?: tool.ts.takeIf { it > 0L }
+    val endMs = if (active) nowMs else (matchedSubagent?.updatedAt ?: tool.ts)
+    val elapsedLabel = formatSubagentDuration(startMs, endMs, includeZero = active)
+    val stepLabel = matchedSubagent?.stepProgressLabel()
+    val displayTitle = matchedSubagent?.title?.takeIf { it.isNotBlank() } ?: meta.title
+    val roleLabel = (matchedSubagent?.role ?: meta.roleBadge)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() && !it.equals(displayTitle, ignoreCase = true) }
+    val statusLine = when {
+        matchedSubagent != null -> matchedSubagent.displayStatusLabel()
+        !meta.brief.isNullOrBlank() -> meta.brief.replace('\n', ' ').trim()
+        resolvedState == SessionState.RUNNING -> "正在执行子任务…"
+        resolvedState == SessionState.ERROR -> "执行出错"
+        else -> "已完成"
+    }
+    val canDrillDown = matchedSubagent != null && onOpenSubagent != null
+    val hasInlineDetail = !meta.brief.isNullOrBlank() || !tool.output.isNullOrBlank()
+    val kindAccent = if (meta.kindLabel == "Workflow") Everforest.Aqua else Everforest.Orange
+    val borderColor = when {
+        active -> kindAccent.copy(alpha = 0.42f)
+        resolvedState == SessionState.ERROR -> Everforest.Red.copy(alpha = 0.42f)
+        else -> Everforest.Bg3
+    }
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Everforest.Bg1,
+        border = BorderStroke(1.dp, borderColor),
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = canDrillDown || hasInlineDetail) {
+                if (matchedSubagent != null && onOpenSubagent != null) {
+                    onOpenSubagent(matchedSubagent)
+                } else if (hasInlineDetail) {
+                    detailExpanded = !detailExpanded
+                }
+            }
+            .testTag("inline_subagent_card_${tool.id}"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                SubagentStatusDot(state = resolvedState, sizeDp = 7)
+
+                Surface(
+                    shape = RoundedCornerShape(5.dp),
+                    color = kindAccent.copy(alpha = 0.14f),
+                    border = BorderStroke(0.7.dp, kindAccent.copy(alpha = 0.35f)),
+                ) {
+                    Text(
+                        text = meta.kindLabel,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = FontFamily.Monospace,
+                        color = kindAccent,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                    )
+                }
+
                 Text(
-                    text = subagent.displayStatusLabel(),
-                    fontSize = 11.sp,
-                    color = statusColor,
+                    text = displayTitle,
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Everforest.Fg,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+
+                if (roleLabel != null) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Everforest.Bg2,
+                    ) {
+                        Text(
+                            text = roleLabel,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = Everforest.InlineCode,
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                        )
+                    }
+                }
+
+                if (stepLabel != null) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = Everforest.Aqua.copy(alpha = 0.14f),
+                    ) {
+                        Text(
+                            text = stepLabel,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = Everforest.Aqua,
+                            maxLines = 1,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                if (elapsedLabel != null) {
+                    Text(
+                        text = elapsedLabel,
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Everforest.CommentGrey,
+                        maxLines = 1,
+                    )
+                }
+
+                if (canDrillDown) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        modifier = Modifier.testTag("inline_subagent_open_${tool.id}"),
+                    ) {
+                        Text(
+                            text = "查看详情",
+                            fontSize = 11.sp,
+                            color = Everforest.BoldGold,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                            contentDescription = "查看子任务详情",
+                            tint = Everforest.BoldGold,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                } else if (hasInlineDetail) {
+                    Icon(
+                        imageVector = if (detailExpanded) {
+                            Icons.Rounded.KeyboardArrowDown
+                        } else {
+                            Icons.AutoMirrored.Rounded.KeyboardArrowRight
+                        },
+                        contentDescription = null,
+                        tint = Everforest.CommentGrey,
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
+            }
+
+            // Tree subtitle row (`└ activity / prompt summary`)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    text = "└",
+                    fontSize = 11.5.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Everforest.Bg4,
+                )
+                Text(
+                    text = statusLine,
+                    fontSize = 11.5.sp,
+                    color = if (active) Everforest.SoftSand else Everforest.CommentGrey,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
             }
 
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                contentDescription = "查看子任务详情",
-                tint = Everforest.CommentGrey,
-                modifier = Modifier.size(16.dp),
-            )
+            // Standalone expandable prompt / output preview when no live SubagentSummary matches
+            AnimatedVisibility(visible = detailExpanded && !canDrillDown && hasInlineDetail) {
+                Surface(
+                    shape = RoundedCornerShape(7.dp),
+                    color = Everforest.BgDim,
+                    border = BorderStroke(0.8.dp, Everforest.Bg2),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 2.dp),
+                ) {
+                    SelectionContainer {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 9.dp, vertical = 7.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            if (!meta.brief.isNullOrBlank()) {
+                                Text(
+                                    text = meta.brief.take(800),
+                                    fontSize = 11.5.sp,
+                                    lineHeight = 17.sp,
+                                    color = Everforest.Fg,
+                                )
+                            }
+                            val cleanedOut = tool.output?.trim().orEmpty()
+                            if (cleanedOut.isNotEmpty()) {
+                                if (!meta.brief.isNullOrBlank()) {
+                                    HorizontalDivider(color = Everforest.Bg2, thickness = 0.8.dp)
+                                }
+                                Text(
+                                    text = cleanedOut.take(800),
+                                    fontSize = 11.sp,
+                                    lineHeight = 16.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Everforest.Grey2,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -387,6 +784,13 @@ internal fun SubagentInspectorDialog(
     onClose: () -> Unit,
 ) {
     val accent = subagent.accentColor()
+    val nowMs = rememberLiveSubagentNowMs(subagent.isActive(), subagent.id)
+    val inspectorStepLabel = subagent.stepProgressLabel()
+    val inspectorElapsed = formatSubagentDuration(
+        startMs = subagent.createdAt,
+        endMs = if (subagent.isActive()) nowMs else subagent.updatedAt,
+        includeZero = subagent.isActive(),
+    )
     val workspaceName = remember(subagent.workspace) {
         subagent.workspace
             ?.trimEnd('/')
@@ -486,6 +890,29 @@ internal fun SubagentInspectorDialog(
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp),
                                         )
                                     }
+                                }
+                                if (inspectorStepLabel != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Everforest.Aqua.copy(alpha = 0.14f),
+                                    ) {
+                                        Text(
+                                            text = inspectorStepLabel,
+                                            fontSize = 10.5.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = Everforest.Aqua,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp),
+                                        )
+                                    }
+                                }
+                                if (inspectorElapsed != null) {
+                                    Text(
+                                        text = inspectorElapsed,
+                                        fontSize = 10.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Everforest.CommentGrey,
+                                        maxLines = 1,
+                                    )
                                 }
                                 if (workspaceName != null) {
                                     Row(

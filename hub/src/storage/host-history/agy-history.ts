@@ -26,6 +26,11 @@ import {
 } from '../attachment-store.ts'
 import { countQuickAgyArtifacts } from '../artifacts.ts'
 import { parseAgyModelString, readAgyLocalSettings } from './engine-settings.ts'
+import {
+  extractLatestAgyStepProgress,
+  isPlanStepToolName,
+  parsePlanEntriesFromRaw,
+} from './plan-steps.ts'
 
 const AGY_MEDIA_IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp|heic|tiff?)$/i
 
@@ -392,6 +397,23 @@ function extractAgySubagentBrief(rawContent: string): string | undefined {
   return body || undefined
 }
 
+function extractAgySubagentRole(lines: string[]): string | undefined {
+  for (const l of lines) {
+    try {
+      const o = JSON.parse(l) as { type?: string; content?: string }
+      if (o.type !== 'USER_INPUT' || typeof o.content !== 'string') continue
+      const content = o.content
+      const roleHeader = content.match(/(?:^|\n)\s*\[?(?:Role|Subagent\s*Role|Worker)\]?\s*[:=]\s*([^\n\]<]{2,48})/i)
+      if (roleHeader?.[1]?.trim()) return roleHeader[1].trim()
+      const swarmHeader = content.match(/\[Swarm\s+worker\s+([a-z0-9_-]{2,32})\]/i)
+      if (swarmHeader?.[1]?.trim()) return `swarm:${swarmHeader[1].trim()}`
+    } catch {
+      // ignore
+    }
+  }
+  return undefined
+}
+
 function buildAgySubagentSummary(
   convId: string,
   filePath: string,
@@ -401,7 +423,7 @@ function buildAgySubagentSummary(
   homeDir: string,
   fallbackCwd: string,
 ): { summary: SubagentSummary; entry: HostTranscriptEntry } {
-  const { first, last } = readFirstAndLastLines(filePath, 15, 12)
+  const { first, last } = readFirstAndLastLines(filePath, 15, 24)
   let firstPrompt = ''
   const inferredPaths: string[] = []
   for (const l of [...first, ...last]) {
@@ -431,24 +453,35 @@ function buildAgySubagentSummary(
   }
 
   const title = (summaryInfo?.title || firstPrompt || `SubAgent ${convId.slice(0, 8)}`).slice(0, 64)
+  const inferredRole = extractAgySubagentRole(first)
+  const role = inferredRole && inferredRole !== title ? inferredRole : undefined
   const workspaces = mergeUniqueWorkspaces(
     [...(summaryInfo?.workspaces ?? []), ...inferredPaths],
     homeDir,
   )
   const workspace = workspaces[0]
   const activity = inferAgySubagentActivity(last, mtimeMs)
+  const stepProgress = extractLatestAgyStepProgress([...first, ...last])
   const subId = `host:agy:${convId}`
   const createdAt = Math.floor(birthtimeMs || mtimeMs)
   const updatedAt = Math.floor(mtimeMs)
+  const parentId = summaryInfo?.parentConversationId
+    ? `host:agy:${summaryInfo.parentConversationId}`
+    : undefined
+  const depth = summaryInfo?.depth && summaryInfo.depth > 0 ? summaryInfo.depth : 1
 
   const summary: SubagentSummary = {
     id: subId,
     title,
+    ...(role ? { role } : {}),
     state: activity.state,
     statusText: activity.statusText,
     createdAt,
     updatedAt,
     ...(workspace ? { workspace } : {}),
+    ...(parentId ? { parentId } : {}),
+    depth,
+    ...(stepProgress ? { stepsDone: stepProgress.stepsDone, stepsTotal: stepProgress.stepsTotal } : {}),
   }
 
   const entry: HostTranscriptEntry = {
@@ -542,7 +575,7 @@ export function parseAgyTranscript(
 ): ParsedHostTranscript {
   const events: AgentEvent[] = []
   const workspaces: string[] = []
-  let pendingToolIds: string[] = []
+  let pendingToolIds: Array<string | null> = []
   let isRunning = false
   let turnStartedAt: number | undefined
   let lastUserInputTs = 0
@@ -552,6 +585,7 @@ export function parseAgyTranscript(
   let seq = 0
   const failOpenTools = (ts: number, output = '已停止') => {
     for (const callId of pendingToolIds) {
+      if (!callId) continue
       events.push({
         seq: seq++,
         sessionId,
@@ -689,6 +723,22 @@ export function parseAgyTranscript(
             if (tc.name) {
               const cleanArgsObj = normalizeAgyArgs(tc.args ?? tc.arguments)
               extractProjectRootFromToolInput(cleanArgsObj, workspaces)
+              if (isPlanStepToolName(tc.name) === 'update_steps') {
+                const entries = parsePlanEntriesFromRaw(cleanArgsObj?.steps ?? cleanArgsObj)
+                events.push({
+                  seq: seq++,
+                  sessionId,
+                  ts,
+                  type: 'plan.updated',
+                  entries,
+                })
+                // Preserve positional alignment in `pendingToolIds` so `update_steps`'s `"OK"` tool
+                // response never shifts off a parallel `run_command` / `read_file` call ID!
+                if (!plannerAborted) {
+                  pendingToolIds.push(null)
+                }
+                continue
+              }
               const rawInput = cleanArgsObj ? JSON.stringify(cleanArgsObj) : undefined
               const normalized = classifyRawToolCall(tc.name, rawInput)
               const callId = tc.id ?? `tc_${o.step_index ?? seq}_${tc.name}`
@@ -772,7 +822,7 @@ export function parseAgyTranscript(
   return {
     events,
     workspaces,
-    isRunning: isRunning || pendingToolIds.length > 0,
+    isRunning: isRunning || pendingToolIds.some(id => id !== null),
     turnStartedAt,
     lastUserInputTs,
     recentUserTexts,
@@ -870,6 +920,7 @@ interface AgySummaryInfo {
   workspaces: string[]
   isSubagent: boolean
   parentConversationId?: string
+  depth: number
 }
 
 let cachedSummaryDbPath = ''
@@ -947,6 +998,7 @@ export function readAgyConversationSummaries(summaryDbPath: string): Map<string,
           workspaces: parseAgyWorkspaceUris(row.workspace_uris),
           isSubagent: Boolean(parentId) || depth > 0,
           parentConversationId: parentId || undefined,
+          depth,
         })
       }
     } finally {
@@ -1077,7 +1129,13 @@ export function normalizeAgyArgs(raw: unknown): Record<string, unknown> | undefi
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof v === 'string' && v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    if (
+      typeof v === 'string' &&
+      v.length >= 2 &&
+      ((v.startsWith('"') && v.endsWith('"')) ||
+        (v.startsWith('[') && v.endsWith(']')) ||
+        (v.startsWith('{') && v.endsWith('}')))
+    ) {
       try {
         out[k] = JSON.parse(v)
         continue

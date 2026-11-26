@@ -47,6 +47,106 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 
+internal data class ParsedSubagentToolMeta(
+    val kindLabel: String,
+    val title: String,
+    val roleBadge: String?,
+    val brief: String?,
+    val referencedId: String?,
+    val targetCount: Int?,
+)
+
+private val SUBAGENT_DISPATCH_TOOL_NAMES = setOf(
+    "task",
+    "agent",
+    "invoke_subagent",
+    "swarm",
+    "run_workflow",
+    "workflow",
+)
+
+private val SUBAGENT_CONVERSATION_ID_RE = Regex(
+    """(?:conversationId|conversation_id|agentId|agent_id)["']?\s*[:=]\s*["']?([A-Za-z0-9_-]{8,128})""",
+    RegexOption.IGNORE_CASE,
+)
+
+internal fun isSubagentDispatchTool(item: ChatTimelineItem.Tool): Boolean {
+    val rawTitle = item.title.trim().removePrefix("default_api:").lowercase()
+    if (rawTitle !in SUBAGENT_DISPATCH_TOOL_NAMES) return false
+    if (rawTitle == "swarm") {
+        val action = parseInputJsonObject(item.input)?.str("action")?.lowercase()
+        // Keep read-only swarm queries (`status`, `models`, `title`) quiet inside ProcessTrace.
+        if (action in setOf("status", "models", "title")) return false
+    }
+    return true
+}
+
+internal fun parseSubagentToolMeta(item: ChatTimelineItem.Tool): ParsedSubagentToolMeta {
+    val rawTitle = item.title.trim().removePrefix("default_api:")
+    val lowerTitle = rawTitle.lowercase()
+    val jsonObj = parseInputJsonObject(item.input)
+
+    val kindLabel = when (lowerTitle) {
+        "swarm" -> "Swarm"
+        "run_workflow", "workflow" -> "Workflow"
+        else -> "SubAgent"
+    }
+
+    val swarmAction = jsonObj?.str("action")?.lowercase()
+    val swarmName = jsonObj?.str("name")
+    val roleField = jsonObj?.str("Role") ?: jsonObj?.str("role")
+    val typeField = jsonObj?.str("TypeName") ?: jsonObj?.str("subagent_type")
+    val descField = jsonObj?.str("Description") ?: jsonObj?.str("description")
+    val tasksArr = jsonObj?.get("tasks") as? JsonArray
+    val nCount = (jsonObj?.get("n") as? JsonPrimitive)?.content?.toIntOrNull()
+    val targetCount = when {
+        tasksArr != null && tasksArr.isNotEmpty() -> tasksArr.size
+        nCount != null && nCount > 1 -> nCount
+        else -> null
+    }
+
+    val primaryTitle = when (lowerTitle) {
+        "swarm" -> {
+            val workerLabel = swarmName?.let { if (targetCount != null) "$it ×$targetCount" else it }
+            when {
+                !workerLabel.isNullOrBlank() && !swarmAction.isNullOrBlank() && swarmAction != "add" ->
+                    "$swarmAction · $workerLabel"
+                !workerLabel.isNullOrBlank() -> workerLabel
+                !swarmAction.isNullOrBlank() -> "Swarm · $swarmAction"
+                else -> "协作集群任务"
+            }
+        }
+        "run_workflow", "workflow" -> descField ?: jsonObj?.str("ScriptPath")?.substringAfterLast('/') ?: "工作流编排"
+        else -> roleField ?: descField ?: swarmName ?: typeField ?: "子任务"
+    }
+
+    val roleBadge = when (lowerTitle) {
+        "swarm" -> swarmAction?.takeIf { it.isNotBlank() && it != "add" }
+        "run_workflow", "workflow" -> null
+        else -> typeField?.takeIf { !it.equals(primaryTitle, ignoreCase = true) }
+    }
+
+    val brief = (
+        jsonObj?.str("Prompt")
+            ?: jsonObj?.str("prompt")
+            ?: jsonObj?.str("brief")
+            ?: descField?.takeIf { !it.equals(primaryTitle, ignoreCase = true) }
+        )?.trim()?.takeIf { it.isNotBlank() }
+
+    val referencedId = item.output?.let { out ->
+        SUBAGENT_CONVERSATION_ID_RE.find(out)?.groupValues?.getOrNull(1)?.trim()
+    }
+
+    return ParsedSubagentToolMeta(
+        kindLabel = kindLabel,
+        title = oneLine(primaryTitle, 52),
+        roleBadge = roleBadge?.let { oneLine(it, 24) },
+        brief = brief,
+        referencedId = referencedId,
+        targetCount = targetCount,
+    )
+}
+
 internal enum class CliToolCategory {
     BASH,
     SKILL,
@@ -959,21 +1059,34 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
         )
     }
 
-    // 6. Task / Subagent
-    if (lowerTitle in setOf("task", "agent", "invoke_subagent")) {
-        val role = jsonObj?.str("Role")
-            ?: jsonObj?.str("description")
-            ?: jsonObj?.str("name")
-            ?: jsonObj?.str("subagent_type")
-            ?: "子任务"
+    // 6. Task / Subagent / Swarm / Workflow
+    if (
+        lowerTitle in setOf(
+            "task",
+            "agent",
+            "invoke_subagent",
+            "swarm",
+            "run_workflow",
+            "workflow",
+            "define_subagent",
+            "manage_subagents",
+        )
+    ) {
+        val meta = parseSubagentToolMeta(item)
+        val badge = when (lowerTitle) {
+            "swarm" -> "Swarm"
+            "run_workflow", "workflow" -> "Workflow"
+            else -> "Task"
+        }
+        val role = meta.title
         return ParsedCliTool(
             category = CliToolCategory.TASK,
-            badge = "Task",
-            badgeColor = Everforest.Orange,
+            badge = badge,
+            badgeColor = if (badge == "Workflow") Everforest.Aqua else Everforest.Orange,
             conciseLabel = oneLine(role, 42),
             microTag = oneLine(role, 22),
             description = role,
-            fullCommandOrDetail = jsonObj?.str("prompt") ?: jsonObj?.str("Prompt") ?: item.input,
+            fullCommandOrDetail = meta.brief ?: item.input,
             outputLineCount = outLines,
         )
     }

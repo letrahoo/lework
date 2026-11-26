@@ -10,6 +10,7 @@ import {
   readAgyLocalSettings,
   resolveAgyWireModel,
 } from '../storage/host-history/engine-settings.ts'
+import { isPlanStepToolName, parsePlanEntriesFromRaw } from '../storage/host-history/plan-steps.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
@@ -89,6 +90,7 @@ class AgyStreamSession implements EngineSession {
   private spawnedSpecKey: string | null = null
   private currentMsgId = `msg_${crypto.randomUUID()}`
   private emittedDeltaInTurn = false
+  private emittedPlanStepKeys = new Set<string>()
   private pendingTurn: {
     turnId: string
     sawStreamActivity: boolean
@@ -311,6 +313,7 @@ class AgyStreamSession implements EngineSession {
   async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
     this.currentMsgId = `msg_${turnId}`
     this.emittedDeltaInTurn = false
+    this.emittedPlanStepKeys.clear()
     this.init.emit({ type: 'session.state', state: 'running' })
 
     const imgHeader =
@@ -505,10 +508,26 @@ class AgyStreamSession implements EngineSession {
             text,
           })
         }
+      } else if (stepType === 'plan' || stepType === 'steps') {
+        const entries = parsePlanEntriesFromRaw(step.steps ?? step.entries ?? step.plan)
+        if (entries.length > 0) {
+          this.init.emit({ type: 'plan.updated', entries })
+        }
       } else if (stepType === 'tool') {
         const toolInfo = (step.tool_info as Record<string, unknown>) ?? {}
         const toolName =
           typeof step.tool_name === 'string' ? step.tool_name : String(toolInfo.name ?? 'tool')
+        const stepKey = String(step.step_index ?? toolName)
+        if (isPlanStepToolName(toolName) === 'update_steps') {
+          const rawSteps =
+            toolInfo.parameters ?? step.tool_input ?? step.args ?? toolInfo.args ?? toolInfo.input
+          const entries = parsePlanEntriesFromRaw(rawSteps)
+          if (entries.length > 0 && !this.emittedPlanStepKeys.has(stepKey)) {
+            this.emittedPlanStepKeys.add(stepKey)
+            this.init.emit({ type: 'plan.updated', entries })
+          }
+          return
+        }
         const callId = `agy_tc_${step.step_index ?? Date.now()}`
         if (step.state === 'ACTIVE') {
           const rawInput = toolInfo.parameters ? JSON.stringify(toolInfo.parameters) : undefined
