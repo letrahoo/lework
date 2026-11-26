@@ -156,12 +156,18 @@ private fun HeadingBlockView(heading: MdBlock.Heading) {
         else -> 14.5.sp to 21.sp
     }
     val headingColor = if (heading.level <= 2) Everforest.HeadingWarm else Everforest.BoldFg
-    val annotated = remember(heading.text, fontSize, headingColor) {
-        parseEverforestInline(
-            text = heading.text,
-            baseColor = headingColor,
-            baseWeight = FontWeight.SemiBold,
-            codeFontSizeSp = fontSize.value - 1.5f,
+    val highlightQuery = LocalSearchHighlightQuery.current
+    val highlightPrimary = LocalSearchHighlightPrimary.current
+    val annotated = remember(heading.text, fontSize, headingColor, highlightQuery, highlightPrimary) {
+        applySearchTermHighlights(
+            source = parseEverforestInline(
+                text = heading.text,
+                baseColor = headingColor,
+                baseWeight = FontWeight.SemiBold,
+                codeFontSizeSp = fontSize.value - 1.5f,
+            ),
+            query = highlightQuery,
+            primary = highlightPrimary,
         )
     }
     Column(
@@ -181,8 +187,14 @@ private fun HeadingBlockView(heading: MdBlock.Heading) {
 
 @Composable
 private fun ParagraphBlockView(text: String) {
-    val annotated = remember(text) {
-        parseEverforestInline(text = text)
+    val highlightQuery = LocalSearchHighlightQuery.current
+    val highlightPrimary = LocalSearchHighlightPrimary.current
+    val annotated = remember(text, highlightQuery, highlightPrimary) {
+        applySearchTermHighlights(
+            source = parseEverforestInline(text = text),
+            query = highlightQuery,
+            primary = highlightPrimary,
+        )
     }
     Text(
         text = annotated,
@@ -237,8 +249,14 @@ private fun ListGroupBlockView(items: List<MdListItem>) {
                     }
                 }
 
-                val annotated = remember(item.text) {
-                    parseEverforestInline(text = item.text)
+                val highlightQuery = LocalSearchHighlightQuery.current
+                val highlightPrimary = LocalSearchHighlightPrimary.current
+                val annotated = remember(item.text, highlightQuery, highlightPrimary) {
+                    applySearchTermHighlights(
+                        source = parseEverforestInline(text = item.text),
+                        query = highlightQuery,
+                        primary = highlightPrimary,
+                    )
                 }
                 Text(
                     text = annotated,
@@ -287,8 +305,14 @@ private fun QuoteBlockView(quote: MdBlock.Quote) {
                 }
             }
             val joined = quote.lines.joinToString("\n")
-            val annotated = remember(joined) {
-                parseEverforestInline(text = joined, baseColor = Everforest.Grey2)
+            val highlightQuery = LocalSearchHighlightQuery.current
+            val highlightPrimary = LocalSearchHighlightPrimary.current
+            val annotated = remember(joined, highlightQuery, highlightPrimary) {
+                applySearchTermHighlights(
+                    source = parseEverforestInline(text = joined, baseColor = Everforest.Grey2),
+                    query = highlightQuery,
+                    primary = highlightPrimary,
+                )
             }
             Text(
                 text = annotated,
@@ -387,16 +411,22 @@ private fun TableBlockView(table: MdBlock.Table) {
                     },
                     content = {
                         // Row 0: Headers (emit invisible TSV/newline separators between cells in composition order)
+                        val highlightQuery = LocalSearchHighlightQuery.current
+                        val highlightPrimary = LocalSearchHighlightPrimary.current
                         for (c in 0 until colCount) {
                             if (c > 0) MarkdownSelectionSeparator("\t")
                             val align = table.alignments.getOrElse(c) { MdTableAlign.START }
                             val cellText = table.headers.getOrElse(c) { "" }
-                            val annotated = remember(cellText) {
-                                parseEverforestInline(
-                                    text = cellText,
-                                    baseColor = Everforest.BoldFg,
-                                    baseWeight = FontWeight.SemiBold,
-                                    codeFontSizeSp = 12f,
+                            val annotated = remember(cellText, highlightQuery, highlightPrimary) {
+                                applySearchTermHighlights(
+                                    source = parseEverforestInline(
+                                        text = cellText,
+                                        baseColor = Everforest.BoldFg,
+                                        baseWeight = FontWeight.SemiBold,
+                                        codeFontSizeSp = 12f,
+                                    ),
+                                    query = highlightQuery,
+                                    primary = highlightPrimary,
                                 )
                             }
                             Text(
@@ -416,11 +446,15 @@ private fun TableBlockView(table: MdBlock.Table) {
                                 MarkdownSelectionSeparator(if (c == 0) "\n" else "\t")
                                 val align = table.alignments.getOrElse(c) { MdTableAlign.START }
                                 val cellText = row.getOrElse(c) { "" }
-                                val annotated = remember(cellText) {
-                                    parseEverforestInline(
-                                        text = cellText,
-                                        baseColor = Everforest.Fg,
-                                        codeFontSizeSp = 12f,
+                                val annotated = remember(cellText, highlightQuery, highlightPrimary) {
+                                    applySearchTermHighlights(
+                                        source = parseEverforestInline(
+                                            text = cellText,
+                                            baseColor = Everforest.Fg,
+                                            codeFontSizeSp = 12f,
+                                        ),
+                                        query = highlightQuery,
+                                        primary = highlightPrimary,
                                     )
                                 }
                                 Text(
@@ -570,7 +604,15 @@ internal fun CodeFenceBlockView(
     }
     val canFold = totalLines > CODE_FOLD_THRESHOLD_LINES
     val visibleCode = if (canFold && !codeExpanded) previewCode else code
-    val highlighted = remember(visibleCode, lang) { highlightEverforestCode(visibleCode, lang) }
+    val highlightQuery = LocalSearchHighlightQuery.current
+    val highlightPrimary = LocalSearchHighlightPrimary.current
+    val highlighted = remember(visibleCode, lang, highlightQuery, highlightPrimary) {
+        applySearchTermHighlights(
+            source = highlightEverforestCode(visibleCode, lang),
+            query = highlightQuery,
+            primary = highlightPrimary,
+        )
+    }
 
     Surface(
         shape = RoundedCornerShape(10.dp),

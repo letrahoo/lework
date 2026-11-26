@@ -15,7 +15,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,8 +32,10 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,6 +45,7 @@ import dev.lework.ui.Everforest
 @Composable
 internal fun DesktopInSessionFindBar(
     state: ConsoleUiState,
+    openNonce: Int = 0,
     onQueryChange: (String) -> Unit,
     onPrevMatch: () -> Unit,
     onNextMatch: () -> Unit,
@@ -47,10 +53,34 @@ internal fun DesktopInSessionFindBar(
     modifier: Modifier = Modifier,
 ) {
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(state.inSessionFindOpen) {
+    var findFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = state.inSessionFindQuery,
+                selection = TextRange(0, state.inSessionFindQuery.length),
+            ),
+        )
+    }
+    var lastSyncedExternalQuery by remember { mutableStateOf(state.inSessionFindQuery) }
+    if (state.inSessionFindQuery != lastSyncedExternalQuery) {
+        lastSyncedExternalQuery = state.inSessionFindQuery
+        if (findFieldValue.text != state.inSessionFindQuery) {
+            findFieldValue = TextFieldValue(
+                text = state.inSessionFindQuery,
+                selection = TextRange(0, state.inSessionFindQuery.length),
+            )
+        }
+    }
+    LaunchedEffect(state.inSessionFindOpen, openNonce) {
         if (state.inSessionFindOpen) {
             withFrameNanos {}
             runCatching { focusRequester.requestFocus() }
+            if (findFieldValue.text.isNotEmpty()) {
+                withFrameNanos {}
+                findFieldValue = findFieldValue.copy(
+                    selection = TextRange(0, findFieldValue.text.length),
+                )
+            }
         }
     }
 
@@ -107,8 +137,14 @@ internal fun DesktopInSessionFindBar(
                     )
                 }
                 BasicTextField(
-                    value = state.inSessionFindQuery,
-                    onValueChange = onQueryChange,
+                    value = findFieldValue,
+                    onValueChange = { next ->
+                        val textChanged = next.text != findFieldValue.text
+                        findFieldValue = next
+                        if (textChanged) {
+                            onQueryChange(next.text)
+                        }
+                    },
                     singleLine = true,
                     textStyle = TextStyle(
                         fontSize = 12.5.sp,

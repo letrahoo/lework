@@ -156,6 +156,7 @@ internal fun ConversationStreamView(
     pendingJumpSeq: Int? = null,
     pendingJumpNonce: Long = 0L,
     highlightedSeq: Int? = null,
+    highlightedQuery: String? = null,
     keepHighlightPersistent: Boolean = false,
     onJumpHandled: () -> Unit = {},
     onClearHighlight: () -> Unit = {},
@@ -350,9 +351,9 @@ internal fun ConversationStreamView(
         }
     }
 
-    LaunchedEffect(highlightedSeq, keepHighlightPersistent) {
+    LaunchedEffect(highlightedSeq, highlightedQuery, keepHighlightPersistent) {
         if (highlightedSeq != null && !keepHighlightPersistent) {
-            delay(2_400L)
+            delay(8_000L)
             onClearHighlight()
         }
     }
@@ -424,6 +425,11 @@ internal fun ConversationStreamView(
                 else -> 12.dp
             }
             val isHighlighted = highlightedSeq != null && segment.seq >= 0 && segment.seq == highlightedSeq
+            val segmentHighlightQuery = when {
+                highlightedQuery.isNullOrBlank() -> null
+                keepHighlightPersistent || highlightedSeq != null -> highlightedQuery
+                else -> null
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -441,48 +447,53 @@ internal fun ConversationStreamView(
                         },
                     ),
             ) {
-                when (segment) {
-                    is TimelineSegment.ProcessTrace -> ClaudeProcessTraceView(
-                        steps = segment.steps,
-                        isSessionRunning = isSessionRunning,
-                    )
-                    is TimelineSegment.AssistantBlock -> {
-                        if (segment.isLastBlockOfMessage) {
-                            Column(modifier = Modifier.fillMaxWidth()) {
+                CompositionLocalProvider(
+                    LocalSearchHighlightQuery provides segmentHighlightQuery,
+                    LocalSearchHighlightPrimary provides isHighlighted,
+                ) {
+                    when (segment) {
+                        is TimelineSegment.ProcessTrace -> ClaudeProcessTraceView(
+                            steps = segment.steps,
+                            isSessionRunning = isSessionRunning,
+                        )
+                        is TimelineSegment.AssistantBlock -> {
+                            if (segment.isLastBlockOfMessage) {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    MarkdownBlockItemView(segment.block, wrapInSelectionContainer = true)
+                                    MessageTimestampCaption(
+                                        prefix = "回复",
+                                        timestampMs = segment.timestampMs,
+                                        nowMs = nowMs,
+                                        alignEnd = false,
+                                        tag = "msg_time_assistant_${segment.messageId}",
+                                        copyableText = segment.fullText.takeIf { it.isNotBlank() },
+                                        copyTag = "msg_copy_assistant_${segment.messageId}",
+                                    )
+                                }
+                            } else {
                                 MarkdownBlockItemView(segment.block, wrapInSelectionContainer = true)
-                                MessageTimestampCaption(
-                                    prefix = "回复",
-                                    timestampMs = segment.timestampMs,
-                                    nowMs = nowMs,
-                                    alignEnd = false,
-                                    tag = "msg_time_assistant_${segment.messageId}",
-                                    copyableText = segment.fullText.takeIf { it.isNotBlank() },
-                                    copyTag = "msg_copy_assistant_${segment.messageId}",
-                                )
                             }
-                        } else {
-                            MarkdownBlockItemView(segment.block, wrapInSelectionContainer = true)
                         }
+                        is TimelineSegment.Single -> MessageTimelineRow(
+                            item = segment.item,
+                            nowMs = nowMs,
+                            isSessionRunning = isSessionRunning,
+                            subagents = subagents,
+                            onOpenSubagent = onOpenSubagent,
+                            onInlineRetry = if (
+                                showInlineErrorRetry &&
+                                !isSessionRunning &&
+                                onRetryLastTurn != null &&
+                                segment.item is ChatTimelineItem.Notice &&
+                                segment.item.isError &&
+                                segment.item.id == latestErrorNoticeId
+                            ) {
+                                onRetryLastTurn
+                            } else {
+                                null
+                            },
+                        )
                     }
-                    is TimelineSegment.Single -> MessageTimelineRow(
-                        item = segment.item,
-                        nowMs = nowMs,
-                        isSessionRunning = isSessionRunning,
-                        subagents = subagents,
-                        onOpenSubagent = onOpenSubagent,
-                        onInlineRetry = if (
-                            showInlineErrorRetry &&
-                            !isSessionRunning &&
-                            onRetryLastTurn != null &&
-                            segment.item is ChatTimelineItem.Notice &&
-                            segment.item.isError &&
-                            segment.item.id == latestErrorNoticeId
-                        ) {
-                            onRetryLastTurn
-                        } else {
-                            null
-                        },
-                    )
                 }
             }
         }
@@ -995,9 +1006,18 @@ private fun MessageTimelineRow(
                         }
 
                         if (!isAutoPlaceholderOnly && item.text.isNotBlank()) {
+                            val highlightQuery = LocalSearchHighlightQuery.current
+                            val highlightPrimary = LocalSearchHighlightPrimary.current
+                            val styledUserText = remember(item.text, highlightQuery, highlightPrimary) {
+                                highlightPlainTextForSearch(
+                                    text = item.text,
+                                    query = highlightQuery,
+                                    primary = highlightPrimary,
+                                )
+                            }
                             SelectionContainer {
                                 Text(
-                                    text = item.text,
+                                    text = styledUserText,
                                     fontSize = 15.sp,
                                     lineHeight = 22.sp,
                                     color = Everforest.Fg,

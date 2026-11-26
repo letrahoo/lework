@@ -49,6 +49,8 @@ internal fun DesktopConsoleApp(
     var showUsageDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showGlobalSearchDialog by remember { mutableStateOf(false) }
+    var globalSearchOpenNonce by remember { mutableIntStateOf(0) }
+    var inSessionFindOpenNonce by remember { mutableIntStateOf(0) }
     var activeInspectorTab by remember { mutableStateOf<DesktopInspectorTab?>(null) }
     var sidebarExpanded by remember { mutableStateOf(true) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
@@ -60,6 +62,7 @@ internal fun DesktopConsoleApp(
             ?: state.drawerSearchQuery.trim().takeIf { it.isNotEmpty() }
             ?: state.searchQuery
         showGlobalSearchDialog = true
+        globalSearchOpenNonce++
         if (nextQuery.isNotBlank()) {
             store.searchConversations(query = nextQuery, immediate = true)
         }
@@ -86,6 +89,7 @@ internal fun DesktopConsoleApp(
     LaunchedEffect(openInSessionFindSignal) {
         if (openInSessionFindSignal > 0 && state.hasEnteredWorkspace) {
             if (state.activeSessionId != null) {
+                inSessionFindOpenNonce++
                 store.openInSessionFind()
             } else {
                 openGlobalSearchPalette()
@@ -148,6 +152,7 @@ internal fun DesktopConsoleApp(
                         }
                         ev.key == Key.F && !ev.isShiftPressed -> {
                             if (state.activeSessionId != null) {
+                                inSessionFindOpenNonce++
                                 store.openInSessionFind()
                             } else {
                                 openGlobalSearchPalette()
@@ -395,6 +400,7 @@ internal fun DesktopConsoleApp(
                                         pendingJumpSeq = state.pendingJumpSeq,
                                         pendingJumpNonce = state.pendingJumpNonce,
                                         highlightedSeq = state.highlightedSeq,
+                                        highlightedQuery = state.highlightedQuery,
                                         keepHighlightPersistent = state.inSessionFindOpen,
                                         onJumpHandled = store::consumePendingJump,
                                         onClearHighlight = store::clearHighlightedSeq,
@@ -405,6 +411,7 @@ internal fun DesktopConsoleApp(
                             if (state.inSessionFindOpen && state.activeSessionId != null) {
                                 DesktopInSessionFindBar(
                                     state = state,
+                                    openNonce = inSessionFindOpenNonce,
                                     onQueryChange = { q -> store.updateInSessionFindQuery(q) },
                                     onPrevMatch = { store.navigateInSessionFind(-1) },
                                     onNextMatch = { store.navigateInSessionFind(+1) },
@@ -664,6 +671,7 @@ internal fun DesktopConsoleApp(
         if (showGlobalSearchDialog) {
             DesktopSearchDialog(
                 state = state,
+                openNonce = globalSearchOpenNonce,
                 onSearch = { q, eng, role, curWs, archived, immediate ->
                     store.searchConversations(
                         query = q,

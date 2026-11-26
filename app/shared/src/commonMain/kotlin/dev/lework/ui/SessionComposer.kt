@@ -308,6 +308,11 @@ internal fun ClaudeStyleComposer(
                                 if (isPasteShortcut) {
                                     return@onPreviewKeyEvent onPasteClipboardImages(false)
                                 }
+                                val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
+                                if (isEnter && value.composition == null && (keyEvent.isShiftPressed || keyEvent.isAltPressed)) {
+                                    onValueChange(dev.lework.ui.desktop.insertNewlineAtSelection(value))
+                                    return@onPreviewKeyEvent true
+                                }
                                 false
                             }
                             .testTag("composer_input"),
