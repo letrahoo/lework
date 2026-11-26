@@ -128,10 +128,10 @@ if [[ "$MODE" == "--all" || "$MODE" == "--android" ]]; then
   else
     echo "==> Building Android embedded tsnet binaries (arm64-v8a & x86_64, static Linux ELF fallback)..."
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-      "$GO_BIN" build -trimpath -ldflags="-s -w" \
+      "$GO_BIN" build -trimpath -ldflags="-s -w -X main.androidELFFallback=1" \
       -o "$ANDROID_JNI_DIR/arm64-v8a/libtsnetbridge.so" ./cmd/lework-tsnet
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-      "$GO_BIN" build -trimpath -ldflags="-s -w" \
+      "$GO_BIN" build -trimpath -ldflags="-s -w -X main.androidELFFallback=1" \
       -o "$ANDROID_JNI_DIR/x86_64/libtsnetbridge.so" ./cmd/lework-tsnet
   fi
 fi

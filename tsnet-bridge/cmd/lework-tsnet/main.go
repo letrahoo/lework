@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -233,6 +235,9 @@ func installSafeInterfaceGetterIfNeeded(rawSpec string) {
 	})
 }
 
+// Set by build-tsnet.sh only for the Android no-NDK (GOOS=linux) executable.
+var androidELFFallback string
+
 func main() {
 	home, _ := os.UserHomeDir()
 	defaultDir := filepath.Join(home, ".lework", "tsnet")
@@ -259,7 +264,12 @@ func main() {
 		resolvedUpstream = ""
 	}
 
+	var diag io.Writer
+	if *clientOnly && (runtime.GOOS == "android" || androidELFFallback == "1") {
+		diag = os.Stderr
+	}
 	mgr, err := mesh.NewManager(mesh.Config{
+		ForwarderDiag:   diag,
 		StateDir:        *stateDir,
 		Hostname:        *hostname,
 		ControlURL:      *controlURL,
