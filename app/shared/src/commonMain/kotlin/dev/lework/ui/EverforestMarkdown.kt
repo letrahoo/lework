@@ -60,6 +60,7 @@ internal sealed interface MdBlock {
     data class Heading(val level: Int, val text: String) : MdBlock
     data class Paragraph(val text: String) : MdBlock
     data class CodeFence(val lang: String, val code: String) : MdBlock
+    data class MathBlock(val latex: String) : MdBlock
     data class Quote(val alertKind: String?, val lines: List<String>) : MdBlock
     data class ListGroup(val items: List<MdListItem>) : MdBlock
     data class Table(
@@ -126,6 +127,7 @@ internal fun MarkdownBlockItemView(
                     CodeFenceBlockView(block.lang, block.code)
                 }
             }
+            is MdBlock.MathBlock -> MathBlockView(latex = block.latex)
             is MdBlock.Quote -> QuoteBlockView(block)
             is MdBlock.ListGroup -> ListGroupBlockView(block.items)
             is MdBlock.Table -> TableBlockView(block)
@@ -694,6 +696,70 @@ internal fun parseMarkdownBlocks(raw: String): List<MdBlock> {
             continue
         }
 
+        // 1b. Block LaTeX Math (`$$ ... $$` or `\[ ... \]`)
+        if (trimmed.startsWith("$$")) {
+            val rest = trimmed.removePrefix("$$")
+            if (rest.endsWith("$$") && rest.length >= 2) {
+                val inner = rest.removeSuffix("$$").trim()
+                if (inner.isNotEmpty()) {
+                    out.add(MdBlock.MathBlock(inner))
+                    i++
+                    continue
+                }
+            } else {
+                val mathLines = mutableListOf<String>()
+                if (rest.trim().isNotEmpty()) mathLines.add(rest.trim())
+                i++
+                while (i < lines.size) {
+                    val curTrim = lines[i].trim()
+                    if (curTrim.endsWith("$$")) {
+                        val beforeClose = curTrim.removeSuffix("$$").trim()
+                        if (beforeClose.isNotEmpty()) mathLines.add(beforeClose)
+                        i++
+                        break
+                    }
+                    mathLines.add(lines[i])
+                    i++
+                }
+                val latexBody = mathLines.joinToString("\n").trim()
+                if (latexBody.isNotEmpty()) {
+                    out.add(MdBlock.MathBlock(latexBody))
+                }
+                continue
+            }
+        }
+        if (trimmed.startsWith("\\[")) {
+            val rest = trimmed.removePrefix("\\[")
+            if (rest.endsWith("\\]") && rest.length >= 2) {
+                val inner = rest.removeSuffix("\\]").trim()
+                if (inner.isNotEmpty()) {
+                    out.add(MdBlock.MathBlock(inner))
+                    i++
+                    continue
+                }
+            } else {
+                val mathLines = mutableListOf<String>()
+                if (rest.trim().isNotEmpty()) mathLines.add(rest.trim())
+                i++
+                while (i < lines.size) {
+                    val curTrim = lines[i].trim()
+                    if (curTrim.endsWith("\\]")) {
+                        val beforeClose = curTrim.removeSuffix("\\]").trim()
+                        if (beforeClose.isNotEmpty()) mathLines.add(beforeClose)
+                        i++
+                        break
+                    }
+                    mathLines.add(lines[i])
+                    i++
+                }
+                val latexBody = mathLines.joinToString("\n").trim()
+                if (latexBody.isNotEmpty()) {
+                    out.add(MdBlock.MathBlock(latexBody))
+                }
+                continue
+            }
+        }
+
         // 2. Thematic Break (---, ***, ___)
         if (
             (trimmed.length >= 3 && trimmed.all { it == '-' }) ||
@@ -789,6 +855,8 @@ internal fun parseMarkdownBlocks(raw: String): List<MdBlock> {
                 peekTrim.isEmpty() ||
                 peekTrim.startsWith("```") ||
                 peekTrim.startsWith("~~~") ||
+                peekTrim.startsWith("$$") ||
+                peekTrim.startsWith("\\[") ||
                 peekTrim.startsWith(">") ||
                 matchHeading(peekTrim) != null ||
                 matchListItem(peek) != null ||
@@ -1026,6 +1094,19 @@ private fun AnnotatedString.Builder.appendInlineRec(
                     }
                 }
                 i = end + ticks
+                continue
+            }
+        }
+
+        // 1b. Inline LaTeX Math (`$...$`, `\(...\)`, or single-line `$$...$$`)
+        if (ch == '$' || ch == '\\') {
+            val mathMatch = matchInlineMath(text, i)
+            if (mathMatch != null) {
+                appendInlineLatexMath(
+                    latex = mathMatch.body,
+                    baseFontSizeSp = (codeFontSizeSp + 1f).coerceAtLeast(13f),
+                )
+                i = mathMatch.endExclusive
                 continue
             }
         }
