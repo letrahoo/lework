@@ -149,15 +149,18 @@ internal fun DesktopModelPickerDialog(
 
     val isSearching = searchQuery.trim().isNotEmpty()
     val tabFilteredEntries = remember(allEntries, selectedTab, searchQuery, selectedSourceFilter, favSet) {
-        val q = searchQuery.trim().lowercase()
+        val q = searchQuery.trim()
         if (q.isNotEmpty()) {
             allEntries.filter { entry ->
-                entry.spec.name.lowercase().contains(q) ||
-                    entry.spec.id.lowercase().contains(q) ||
-                    entry.engineName.lowercase().contains(q) ||
-                    entry.engineId.lowercase().contains(q) ||
-                    entry.sourceBadge?.lowercase()?.contains(q) == true ||
-                    entry.spec.providerId?.lowercase()?.contains(q) == true
+                matchesModelSearchQuery(
+                    q,
+                    entry.spec.name,
+                    entry.spec.id,
+                    entry.engineName,
+                    entry.engineId,
+                    entry.sourceBadge,
+                    entry.spec.providerId,
+                )
             }
         } else if (selectedTab == "favorites") {
             allEntries.filter { it.isFavorite }

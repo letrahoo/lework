@@ -254,6 +254,7 @@ internal fun DesktopProvidersSection(
                                                     .clickable(enabled = !state.providersBusy) {
                                                         onClearFeedback()
                                                         filteringProvider = provider
+                                                        onRefreshProviders(provider.id)
                                                     }
                                                     .testTag("settings_provider_filter_${provider.id}"),
                                             ) {
@@ -389,6 +390,8 @@ internal fun DesktopProvidersSection(
         DesktopProviderModelFilterDialog(
             provider = activeFilterTarget,
             busy = state.providersBusy,
+            probing = state.providerProbingId == activeFilterTarget.id,
+            onRefresh = { onRefreshProviders(activeFilterTarget.id) },
             onSave = { selectedList ->
                 onUpsertProvider(
                     ProviderConfigInput(
@@ -410,32 +413,69 @@ internal fun DesktopProvidersSection(
     }
 }
 
-private fun modelFamilyLabel(modelId: String): String {
-    val lower = modelId.lowercase()
+internal fun modelFamilyLabel(modelId: String): String {
+    val raw = modelId.trim().lowercase()
+    val base = raw.substringAfterLast('/')
     return when {
-        lower.startsWith("claude") -> "Claude"
-        lower.startsWith("gpt") || lower.startsWith("o1") || lower.startsWith("o3") ||
-            lower.startsWith("o4") || lower.startsWith("codex") -> "GPT / Codex"
-        lower.startsWith("gemini") -> "Gemini"
-        lower.startsWith("kimi") || lower.startsWith("moonshot") -> "Kimi"
-        lower.startsWith("deepseek") -> "DeepSeek"
-        lower.startsWith("glm") -> "GLM"
-        lower.startsWith("qwen") -> "Qwen"
+        base.startsWith("claude") || raw.startsWith("anthropic/") -> "Claude"
+        base.startsWith("gpt") || base.startsWith("o1") || base.startsWith("o3") ||
+            base.startsWith("o4") || base.startsWith("codex") || raw.startsWith("openai/") -> "GPT / Codex"
+        base.startsWith("gemini") || raw.startsWith("google/") -> "Gemini"
+        base.startsWith("kimi") || base.startsWith("moonshot") -> "Kimi"
+        base.startsWith("deepseek") -> "DeepSeek"
+        base.startsWith("glm") -> "GLM"
+        base.startsWith("qwen") -> "Qwen"
         else -> "其他"
     }
+}
+
+private val MODEL_SEARCH_TOKEN_SPLIT_REGEX = Regex("[\\s/]+")
+
+/**
+ * Matches a model search query across one or more searchable fields.
+ * Supports exact substring matches as well as multi-term queries separated by whitespace or `/`
+ * (e.g. `gapi/neon` or `gapi neon` matches `gapi/gemini-4-neon`, while `gapi/` stays prefix-strict).
+ */
+internal fun matchesModelSearchQuery(query: String, vararg fields: String?): Boolean {
+    val trimmed = query.trim().lowercase()
+    if (trimmed.isEmpty()) return true
+    val haystack = fields.asSequence()
+        .filterNotNull()
+        .map { it.trim().lowercase() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+    if (haystack.isEmpty()) return false
+    if (haystack.contains(trimmed)) return true
+    val tokens = trimmed.split(MODEL_SEARCH_TOKEN_SPLIT_REGEX).filter { it.isNotEmpty() }
+    if (tokens.isEmpty()) return false
+    if (tokens.size == 1) {
+        return if (trimmed.contains('/')) false else haystack.contains(tokens[0])
+    }
+    return tokens.all { it in haystack }
 }
 
 @Composable
 private fun DesktopProviderModelFilterDialog(
     provider: ProviderInfo,
     busy: Boolean,
+    probing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onSave: (List<String>) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val allModels = remember(provider.models) { provider.models.distinct() }
-    var selectedSet by remember(provider.id, provider.selectedModels, allModels) {
+    var hasUserEdited by remember(provider.id) { mutableStateOf(false) }
+    var selectedSet by remember(provider.id) {
         val initial = provider.selectedModels.filter { it in allModels }.toSet()
         mutableStateOf(if (initial.isEmpty()) allModels.toSet() else initial)
+    }
+    LaunchedEffect(allModels, provider.selectedModels) {
+        if (!hasUserEdited) {
+            val initial = provider.selectedModels.filter { it in allModels }.toSet()
+            selectedSet = if (initial.isEmpty()) allModels.toSet() else initial
+        } else {
+            selectedSet = selectedSet.filter { it in allModels }.toSet()
+        }
     }
     var searchQuery by remember(provider.id) { mutableStateOf("") }
     var selectedFamily by remember(provider.id) { mutableStateOf<String?>(null) }
@@ -450,10 +490,9 @@ private fun DesktopProviderModelFilterDialog(
     }
 
     val filteredModels = remember(allModels, searchQuery, selectedFamily) {
-        val q = searchQuery.trim().lowercase()
         allModels.filter { id ->
             val famOk = selectedFamily == null || modelFamilyLabel(id) == selectedFamily
-            val qOk = q.isEmpty() || id.lowercase().contains(q)
+            val qOk = matchesModelSearchQuery(searchQuery, id)
             famOk && qOk
         }
     }
@@ -492,17 +531,34 @@ private fun DesktopProviderModelFilterDialog(
                             color = Everforest.Fg,
                         )
                         Text(
-                            text = "仅把勾选的模型合并到 ⌘K 引擎列表中（已选 ${selectedSet.size} / 共 ${allModels.size} 个）",
+                            text = buildString {
+                                append("仅把勾选的模型合并到 ⌘K 引擎列表中（已选 ${selectedSet.size} / 共 ${allModels.size} 个")
+                                if (probing) append(" · 正在同步最新列表…")
+                                append("）")
+                            },
                             fontSize = 11.5.sp,
                             color = Everforest.CommentGrey,
                         )
                     }
-                    LeworkIconActionButton(
-                        icon = Icons.Rounded.Close,
-                        tooltip = "关闭",
-                        shortcut = "Esc",
-                        onClick = onDismiss,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        LeworkIconActionButton(
+                            icon = Icons.Rounded.Refresh,
+                            tooltip = "刷新模型列表",
+                            size = 24.dp,
+                            iconSize = 14.dp,
+                            testTag = "provider_filter_btn_refresh",
+                            onClick = onRefresh,
+                        )
+                        LeworkIconActionButton(
+                            icon = Icons.Rounded.Close,
+                            tooltip = "关闭",
+                            shortcut = "Esc",
+                            onClick = onDismiss,
+                        )
+                    }
                 }
 
                 // Search bar
@@ -587,7 +643,10 @@ private fun DesktopProviderModelFilterDialog(
                             color = Everforest.Green,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(5.dp))
-                                .clickable { selectedSet = selectedSet + filteredModels }
+                                .clickable {
+                                    hasUserEdited = true
+                                    selectedSet = selectedSet + filteredModels
+                                }
                                 .padding(horizontal = 4.dp, vertical = 2.dp),
                         )
                         Text(
@@ -596,7 +655,10 @@ private fun DesktopProviderModelFilterDialog(
                             color = Everforest.Grey1,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(5.dp))
-                                .clickable { selectedSet = selectedSet - filteredModels.toSet() }
+                                .clickable {
+                                    hasUserEdited = true
+                                    selectedSet = selectedSet - filteredModels.toSet()
+                                }
                                 .padding(horizontal = 4.dp, vertical = 2.dp)
                                 .testTag("provider_filter_btn_clear_visible"),
                         )
@@ -607,7 +669,10 @@ private fun DesktopProviderModelFilterDialog(
                         color = Everforest.Aqua,
                         modifier = Modifier
                             .clip(RoundedCornerShape(5.dp))
-                            .clickable { selectedSet = allModels.toSet() }
+                            .clickable {
+                                hasUserEdited = true
+                                selectedSet = allModels.toSet()
+                            }
                             .padding(horizontal = 4.dp, vertical = 2.dp)
                             .testTag("provider_filter_btn_reset_all"),
                     )
@@ -639,6 +704,7 @@ private fun DesktopProviderModelFilterDialog(
                                     .clip(RoundedCornerShape(7.dp))
                                     .background(if (checked) Everforest.Bg2.copy(alpha = 0.65f) else Everforest.Bg0.copy(alpha = 0.45f))
                                     .clickable {
+                                        hasUserEdited = true
                                         selectedSet = if (checked) selectedSet - modelId else selectedSet + modelId
                                     }
                                     .padding(horizontal = 10.dp, vertical = 7.dp)
