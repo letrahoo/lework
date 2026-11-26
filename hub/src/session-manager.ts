@@ -24,7 +24,7 @@ import { formatEngineTurnError } from './engines/network-error.ts'
 import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { isExternalProviderId } from './registry/provider-adapters.ts'
-import { HubRpcError, resolveAllowedWorkspacePath } from './security/path-guard.ts'
+import { HubRpcError, isSensitivePath, resolveAllowedWorkspacePath } from './security/path-guard.ts'
 import {
   listSessionArtifacts,
   readSessionArtifact,
@@ -38,6 +38,7 @@ import {
   sweepExpiredArchivedAttachments,
 } from './storage/attachment-store.ts'
 import { HostTaskInspector, TerminalApprovalError } from './storage/host-history.ts'
+import { isFilesystemRoot } from './storage/host-history/common.ts'
 import { ConversationSearchIndex, type SearchableSessionSource } from './storage/search-index.ts'
 import { SessionMetadataStore } from './storage/session-metadata.ts'
 import {
@@ -577,9 +578,10 @@ export class SessionManager {
             await pendingClose
           }
           const decoratedHost = this.metaStore.applyToMeta(hostLoaded.session)
+          const materializeCwd = this.resolveHostMaterializeCwd(hostLoaded.session)
           await this.createSession({
             engineId: hostLoaded.session.engineId,
-            cwd: hostLoaded.session.cwd,
+            cwd: materializeCwd,
             workspaces: hostLoaded.session.workspaces,
             title: hostLoaded.session.title,
             providerId: overrides?.providerId ?? decoratedHost.providerId,
@@ -1216,6 +1218,80 @@ export class SessionManager {
     removeSessionAttachments(sessionId, aliasId)
   }
 
+  private resolveHostMaterializeCwd(hostMeta: SessionMeta): string {
+    const allowedRoots = [...new Set([...this.workspaceRoots, getManagedWorktreesRoot()])]
+    const candidates = [hostMeta.cwd, ...(hostMeta.workspaces ?? [])].filter(
+      (p): p is string => typeof p === 'string' && p.trim().length > 0,
+    )
+
+    let primaryError: unknown
+    for (let i = 0; i < candidates.length; i++) {
+      try {
+        return resolveAllowedWorkspacePath(candidates[i]!, allowedRoots)
+      } catch (err) {
+        if (i === 0) primaryError = err
+      }
+    }
+
+    const rawCwd = hostMeta.cwd?.trim() ?? ''
+    const homeDir = this.hostInspector.getHomeDir()
+    const homeAliases = new Set<string>([homeDir])
+    try {
+      homeAliases.add(fs.realpathSync(homeDir))
+    } catch {
+      // ignore
+    }
+
+    let existsAsDir = false
+    let realCwd = rawCwd
+    if (rawCwd) {
+      try {
+        existsAsDir = fs.statSync(rawCwd).isDirectory()
+        if (existsAsDir) realCwd = fs.realpathSync(rawCwd)
+      } catch {
+        existsAsDir = false
+      }
+    }
+
+    if (existsAsDir && isSensitivePath(realCwd)) {
+      throw primaryError instanceof Error
+        ? primaryError
+        : new HubRpcError(ErrorCode.PathNotAllowed, 'Access to credential / secret files is blocked.')
+    }
+
+    const isHomeAlias = (p: string): boolean => {
+      if (homeAliases.has(p)) return true
+      try {
+        return homeAliases.has(fs.realpathSync(p))
+      } catch {
+        return false
+      }
+    }
+
+    const hasOnlyHomeWorkspaces = (hostMeta.workspaces ?? []).every(w => !w.trim() || isHomeAlias(w))
+    const isGenericFallbackCwd =
+      !rawCwd ||
+      !existsAsDir ||
+      isFilesystemRoot(realCwd) ||
+      (homeAliases.has(realCwd) && hasOnlyHomeWorkspaces)
+
+    if (isGenericFallbackCwd) {
+      for (const root of this.workspaceRoots) {
+        try {
+          return resolveAllowedWorkspacePath(root, allowedRoots)
+        } catch {
+          // try next configured workspace root
+        }
+      }
+    }
+
+    const displayPath = realCwd || rawCwd || '/'
+    throw new HubRpcError(
+      ErrorCode.PathNotAllowed,
+      `会话目录 "${displayPath}" 不在主机允许的工作区目录内，无法直接发送消息；请在主机终端执行：lework config workspace add "${displayPath}" 并重启 Hub 后重试。`,
+    )
+  }
+
   private resolveSessionWorkspaceCwd(sessionId: string): string {
     const allowedRoots = [...new Set([...this.workspaceRoots, getManagedWorktreesRoot()])]
     const managed = this.sessions.get(sessionId)
@@ -1232,7 +1308,20 @@ export class SessionManager {
   }
 
   listCheckpoints(sessionId: string): CheckpointInfo[] {
-    const cwd = this.resolveSessionWorkspaceCwd(sessionId)
+    let cwd: string
+    try {
+      cwd = this.resolveSessionWorkspaceCwd(sessionId)
+    } catch (err) {
+      if (
+        sessionId.startsWith('host:') &&
+        !this.sessions.has(sessionId) &&
+        err instanceof HubRpcError &&
+        err.code === ErrorCode.PathNotAllowed
+      ) {
+        return []
+      }
+      throw err
+    }
     return this.checkpoints.list(sessionId, cwd)
   }
 

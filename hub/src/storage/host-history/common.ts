@@ -111,6 +111,24 @@ export function readFullSessionLines(filePath: string): string[] {
   }
 }
 
+function resolveHomeAliases(homeDir: string): string[] {
+  const aliases = [homeDir]
+  try {
+    const real = fs.realpathSync(homeDir)
+    if (real && !aliases.includes(real)) aliases.push(real)
+  } catch {
+    // ignore missing homeDir
+  }
+  return aliases
+}
+
+export function isFilesystemRoot(dirPath: string): boolean {
+  const trimmed = dirPath.trim()
+  if (!trimmed) return false
+  const resolved = path.resolve(trimmed)
+  return path.parse(resolved).root === resolved
+}
+
 export function extractProjectRootFromToolInput(
   args: Record<string, unknown> | undefined,
   sink: string[],
@@ -119,15 +137,33 @@ export function extractProjectRootFromToolInput(
   if (!args) return
   const rawPath = (args.Path ?? args.path ?? args.file_path ?? args.Cwd ?? args.cwd) as unknown
   if (typeof rawPath !== 'string' || !rawPath.startsWith('/')) return
-  for (const bucket of ['my-projects', 'projects', 'repos', 'code', 'work', 'personal']) {
-    const prefix = path.join(homeDir, bucket) + path.sep
-    if (rawPath.startsWith(prefix)) {
-      const rest = rawPath.slice(prefix.length)
-      const repoName = rest.split(path.sep)[0]
-      if (repoName && !repoName.startsWith('.')) {
-        sink.push(path.join(homeDir, bucket, repoName))
+  const homeAliases = resolveHomeAliases(homeDir)
+  const pathCandidates = [rawPath]
+  try {
+    const realRaw = fs.realpathSync(rawPath)
+    if (realRaw && !pathCandidates.includes(realRaw)) pathCandidates.push(realRaw)
+  } catch {
+    try {
+      const realParent = fs.realpathSync(path.dirname(rawPath))
+      const combined = path.join(realParent, path.basename(rawPath))
+      if (!pathCandidates.includes(combined)) pathCandidates.push(combined)
+    } catch {
+      // ignore non-existent paths
+    }
+  }
+  for (const candidatePath of pathCandidates) {
+    for (const alias of homeAliases) {
+      for (const bucket of ['my-projects', 'projects', 'repos', 'code', 'work', 'personal']) {
+        const prefix = path.join(alias, bucket) + path.sep
+        if (candidatePath.startsWith(prefix)) {
+          const rest = candidatePath.slice(prefix.length)
+          const repoName = rest.split(path.sep)[0]
+          if (repoName && !repoName.startsWith('.')) {
+            sink.push(path.join(alias, bucket, repoName))
+          }
+          return
+        }
       }
-      return
     }
   }
 }
@@ -135,7 +171,17 @@ export function extractProjectRootFromToolInput(
 export function mergeUniqueWorkspaces(candidates: string[], homeDir = os.homedir()): string[] {
   const out: string[] = []
   const seenReal = new Set<string>()
-  const genericDirs = new Set([homeDir, path.join(homeDir, 'work'), path.join(homeDir, 'personal')])
+  const genericDirs = new Set<string>()
+  for (const alias of resolveHomeAliases(homeDir)) {
+    for (const dir of [alias, path.join(alias, 'work'), path.join(alias, 'personal')]) {
+      genericDirs.add(dir)
+      try {
+        genericDirs.add(fs.realpathSync(dir))
+      } catch {
+        // ignore missing dir
+      }
+    }
+  }
 
   const specific: string[] = []
   const generic: string[] = []
@@ -145,6 +191,7 @@ export function mergeUniqueWorkspaces(candidates: string[], homeDir = os.homedir
     try {
       const real = fs.realpathSync(raw)
       if (!fs.statSync(real).isDirectory()) continue
+      if (isFilesystemRoot(real)) continue
       if (seenReal.has(real)) continue
       seenReal.add(real)
       if (genericDirs.has(real)) {

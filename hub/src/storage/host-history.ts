@@ -30,6 +30,7 @@ import {
 import { parseCodexTranscript, scanCodexSessions } from './host-history/codex-history.ts'
 import {
   classifyRawToolCall,
+  isFilesystemRoot,
   mergeUniqueWorkspaces,
   readFirstAndLastLines,
   type CachedTranscript,
@@ -394,10 +395,10 @@ export class HostTaskInspector {
       if (!prev) continue
       const isRich = this.watched.has(id) || this.transcriptCache.has(id)
       if (!isRich) continue
-      const mergedWorkspaces = mergeUniqueWorkspaces([
-        ...(prev.meta.workspaces ?? []),
-        ...(entry.meta.workspaces ?? []),
-      ])
+      const mergedWorkspaces = mergeUniqueWorkspaces(
+        [...(prev.meta.workspaces ?? []), ...(entry.meta.workspaces ?? [])],
+        this.homeDir,
+      )
       const activeWatch = this.watched.get(id)
       const hasCancelWm = this.cancelledWatermarks.has(id)
       let preservedState = entry.meta.state
@@ -732,11 +733,12 @@ export class HostTaskInspector {
       queuedPrompts = this.filterSuppressedQueuedPrompts(sessionId, queuedPrompts)
     }
 
-    const mergedWorkspaces = mergeUniqueWorkspaces([
-      ...(entry.meta.workspaces ?? [entry.meta.cwd]),
-      ...extraWorkspaces,
-    ])
-    const primaryCwd = mergedWorkspaces[0] ?? entry.meta.cwd
+    const mergedWorkspaces = mergeUniqueWorkspaces(
+      [...(entry.meta.workspaces ?? [entry.meta.cwd]), ...extraWorkspaces],
+      this.homeDir,
+    )
+    const fallbackCwd = isFilesystemRoot(entry.meta.cwd) ? this.homeDir : entry.meta.cwd
+    const primaryCwd = mergedWorkspaces[0] ?? fallbackCwd
 
     const updatedMeta: SessionMeta = {
       ...entry.meta,

@@ -16,6 +16,7 @@ export interface ClaudeLiveSessionMeta {
   name?: string
   status?: string
   waitingFor?: string | null
+  entrypoint?: string
   updatedAt?: number
 }
 
@@ -169,19 +170,31 @@ export class TerminalBridge {
           name?: string
           status?: string
           waitingFor?: string | null
+          entrypoint?: string
           updatedAt?: number
         }
         if (typeof raw.pid !== 'number' || typeof raw.sessionId !== 'string') continue
         if (!this.pidAlive(raw.pid)) continue
-        out.set(raw.sessionId, {
+        const entrypoint =
+          typeof raw.entrypoint === 'string' && raw.entrypoint.trim() ? raw.entrypoint.trim() : undefined
+        const nextMeta: ClaudeLiveSessionMeta = {
           pid: raw.pid,
           sessionId: raw.sessionId,
           cwd: raw.cwd ?? '',
           name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : undefined,
           status: raw.status,
           waitingFor: raw.waitingFor,
+          entrypoint,
           updatedAt: raw.updatedAt,
-        })
+        }
+        const existing = out.get(raw.sessionId)
+        if (existing) {
+          const existingIsSdk = Boolean(existing.entrypoint && /^sdk\b/i.test(existing.entrypoint))
+          const nextIsSdk = Boolean(entrypoint && /^sdk\b/i.test(entrypoint))
+          // Prefer a real interactive CLI process over a headless SDK/ACP subprocess.
+          if (!existingIsSdk && nextIsSdk) continue
+        }
+        out.set(raw.sessionId, nextMeta)
       } catch {
         // ignore malformed json
       }
@@ -204,8 +217,18 @@ export class TerminalBridge {
       target = await this.findTarget(params)
     }
     if (!target) {
-      const hostAppHint =
-        params.claudeRuntime?.pid ? await this.detectParentHostApp(params.claudeRuntime.pid) : undefined
+      let hostAppHint: string | undefined
+      if (params.claudeRuntime?.pid) {
+        const isSdk = Boolean(
+          params.claudeRuntime.entrypoint && /^sdk\b/i.test(params.claudeRuntime.entrypoint),
+        )
+        if (!isSdk) {
+          const ancestry = await this.inspectProcessAncestry(params.claudeRuntime.pid)
+          if (!ancestry.ownedBySelf) {
+            hostAppHint = ancestry.hostAppHint
+          }
+        }
+      }
       return { targetReachable: false, hostAppHint }
     }
 
@@ -322,8 +345,20 @@ export class TerminalBridge {
       if (params.engineId === 'claude') {
         const rt = params.claudeRuntime
         if (rt?.pid && rt.sessionId === params.nativeId && this.pidAlive(rt.pid)) {
-          const hostAppHint = await this.detectParentHostApp(rt.pid)
-          return { delivered: false, reason: 'unreachable_terminal', hostAppHint }
+          // Never mistake Hub's own `claude-agent-acp` / `claude-agent-sdk` child process
+          // (or any headless non-TTY SDK subprocess) for an external interactive terminal!
+          if (rt.entrypoint && /^sdk\b/i.test(rt.entrypoint)) {
+            return { delivered: false, reason: 'not_running' }
+          }
+          const ancestry = await this.inspectProcessAncestry(rt.pid)
+          if (ancestry.ownedBySelf) {
+            return { delivered: false, reason: 'not_running' }
+          }
+          const tty = await this.getProcessTty(rt.pid)
+          if (!tty) {
+            return { delivered: false, reason: 'not_running' }
+          }
+          return { delivered: false, reason: 'unreachable_terminal', hostAppHint: ancestry.hostAppHint }
         }
         return { delivered: false, reason: 'not_running' }
       }
@@ -331,8 +366,11 @@ export class TerminalBridge {
       const agyProcs = await this.getAgyTtyProcesses()
       const liveUnreachable = this.matchAgyProcess(params.nativeId, params.cwd, agyProcs)
       if (liveUnreachable && this.pidAlive(liveUnreachable.pid)) {
-        const hostAppHint = await this.detectParentHostApp(liveUnreachable.pid)
-        return { delivered: false, reason: 'unreachable_terminal', hostAppHint }
+        const ancestry = await this.inspectProcessAncestry(liveUnreachable.pid)
+        if (ancestry.ownedBySelf) {
+          return { delivered: false, reason: 'not_running' }
+        }
+        return { delivered: false, reason: 'unreachable_terminal', hostAppHint: ancestry.hostAppHint }
       }
       return { delivered: false, reason: 'not_running' }
     }
