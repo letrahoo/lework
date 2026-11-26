@@ -2141,6 +2141,8 @@ class ConsoleStore(
                 promptErrorText = null,
                 turnRecoveryBanner = null,
                 retryingTurn = false,
+                highlightedSeq = null,
+                highlightedQuery = null,
                 selectedEngineId = eng?.id.orEmpty(),
                 selectedProviderId = defaultModel?.providerId,
                 selectedModelId = defaultModel?.id,
@@ -2650,6 +2652,8 @@ class ConsoleStore(
                 promptNoticeText = null,
                 turnRecoveryBanner = s.turnRecoveryBanner?.takeIf { it.sessionId == sessionId },
                 retryingTurn = false,
+                highlightedSeq = if (s.activeSessionId == sessionId) s.highlightedSeq else null,
+                highlightedQuery = if (s.activeSessionId == sessionId) s.highlightedQuery else null,
                 selectedEngineId = targetEngineId,
                 selectedProviderId = resolvedProvider,
                 selectedModelId = resolvedModel,
@@ -4450,6 +4454,7 @@ class ConsoleStore(
         sessionId: String,
         targetSeq: Int,
         keepFindOpen: Boolean = false,
+        highlightQuery: String? = null,
     ) {
         if (sessionId.isBlank()) return
         val switchingSession = _state.value.activeSessionId != sessionId
@@ -4470,6 +4475,10 @@ class ConsoleStore(
         }
 
         val meta = _state.value.sessions.firstOrNull { it.id == sessionId }
+        val resolvedHighlightQuery = (
+            highlightQuery
+                ?: if (keepFindOpen && !switchingSession) _state.value.inSessionFindQuery else _state.value.searchQuery
+            ).trim().takeIf { it.isNotEmpty() }
         _state.update { s ->
             val targetEngineId = meta?.engineId ?: s.selectedEngineId
             val eng = s.engines.firstOrNull { it.id == targetEngineId }
@@ -4492,6 +4501,7 @@ class ConsoleStore(
                 pendingJumpSeq = if (hasLoadedRange) targetSeq else null,
                 pendingJumpNonce = if (hasLoadedRange) nextNonce else s.pendingJumpNonce,
                 highlightedSeq = targetSeq,
+                highlightedQuery = resolvedHighlightQuery,
                 inSessionFindOpen = if (keepFindOpen && !switchingSession) s.inSessionFindOpen else false,
                 inSessionFindQuery = if (keepFindOpen && !switchingSession) s.inSessionFindQuery else "",
                 inSessionFindMatches = if (keepFindOpen && !switchingSession) s.inSessionFindMatches else emptyList(),
@@ -4543,6 +4553,7 @@ class ConsoleStore(
                         pendingJumpSeq = targetSeq,
                         pendingJumpNonce = s.pendingJumpNonce + 1L,
                         highlightedSeq = targetSeq,
+                        highlightedQuery = resolvedHighlightQuery,
                     )
                 }
                 if (switchingSession) {
@@ -4586,6 +4597,7 @@ class ConsoleStore(
                         transcripts = s.transcripts + (sessionId to built),
                         pendingJumpSeq = null,
                         highlightedSeq = null,
+                        highlightedQuery = null,
                     )
                 }
             }
@@ -4599,8 +4611,8 @@ class ConsoleStore(
     }
 
     fun clearHighlightedSeq() {
-        if (_state.value.highlightedSeq != null && !_state.value.inSessionFindOpen) {
-            _state.update { it.copy(highlightedSeq = null) }
+        if ((_state.value.highlightedSeq != null || _state.value.highlightedQuery != null) && !_state.value.inSessionFindOpen) {
+            _state.update { it.copy(highlightedSeq = null, highlightedQuery = null) }
         }
     }
 
@@ -4623,6 +4635,7 @@ class ConsoleStore(
                 inSessionFindActiveIndex = 0,
                 inSessionFindLoading = false,
                 highlightedSeq = null,
+                highlightedQuery = null,
             )
         }
     }
@@ -4643,6 +4656,7 @@ class ConsoleStore(
                     inSessionFindActiveIndex = 0,
                     inSessionFindLoading = false,
                     highlightedSeq = null,
+                    highlightedQuery = null,
                 )
             }
             return
@@ -4662,6 +4676,7 @@ class ConsoleStore(
                 pendingJumpSeq = initialTarget?.seq ?: s.pendingJumpSeq,
                 pendingJumpNonce = if (initialTarget != null) s.pendingJumpNonce + 1L else s.pendingJumpNonce,
                 highlightedSeq = initialTarget?.seq,
+                highlightedQuery = trimmed,
             )
         }
 
@@ -4699,10 +4714,11 @@ class ConsoleStore(
                         inSessionFindActiveIndex = nextIdx,
                         inSessionFindLoading = false,
                         highlightedSeq = activeMatch?.seq,
+                        highlightedQuery = trimmed,
                     )
                 }
                 if (activeMatch != null && activeMatch.seq != currentSeq) {
-                    jumpToSearchHit(sid, activeMatch.seq, keepFindOpen = true)
+                    jumpToSearchHit(sid, activeMatch.seq, keepFindOpen = true, highlightQuery = trimmed)
                 }
             }.onFailure { err ->
                 if (err is CancellationException) throw err
@@ -4725,9 +4741,10 @@ class ConsoleStore(
             it.copy(
                 inSessionFindActiveIndex = nextIdx,
                 highlightedSeq = target.seq,
+                highlightedQuery = cur.inSessionFindQuery.trim().takeIf { q -> q.isNotEmpty() },
             )
         }
-        jumpToSearchHit(sid, target.seq, keepFindOpen = true)
+        jumpToSearchHit(sid, target.seq, keepFindOpen = true, highlightQuery = cur.inSessionFindQuery)
     }
 
     private fun findLocalTranscriptMatches(

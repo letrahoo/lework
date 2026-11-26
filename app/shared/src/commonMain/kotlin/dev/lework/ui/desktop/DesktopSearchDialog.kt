@@ -33,11 +33,11 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -53,6 +53,7 @@ import dev.lework.store.ConsoleUiState
 import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
 import dev.lework.ui.engineAccentColor
+import dev.lework.ui.highlightPlainTextForSearch
 import dev.lework.ui.shortEngineLabel
 
 private data class FlattenedSearchRow(
@@ -64,6 +65,7 @@ private data class FlattenedSearchRow(
 @Composable
 internal fun DesktopSearchDialog(
     state: ConsoleUiState,
+    openNonce: Int = 0,
     onSearch: (
         query: String,
         engineFilter: String?,
@@ -78,6 +80,24 @@ internal fun DesktopSearchDialog(
     val focusRequester = remember { FocusRequester() }
     val listState = rememberLazyListState()
     val nowMs = remember(state.searchHits) { epochMillis() }
+    var queryFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = state.searchQuery,
+                selection = TextRange(0, state.searchQuery.length),
+            ),
+        )
+    }
+    var lastSyncedExternalQuery by remember { mutableStateOf(state.searchQuery) }
+    if (state.searchQuery != lastSyncedExternalQuery) {
+        lastSyncedExternalQuery = state.searchQuery
+        if (queryFieldValue.text != state.searchQuery) {
+            queryFieldValue = TextFieldValue(
+                text = state.searchQuery,
+                selection = TextRange(0, state.searchQuery.length),
+            )
+        }
+    }
 
     val flatRows = remember(state.searchHits) {
         buildList {
@@ -91,9 +111,15 @@ internal fun DesktopSearchDialog(
     }
     var selectedFlatIdx by remember(flatRows) { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(openNonce) {
         withFrameNanos {}
         runCatching { focusRequester.requestFocus() }
+        if (queryFieldValue.text.isNotEmpty()) {
+            withFrameNanos {}
+            queryFieldValue = queryFieldValue.copy(
+                selection = TextRange(0, queryFieldValue.text.length),
+            )
+        }
     }
 
     LaunchedEffect(selectedFlatIdx, flatRows.size) {
@@ -196,16 +222,20 @@ internal fun DesktopSearchDialog(
                             )
                         }
                         BasicTextField(
-                            value = state.searchQuery,
+                            value = queryFieldValue,
                             onValueChange = { next ->
-                                onSearch(
-                                    next,
-                                    state.searchEngineFilter,
-                                    state.searchRoleFilter,
-                                    state.searchScopeCurrentWorkspace,
-                                    state.searchIncludeArchived,
-                                    false,
-                                )
+                                val textChanged = next.text != queryFieldValue.text
+                                queryFieldValue = next
+                                if (textChanged) {
+                                    onSearch(
+                                        next.text,
+                                        state.searchEngineFilter,
+                                        state.searchRoleFilter,
+                                        state.searchScopeCurrentWorkspace,
+                                        state.searchIncludeArchived,
+                                        false,
+                                    )
+                                }
                             },
                             singleLine = true,
                             textStyle = TextStyle(
@@ -254,6 +284,7 @@ internal fun DesktopSearchDialog(
                                 .size(16.dp)
                                 .clip(RoundedCornerShape(4.dp))
                                 .clickable {
+                                    queryFieldValue = TextFieldValue("")
                                     onSearch(
                                         "",
                                         state.searchEngineFilter,
@@ -652,7 +683,7 @@ private fun SearchSessionGroupHeader(
                 modifier = Modifier.size(11.dp),
             )
             Text(
-                text = wsShort,
+                text = buildHighlightedSearchText(wsShort, query),
                 fontSize = 11.sp,
                 color = Everforest.Grey0,
                 maxLines = 1,
@@ -708,54 +739,11 @@ private fun SearchFilterChip(
 internal fun buildHighlightedSearchText(
     text: String,
     query: String,
-): AnnotatedString {
-    val terms = query.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
-    if (terms.isEmpty() || text.isEmpty()) return AnnotatedString(text)
-    val lower = text.lowercase()
-    val ranges = mutableListOf<IntRange>()
-    for (term in terms) {
-        val needle = term.lowercase()
-        var pos = 0
-        while (pos < lower.length) {
-            val found = lower.indexOf(needle, startIndex = pos)
-            if (found < 0) break
-            ranges.add(found until (found + needle.length))
-            pos = found + needle.length
-        }
-    }
-    if (ranges.isEmpty()) return AnnotatedString(text)
-    val sorted = ranges.sortedBy { it.first }
-    val merged = mutableListOf<IntRange>()
-    for (r in sorted) {
-        val last = merged.lastOrNull()
-        if (last != null && r.first <= last.last + 1) {
-            merged[merged.lastIndex] = last.first..maxOf(last.last, r.last)
-        } else {
-            merged.add(r)
-        }
-    }
-    return buildAnnotatedString {
-        var cursor = 0
-        for (r in merged) {
-            if (r.first > cursor) {
-                append(text.substring(cursor, r.first))
-            }
-            pushStyle(
-                SpanStyle(
-                    color = Everforest.BoldGold,
-                    fontWeight = FontWeight.SemiBold,
-                    background = Everforest.BoldGold.copy(alpha = 0.18f),
-                ),
-            )
-            append(text.substring(r.first, (r.last + 1).coerceAtMost(text.length)))
-            pop()
-            cursor = (r.last + 1).coerceAtMost(text.length)
-        }
-        if (cursor < text.length) {
-            append(text.substring(cursor))
-        }
-    }
-}
+): AnnotatedString = highlightPlainTextForSearch(
+    text = text,
+    query = query,
+    primary = true,
+)
 
 private fun formatSearchShortTime(tsMs: Long, nowMs: Long): String {
     if (tsMs <= 0L) return ""

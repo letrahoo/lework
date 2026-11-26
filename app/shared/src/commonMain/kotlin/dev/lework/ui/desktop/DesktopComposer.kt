@@ -37,9 +37,11 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,6 +51,17 @@ import dev.lework.protocol.SessionState
 import dev.lework.store.ConsoleUiState
 import dev.lework.store.externalProviderLabel
 import dev.lework.ui.*
+
+internal fun insertNewlineAtSelection(current: TextFieldValue): TextFieldValue {
+    val start = current.selection.min.coerceIn(0, current.text.length)
+    val end = current.selection.max.coerceIn(start, current.text.length)
+    val nextText = buildString(current.text.length - (end - start) + 1) {
+        append(current.text, 0, start)
+        append('\n')
+        append(current.text, end, current.text.length)
+    }
+    return TextFieldValue(text = nextText, selection = TextRange(start + 1))
+}
 
 @Composable
 internal fun DesktopComposer(
@@ -260,6 +273,20 @@ internal fun DesktopComposer(
                 val canSubmitNow =
                     hasDraft && (!isSessionRunning || activeSess?.state == SessionState.RUNNING)
 
+                var fieldValue by remember {
+                    mutableStateOf(TextFieldValue(text = text, selection = TextRange(text.length)))
+                }
+                var lastSyncedExternalText by remember { mutableStateOf(text) }
+                if (text != lastSyncedExternalText) {
+                    lastSyncedExternalText = text
+                    if (fieldValue.text != text) {
+                        fieldValue = TextFieldValue(
+                            text = text,
+                            selection = TextRange(text.length),
+                        )
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -275,8 +302,13 @@ internal fun DesktopComposer(
                         )
                     }
                     BasicTextField(
-                        value = text,
-                        onValueChange = onTextChange,
+                        value = fieldValue,
+                        onValueChange = { next ->
+                            fieldValue = next
+                            if (next.text != text) {
+                                onTextChange(next.text)
+                            }
+                        },
                         textStyle = TextStyle(
                             color = Everforest.Fg,
                             fontSize = 14.5.sp,
@@ -298,19 +330,24 @@ internal fun DesktopComposer(
                                 }
                                 val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
                                 if (!isEnter) return@onPreviewKeyEvent false
+                                // Let active IME composition (e.g. Chinese Pinyin) confirm characters first.
+                                if (fieldValue.composition != null) return@onPreviewKeyEvent false
                                 if (keyEvent.isMetaPressed || keyEvent.isCtrlPressed) {
                                     if (canSubmitNow) onSend()
                                     return@onPreviewKeyEvent true
                                 }
-                                if (!keyEvent.isShiftPressed) {
-                                    if (state.mentionQuery != null && state.workspaceFileSuggestions.isNotEmpty()) {
-                                        onSelectMentionFile(state.workspaceFileSuggestions.first())
-                                    } else if (canSubmitNow) {
-                                        onSend()
-                                    }
+                                if (keyEvent.isShiftPressed || keyEvent.isAltPressed) {
+                                    val inserted = insertNewlineAtSelection(fieldValue)
+                                    fieldValue = inserted
+                                    onTextChange(inserted.text)
                                     return@onPreviewKeyEvent true
                                 }
-                                false
+                                if (state.mentionQuery != null && state.workspaceFileSuggestions.isNotEmpty()) {
+                                    onSelectMentionFile(state.workspaceFileSuggestions.first())
+                                } else if (canSubmitNow) {
+                                    onSend()
+                                }
+                                true
                             }
                             .testTag("composer_input"),
                     )

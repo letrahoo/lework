@@ -373,6 +373,7 @@ data class ConsoleUiState(
     val pendingJumpSeq: Int? = null,
     val pendingJumpNonce: Long = 0L,
     val highlightedSeq: Int? = null,
+    val highlightedQuery: String? = null,
     val inSessionFindOpen: Boolean = false,
     val inSessionFindQuery: String = "",
     val inSessionFindMatches: List<SessionSearchMatch> = emptyList(),
