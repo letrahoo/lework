@@ -274,6 +274,8 @@ internal fun ImageLightboxDialog(
     }
     val currentBmp = rememberBase64ImageBitmap(imagesBase64.getOrNull(currentIdx))
 
+    ModalEscapeEffect(onDismiss = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -282,6 +284,7 @@ internal fun ImageLightboxDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Everforest.BgDim.copy(alpha = 0.95f))
+                .dialogEscapeDismiss(onDismiss = onDismiss)
                 .clickable { onDismiss() }
                 .windowInsetsPadding(WindowInsets.safeDrawing),
         ) {

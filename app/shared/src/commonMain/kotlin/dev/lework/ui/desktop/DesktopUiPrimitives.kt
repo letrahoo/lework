@@ -22,11 +22,6 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -40,6 +35,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.lework.ui.Everforest
+import dev.lework.ui.ModalEscapeEffect
+import dev.lework.ui.dialogEscapeDismiss
 
 // ---------------------------------------------------------------------------
 // Strict Desktop Chrome Geometry Tokens (Pixel-Aligned Grid)
@@ -349,6 +346,8 @@ internal fun DesktopModalFrame(
     testTag: String? = null,
     content: @Composable () -> Unit,
 ) {
+    ModalEscapeEffect(onDismiss = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -362,14 +361,7 @@ internal fun DesktopModalFrame(
                 .padding(24.dp)
                 .widthIn(min = minWidth, max = maxWidth)
                 .heightIn(max = maxHeight)
-                .onPreviewKeyEvent { ev ->
-                    if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
-                        onDismiss()
-                        true
-                    } else {
-                        false
-                    }
-                }
+                .dialogEscapeDismiss(onDismiss = onDismiss)
                 .let { mod -> if (testTag != null) mod.testTag(testTag) else mod },
         ) {
             Box(modifier = Modifier.padding(top = 14.dp)) {

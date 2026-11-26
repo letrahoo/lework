@@ -783,6 +783,8 @@ internal fun PendingDeepLinkPairingDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    ModalEscapeEffect(onDismiss = onDismiss)
+
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Everforest.Bg1,

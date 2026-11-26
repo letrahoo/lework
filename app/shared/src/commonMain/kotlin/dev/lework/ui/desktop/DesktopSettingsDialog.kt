@@ -17,11 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -38,8 +33,10 @@ import dev.lework.protocol.ProviderConfigInput
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
+import dev.lework.ui.ModalEscapeEffect
 import dev.lework.ui.RenameHostDialog
 import dev.lework.ui.connectionChannelLabel
+import dev.lework.ui.dialogEscapeDismiss
 import dev.lework.ui.shortEngineLabel
 
 @Composable
@@ -63,6 +60,8 @@ internal fun DesktopSettingsDialog(
     val onlineCount = state.engines.count { it.status.ready }
     val logPath = remember { runtimeLogFilePath() }
 
+    ModalEscapeEffect(onDismiss = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -75,14 +74,7 @@ internal fun DesktopSettingsDialog(
             modifier = Modifier
                 .width(540.dp)
                 .heightIn(max = 720.dp)
-                .onPreviewKeyEvent { ev ->
-                    if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
-                        onDismiss()
-                        true
-                    } else {
-                        false
-                    }
-                }
+                .dialogEscapeDismiss(onDismiss = onDismiss)
                 .testTag("desktop_settings_dialog"),
         ) {
             Column(
@@ -443,11 +435,11 @@ internal fun DesktopSettingsDialog(
                                 color = Everforest.Fg,
                             )
                             DesktopShortcutRow("全局唤起 / 隐藏窗口", "⌃⌘E", "关闭窗口到后台", "⌘W")
+                            DesktopShortcutRow("关闭当前弹层", "Esc", "打开设置", "⌘,")
                             DesktopShortcutRow("新建会话", "⌘N", "收起 / 展开侧边栏", "⌘B")
                             DesktopShortcutRow("全局搜索历史对话", "⇧⌘F", "当前会话内查找", "⌘F")
                             DesktopShortcutRow("切换引擎与模型", "⌘K", "查看代码变更与快照", "⇧⌘D")
-                            DesktopShortcutRow("刷新会话列表", "⌘R", "打开设置", "⌘,")
-                            DesktopShortcutRow("发送消息", "Enter", "输入框换行", "Shift+Enter")
+                            DesktopShortcutRow("刷新会话列表", "⌘R", "发送 / 换行", "Enter / ⇧↩")
                         }
                     }
 

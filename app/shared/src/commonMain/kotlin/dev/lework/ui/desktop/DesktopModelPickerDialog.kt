@@ -3,6 +3,7 @@ package dev.lework.ui.desktop
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -21,6 +22,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
@@ -197,6 +200,12 @@ internal fun DesktopModelPickerDialog(
     val columnTopInset = 6.dp
     val columnHeaderHeight = 36.dp
 
+    val dialogFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { dialogFocusRequester.requestFocus() }
+    }
+    dev.lework.ui.ModalEscapeEffect(onDismiss = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -209,6 +218,8 @@ internal fun DesktopModelPickerDialog(
             modifier = Modifier
                 .width(612.dp)
                 .height(396.dp)
+                .focusRequester(dialogFocusRequester)
+                .focusable()
                 .onPreviewKeyEvent { ev ->
                     if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                     if (ev.key == Key.Escape) {

@@ -25,11 +25,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -414,6 +409,8 @@ internal fun SubagentInspectorDialog(
         )
     }
 
+    ModalEscapeEffect(onDismiss = onClose)
+
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -427,14 +424,7 @@ internal fun SubagentInspectorDialog(
                 .fillMaxWidth(0.94f)
                 .widthIn(max = 840.dp)
                 .fillMaxHeight(0.86f)
-                .onPreviewKeyEvent { ev ->
-                    if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
-                        onClose()
-                        true
-                    } else {
-                        false
-                    }
-                }
+                .dialogEscapeDismiss(onDismiss = onClose)
                 .testTag("subagent_inspector_dialog"),
         ) {
             Column(modifier = Modifier.fillMaxSize()) {

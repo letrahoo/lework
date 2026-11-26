@@ -1,5 +1,6 @@
 package dev.lework.desktop
 
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -12,7 +13,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.KeyShortcut
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.MenuBar
@@ -26,6 +30,8 @@ import dev.lework.platform.logRuntimeEvent
 import dev.lework.platform.runtimeLogFilePath
 import dev.lework.store.ConsoleStore
 import dev.lework.ui.ConsoleApp
+import dev.lework.ui.LocalModalEscapeDispatcher
+import dev.lework.ui.ModalEscapeDispatcher
 import dev.lework.ui.rememberLeworkBrandPainter
 import java.awt.Desktop
 import java.awt.Dimension
@@ -68,6 +74,7 @@ fun main(args: Array<String>) {
         var openGlobalSearchSignal by remember { mutableIntStateOf(0) }
         var openInSessionFindSignal by remember { mutableIntStateOf(0) }
         val toggleDebouncer = remember { ToggleHotkeyDebouncer() }
+        val modalEscapeDispatcher = remember { ModalEscapeDispatcher() }
         var windowRef by remember { mutableStateOf<ComposeWindow?>(null) }
 
         val hostTitle = uiState.hub?.let {
@@ -219,6 +226,13 @@ fun main(args: Array<String>) {
             state = windowState,
             title = hostTitle,
             icon = appIcon,
+            onPreviewKeyEvent = { ev ->
+                if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
+                    modalEscapeDispatcher.dispatchEscape()
+                } else {
+                    false
+                }
+            },
         ) {
             DisposableEffect(window) {
                 windowRef = window
@@ -324,13 +338,15 @@ fun main(args: Array<String>) {
                 }
             }
 
-            ConsoleApp(
-                externalStore = store,
-                openSettingsSignal = openSettingsSignal,
-                toggleSidebarSignal = toggleSidebarSignal,
-                openGlobalSearchSignal = openGlobalSearchSignal,
-                openInSessionFindSignal = openInSessionFindSignal,
-            )
+            CompositionLocalProvider(LocalModalEscapeDispatcher provides modalEscapeDispatcher) {
+                ConsoleApp(
+                    externalStore = store,
+                    openSettingsSignal = openSettingsSignal,
+                    toggleSidebarSignal = toggleSidebarSignal,
+                    openGlobalSearchSignal = openGlobalSearchSignal,
+                    openInSessionFindSignal = openInSessionFindSignal,
+                )
+            }
         }
     }
 }

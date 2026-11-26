@@ -24,11 +24,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -43,6 +38,8 @@ import androidx.compose.ui.window.DialogProperties
 import dev.lework.protocol.ProviderAdapterKind
 import dev.lework.protocol.ProviderConfigInput
 import dev.lework.protocol.ProviderInfo
+import dev.lework.ui.ModalEscapeEffect
+import dev.lework.ui.dialogEscapeDismiss
 import dev.lework.protocol.WireApi
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.Everforest
@@ -461,6 +458,8 @@ private fun DesktopProviderModelFilterDialog(
         }
     }
 
+    ModalEscapeEffect(onDismiss = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -473,14 +472,7 @@ private fun DesktopProviderModelFilterDialog(
             modifier = Modifier
                 .width(500.dp)
                 .heightIn(max = 620.dp)
-                .onPreviewKeyEvent { ev ->
-                    if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
-                        onDismiss()
-                        true
-                    } else {
-                        false
-                    }
-                }
+                .dialogEscapeDismiss(onDismiss = onDismiss)
                 .testTag("provider_model_filter_dialog"),
         ) {
             Column(
@@ -819,6 +811,8 @@ private fun DesktopProviderEditorDialog(
         )
     }
 
+    ModalEscapeEffect(onDismiss = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -831,14 +825,7 @@ private fun DesktopProviderEditorDialog(
             modifier = Modifier
                 .width(500.dp)
                 .heightIn(max = 680.dp)
-                .onPreviewKeyEvent { ev ->
-                    if (ev.type == KeyEventType.KeyDown && ev.key == Key.Escape) {
-                        onDismiss()
-                        true
-                    } else {
-                        false
-                    }
-                }
+                .dialogEscapeDismiss(onDismiss = onDismiss)
                 .testTag("provider_editor_dialog"),
         ) {
             Column(

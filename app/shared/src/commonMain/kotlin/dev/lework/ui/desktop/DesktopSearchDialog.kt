@@ -111,6 +111,8 @@ internal fun DesktopSearchDialog(
     val activeWorkspacePath = state.activeSession?.cwd?.takeIf { it.isNotBlank() }
         ?: state.selectedWorkspacePath.takeIf { it.isNotBlank() }
 
+    dev.lework.ui.ModalEscapeEffect(onDismiss = onDismiss)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
