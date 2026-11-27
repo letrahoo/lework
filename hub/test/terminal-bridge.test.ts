@@ -173,7 +173,13 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
           return ' 2001 ttys008 agy -c\n 9999 ?? /Applications/Gemini.app/Contents/Helpers/agy --hub\n'
         }
         if (bin === 'lsof' || bin.endsWith('/lsof')) {
-          return 'p2001\nfcwd\nn/tmp/demo-agy-repo\n'
+          return [
+            'p2001',
+            'fcwd',
+            'n/tmp/demo-agy-repo',
+            'f12',
+            'n/Users/demo/.gemini/antigravity-cli/presence/agy-conv-1.lock',
+          ].join('\n')
         }
         if (bin === '/usr/local/bin/tmux' && args.includes('capture-pane')) {
           const digitSent = sentCommands.some(c => c.args.includes('send-keys'))
@@ -229,7 +235,8 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
     })
     expect(mismatched?.targetReachable).toBe(false)
 
-    // D) AGY session running in iTerm2 (`ttys008`) matched by unambiguous cwd
+    // D) AGY session running in iTerm2 (`ttys008`) matched strictly by presence lock;
+    //    another conversation sharing the same cwd MUST NOT hijack this live terminal!
     const okAgy = await bridge.inspectSessionTerminal({
       nativeId: 'agy-conv-1',
       engineId: 'agy',
@@ -237,6 +244,14 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
     })
     expect(okAgy?.targetReachable).toBe(true)
     expect(okAgy?.pendingPermission?.options[0]?.name).toBe('1. Allow once')
+
+    const unrelatedAgySameCwd = await bridge.inspectSessionTerminal({
+      nativeId: 'agy-conv-other',
+      engineId: 'agy',
+      cwd: '/tmp/demo-agy-repo',
+    })
+    expect(unrelatedAgySameCwd?.targetReachable).toBe(false)
+    expect(unrelatedAgySameCwd?.pendingPermission).toBeUndefined()
 
     // E) Keystroke delivery: sends '1' AND trailing 'Enter' when prompt didn't dismiss immediately
     sentCommands.length = 0

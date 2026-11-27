@@ -109,6 +109,19 @@ function safeRealpath(p: string): string {
   }
 }
 
+function hasExplicitAgyConversationArg(args: string, nativeId: string): boolean {
+  if (!nativeId || !args.includes(nativeId)) return false
+  for (const raw of args.split(/\s+/)) {
+    const token = raw.replace(/^['"]|['"]$/g, '')
+    if (token === nativeId) return true
+    const eqIdx = token.indexOf('=')
+    if (eqIdx > 0 && token.slice(eqIdx + 1).replace(/^['"]|['"]$/g, '') === nativeId) {
+      return true
+    }
+  }
+  return false
+}
+
 export class TerminalBridge {
   private topologyCache: CachedTopology | null = null
   private topologyLoading: Promise<CachedTopology> | null = null
@@ -364,12 +377,18 @@ export class TerminalBridge {
       }
 
       const agyProcs = await this.getAgyTtyProcesses()
-      const liveUnreachable = this.matchAgyProcess(params.nativeId, params.cwd, agyProcs)
+      const liveUnreachable = this.matchAgyProcess(params.nativeId, agyProcs)
       if (liveUnreachable && this.pidAlive(liveUnreachable.pid)) {
         const ancestry = await this.inspectProcessAncestry(liveUnreachable.pid)
         if (ancestry.ownedBySelf) {
           return { delivered: false, reason: 'not_running' }
         }
+        return { delivered: false, reason: 'unreachable_terminal', hostAppHint: ancestry.hostAppHint }
+      }
+      const lockPids = await this.probeAgyPresenceLockPids(params.nativeId)
+      for (const pid of lockPids) {
+        const ancestry = await this.inspectProcessAncestry(pid)
+        if (ancestry.ownedBySelf) continue
         return { delivered: false, reason: 'unreachable_terminal', hostAppHint: ancestry.hostAppHint }
       }
       return { delivered: false, reason: 'not_running' }
@@ -453,6 +472,35 @@ export class TerminalBridge {
     return true
   }
 
+  private async probeAgyPresenceLockPids(nativeId: string): Promise<number[]> {
+    if (!/^[A-Za-z0-9_-]{4,128}$/.test(nativeId)) return []
+    const lockFile = path.join(this.homeDir, '.gemini', 'antigravity-cli', 'presence', `${nativeId}.lock`)
+    if (!fs.existsSync(lockFile)) return []
+    let out = ''
+    const lsofBin = this.resolveLsofBin()
+    if (lsofBin) {
+      try {
+        // Do NOT pass `-b` with an explicit file path on macOS: `lsof -b <file>` fails with
+        // `Resource temporarily unavailable` during vnode/stat lookups.
+        out = await this.runCmd(lsofBin, ['-w', '-Fp', lockFile], 2_000, augmentedPathEnv(process.env))
+      } catch (err) {
+        const partial = (err as { stdout?: unknown } | null)?.stdout
+        if (typeof partial === 'string') out = partial
+      }
+    }
+    const pids: number[] = []
+    const seen = new Set<number>()
+    for (const line of out.split('\n')) {
+      if (!line.startsWith('p')) continue
+      const pid = Number(line.slice(1).trim())
+      if (pid > 0 && !seen.has(pid) && this.pidAlive(pid)) {
+        seen.add(pid)
+        pids.push(pid)
+      }
+    }
+    return pids
+  }
+
   async checkAgyPresenceLock(nativeId: string): Promise<{ locked: boolean; hostAppHint?: string }> {
     if (process.platform !== 'darwin' && process.platform !== 'linux') {
       return { locked: false }
@@ -466,30 +514,13 @@ export class TerminalBridge {
         return { locked: true, hostAppHint: ancestry.hostAppHint }
       }
     }
-    const lockFile = path.join(this.homeDir, '.gemini', 'antigravity-cli', 'presence', `${nativeId}.lock`)
-    if (!fs.existsSync(lockFile)) return { locked: false }
-    let out = ''
-    const lsofBin = this.resolveLsofBin()
-    if (lsofBin) {
-      try {
-        // Do NOT pass `-b` with an explicit file path on macOS: `lsof -b <file>` fails with
-        // `Resource temporarily unavailable` during vnode/stat lookups.
-        out = await this.runCmd(lsofBin, ['-w', '-Fp', lockFile], 2_000, augmentedPathEnv(process.env))
-      } catch (err) {
-        const partial = (err as { stdout?: unknown } | null)?.stdout
-        if (typeof partial === 'string') out = partial
-      }
-    }
-    for (const line of out.split('\n')) {
-      if (!line.startsWith('p')) continue
-      const pid = Number(line.slice(1).trim())
-      if (pid > 0 && this.pidAlive(pid)) {
-        // Never treat Hub's own persistent `agy --input-format stream-json` worker (or any
-        // descendant of this Hub process) as an external interactive terminal holding the lock.
-        const ancestry = await this.inspectProcessAncestry(pid)
-        if (ancestry.ownedBySelf) continue
-        return { locked: true, hostAppHint: ancestry.hostAppHint }
-      }
+    const lockPids = await this.probeAgyPresenceLockPids(nativeId)
+    for (const pid of lockPids) {
+      // Never treat Hub's own persistent `agy --input-format stream-json` worker (or any
+      // descendant of this Hub process) as an external interactive terminal holding the lock.
+      const ancestry = await this.inspectProcessAncestry(pid)
+      if (ancestry.ownedBySelf) continue
+      return { locked: true, hostAppHint: ancestry.hostAppHint }
     }
     return { locked: false }
   }
@@ -526,10 +557,10 @@ export class TerminalBridge {
 
     if (params.engineId === 'agy') {
       const tmuxTopo = await this.getTopology(false)
-      const inTmux = await this.findAgyTarget(params.nativeId, params.cwd, tmuxTopo)
+      const inTmux = await this.findAgyTarget(params.nativeId, tmuxTopo)
       if (inTmux) return inTmux
       const fullTopo = await this.getTopology(true)
-      return this.findAgyTarget(params.nativeId, params.cwd, fullTopo)
+      return this.findAgyTarget(params.nativeId, fullTopo)
     }
 
     return null
@@ -537,7 +568,6 @@ export class TerminalBridge {
 
   private matchAgyProcess(
     nativeId: string,
-    sessionCwd: string | undefined,
     candidates: AgyTtyProcess[],
   ): AgyTtyProcess | null {
     if (candidates.length === 0) return null
@@ -546,40 +576,59 @@ export class TerminalBridge {
     const byPresence = candidates.find(p => p.presenceConvIds.includes(nativeId))
     if (byPresence) return byPresence
 
-    // 2. Exact `--conversation <nativeId>` match on command line (when not holding another conversation's lock)
+    // 2. Exact `--conversation <nativeId>` match on command line (ONLY when not holding another conversation's lock/db)
     const byExplicitFlag = candidates.find(
-      p => p.args.includes(nativeId) && (p.presenceConvIds.length === 0 || p.presenceConvIds.includes(nativeId)),
+      p =>
+        hasExplicitAgyConversationArg(p.args, nativeId) &&
+        (p.presenceConvIds.length === 0 || p.presenceConvIds.includes(nativeId)) &&
+        (p.openConvIds.length === 0 || p.openConvIds.includes(nativeId)),
     )
     if (byExplicitFlag) return byExplicitFlag
 
-    // 3. Unambiguous open SQLite conversation database (`conversations/<convId>.db`)
-    const byOpenDb = candidates.filter(p => p.openConvIds.includes(nativeId))
+    // 3. Unambiguous open SQLite conversation database (`conversations/<convId>.db`),
+    //    ONLY when the process does not hold a conflicting active presence lock.
+    const byOpenDb = candidates.filter(
+      p =>
+        p.openConvIds.includes(nativeId) &&
+        (p.presenceConvIds.length === 0 || p.presenceConvIds.includes(nativeId)),
+    )
     if (byOpenDb.length === 1) return byOpenDb[0]!
 
-    // 4. Fallback: unambiguous 1-to-1 working directory match among `agy` processes that do NOT
-    // hold an active presence lock for a different conversation (prevents closed historical
-    // conversations in the same repo from colliding with a live terminal session!).
-    if (sessionCwd) {
-      const targetReal = safeRealpath(sessionCwd)
-      const byCwd = candidates.filter(
-        p => p.presenceConvIds.length === 0 && p.cwd && safeRealpath(p.cwd) === targetReal,
-      )
-      if (byCwd.length === 1) {
-        return byCwd[0]!
-      }
-    }
+    // Strict session isolation (aligned with Claude): NEVER fall back to matching by working
+    // directory (`cwd`). Multiple AGY sessions frequently share one repository without git worktrees;
+    // a `cwd` fallback causes idle/other sessions to hijack a live background terminal's spinner
+    // status, permission prompts, and prompt input.
     return null
   }
 
   private async findAgyTarget(
     nativeId: string,
-    sessionCwd: string | undefined,
     topo: CachedTopology,
   ): Promise<TerminalTarget | null> {
     const procs = await this.getAgyTtyProcesses()
     const reachable = procs.filter(p => topo.byTty.has(p.tty))
-    const matched = this.matchAgyProcess(nativeId, sessionCwd, reachable)
-    return matched ? (topo.byTty.get(matched.tty) ?? null) : null
+    const matched = this.matchAgyProcess(nativeId, reachable)
+    if (matched) {
+      return topo.byTty.get(matched.tty) ?? null
+    }
+
+    // Exact lockfile fallback: on macOS, PID-scoped `lsof -b -p <pids>` may miss vnode entries
+    // or a helper child process may hold `presence/<nativeId>.lock`. Probe the exact lockfile
+    // (100% bound to `nativeId`, never by `cwd`) and map its owning TTY into the terminal topology.
+    const lockPids = await this.probeAgyPresenceLockPids(nativeId)
+    for (const pid of lockPids) {
+      const byPid = reachable.find(p => p.pid === pid)
+      if (byPid) {
+        return topo.byTty.get(byPid.tty) ?? null
+      }
+      const ancestry = await this.inspectProcessAncestry(pid)
+      if (ancestry.ownedBySelf) continue
+      const tty = await this.getProcessTty(pid)
+      if (tty && topo.byTty.has(tty)) {
+        return topo.byTty.get(tty)!
+      }
+    }
+    return null
   }
 
   private async getAgyTtyProcesses(): Promise<AgyTtyProcess[]> {

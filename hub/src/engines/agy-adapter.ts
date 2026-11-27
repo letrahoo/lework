@@ -469,21 +469,42 @@ class AgyStreamSession implements EngineSession {
   }
 
   private handleAgyEvent(event: Record<string, unknown>): void {
-    this.pendingTurn?.onActivity()
     const eventName = event.event
     if (eventName === 'init') {
-      if (typeof event.conversation_id === 'string' && event.conversation_id) {
-        this.conversationId = event.conversation_id
-        this.init.onNativeSessionLinked?.(event.conversation_id)
+      const initConvId = extractAgyEventConversationId(event)
+      if (initConvId) {
+        if (!this.conversationId) {
+          this.conversationId = initConvId
+          this.init.onNativeSessionLinked?.(initConvId)
+        } else if (initConvId !== this.conversationId) {
+          return
+        }
       }
+      this.pendingTurn?.onActivity()
       return
     }
     if (eventName === 'step_update' && event.step_update && typeof event.step_update === 'object') {
       const step = event.step_update as Record<string, unknown>
-      if (typeof step.conversation_id === 'string' && step.conversation_id && !this.conversationId) {
-        this.conversationId = step.conversation_id
-        this.init.onNativeSessionLinked?.(step.conversation_id)
+      const stepConvId = extractAgyEventConversationId(step, event)
+      if (stepConvId) {
+        if (!this.conversationId) {
+          this.conversationId = stepConvId
+          this.init.onNativeSessionLinked?.(stepConvId)
+        } else if (stepConvId !== this.conversationId) {
+          // Strict conversation isolation: never mix another conversation's or subagent's
+          // `update_steps` / `plan` / deltas / tools into this session's timeline.
+          return
+        }
       }
+      if (
+        step.is_subagent === true ||
+        step.isSubagent === true ||
+        (typeof step.parent_conversation_id === 'string' && step.parent_conversation_id.trim().length > 0) ||
+        (typeof step.parentConversationId === 'string' && step.parentConversationId.trim().length > 0)
+      ) {
+        return
+      }
+      this.pendingTurn?.onActivity()
       const stepType = step.step_type
       if (stepType === 'agent_response' && typeof step.text_delta === 'string') {
         if (step.text_delta.length > 0) this.emittedDeltaInTurn = true
@@ -557,10 +578,16 @@ class AgyStreamSession implements EngineSession {
 
     if (eventName === 'result' && event.result && typeof event.result === 'object') {
       const res = event.result as Record<string, unknown>
-      if (typeof res.conversation_id === 'string' && res.conversation_id) {
-        this.conversationId = res.conversation_id
-        this.init.onNativeSessionLinked?.(res.conversation_id)
+      const resConvId = extractAgyEventConversationId(res, event)
+      if (resConvId) {
+        if (!this.conversationId) {
+          this.conversationId = resConvId
+          this.init.onNativeSessionLinked?.(resConvId)
+        } else if (resConvId !== this.conversationId) {
+          return
+        }
       }
+      this.pendingTurn?.onActivity()
       if (!this.emittedDeltaInTurn && typeof res.response === 'string' && res.response.length > 0) {
         this.init.emit({
           type: 'message.assistant.delta',
@@ -591,6 +618,17 @@ class AgyStreamSession implements EngineSession {
       }
     }
   }
+}
+
+function extractAgyEventConversationId(
+  primary: Record<string, unknown>,
+  secondary?: Record<string, unknown>,
+): string | undefined {
+  const direct = primary.conversation_id ?? primary.conversationId
+  if (typeof direct === 'string' && direct.trim()) return direct.trim()
+  const alt = secondary?.conversation_id ?? secondary?.conversationId
+  if (typeof alt === 'string' && alt.trim()) return alt.trim()
+  return undefined
 }
 
 function summarizeAgyStderr(raw: string): string {

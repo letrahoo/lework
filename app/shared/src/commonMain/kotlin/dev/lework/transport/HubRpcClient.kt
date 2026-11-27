@@ -236,14 +236,14 @@ class HubRpcClient(
 
     private val _events = MutableSharedFlow<AgentEvent>(
         replay = 0,
-        extraBufferCapacity = 256,
+        extraBufferCapacity = 2048,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     override val events: SharedFlow<AgentEvent> = _events.asSharedFlow()
 
     private val _sessionUpdates = MutableSharedFlow<SessionMeta>(
         replay = 0,
-        extraBufferCapacity = 64,
+        extraBufferCapacity = 256,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     override val sessionUpdates: SharedFlow<SessionMeta> = _sessionUpdates.asSharedFlow()
