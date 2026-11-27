@@ -638,6 +638,38 @@ object JvmDesktopRuntime {
         }
     }
 
+    private fun resolveExistingLocalFile(path: String): File? {
+        val raw = path.trim()
+        if (raw.isEmpty()) return null
+        val expanded = when {
+            raw == "~" -> System.getProperty("user.home").orEmpty()
+            raw.startsWith("~/") -> File(System.getProperty("user.home").orEmpty(), raw.removePrefix("~/")).path
+            else -> raw
+        }
+        if (expanded.isEmpty()) return null
+        return runCatching { File(expanded).canonicalFile }.getOrNull()?.takeIf { it.isFile }
+    }
+
+    fun canOpenLocalFileExternally(path: String): Boolean = resolveExistingLocalFile(path) != null
+
+    fun openLocalFileExternally(path: String): Boolean {
+        val file = resolveExistingLocalFile(path) ?: return false
+        logRuntimeEvent("LOCAL_FILE", "openExternal name=${file.name}")
+        val openedByDesktop = runCatching {
+            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
+                Desktop.getDesktop().open(file)
+                true
+            } else {
+                false
+            }
+        }.getOrDefault(false)
+        if (openedByDesktop) return true
+        return runCatching {
+            ProcessBuilder("open", file.absolutePath).start()
+            true
+        }.getOrDefault(false)
+    }
+
     fun copyToClipboard(text: String): Boolean =
         runCatching {
             val selection = StringSelection(text)

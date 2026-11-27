@@ -336,6 +336,26 @@ internal fun modeToWire(m: SessionMode): String = when (m) {
     SessionMode.BYPASS_PERMISSIONS -> "bypassPermissions"
 }
 
+internal const val NEW_SESSION_DRAFT_KEY = "__new_session__"
+
+internal fun sessionDraftKey(sessionId: String?): String = sessionId ?: NEW_SESSION_DRAFT_KEY
+
+data class LinkedFilePreviewEntry(
+    val rawTarget: String,
+    val resolvedPath: String,
+    val displayName: String,
+    val startLine: Int? = null,
+    val endLine: Int? = null,
+    val content: String? = null,
+    val truncated: Boolean = false,
+    val isBinary: Boolean = false,
+    val companionMarkdownPath: String? = null,
+    val companionMarkdownContent: String? = null,
+    val companionMarkdownTruncated: Boolean = false,
+    val loading: Boolean = false,
+    val error: String? = null,
+)
+
 data class ConsoleUiState(
     val hasEnteredWorkspace: Boolean = false,
     val discoveredBaseUrl: String = "",
@@ -412,8 +432,9 @@ data class ConsoleUiState(
     val connectingTsnetHubId: String? = null,
     val pairedHosts: List<PairedHost> = loadPairedHosts(),
     val activeHostId: String? = loadActiveHostId(),
-    // Composer `@file` autocomplete, image attachments & signing expiry reminder
-    val composerAttachedImages: List<PromptImageAttachment> = emptyList(),
+    // Composer `@file` autocomplete, per-session drafts/images & signing expiry reminder
+    val sessionDrafts: Map<String, String> = emptyMap(),
+    val sessionAttachedImages: Map<String, List<PromptImageAttachment>> = emptyMap(),
     val mentionQuery: String? = null,
     val workspaceFileSuggestions: List<String> = emptyList(),
     val signingExpiryDismissed: Boolean = false,
@@ -451,7 +472,43 @@ data class ConsoleUiState(
     val inSessionFindMatches: List<SessionSearchMatch> = emptyList(),
     val inSessionFindActiveIndex: Int = 0,
     val inSessionFindLoading: Boolean = false,
+    // In-app Local File Link Preview Stack (Markdown, Code with line anchors, HTML dashboards)
+    val filePreviewStack: List<LinkedFilePreviewEntry> = emptyList(),
 ) {
+    val activeDraftKey: String
+        get() = sessionDraftKey(activeSessionId)
+
+    val activeDraftText: String
+        get() = sessionDrafts[activeDraftKey].orEmpty()
+
+    val composerAttachedImages: List<PromptImageAttachment>
+        get() = sessionAttachedImages[activeDraftKey].orEmpty()
+
+    val activeFilePreview: LinkedFilePreviewEntry?
+        get() = filePreviewStack.lastOrNull()
+
+    val canNavigateBackFilePreview: Boolean
+        get() = filePreviewStack.size > 1
+
+    fun draftTextFor(sessionId: String?): String =
+        sessionDrafts[sessionDraftKey(sessionId)].orEmpty()
+
+    fun attachedImagesFor(sessionId: String?): List<PromptImageAttachment> =
+        sessionAttachedImages[sessionDraftKey(sessionId)].orEmpty()
+
+    fun hasDraft(sessionId: String?): Boolean =
+        draftTextFor(sessionId).isNotBlank() || attachedImagesFor(sessionId).isNotEmpty()
+
+    fun draftPreviewFor(sessionId: String?): String? {
+        val text = draftTextFor(sessionId).replace(Regex("\\s+"), " ").trim()
+        val imgCount = attachedImagesFor(sessionId).size
+        return when {
+            text.isNotEmpty() && imgCount > 0 -> "[图片 ×$imgCount] $text"
+            text.isNotEmpty() -> text
+            imgCount > 0 -> "[图片 ×$imgCount]"
+            else -> null
+        }
+    }
     val activeHostDisplayName: String
         get() = pairedHosts.firstOrNull { it.hubId == hub?.id }?.displayName
             ?: hub?.name
@@ -612,6 +669,23 @@ data class ConsoleUiState(
                     it.matchesDrawerQuery(drawerSearchQuery)
             }
             .sortedByDescending { it.archivedAt ?: it.updatedAt }
+
+    /**
+     * Canonical session display order matching `DesktopSidebar` (pinned -> running -> history, or archived).
+     * Shared by sidebar rendering and keyboard shortcuts (`⌥↑`/`⌥↓`, `⌘1`..`⌘9`) so visual order and shortcut
+     * order never drift apart.
+     */
+    val visibleSidebarSessions: List<SessionMeta>
+        get() {
+            if (drawerShowArchived) return filteredArchivedSessions
+            val pinnedSet = pinnedSessionIds.toSet()
+            val allVisibleActive = filteredRunningSessions + filteredHistorySessions
+            val byId = allVisibleActive.associateBy { it.id }
+            val pinnedList = pinnedSessionIds.mapNotNull { byId[it] }
+            val runningList = filteredRunningSessions.filterNot { it.id in pinnedSet }
+            val historyList = filteredHistorySessions.filterNot { it.id in pinnedSet }
+            return pinnedList + runningList + historyList
+        }
 }
 
 private class PlanHygieneMutableState(

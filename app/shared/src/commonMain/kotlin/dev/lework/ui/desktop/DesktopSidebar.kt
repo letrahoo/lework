@@ -28,11 +28,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.PairedHost
@@ -467,15 +470,22 @@ internal fun DesktopSidebar(
                 onClick = { onToggleArchivedView(!state.drawerShowArchived) },
             )
 
+            val newSessionDraftPreview = state.draftPreviewFor(null)
             LeworkIconActionButton(
                 icon = LeworkSquarePenIcon,
-                tooltip = "新建会话",
+                tooltip = if (newSessionDraftPreview != null && state.activeSessionId != null) {
+                    "新建会话（有未发送草稿）"
+                } else {
+                    "新建会话"
+                },
                 shortcut = "⌘N",
                 idleTint = Everforest.Green,
                 hoverTint = Everforest.Green,
                 active = state.activeSessionId == null && !state.drawerShowArchived,
                 activeTint = Everforest.Green,
                 activeContainerColor = Everforest.BgGreen,
+                showBadgeDot = newSessionDraftPreview != null && state.activeSessionId != null,
+                badgeColor = Everforest.SoftRed,
                 size = DesktopControlSize,
                 iconSize = 16.dp,
                 testTag = "drawer_btn_new_session",
@@ -562,6 +572,23 @@ internal fun DesktopSidebar(
         val runningList = state.filteredRunningSessions.filterNot { it.id in pinnedSet }
         val historyList = state.filteredHistorySessions.filterNot { it.id in pinnedSet }
 
+        // Keep keyboard-selected session (`⌥↑`/`⌥↓`, `⌘1`..`⌘9`, `⌘[`/`⌘]`) scrolled into view in the sidebar
+        LaunchedEffect(state.activeSessionId, state.drawerShowArchived) {
+            val activeId = state.activeSessionId ?: return@LaunchedEffect
+            val targetKey = when {
+                state.drawerShowArchived -> "arch_$activeId"
+                activeId in pinnedSet -> "pin_$activeId"
+                runningList.any { it.id == activeId } -> "run_$activeId"
+                else -> activeId
+            }
+            val visibleInfo = listState.layoutInfo.visibleItemsInfo
+            if (visibleInfo.any { it.key == targetKey }) return@LaunchedEffect
+            val activeIndex = state.visibleSidebarSessions.indexOfFirst { it.id == activeId }
+            if (activeIndex >= 0) {
+                listState.scrollToItem(activeIndex.coerceAtLeast(0))
+            }
+        }
+
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f),
@@ -598,6 +625,7 @@ internal fun DesktopSidebar(
                             selected = sess.id == state.activeSessionId,
                             isPinned = false,
                             allowPin = false,
+                            draftPreview = state.draftPreviewFor(sess.id),
                             onClick = { onSelectSession(sess.id) },
                             onTogglePin = {},
                             onRename = { onRequestRenameSession(sess) },
@@ -606,6 +634,20 @@ internal fun DesktopSidebar(
                     }
                 }
             } else {
+                val newDraftPreview = state.draftPreviewFor(null)
+                val query = state.drawerSearchQuery.trim()
+                if (
+                    newDraftPreview != null &&
+                    (query.isEmpty() || newDraftPreview.contains(query, ignoreCase = true) || "新会话草稿".contains(query))
+                ) {
+                    item(key = "new_session_draft_row") {
+                        DesktopNewSessionDraftRow(
+                            draftPreview = newDraftPreview,
+                            selected = state.activeSessionId == null,
+                            onClick = onNewSession,
+                        )
+                    }
+                }
                 if (pinnedList.isNotEmpty()) {
                     item(key = "hdr_pinned") {
                         Row(
@@ -633,6 +675,7 @@ internal fun DesktopSidebar(
                             selected = sess.id == state.activeSessionId,
                             isPinned = true,
                             allowPin = true,
+                            draftPreview = state.draftPreviewFor(sess.id),
                             onClick = { onSelectSession(sess.id) },
                             onTogglePin = { onTogglePinSession(sess.id) },
                             onRename = { onRequestRenameSession(sess) },
@@ -658,6 +701,7 @@ internal fun DesktopSidebar(
                             selected = sess.id == state.activeSessionId,
                             isPinned = false,
                             allowPin = true,
+                            draftPreview = state.draftPreviewFor(sess.id),
                             onClick = { onSelectSession(sess.id) },
                             onTogglePin = { onTogglePinSession(sess.id) },
                             onRename = { onRequestRenameSession(sess) },
@@ -697,6 +741,7 @@ internal fun DesktopSidebar(
                             selected = sess.id == state.activeSessionId,
                             isPinned = false,
                             allowPin = true,
+                            draftPreview = state.draftPreviewFor(sess.id),
                             onClick = { onSelectSession(sess.id) },
                             onTogglePin = { onTogglePinSession(sess.id) },
                             onRename = { onRequestRenameSession(sess) },
@@ -812,6 +857,85 @@ internal fun DesktopSidebar(
     }
 }
 
+@Composable
+private fun DesktopNewSessionDraftRow(
+    draftPreview: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val rowHoverSource = remember { MutableInteractionSource() }
+    val isRowHovered by rowHoverSource.collectIsHoveredAsState()
+    val subtitleAnnotated = remember(draftPreview) {
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = Everforest.SoftRed, fontWeight = FontWeight.SemiBold)) {
+                append("[草稿] ")
+            }
+            withStyle(SpanStyle(color = Everforest.Grey2)) {
+                append(draftPreview)
+            }
+        }
+    }
+    Surface(
+        shape = RoundedCornerShape(9.dp),
+        color = when {
+            selected -> Everforest.Bg2
+            isRowHovered -> Everforest.Bg1
+            else -> Everforest.Bg1.copy(alpha = 0.55f)
+        },
+        border = BorderStroke(1.dp, Everforest.SoftRed.copy(alpha = if (selected) 0.48f else 0.28f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 4.dp)
+            .testTag("session_row_new_draft")
+            .clip(RoundedCornerShape(9.dp))
+            .hoverable(rowHoverSource)
+            .clickable(interactionSource = rowHoverSource, indication = null, onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 9.dp, end = 6.dp, top = 6.5.dp, bottom = 6.5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(Everforest.SoftRed),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "新会话",
+                    fontSize = 13.sp,
+                    color = if (selected) Everforest.BoldGold else Everforest.Fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = subtitleAnnotated,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = Everforest.BgRed,
+                border = BorderStroke(1.dp, Everforest.SoftRed.copy(alpha = 0.45f)),
+                modifier = Modifier.testTag("session_draft_badge_new"),
+            ) {
+                Text(
+                    text = "草稿",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Everforest.SoftRed,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DesktopSessionRow(
@@ -819,6 +943,7 @@ private fun DesktopSessionRow(
     selected: Boolean,
     isPinned: Boolean,
     allowPin: Boolean,
+    draftPreview: String? = null,
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
     onRename: () -> Unit,
@@ -884,22 +1009,43 @@ private fun DesktopSessionRow(
                     overflow = TextOverflow.Ellipsis,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 )
-                val subtitle = if (isRunning && !session.liveStatusText.isNullOrBlank()) {
-                    session.liveStatusText
+                val hasLiveStatus = isRunning && !session.liveStatusText.isNullOrBlank()
+                if (draftPreview != null && !hasLiveStatus) {
+                    val draftSubtitle = remember(draftPreview) {
+                        buildAnnotatedString {
+                            withStyle(SpanStyle(color = Everforest.SoftRed, fontWeight = FontWeight.SemiBold)) {
+                                append("[草稿] ")
+                            }
+                            withStyle(SpanStyle(color = Everforest.Grey2)) {
+                                append(draftPreview)
+                            }
+                        }
+                    }
+                    Text(
+                        text = draftSubtitle,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("session_draft_preview_${session.id}"),
+                    )
                 } else {
-                    "${shortEngineLabel(session.engineId)} · $wsBadge"
-                }
-                Text(
-                    text = subtitle,
-                    fontSize = 11.sp,
-                    color = if (isRunning && !session.liveStatusText.isNullOrBlank()) {
-                        Everforest.BoldGold
+                    val subtitle = if (hasLiveStatus) {
+                        session.liveStatusText.orEmpty()
                     } else {
-                        Everforest.Grey0
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                        "${shortEngineLabel(session.engineId)} · $wsBadge"
+                    }
+                    Text(
+                        text = subtitle,
+                        fontSize = 11.sp,
+                        color = if (hasLiveStatus) {
+                            Everforest.BoldGold
+                        } else {
+                            Everforest.Grey0
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
 
             if (showInlineActions) {
@@ -969,6 +1115,21 @@ private fun DesktopSessionRow(
                             text = "队列 ${session.queuedPrompts.size}",
                             fontSize = 10.sp,
                             color = Everforest.CommentGrey,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        )
+                    }
+                } else if (draftPreview != null) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.BgRed,
+                        border = BorderStroke(1.dp, Everforest.SoftRed.copy(alpha = 0.45f)),
+                        modifier = Modifier.testTag("session_draft_badge_${session.id}"),
+                    ) {
+                        Text(
+                            text = "草稿",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.SoftRed,
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                         )
                     }

@@ -749,6 +749,10 @@ actual fun openExternalUrl(url: String) {
     }
 }
 
+actual fun canOpenLocalFileExternally(path: String): Boolean = false
+
+actual fun openLocalFileExternally(path: String): Boolean = false
+
 actual fun copyTextToClipboard(text: String): Boolean {
     val ctx = AndroidPlatformRuntime.appContext ?: return false
     val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return false

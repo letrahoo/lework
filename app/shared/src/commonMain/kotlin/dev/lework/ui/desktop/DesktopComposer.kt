@@ -23,6 +23,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -66,6 +68,8 @@ internal fun insertNewlineAtSelection(current: TextFieldValue): TextFieldValue {
 @Composable
 internal fun DesktopComposer(
     state: ConsoleUiState,
+    draftKey: String = "",
+    composerFocusRequester: FocusRequester = remember { FocusRequester() },
     text: String,
     onTextChange: (String) -> Unit,
     onOpenWorkspaceDialog: () -> Unit,
@@ -273,10 +277,10 @@ internal fun DesktopComposer(
                 val canSubmitNow =
                     hasDraft && (!isSessionRunning || activeSess?.state == SessionState.RUNNING)
 
-                var fieldValue by remember {
+                var fieldValue by remember(draftKey) {
                     mutableStateOf(TextFieldValue(text = text, selection = TextRange(text.length)))
                 }
-                var lastSyncedExternalText by remember { mutableStateOf(text) }
+                var lastSyncedExternalText by remember(draftKey) { mutableStateOf(text) }
                 if (text != lastSyncedExternalText) {
                     lastSyncedExternalText = text
                     if (fieldValue.text != text) {
@@ -318,6 +322,7 @@ internal fun DesktopComposer(
                         maxLines = 8,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .focusRequester(composerFocusRequester)
                             .onPreviewKeyEvent { keyEvent ->
                                 if (keyEvent.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                                 val isPasteShortcut =

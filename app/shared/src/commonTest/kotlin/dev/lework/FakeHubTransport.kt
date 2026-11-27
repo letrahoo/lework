@@ -274,8 +274,10 @@ class FakeHubTransport : HubTransport {
     override suspend fun listDirectory(path: String): FsListResult =
         FsListResult(path = path, entries = emptyList())
 
+    var readFileHandler: ((String) -> FsReadResult)? = null
+
     override suspend fun readFile(path: String): FsReadResult =
-        FsReadResult(path = path, content = "", truncated = false)
+        readFileHandler?.invoke(path) ?: FsReadResult(path = path, content = "", truncated = false)
 
     override suspend fun upsertProfile(profile: ProfileInfo): List<ProfileInfo> = listOf(profile)
 

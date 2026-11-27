@@ -90,6 +90,10 @@ class ConsoleStore(
     private var pairingInFlight: Boolean = false
     private var pendingDeepLinkSessionId: String? = null
     private var mentionJob: Job? = null
+    private var filePreviewJob: Job? = null
+    private var filePreviewRequestToken: Long = 0L
+    private val sessionNavHistory = mutableListOf<String>()
+    private var sessionNavIndex: Int = -1
     private val lastSubmittedPromptBySession = mutableMapOf<String, String>()
     private val lastErrorSignatureBySession = mutableMapOf<String, Pair<String, Long>>()
     private var consecutiveReconnectFailures: Int = 0
@@ -1418,6 +1422,8 @@ class ConsoleStore(
         tsnetPollJob?.cancel()
         resumeJob?.cancel()
         switchSubscriptionTo(null)
+        sessionNavHistory.clear()
+        sessionNavIndex = -1
         consecutiveReconnectFailures = 0
         saveActiveHostId(hubId)
         val hostToken = loadHostAccessToken(hubId)
@@ -1437,6 +1443,11 @@ class ConsoleStore(
                 activeHostId = hubId,
                 activeSessionId = null,
                 authUserName = hostMeta?.userName ?: it.authUserName,
+                sessionDrafts = emptyMap(),
+                sessionAttachedImages = emptyMap(),
+                mentionQuery = null,
+                workspaceFileSuggestions = emptyList(),
+                filePreviewStack = emptyList(),
             )
         }
         scope.launch {
@@ -1922,6 +1933,8 @@ class ConsoleStore(
         tsnetPollJob?.cancel()
         resumeJob?.cancel()
         switchSubscriptionTo(null)
+        sessionNavHistory.clear()
+        sessionNavIndex = -1
         consecutiveReconnectFailures = 0
         saveAuthSession(null, null)
         _state.update {
@@ -1934,6 +1947,11 @@ class ConsoleStore(
                 connectionError = null,
                 turnRecoveryBanner = null,
                 retryingTurn = false,
+                sessionDrafts = emptyMap(),
+                sessionAttachedImages = emptyMap(),
+                mentionQuery = null,
+                workspaceFileSuggestions = emptyList(),
+                filePreviewStack = emptyList(),
             )
         }
         scope.launch {
@@ -2338,6 +2356,7 @@ class ConsoleStore(
         userManuallyPickedModel = false
         userManuallyPickedEffort = false
         userManuallyPickedMode = false
+        mentionJob?.cancel()
         switchSubscriptionTo(null)
         _state.update { s ->
             val eng = s.taskEngines.draftEngine(s.selectedEngineId)
@@ -2358,6 +2377,8 @@ class ConsoleStore(
                 promptErrorText = null,
                 turnRecoveryBanner = null,
                 retryingTurn = false,
+                mentionQuery = null,
+                workspaceFileSuggestions = emptyList(),
                 highlightedSeq = null,
                 highlightedQuery = null,
                 selectedEngineId = eng?.id.orEmpty(),
@@ -2768,6 +2789,7 @@ class ConsoleStore(
         val prevActive = _state.value.activeSession
         val resetDraft = if (prevActive != null && prevActive.cwd != path) null else _state.value.activeSessionId
         if (resetDraft == null) {
+            mentionJob?.cancel()
             switchSubscriptionTo(null)
         }
         _state.update {
@@ -2779,6 +2801,8 @@ class ConsoleStore(
                 dirEntries = emptyList(),
                 openedFilePath = null,
                 openedFileContent = null,
+                mentionQuery = if (resetDraft == null) null else it.mentionQuery,
+                workspaceFileSuggestions = if (resetDraft == null) emptyList() else it.workspaceFileSuggestions,
             )
         }
         persistCurrentPrefs()
@@ -2833,10 +2857,72 @@ class ConsoleStore(
     }
 
     fun selectSession(sessionId: String) {
+        selectSessionInternal(sessionId = sessionId, recordHistory = true)
+    }
+
+    fun selectAdjacentSession(delta: Int): Boolean {
+        val visible = _state.value.visibleSidebarSessions
+        if (visible.isEmpty() || delta == 0) return false
+        val currentId = _state.value.activeSessionId
+        val curIdx = currentId?.let { id -> visible.indexOfFirst { it.id == id } } ?: -1
+        val targetIdx = if (curIdx < 0) {
+            if (delta > 0) 0 else visible.lastIndex
+        } else {
+            (curIdx + delta).coerceIn(0, visible.lastIndex)
+        }
+        val targetId = visible[targetIdx].id
+        if (targetId == currentId) return false
+        selectSessionInternal(sessionId = targetId, recordHistory = true)
+        return true
+    }
+
+    fun selectSessionByIndex(zeroBasedIndex: Int): Boolean {
+        val target = _state.value.visibleSidebarSessions.getOrNull(zeroBasedIndex) ?: return false
+        if (target.id == _state.value.activeSessionId) return false
+        selectSessionInternal(sessionId = target.id, recordHistory = true)
+        return true
+    }
+
+    fun navigateSessionHistory(delta: Int): Boolean {
+        if (delta == 0 || sessionNavHistory.isEmpty()) return false
+        val existingIds = _state.value.sessions.mapTo(HashSet()) { it.id }
+        val currentId = _state.value.activeSessionId
+        var idx = sessionNavIndex + delta
+        while (idx in sessionNavHistory.indices) {
+            val candidate = sessionNavHistory[idx]
+            if (candidate in existingIds && candidate != currentId) {
+                sessionNavIndex = idx
+                selectSessionInternal(sessionId = candidate, recordHistory = false)
+                return true
+            }
+            idx += if (delta > 0) 1 else -1
+        }
+        return false
+    }
+
+    private fun recordSessionVisit(sessionId: String) {
+        if (sessionNavIndex in sessionNavHistory.indices && sessionNavHistory[sessionNavIndex] == sessionId) {
+            return
+        }
+        while (sessionNavHistory.size > sessionNavIndex + 1) {
+            sessionNavHistory.removeAt(sessionNavHistory.lastIndex)
+        }
+        sessionNavHistory.add(sessionId)
+        if (sessionNavHistory.size > 40) {
+            sessionNavHistory.removeAt(0)
+        }
+        sessionNavIndex = sessionNavHistory.lastIndex
+    }
+
+    private fun selectSessionInternal(sessionId: String, recordHistory: Boolean) {
         logRuntimeEvent("SESSION", "selectSession sid=$sessionId prev=${_state.value.activeSessionId ?: "none"}")
+        if (recordHistory) {
+            recordSessionVisit(sessionId)
+        }
         userManuallyPickedModel = false
         userManuallyPickedEffort = false
         userManuallyPickedMode = false
+        mentionJob?.cancel()
         switchSubscriptionTo(sessionId)
         val meta = _state.value.sessions.firstOrNull { it.id == sessionId }
         _state.update { s ->
@@ -2867,6 +2953,8 @@ class ConsoleStore(
                 approvalErrorText = null,
                 promptErrorText = null,
                 promptNoticeText = null,
+                mentionQuery = null,
+                workspaceFileSuggestions = emptyList(),
                 turnRecoveryBanner = s.turnRecoveryBanner?.takeIf { it.sessionId == sessionId },
                 retryingTurn = false,
                 highlightedSeq = if (s.activeSessionId == sessionId) s.highlightedSeq else null,
@@ -2990,6 +3078,35 @@ class ConsoleStore(
         _state.update { it.copy(signingExpiryDismissed = true) }
     }
 
+    fun updateSessionDraft(
+        text: String,
+        cursorIndex: Int = text.length,
+        updateMentions: Boolean = true,
+    ) {
+        _state.update { s ->
+            val key = s.activeDraftKey
+            val nextDrafts = if (text.isEmpty()) {
+                s.sessionDrafts - key
+            } else {
+                s.sessionDrafts + (key to text)
+            }
+            if (nextDrafts == s.sessionDrafts) s else s.copy(sessionDrafts = nextDrafts)
+        }
+        if (updateMentions) {
+            updateComposerTextForMentions(text, cursorIndex)
+        }
+    }
+
+    fun clearSessionDraft(sessionId: String? = _state.value.activeSessionId) {
+        val key = sessionDraftKey(sessionId)
+        _state.update { s ->
+            s.copy(
+                sessionDrafts = s.sessionDrafts - key,
+                sessionAttachedImages = s.sessionAttachedImages - key,
+            )
+        }
+    }
+
     fun updateComposerTextForMentions(nextText: String, cursorIndex: Int = nextText.length) {
         val query = extractMentionQueryAtCursor(nextText, cursorIndex)
         if (query == null) {
@@ -3057,9 +3174,16 @@ class ConsoleStore(
     fun attachImages(attachments: List<PromptImageAttachment>) {
         if (attachments.isEmpty()) return
         _state.update { s ->
-            val slots = (4 - s.composerAttachedImages.size).coerceAtLeast(0)
-            if (slots == 0) s
-            else s.copy(composerAttachedImages = s.composerAttachedImages + attachments.take(slots))
+            val key = s.activeDraftKey
+            val current = s.sessionAttachedImages[key].orEmpty()
+            val slots = (4 - current.size).coerceAtLeast(0)
+            if (slots == 0) {
+                s
+            } else {
+                s.copy(
+                    sessionAttachedImages = s.sessionAttachedImages + (key to (current + attachments.take(slots))),
+                )
+            }
         }
     }
 
@@ -3091,13 +3215,15 @@ class ConsoleStore(
         val toAdd = valid.take(remaining)
         val overflow = valid.size > remaining
         _state.update { s ->
-            val slots = (4 - s.composerAttachedImages.size).coerceAtLeast(0)
+            val key = s.activeDraftKey
+            val current = s.sessionAttachedImages[key].orEmpty()
+            val slots = (4 - current.size).coerceAtLeast(0)
             if (slots == 0) {
                 s.copy(promptErrorText = "单条消息最多附带 4 张图片")
             } else {
                 val added = valid.take(slots)
                 s.copy(
-                    composerAttachedImages = s.composerAttachedImages + added,
+                    sessionAttachedImages = s.sessionAttachedImages + (key to (current + added)),
                     promptErrorText = if (overflow) "单条消息最多附带 4 张图片，已附加前 ${toAdd.size} 张" else null,
                 )
             }
@@ -3122,8 +3248,19 @@ class ConsoleStore(
 
     fun removeAttachedImage(index: Int) {
         _state.update { s ->
-            if (index !in s.composerAttachedImages.indices) s
-            else s.copy(composerAttachedImages = s.composerAttachedImages.filterIndexed { i, _ -> i != index })
+            val key = s.activeDraftKey
+            val current = s.sessionAttachedImages[key].orEmpty()
+            if (index !in current.indices) {
+                s
+            } else {
+                val remainingImages = current.filterIndexed { i, _ -> i != index }
+                val nextMap = if (remainingImages.isEmpty()) {
+                    s.sessionAttachedImages - key
+                } else {
+                    s.sessionAttachedImages + (key to remainingImages)
+                }
+                s.copy(sessionAttachedImages = nextMap)
+            }
         }
     }
 
@@ -3134,11 +3271,25 @@ class ConsoleStore(
     fun dismissTurnRecoveryBanner() {
         _state.update { s ->
             val banner = s.turnRecoveryBanner
+            val targetKey = sessionDraftKey(banner?.sessionId ?: s.activeSessionId)
+            val restoreText = banner?.failedPromptText?.takeIf { it.isNotBlank() }
+            val restoreImages = banner?.failedImages.orEmpty()
+            val nextDrafts = if (restoreText != null && s.sessionDrafts[targetKey].isNullOrBlank()) {
+                s.sessionDrafts + (targetKey to restoreText)
+            } else {
+                s.sessionDrafts
+            }
+            val nextImages = if (restoreImages.isNotEmpty() && s.sessionAttachedImages[targetKey].isNullOrEmpty()) {
+                s.sessionAttachedImages + (targetKey to restoreImages)
+            } else {
+                s.sessionAttachedImages
+            }
             s.copy(
                 turnRecoveryBanner = null,
                 promptErrorText = null,
-                unsentDraftToRestore = s.unsentDraftToRestore ?: banner?.failedPromptText?.takeIf { it.isNotBlank() },
-                composerAttachedImages = s.composerAttachedImages.ifEmpty { banner?.failedImages.orEmpty() },
+                unsentDraftToRestore = null,
+                sessionDrafts = nextDrafts,
+                sessionAttachedImages = nextImages,
             )
         }
     }
@@ -3368,12 +3519,15 @@ class ConsoleStore(
     fun sendPrompt(text: String) {
         val trimmed = text.trim()
         val s = _state.value
-        val attached = s.composerAttachedImages
+        val originatingSessionId = s.activeSessionId
+        val originatingDraftKey = sessionDraftKey(originatingSessionId)
+        val attached = s.attachedImagesFor(originatingSessionId)
         if (trimmed.isEmpty() && attached.isEmpty()) return
         mentionJob?.cancel()
         _state.update {
             it.copy(
-                composerAttachedImages = emptyList(),
+                sessionDrafts = it.sessionDrafts - originatingDraftKey,
+                sessionAttachedImages = it.sessionAttachedImages - originatingDraftKey,
                 mentionQuery = null,
                 workspaceFileSuggestions = emptyList(),
                 promptErrorText = null,
@@ -3387,10 +3541,10 @@ class ConsoleStore(
                 if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) {
                     val connected = ensureConnectedForSend(forceReconnect = false)
                     if (!connected) {
-                        throw IllegalStateException(_state.value.connectionError ?: "网络连接已断开，无法连接到主机")
+                        error(_state.value.connectionError ?: "网络连接已断开，无法连接到主机")
                     }
                 }
-                val preSendSessionId = _state.value.activeSessionId
+                val preSendSessionId = originatingSessionId
                 val preSendTranscript = preSendSessionId?.let { _state.value.transcripts[it] }
                 val preSendPlanUpdatedAt = preSendTranscript?.planUpdatedAt ?: 0L
                 val preSendPlanEntries = preSendTranscript?.planEntries.orEmpty()
@@ -3430,7 +3584,7 @@ class ConsoleStore(
             } catch (ce: CancellationException) {
                 if (!isActive) throw ce
                 recordTurnError(
-                    sessionId = _state.value.activeSessionId,
+                    sessionId = originatingSessionId,
                     rawMessage = "网络连接刚恢复，消息尚未发出",
                     failedPromptText = trimmed.takeIf { it.isNotEmpty() },
                     failedImages = attached,
@@ -3439,7 +3593,7 @@ class ConsoleStore(
             } catch (e: RpcCallException) {
                 val errMsg = e.message.takeIf { it.isNotBlank() } ?: "消息发送未成功，请检查连接后重试"
                 recordTurnError(
-                    sessionId = _state.value.activeSessionId,
+                    sessionId = originatingSessionId,
                     rawMessage = errMsg,
                     failedPromptText = trimmed.takeIf { it.isNotEmpty() },
                     failedImages = attached,
@@ -3448,7 +3602,7 @@ class ConsoleStore(
             } catch (t: Throwable) {
                 val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "消息发送未成功，请检查连接后重试"
                 recordTurnError(
-                    sessionId = _state.value.activeSessionId,
+                    sessionId = originatingSessionId,
                     rawMessage = errMsg,
                     failedPromptText = trimmed.takeIf { it.isNotEmpty() },
                     failedImages = attached,
@@ -3551,15 +3705,19 @@ class ConsoleStore(
                     } else {
                         st.transcripts
                     }
+                    val retryDraftKey = sessionDraftKey(preSendSessionId)
+                    val nextAttachedImages = if (
+                        hasUnsentPrompt && st.sessionAttachedImages[retryDraftKey] == failedImages
+                    ) {
+                        st.sessionAttachedImages - retryDraftKey
+                    } else {
+                        st.sessionAttachedImages
+                    }
                     st.copy(
                         turnRecoveryBanner = null,
                         promptErrorText = null,
                         unsentDraftToRestore = null,
-                        composerAttachedImages = if (hasUnsentPrompt && st.composerAttachedImages == failedImages) {
-                            emptyList()
-                        } else {
-                            st.composerAttachedImages
-                        },
+                        sessionAttachedImages = nextAttachedImages,
                         transcripts = nextTranscripts,
                     )
                 }
@@ -3875,6 +4033,120 @@ class ConsoleStore(
 
     fun closeOpenedFile() {
         _state.update { it.copy(openedFilePath = null, openedFileContent = null) }
+    }
+
+    fun openLinkedFilePreview(
+        rawTarget: String,
+        baseDirectory: String? = null,
+        pushToStack: Boolean = false,
+    ) {
+        val parsed = parseLocalFileLink(rawTarget) ?: return
+        val snap = _state.value
+        val effectiveBase = baseDirectory?.takeIf { it.isNotBlank() }
+            ?: snap.activeSession?.cwd?.takeIf { it.isNotBlank() }
+            ?: snap.activeWorkspaces.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: snap.selectedWorkspacePath.takeIf { it.isNotBlank() }
+        val resolvedPath = resolveLocalFilePath(parsed.path, effectiveBase)
+        val displayName = resolvedPath.trimEnd('/').substringAfterLast('/').ifBlank { resolvedPath }
+
+        val initialEntry = LinkedFilePreviewEntry(
+            rawTarget = rawTarget,
+            resolvedPath = resolvedPath,
+            displayName = displayName,
+            startLine = parsed.startLine,
+            endLine = parsed.endLine,
+            loading = true,
+        )
+
+        filePreviewJob?.cancel()
+        val reqToken = ++filePreviewRequestToken
+        _state.update { s ->
+            val nextStack = if (pushToStack && s.filePreviewStack.isNotEmpty()) {
+                (s.filePreviewStack + initialEntry).takeLast(16)
+            } else {
+                listOf(initialEntry)
+            }
+            s.copy(filePreviewStack = nextStack)
+        }
+
+        filePreviewJob = scope.launch {
+            try {
+                val res = rpc.readFile(resolvedPath)
+                val isBinary = res.content.indexOf('\u0000') >= 0
+                var companionPath: String? = null
+                var companionContent: String? = null
+                var companionTruncated = false
+
+                if (!isBinary && isHtmlExtension(fileExtensionOf(res.path))) {
+                    for (candidate in companionMarkdownCandidates(res.path)) {
+                        val companionRes = try {
+                            rpc.readFile(candidate)
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        if (companionRes != null && companionRes.content.isNotBlank()) {
+                            companionPath = companionRes.path
+                            companionContent = companionRes.content
+                            companionTruncated = companionRes.truncated
+                            break
+                        }
+                    }
+                }
+
+                if (filePreviewRequestToken != reqToken) return@launch
+                _state.update { s ->
+                    val top = s.filePreviewStack.lastOrNull() ?: return@update s
+                    if (top.resolvedPath != resolvedPath) return@update s
+                    val loaded = top.copy(
+                        resolvedPath = res.path,
+                        displayName = res.path.trimEnd('/').substringAfterLast('/').ifBlank { top.displayName },
+                        content = if (isBinary) null else res.content,
+                        truncated = res.truncated,
+                        isBinary = isBinary,
+                        companionMarkdownPath = companionPath,
+                        companionMarkdownContent = companionContent,
+                        companionMarkdownTruncated = companionTruncated,
+                        loading = false,
+                        error = null,
+                    )
+                    s.copy(filePreviewStack = s.filePreviewStack.dropLast(1) + loaded)
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                if (filePreviewRequestToken != reqToken) return@launch
+                val errText = t.message?.takeIf { it.isNotBlank() } ?: "无法读取文件，请确认文件存在且位于可访问目录内"
+                _state.update { s ->
+                    val top = s.filePreviewStack.lastOrNull() ?: return@update s
+                    if (top.resolvedPath != resolvedPath) return@update s
+                    val failed = top.copy(
+                        loading = false,
+                        error = errText,
+                    )
+                    s.copy(filePreviewStack = s.filePreviewStack.dropLast(1) + failed)
+                }
+            }
+        }
+    }
+
+    fun navigateBackFilePreview() {
+        filePreviewJob?.cancel()
+        filePreviewRequestToken++
+        _state.update { s ->
+            if (s.filePreviewStack.size <= 1) {
+                s
+            } else {
+                s.copy(filePreviewStack = s.filePreviewStack.dropLast(1))
+            }
+        }
+    }
+
+    fun closeFilePreview() {
+        filePreviewJob?.cancel()
+        filePreviewRequestToken++
+        _state.update { it.copy(filePreviewStack = emptyList()) }
     }
 
     private suspend fun subscribeAndCatchUp(sessionId: String) {

@@ -264,6 +264,22 @@ fun main(args: Array<String>) {
                         onClick = store::startNewDraftSession,
                     )
                     Item(
+                        text = "上一个会话 (⌥↑)",
+                        onClick = { store.selectAdjacentSession(-1) },
+                    )
+                    Item(
+                        text = "下一个会话 (⌥↓)",
+                        onClick = { store.selectAdjacentSession(+1) },
+                    )
+                    Item(
+                        text = "返回上一个访问会话 (⌘[)",
+                        onClick = { store.navigateSessionHistory(-1) },
+                    )
+                    Item(
+                        text = "前进到下一个访问会话 (⌘])",
+                        onClick = { store.navigateSessionHistory(+1) },
+                    )
+                    Item(
                         text = "刷新会话列表",
                         shortcut = KeyShortcut(Key.R, meta = true),
                         onClick = store::refreshHostSessions,

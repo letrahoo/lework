@@ -34,6 +34,8 @@ object JvmPlatformTestHooks {
     var clipboardText: String = ""
     var clipboardWriteSucceeds: Boolean = true
     val openedUrls = mutableListOf<String>()
+    val openedLocalFiles = mutableListOf<String>()
+    var canOpenLocalFiles: Boolean = false
 
     var tsnetAvailable: Boolean = false
     var tsnetEnabled: Boolean = false
@@ -105,6 +107,8 @@ object JvmPlatformTestHooks {
         clipboardText = ""
         clipboardWriteSucceeds = true
         openedUrls.clear()
+        openedLocalFiles.clear()
+        canOpenLocalFiles = false
         tsnetAvailable = false
         tsnetEnabled = false
         tsnetControlUrl = null
@@ -246,6 +250,23 @@ actual fun openExternalUrl(url: String) {
         JvmPlatformTestHooks.openedUrls.add(url)
     }
 }
+
+actual fun canOpenLocalFileExternally(path: String): Boolean =
+    if (JvmDesktopRuntime.isEnabled) {
+        JvmDesktopRuntime.canOpenLocalFileExternally(path)
+    } else {
+        JvmPlatformTestHooks.canOpenLocalFiles
+    }
+
+actual fun openLocalFileExternally(path: String): Boolean =
+    if (JvmDesktopRuntime.isEnabled) {
+        JvmDesktopRuntime.openLocalFileExternally(path)
+    } else if (JvmPlatformTestHooks.canOpenLocalFiles) {
+        JvmPlatformTestHooks.openedLocalFiles.add(path)
+        true
+    } else {
+        false
+    }
 
 actual fun copyTextToClipboard(text: String): Boolean =
     if (JvmDesktopRuntime.isEnabled) {

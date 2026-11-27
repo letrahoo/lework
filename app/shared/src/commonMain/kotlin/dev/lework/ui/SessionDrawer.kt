@@ -29,10 +29,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.PairedHost
@@ -557,6 +560,7 @@ internal fun TasksSidebarContent(
                             session = sess,
                             selected = sess.id == state.activeSessionId,
                             showQuickUnarchive = true,
+                            draftPreview = state.draftPreviewFor(sess.id),
                             onClick = {
                                 dismissKeyboard()
                                 onSelectSession(sess.id)
@@ -573,6 +577,23 @@ internal fun TasksSidebarContent(
                     }
                 }
             } else {
+                val newDraftPreview = state.draftPreviewFor(null)
+                val query = state.drawerSearchQuery.trim()
+                if (
+                    newDraftPreview != null &&
+                    (query.isEmpty() || newDraftPreview.contains(query, ignoreCase = true) || "新会话草稿".contains(query))
+                ) {
+                    item(key = "drawer_new_session_draft_row") {
+                        MobileNewSessionDraftRow(
+                            draftPreview = newDraftPreview,
+                            selected = state.activeSessionId == null,
+                            onClick = {
+                                dismissKeyboard()
+                                onNewSession()
+                            },
+                        )
+                    }
+                }
                 val runningList = state.filteredRunningSessions
                 if (runningList.isNotEmpty()) {
                     item(key = "hdr_running") {
@@ -588,6 +609,7 @@ internal fun TasksSidebarContent(
                         SessionDrawerRow(
                             session = sess,
                             selected = sess.id == state.activeSessionId,
+                            draftPreview = state.draftPreviewFor(sess.id),
                             onClick = {
                                 dismissKeyboard()
                                 onSelectSession(sess.id)
@@ -634,6 +656,7 @@ internal fun TasksSidebarContent(
                         SessionDrawerRow(
                             session = sess,
                             selected = sess.id == state.activeSessionId,
+                            draftPreview = state.draftPreviewFor(sess.id),
                             onClick = {
                                 dismissKeyboard()
                                 onSelectSession(sess.id)
@@ -743,12 +766,85 @@ internal fun SidebarFilterPill(
     }
 }
 
+@Composable
+private fun MobileNewSessionDraftRow(
+    draftPreview: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val subtitleAnnotated = remember(draftPreview) {
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = Everforest.SoftRed, fontWeight = FontWeight.SemiBold)) {
+                append("[草稿] ")
+            }
+            withStyle(SpanStyle(color = Everforest.Grey2)) {
+                append(draftPreview)
+            }
+        }
+    }
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) Everforest.Bg2 else Everforest.Bg1.copy(alpha = 0.6f),
+        border = BorderStroke(1.dp, Everforest.SoftRed.copy(alpha = if (selected) 0.48f else 0.28f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 4.dp)
+            .testTag("session_row_new_draft")
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 10.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(Everforest.SoftRed),
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "新会话",
+                    fontSize = 13.sp,
+                    color = if (selected) Everforest.BoldGold else Everforest.Fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = subtitleAnnotated,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = Everforest.BgRed,
+                border = BorderStroke(1.dp, Everforest.SoftRed.copy(alpha = 0.45f)),
+                modifier = Modifier.testTag("session_draft_badge_new"),
+            ) {
+                Text(
+                    text = "草稿",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Everforest.SoftRed,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionDrawerRow(
     session: SessionMeta,
     selected: Boolean,
     showQuickUnarchive: Boolean = false,
+    draftPreview: String? = null,
     onClick: () -> Unit,
     onRename: () -> Unit = {},
     onToggleArchive: () -> Unit = {},
@@ -804,22 +900,43 @@ private fun SessionDrawerRow(
                         overflow = TextOverflow.Ellipsis,
                         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     )
-                    val subtitle = if (isRunning && !session.liveStatusText.isNullOrBlank()) {
-                        session.liveStatusText
+                    val hasLiveStatus = isRunning && !session.liveStatusText.isNullOrBlank()
+                    if (draftPreview != null && !hasLiveStatus) {
+                        val draftSubtitle = remember(draftPreview) {
+                            buildAnnotatedString {
+                                withStyle(SpanStyle(color = Everforest.SoftRed, fontWeight = FontWeight.SemiBold)) {
+                                    append("[草稿] ")
+                                }
+                                withStyle(SpanStyle(color = Everforest.Grey2)) {
+                                    append(draftPreview)
+                                }
+                            }
+                        }
+                        Text(
+                            text = draftSubtitle,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("session_draft_preview_${session.id}"),
+                        )
                     } else {
-                        "${shortEngineLabel(session.engineId)} · $wsBadge"
-                    }
-                    Text(
-                        text = subtitle,
-                        fontSize = 11.sp,
-                        color = if (isRunning && !session.liveStatusText.isNullOrBlank()) {
-                            Everforest.BoldGold
+                        val subtitle = if (hasLiveStatus) {
+                            session.liveStatusText.orEmpty()
                         } else {
-                            Everforest.Grey0
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                            "${shortEngineLabel(session.engineId)} · $wsBadge"
+                        }
+                        Text(
+                            text = subtitle,
+                            fontSize = 11.sp,
+                            color = if (hasLiveStatus) {
+                                Everforest.BoldGold
+                            } else {
+                                Everforest.Grey0
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
                 if (isWaiting) {
                     Surface(
@@ -845,6 +962,21 @@ private fun SessionDrawerRow(
                             text = "队列 ${session.queuedPrompts.size}",
                             fontSize = 10.sp,
                             color = Everforest.CommentGrey,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        )
+                    }
+                } else if (draftPreview != null) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.BgRed,
+                        border = BorderStroke(1.dp, Everforest.SoftRed.copy(alpha = 0.45f)),
+                        modifier = Modifier.testTag("session_draft_badge_${session.id}"),
+                    ) {
+                        Text(
+                            text = "草稿",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.SoftRed,
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                         )
                     }
