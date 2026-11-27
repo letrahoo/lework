@@ -372,7 +372,7 @@ private fun SessionContextCard(u: SessionUsageResult) {
                     )
                 }
                 Text(
-                    text = "累计 ${formatTokenCompact(u.totals.totalTokens)} tokens (${u.totals.requests} 轮) · 最近一轮 ↑${formatTokenCompact(u.lastInputTokens)} ↓${formatTokenCompact(u.lastOutputTokens)}",
+                    text = "累计 ${formatTokenCompact(u.totals.totalTokens)} Token (${u.totals.requests} 轮) · 最近一轮 ↑${formatTokenCompact(u.lastInputTokens)} ↓${formatTokenCompact(u.lastOutputTokens)}",
                     fontSize = 10.5.sp,
                     color = Everforest.CommentGrey,
                 )
@@ -467,7 +467,7 @@ private fun QuotaWindowCard(window: QuotaWindowInfo, nowMs: Long) {
                             if (window.usedTokens > 0) append(" · ")
                         }
                         if (window.usedTokens > 0 || pct == null) {
-                            append("${formatTokenCompact(window.usedTokens)} tokens")
+                            append("${formatTokenCompact(window.usedTokens)} Token")
                         }
                         window.estimatedCostUsd?.takeIf { it > 0.001 }?.let { c ->
                             append(" (${formatUsd(c)})")
@@ -771,7 +771,7 @@ private fun ProxyStatsCard(proxy: ProxyUsageResult) {
 
             if (proxy.managementEnabled && proxy.totalRequests != null) {
                 Text(
-                    text = "累计请求 ${proxy.totalRequests} 次 · 成功 ${proxy.successCount ?: 0} · 失败 ${proxy.failureCount ?: 0} · 代理总计 ${formatTokenCompact(proxy.totalTokens ?: 0)} tokens",
+                    text = "累计请求 ${proxy.totalRequests} 次 · 成功 ${proxy.successCount ?: 0} · 失败 ${proxy.failureCount ?: 0} · 代理总计 ${formatTokenCompact(proxy.totalTokens ?: 0)} Token",
                     fontSize = 11.sp,
                     color = Everforest.Grey2,
                 )

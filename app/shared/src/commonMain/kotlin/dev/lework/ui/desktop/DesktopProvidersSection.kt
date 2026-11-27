@@ -16,6 +16,8 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
@@ -60,6 +62,10 @@ internal fun DesktopProvidersSection(
     var showCreateDialog by remember { mutableStateOf(false) }
 
     val externalProviders = state.externalProviders
+    val hostEngineIds = remember(state.engines) {
+        val installed = state.engines.filter { it.id != "mock" && it.id != "agy" && it.status.installed }.map { it.id }
+        if (installed.isNotEmpty()) installed else listOf("claude", "codex", "pi")
+    }
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -222,7 +228,7 @@ internal fun DesktopProvidersSection(
                                             color = Everforest.Bg0,
                                         ) {
                                             Text(
-                                                text = if (provider.adapter == ProviderAdapterKind.CPA) "CPA 插件" else "标准兼容",
+                                                text = if (provider.adapter == ProviderAdapterKind.CPA) "CPA 本地代理" else "标准兼容",
                                                 fontSize = 9.5.sp,
                                                 color = Everforest.Aqua,
                                                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
@@ -404,6 +410,7 @@ internal fun DesktopProvidersSection(
         DesktopProviderEditorDialog(
             initial = editingProvider,
             hostDisplayName = state.activeHostDisplayName,
+            availableEngineIds = hostEngineIds,
             busy = state.providersBusy,
             probing = state.providerProbingId != null,
             probeResult = state.providerDraftProbeResult,
@@ -846,6 +853,7 @@ private fun DesktopProviderModelFilterDialog(
 private fun DesktopProviderEditorDialog(
     initial: ProviderInfo?,
     hostDisplayName: String,
+    availableEngineIds: List<String> = listOf("claude", "codex", "pi"),
     busy: Boolean,
     probing: Boolean,
     probeResult: ProviderInfo?,
@@ -873,11 +881,23 @@ private fun DesktopProviderEditorDialog(
                 ?: setOf(WireApi.ANTHROPIC_MESSAGES, WireApi.OPENAI_RESPONSES, WireApi.OPENAI_CHAT),
         )
     }
-    var selectedEngines by remember(initial?.id) {
+    val engineChoices = remember(availableEngineIds, initial?.enabledEngines) {
+        (availableEngineIds + initial?.enabledEngines.orEmpty()).distinct().ifEmpty { listOf("claude", "codex", "pi") }
+    }
+    var selectedEngines by remember(initial?.id, engineChoices) {
         mutableStateOf(
             initial?.enabledEngines?.takeIf { it.isNotEmpty() }?.toSet()
-                ?: setOf("claude", "codex", "pi"),
+                ?: engineChoices.toSet(),
         )
+    }
+    var showAdvancedOptions by remember(initial?.id) {
+        val hasCustomAdvanced = initial != null && (
+            initial.adapter == ProviderAdapterKind.CPA ||
+                !initial.apiKeyEnv.isNullOrBlank() ||
+                initial.manualModels.isNotEmpty() ||
+                (initial.wireApis.isNotEmpty() && initial.wireApis.size < 3)
+            )
+        mutableStateOf(hasCustomAdvanced)
     }
     var localValidationError by remember { mutableStateOf<String?>(null) }
 
@@ -889,11 +909,19 @@ private fun DesktopProviderEditorDialog(
             return null
         }
         if (cleanUrl.isEmpty() || (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://"))) {
-            localValidationError = "服务地址需以 http:// 或 https:// 开头"
+            localValidationError = "接口地址需以 http:// 或 https:// 开头"
             return null
         }
         if (selectedWireApis.isEmpty()) {
             localValidationError = "请至少选择一种兼容协议"
+            return null
+        }
+        if (selectedEngines.isEmpty()) {
+            localValidationError = "请至少选择一个与当前协议兼容的引擎"
+            return null
+        }
+        if ("claude" in selectedEngines && WireApi.ANTHROPIC_MESSAGES !in selectedWireApis) {
+            localValidationError = "Claude 引擎需要支持 Anthropic 协议，请展开「高级选项」勾选 Anthropic 或取消勾选 Claude"
             return null
         }
         localValidationError = null
@@ -988,7 +1016,7 @@ private fun DesktopProviderEditorDialog(
                                         WireApi.OPENAI_RESPONSES,
                                         WireApi.OPENAI_CHAT,
                                     )
-                                    selectedEngines = setOf("claude", "codex", "pi")
+                                    selectedEngines = engineChoices.toSet()
                                 }
                                 ProviderPresetChip("OpenRouter") {
                                     name = "OpenRouter"
@@ -998,7 +1026,7 @@ private fun DesktopProviderEditorDialog(
                                         WireApi.ANTHROPIC_MESSAGES,
                                         WireApi.OPENAI_CHAT,
                                     )
-                                    selectedEngines = setOf("claude", "codex", "pi")
+                                    selectedEngines = engineChoices.toSet()
                                 }
                                 ProviderPresetChip("LiteLLM / New-API") {
                                     name = "LiteLLM"
@@ -1009,14 +1037,14 @@ private fun DesktopProviderEditorDialog(
                                         WireApi.OPENAI_RESPONSES,
                                         WireApi.OPENAI_CHAT,
                                     )
-                                    selectedEngines = setOf("claude", "codex", "pi")
+                                    selectedEngines = engineChoices.toSet()
                                 }
                                 ProviderPresetChip("Ollama") {
                                     name = "Ollama"
                                     adapter = ProviderAdapterKind.GENERIC
                                     baseUrl = "http://127.0.0.1:11434"
                                     selectedWireApis = setOf(WireApi.OPENAI_CHAT)
-                                    selectedEngines = setOf("codex", "pi")
+                                    selectedEngines = engineChoices.filter { it != "claude" }.toSet()
                                 }
                             }
                         }
@@ -1030,24 +1058,8 @@ private fun DesktopProviderEditorDialog(
                         testTag = "provider_field_name",
                     )
 
-                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("接入适配器", fontSize = 11.5.sp, color = Everforest.Grey1)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            ProviderChoiceChip(
-                                label = "标准兼容服务",
-                                selected = adapter == ProviderAdapterKind.GENERIC,
-                                onClick = { adapter = ProviderAdapterKind.GENERIC },
-                            )
-                            ProviderChoiceChip(
-                                label = "CPA 插件（自动读本机密钥）",
-                                selected = adapter == ProviderAdapterKind.CPA,
-                                onClick = { adapter = ProviderAdapterKind.CPA },
-                            )
-                        }
-                    }
-
                     ProviderTextField(
-                        label = "服务地址（Base URL）",
+                        label = "接口地址",
                         value = baseUrl,
                         onValueChange = { baseUrl = it },
                         placeholder = "http://127.0.0.1:8317 或 https://openrouter.ai/api/v1",
@@ -1118,7 +1130,7 @@ private fun DesktopProviderEditorDialog(
                                 if (it.isNotEmpty()) clearApiKey = false
                             },
                             placeholder = if (adapter == ProviderAdapterKind.CPA) {
-                                "留空则自动读取 cpa-config.yaml / LEWORK_CPA_KEY"
+                                "留空则自动读取本机 CPA 配置密钥"
                             } else {
                                 "sk-..."
                             },
@@ -1128,43 +1140,13 @@ private fun DesktopProviderEditorDialog(
                         )
                     }
 
-                    ProviderTextField(
-                        label = "或读取主机环境变量名（可选）",
-                        value = apiKeyEnv,
-                        onValueChange = { apiKeyEnv = it },
-                        placeholder = "例如 OPENROUTER_API_KEY",
-                        monospace = true,
-                        testTag = "provider_field_env",
-                    )
-
                     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("支持的协议接口", fontSize = 11.5.sp, color = Everforest.Grey1)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf(
-                                WireApi.ANTHROPIC_MESSAGES to "Anthropic",
-                                WireApi.OPENAI_RESPONSES to "OpenAI Responses",
-                                WireApi.OPENAI_CHAT to "OpenAI Chat",
-                            ).forEach { (wire, label) ->
-                                val active = wire in selectedWireApis
-                                ProviderChoiceChip(
-                                    label = label,
-                                    selected = active,
-                                    onClick = {
-                                        selectedWireApis = if (active && selectedWireApis.size > 1) {
-                                            selectedWireApis - wire
-                                        } else {
-                                            selectedWireApis + wire
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                    }
-
-                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("适用引擎（可跨厂商调用该服务暴露的对话模型）", fontSize = 11.5.sp, color = Everforest.Grey1)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf("claude", "codex", "pi", "dsh").forEach { engId ->
+                        Text("适用引擎", fontSize = 11.5.sp, color = Everforest.Grey1)
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            engineChoices.forEach { engId ->
                                 val active = engId in selectedEngines
                                 ProviderChoiceChip(
                                     label = shortEngineLabel(engId),
@@ -1175,16 +1157,100 @@ private fun DesktopProviderEditorDialog(
                                 )
                             }
                         }
+                        if (selectedEngines.isEmpty()) {
+                            Text(
+                                text = "当前主机未检测到与该预设协议兼容的引擎，请按需勾选引擎并在「高级选项」中调整协议接口。",
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                color = Everforest.Orange,
+                            )
+                        }
                     }
 
-                    ProviderTextField(
-                        label = "手动补充模型列表（可选，逗号分隔）",
-                        value = manualModelsText,
-                        onValueChange = { manualModelsText = it },
-                        placeholder = "当网关未提供 /v1/models 时可手动填写，例如 gpt-5.4, claude-opus-4-6",
-                        monospace = true,
-                        testTag = "provider_field_manual_models",
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(7.dp))
+                            .clickable { showAdvancedOptions = !showAdvancedOptions }
+                            .padding(vertical = 4.dp)
+                            .testTag("provider_toggle_advanced"),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "高级选项（代理类型 / 兼容协议 / 环境变量 / 手动模型）",
+                            fontSize = 11.5.sp,
+                            color = Everforest.CommentGrey,
+                        )
+                        Icon(
+                            imageVector = if (showAdvancedOptions) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            contentDescription = if (showAdvancedOptions) "收起高级选项" else "展开高级选项",
+                            tint = Everforest.CommentGrey,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+
+                    if (showAdvancedOptions) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text("服务类型", fontSize = 11.5.sp, color = Everforest.Grey1)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    ProviderChoiceChip(
+                                        label = "标准兼容服务",
+                                        selected = adapter == ProviderAdapterKind.GENERIC,
+                                        onClick = { adapter = ProviderAdapterKind.GENERIC },
+                                    )
+                                    ProviderChoiceChip(
+                                        label = "CPA 本地代理（自动读本机密钥）",
+                                        selected = adapter == ProviderAdapterKind.CPA,
+                                        onClick = { adapter = ProviderAdapterKind.CPA },
+                                    )
+                                }
+                            }
+
+                            ProviderTextField(
+                                label = "或读取主机环境变量名（可选）",
+                                value = apiKeyEnv,
+                                onValueChange = { apiKeyEnv = it },
+                                placeholder = "例如 OPENROUTER_API_KEY",
+                                monospace = true,
+                                testTag = "provider_field_env",
+                            )
+
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text("支持的协议接口", fontSize = 11.5.sp, color = Everforest.Grey1)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf(
+                                        WireApi.ANTHROPIC_MESSAGES to "Anthropic",
+                                        WireApi.OPENAI_RESPONSES to "OpenAI Responses",
+                                        WireApi.OPENAI_CHAT to "OpenAI Chat",
+                                    ).forEach { (wire, label) ->
+                                        val active = wire in selectedWireApis
+                                        ProviderChoiceChip(
+                                            label = label,
+                                            selected = active,
+                                            onClick = {
+                                                selectedWireApis = if (active && selectedWireApis.size > 1) {
+                                                    selectedWireApis - wire
+                                                } else {
+                                                    selectedWireApis + wire
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+
+                            ProviderTextField(
+                                label = "手动补充模型列表（可选，逗号分隔）",
+                                value = manualModelsText,
+                                onValueChange = { manualModelsText = it },
+                                placeholder = "当网关未提供 /v1/models 时可手动填写，例如 gpt-5.4, claude-opus-4-6",
+                                monospace = true,
+                                testTag = "provider_field_manual_models",
+                            )
+                        }
+                    }
 
                     if (probeResult != null) {
                         Surface(

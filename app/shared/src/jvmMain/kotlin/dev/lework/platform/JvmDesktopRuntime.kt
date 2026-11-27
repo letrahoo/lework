@@ -1184,7 +1184,7 @@ object JvmDesktopRuntime {
         if (linkMatch == null) {
             val detail = stderrText.trim().lineSequence().lastOrNull { it.isNotBlank() }
                 ?: stdoutText.trim().lineSequence().lastOrNull { it.isNotBlank() }
-                ?: "远端未找到 lework 命令，请先在开发机执行 pnpm setup && lework service install"
+                ?: "远端未找到 lework 命令，请先在目标主机安装并启动 Lework Hub"
             return@withContext Result.failure(IllegalStateException("无法从 $hostPart 获取配对信息：$detail"))
         }
 

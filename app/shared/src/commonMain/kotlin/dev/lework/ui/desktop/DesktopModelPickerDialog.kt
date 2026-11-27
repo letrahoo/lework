@@ -12,6 +12,7 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -37,6 +38,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -92,7 +94,8 @@ internal fun DesktopModelPickerDialog(
     var selectedTab by remember(state.hub?.id) {
         mutableStateOf(state.selectedEngineId.ifBlank { state.taskEngines.firstOrNull()?.id.orEmpty() })
     }
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQueryField by remember { mutableStateOf(TextFieldValue("")) }
+    val searchQuery = searchQueryField.text
     var selectedSourceFilter by remember(selectedTab) { mutableStateOf<String?>(null) }
     var expandedMore by remember(selectedTab) { mutableStateOf(false) }
     var showPermissionsMenu by remember { mutableStateOf(false) }
@@ -194,6 +197,24 @@ internal fun DesktopModelPickerDialog(
         }
     }
     val hiddenMoreCount = (tabFilteredEntries.size - visibleEntries.size).coerceAtLeast(0)
+    var highlightedIndex by remember(visibleEntries) {
+        val activeSpec = state.selectedModelSpec
+        val activeIdx = visibleEntries.indexOfFirst { entry ->
+            entry.engineId == state.selectedEngineId &&
+                entry.spec.id == activeSpec?.id &&
+                (entry.spec.providerId == activeSpec?.providerId ||
+                    (activeSpec?.providerId == null && !entry.spec.isExternalProvider()))
+        }
+        mutableIntStateOf(if (activeIdx >= 0) activeIdx else 0)
+    }
+    val modelsListState = rememberLazyListState()
+    LaunchedEffect(highlightedIndex, visibleEntries.size) {
+        if (visibleEntries.isNotEmpty()) {
+            val clamped = highlightedIndex.coerceIn(0, visibleEntries.lastIndex)
+            if (clamped != highlightedIndex) highlightedIndex = clamped
+            modelsListState.animateScrollToItem(clamped)
+        }
+    }
 
     val jumpNumberKeys = remember {
         listOf(Key.One, Key.Two, Key.Three, Key.Four, Key.Five, Key.Six, Key.Seven, Key.Eight, Key.Nine)
@@ -203,9 +224,10 @@ internal fun DesktopModelPickerDialog(
     val columnTopInset = 6.dp
     val columnHeaderHeight = 36.dp
 
-    val dialogFocusRequester = remember { FocusRequester() }
+    val searchFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
-        runCatching { dialogFocusRequester.requestFocus() }
+        withFrameNanos {}
+        runCatching { searchFocusRequester.requestFocus() }
     }
     dev.lework.ui.ModalEscapeEffect(onDismiss = onDismiss)
 
@@ -221,13 +243,33 @@ internal fun DesktopModelPickerDialog(
             modifier = Modifier
                 .width(612.dp)
                 .height(396.dp)
-                .focusRequester(dialogFocusRequester)
-                .focusable()
                 .onPreviewKeyEvent { ev ->
                     if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                     if (ev.key == Key.Escape) {
                         onDismiss()
                         return@onPreviewKeyEvent true
+                    }
+                    if (!ev.isMetaPressed && !ev.isCtrlPressed && visibleEntries.isNotEmpty() && searchQueryField.composition == null) {
+                        when (ev.key) {
+                            Key.DirectionDown -> {
+                                highlightedIndex = (highlightedIndex + 1) % visibleEntries.size
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.DirectionUp -> {
+                                highlightedIndex = (highlightedIndex - 1 + visibleEntries.size) % visibleEntries.size
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.Enter, Key.NumPadEnter -> {
+                                val picked = visibleEntries.getOrNull(highlightedIndex.coerceIn(0, visibleEntries.lastIndex))
+                                if (picked != null) {
+                                    onSelectEngineAndModel(picked.engineId, picked.spec, null)
+                                    selectedTab = picked.engineId
+                                    onDismiss()
+                                }
+                                return@onPreviewKeyEvent true
+                            }
+                            else -> Unit
+                        }
                     }
                     if (ev.isMetaPressed || ev.isCtrlPressed) {
                         val idx = jumpNumberKeys.indexOf(ev.key)
@@ -240,6 +282,7 @@ internal fun DesktopModelPickerDialog(
                     }
                     false
                 }
+                .focusable()
                 .testTag("desktop_model_picker_dialog"),
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
@@ -285,7 +328,7 @@ internal fun DesktopModelPickerDialog(
                                         )
                                         .hoverable(favHover)
                                         .clickable(interactionSource = favHover, indication = null) {
-                                            searchQuery = ""
+                                            searchQueryField = TextFieldValue("")
                                             selectedTab = "favorites"
                                         }
                                         .testTag("picker_rail_favorites"),
@@ -361,7 +404,7 @@ internal fun DesktopModelPickerDialog(
                                                     indication = null,
                                                     enabled = isReady,
                                                 ) {
-                                                    searchQuery = ""
+                                                    searchQueryField = TextFieldValue("")
                                                     selectedTab = eng.id
                                                     if (state.selectedEngineId != eng.id) {
                                                         onSelectEngineAndModel(eng.id, null, null)
@@ -442,8 +485,8 @@ internal fun DesktopModelPickerDialog(
                                         )
                                     }
                                     BasicTextField(
-                                        value = searchQuery,
-                                        onValueChange = { searchQuery = it },
+                                        value = searchQueryField,
+                                        onValueChange = { searchQueryField = it },
                                         interactionSource = searchInteraction,
                                         singleLine = true,
                                         textStyle = TextStyle(
@@ -454,6 +497,7 @@ internal fun DesktopModelPickerDialog(
                                         cursorBrush = SolidColor(Everforest.Green),
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .focusRequester(searchFocusRequester)
                                             .testTag("model_picker_search_input"),
                                     )
                                 }
@@ -464,7 +508,7 @@ internal fun DesktopModelPickerDialog(
                                         tint = Everforest.CommentGrey,
                                         modifier = Modifier
                                             .size(14.dp)
-                                            .clickable { searchQuery = "" },
+                                            .clickable { searchQueryField = TextFieldValue("") },
                                     )
                                 }
                             }
@@ -544,7 +588,7 @@ internal fun DesktopModelPickerDialog(
                                     } else {
                                         when {
                                             state.taskEngines.isEmpty() -> "当前主机没有可选引擎"
-                                            !isSearching && state.taskEngines.any { it.id == selectedTab && it.canStartTask && it.models.isEmpty() } -> "模型由主机 CLI 决定"
+                                            !isSearching && state.taskEngines.any { it.id == selectedTab && it.canStartTask && it.models.isEmpty() } -> "使用主机默认模型配置"
                                             else -> "未找到匹配的模型"
                                         }
                                     },
@@ -556,6 +600,7 @@ internal fun DesktopModelPickerDialog(
                             }
                         } else {
                             LazyColumn(
+                                state = modelsListState,
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .padding(horizontal = 8.dp, vertical = 6.dp),
@@ -571,6 +616,7 @@ internal fun DesktopModelPickerDialog(
                                             entry.spec.id == activeSpec?.id &&
                                             (entry.spec.providerId == activeSpec?.providerId ||
                                                 (activeSpec?.providerId == null && !entry.spec.isExternalProvider()))
+                                    val isKeyHighlighted = idx == highlightedIndex
                                     val rowHover = remember { MutableInteractionSource() }
                                     val isHovered by rowHover.collectIsHoveredAsState()
                                     val cleanName = entry.spec.name.removeSuffix(" (Proxy)")
@@ -592,13 +638,14 @@ internal fun DesktopModelPickerDialog(
                                             .clip(RoundedCornerShape(8.dp))
                                             .background(
                                                 when {
-                                                    isHovered -> Everforest.Bg2
+                                                    isHovered || isKeyHighlighted -> Everforest.Bg2
                                                     isCurrent -> Everforest.Bg2.copy(alpha = 0.5f)
                                                     else -> Color.Transparent
                                                 },
                                             )
                                             .hoverable(rowHover)
                                             .clickable(interactionSource = rowHover, indication = null) {
+                                                highlightedIndex = idx
                                                 onSelectEngineAndModel(entry.engineId, entry.spec, null)
                                                 if (isSearching) {
                                                     selectedTab = entry.engineId
@@ -890,7 +937,7 @@ internal fun DesktopModelPickerDialog(
                             }
                         }
                         Text(
-                            text = "⌘1-9 速选模型 · Esc 关闭",
+                            text = "↑↓ / ⌘1-9 选模型 · Enter 确认 · Esc 关闭",
                             fontSize = 11.sp,
                             color = Everforest.Grey0,
                         )

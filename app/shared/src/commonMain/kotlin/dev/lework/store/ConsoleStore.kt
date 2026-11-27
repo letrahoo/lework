@@ -95,15 +95,37 @@ class ConsoleStore(
         val mode: SessionMode,
     )
 
+    private data class PreviousWorkspaceSnapshot(
+        val connectionStatus: ConnectionStatus,
+        val discoveredBaseUrl: String,
+        val discoveredWsUrl: String,
+        val oauthEnabled: Boolean,
+        val oauthProvider: String?,
+        val oauthDisplayName: String?,
+        val hub: HubInfo?,
+        val hostDisplayName: String,
+        val authStatusText: String,
+        val activeHostId: String?,
+        val savedAccessToken: String?,
+        val savedUserName: String?,
+        val lastGoodBaseUrl: String?,
+    )
+
     private var modelSwitchVersion: Long = 0L
     private val pendingModelSwitchBySession = mutableMapOf<String, Pair<Long, PendingModelSwitch>>()
     private var manualPairingMode: Boolean = false
+    private var previousWorkspaceSnapshot: PreviousWorkspaceSnapshot? = null
     private var pairingInFlight: Boolean = false
+    private var pairingSessionEpoch: Long = 0L
+    private var sshPairingJob: Job? = null
     private var pendingDeepLinkSessionId: String? = null
     private var mentionJob: Job? = null
     private var promptNoticeAutoClearJob: Job? = null
     private var filePreviewJob: Job? = null
     private var filePreviewRequestToken: Long = 0L
+    private var fsRequestToken: Long = 0L
+    private var lastFailedFsEntry: FsEntry? = null
+    private var lastFailedFsDirPath: String? = null
     private var appUpdateCheckJob: Job? = null
     private var appUpdateInstallJob: Job? = null
     private val sessionNavHistory = mutableListOf<String>()
@@ -497,6 +519,9 @@ class ConsoleStore(
                         verifyAndResumeForegroundSession(fromNetworkHandoff = true)
                     }
                 } else {
+                    previousWorkspaceSnapshot = previousWorkspaceSnapshot?.copy(
+                        connectionStatus = ConnectionStatus.RECONNECTING,
+                    )
                     _state.update { s ->
                         if (s.connectionStatus == ConnectionStatus.CONNECTED) {
                             s.copy(
@@ -746,7 +771,11 @@ class ConsoleStore(
                 _state.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = "未发现可用主机：请确认与主机处于同一 Wi‑Fi，或使用下方「扫码配对」/「Tailscale 同账号组网」接入",
+                        connectionError = if (isDesktopPlatform()) {
+                            "未发现可用主机：请确认目标主机上的 Lework Hub 正在运行，或使用下方「通过 SSH 连接」/「Tailscale 同账号组网」接入"
+                        } else {
+                            "未发现可用主机：请确认与主机处于同一 Wi‑Fi，或使用下方「扫码配对」/「Tailscale 同账号组网」接入"
+                        },
                     )
                 }
                 return@launch
@@ -813,7 +842,11 @@ class ConsoleStore(
                     it.copy(
                         connectionStatus = ConnectionStatus.NEEDS_AUTH,
                         oauthChallenge = null,
-                        authStatusText = "已发现主机 ${found.discover.hub.name}，请扫码配对、Tailscale 同账号组网或输入令牌连接",
+                        authStatusText = if (isDesktopPlatform()) {
+                            "已发现主机 ${found.discover.hub.name}，可通过 SSH、Tailscale、配对链接或令牌连接"
+                        } else {
+                            "已发现主机 ${found.discover.hub.name}，请扫码配对、Tailscale 同账号组网或输入令牌连接"
+                        },
                     )
                 }
             }
@@ -824,7 +857,11 @@ class ConsoleStore(
         if (!isMobileTsnetAvailable()) {
             _state.update {
                 it.copy(
-                    connectionError = "当前设备客户端未内置 Tailscale 模块，请使用扫码配对或手动地址连接",
+                    connectionError = if (isDesktopPlatform()) {
+                        "当前桌面端未启用内置 Tailscale 模块，请通过 SSH、配对链接或手动地址连接"
+                    } else {
+                        "当前设备客户端未内置 Tailscale 模块，请使用扫码配对或手动地址连接"
+                    },
                 )
             }
             return
@@ -1274,6 +1311,36 @@ class ConsoleStore(
         }
     }
 
+    private fun detectClipboardPairingPreview(): PendingDeepLinkPairing? {
+        if (!isDesktopPlatform()) return null
+        val raw = runCatching { readTextFromClipboard()?.trim() }.getOrNull().orEmpty()
+        if (raw.isEmpty()) return null
+        if (!raw.startsWith("lework://", ignoreCase = true) && !raw.startsWith("{")) return null
+        val payload = parsePairingPayload(raw) ?: return null
+        val primaryUrl = (payload.urls + listOf(payload.url))
+            .map { normalizeHubBaseUrl(it) }
+            .firstOrNull { it.isNotEmpty() }
+            .orEmpty()
+        if (primaryUrl.isEmpty()) return null
+        val shortFp = payload.fp?.trim()?.takeIf { it.length >= 16 }?.let { HubAttestation.shortFingerprint(it) }
+        return PendingDeepLinkPairing(
+            rawUri = raw,
+            hostName = payload.name.ifBlank { "Lework Hub" },
+            primaryUrl = primaryUrl,
+            shortFingerprint = shortFp,
+        )
+    }
+
+    fun confirmClipboardPairing() {
+        val preview = _state.value.clipboardPairingPreview ?: return
+        _state.update { it.copy(clipboardPairingPreview = null) }
+        redeemPairingInput(preview.rawUri)
+    }
+
+    fun dismissClipboardPairing() {
+        _state.update { it.copy(clipboardPairingPreview = null) }
+    }
+
     fun pastePairingFromClipboard() {
         val clip = readTextFromClipboard()?.trim().orEmpty()
         if (clip.startsWith("lework://", ignoreCase = true) || clip.startsWith("{")) {
@@ -1282,7 +1349,7 @@ class ConsoleStore(
             _state.update {
                 it.copy(
                     connectionStatus = ConnectionStatus.ERROR,
-                    connectionError = "剪贴板中未检测到配对链接：请在主机运行 lework pair 并复制 lework://pair?... 链接",
+                    connectionError = "剪贴板中未检测到配对链接：请在目标主机运行 lework pair 并复制 lework://pair?... 链接",
                 )
             }
         }
@@ -1291,6 +1358,9 @@ class ConsoleStore(
     fun pairViaSshHost(sshTarget: String) {
         val clean = sshTarget.trim()
         if (clean.isEmpty() || _state.value.sshPairingInProgress) return
+        val epoch = ++pairingSessionEpoch
+        pairingInFlight = false
+        sshPairingJob?.cancel()
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         resumeJob?.cancel()
@@ -1304,22 +1374,33 @@ class ConsoleStore(
                 authStatusText = "正在通过 SSH 连接 $clean 自动获取一次性配对凭证…",
             )
         }
-        scope.launch {
-            val res = requestSshHostPairingLink(clean)
-            _state.update { it.copy(sshPairingInProgress = false) }
-            res.fold(
-                onSuccess = { deepLink ->
-                    redeemPairingInput(deepLink)
-                },
-                onFailure = { err ->
-                    _state.update {
-                        it.copy(
-                            connectionStatus = ConnectionStatus.ERROR,
-                            connectionError = err.message ?: "通过 SSH 连接 $clean 失败",
-                        )
-                    }
-                },
-            )
+        sshPairingJob = scope.launch {
+            try {
+                val res = requestSshHostPairingLink(clean)
+                if (epoch != pairingSessionEpoch) return@launch
+                _state.update { it.copy(sshPairingInProgress = false) }
+                res.fold(
+                    onSuccess = { deepLink ->
+                        if (epoch == pairingSessionEpoch) {
+                            redeemPairingInput(deepLink)
+                        }
+                    },
+                    onFailure = { err ->
+                        if (epoch == pairingSessionEpoch) {
+                            _state.update {
+                                it.copy(
+                                    connectionStatus = ConnectionStatus.ERROR,
+                                    connectionError = err.message ?: "通过 SSH 连接 $clean 失败",
+                                )
+                            }
+                        }
+                    },
+                )
+            } finally {
+                if (epoch == pairingSessionEpoch) {
+                    _state.update { it.copy(sshPairingInProgress = false) }
+                }
+            }
         }
     }
 
@@ -1329,7 +1410,11 @@ class ConsoleStore(
             _state.update {
                 it.copy(
                     connectionStatus = ConnectionStatus.ERROR,
-                    connectionError = "无法识别配对链接，请在电脑主机运行 lework pair 后重新扫码",
+                    connectionError = if (isDesktopPlatform()) {
+                        "无法识别配对链接，请在目标主机运行 lework pair 重新生成"
+                    } else {
+                        "无法识别配对链接，请在目标主机运行 lework pair 后重新扫码"
+                    },
                 )
             }
             return
@@ -1383,7 +1468,11 @@ class ConsoleStore(
             _state.update {
                 it.copy(
                     connectionStatus = ConnectionStatus.ERROR,
-                    connectionError = "无法识别配对信息，请在电脑主机运行 hub pair 后重新扫码",
+                    connectionError = if (isDesktopPlatform()) {
+                        "无法识别配对信息，请在目标主机运行 lework pair 后重新复制链接"
+                    } else {
+                        "无法识别配对信息，请在目标主机运行 lework pair 后重新扫码"
+                    },
                 )
             }
             return
@@ -1396,7 +1485,7 @@ class ConsoleStore(
             _state.update {
                 it.copy(
                     connectionStatus = ConnectionStatus.ERROR,
-                    connectionError = "配对二维码缺少有效主机地址",
+                    connectionError = "配对链接缺少有效主机地址",
                 )
             }
             return
@@ -1404,6 +1493,9 @@ class ConsoleStore(
 
         manualPairingMode = false
         pairingInFlight = true
+        val epoch = ++pairingSessionEpoch
+        sshPairingJob?.cancel()
+        sshPairingJob = null
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
@@ -1411,6 +1503,8 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 hasEnteredWorkspace = false,
+                sshPairingInProgress = false,
+                clipboardPairingPreview = null,
                 discoveredTsnetHubs = emptyList(),
                 connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.CONNECTING,
@@ -1422,6 +1516,7 @@ class ConsoleStore(
             try {
                 var lastError: Throwable? = null
                 for (baseUrl in candidates) {
+                    if (epoch != pairingSessionEpoch) return@launch
                     try {
                         val auth = rpc.redeemPairingCode(
                             baseUrl = baseUrl,
@@ -1430,6 +1525,7 @@ class ConsoleStore(
                             expectedFingerprint = payload.fp,
                             deviceName = platformName(),
                         )
+                        if (epoch != pairingSessionEpoch) return@launch
                         val userName = auth.user?.name ?: "Owner"
                         saveAuthSession(auth.accessToken, userName)
                         saveHostAccessToken(auth.hub.id, auth.accessToken)
@@ -1463,24 +1559,32 @@ class ConsoleStore(
                         lastError = t
                     }
                 }
+                if (epoch != pairingSessionEpoch) return@launch
                 _state.update {
                     it.copy(
                         connectionStatus = ConnectionStatus.ERROR,
-                        connectionError = lastError?.message ?: "配对连接失败，请确认手机可访问主机网络",
+                        connectionError = lastError?.message ?: "配对连接失败，请确认当前设备可访问目标主机网络",
                     )
                 }
             } finally {
-                pairingInFlight = false
+                if (epoch == pairingSessionEpoch) {
+                    pairingInFlight = false
+                }
             }
         }
     }
 
     fun switchPairedHost(hubId: String) {
         if (hubId == _state.value.hub?.id && _state.value.hasEnteredWorkspace) return
+        if (!_state.value.hasEnteredWorkspace && previousWorkspaceSnapshot?.hub?.id == hubId) {
+            cancelPairAnotherHost()
+            return
+        }
         logRuntimeEvent("HOST", "switchPairedHost target=$hubId prev=${_state.value.hub?.id ?: "none"}")
         consecutiveBonjourAutoRetries = 0
         lastBonjourAutoRetryMs = 0L
         manualPairingMode = false
+        previousWorkspaceSnapshot = null
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
@@ -1499,6 +1603,9 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 hasEnteredWorkspace = false,
+                canReturnToWorkspace = false,
+                returnWorkspaceHostName = null,
+                clipboardPairingPreview = null,
                 discoveredTsnetHubs = emptyList(),
                 connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.DISCOVERING,
@@ -1523,17 +1630,51 @@ class ConsoleStore(
 
     fun preparePairAnotherHost() {
         logRuntimeEvent("HOST", "preparePairAnotherHost")
+        val prev = _state.value
+        if (!prev.hasEnteredWorkspace && previousWorkspaceSnapshot != null) {
+            val clipPreview = detectClipboardPairingPreview()
+            _state.update { it.copy(clipboardPairingPreview = clipPreview) }
+            return
+        }
+        val wasInWorkspace = prev.hasEnteredWorkspace
         manualPairingMode = true
+        pairingInFlight = false
+        pairingSessionEpoch++
+        sshPairingJob?.cancel()
+        sshPairingJob = null
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
         resumeJob?.cancel()
-        warmSubscribedSessionIds.clear()
-        switchSubscriptionTo(null)
         consecutiveReconnectFailures = 0
+        if (wasInWorkspace) {
+            previousWorkspaceSnapshot = PreviousWorkspaceSnapshot(
+                connectionStatus = prev.connectionStatus,
+                discoveredBaseUrl = prev.discoveredBaseUrl,
+                discoveredWsUrl = prev.discoveredWsUrl,
+                oauthEnabled = prev.oauthEnabled,
+                oauthProvider = prev.oauthProvider,
+                oauthDisplayName = prev.oauthDisplayName,
+                hub = prev.hub,
+                hostDisplayName = prev.activeHostDisplayName,
+                authStatusText = prev.authStatusText,
+                activeHostId = loadActiveHostId() ?: prev.hub?.id,
+                savedAccessToken = loadSavedAccessToken(),
+                savedUserName = loadSavedAuthUserName() ?: prev.authUserName,
+                lastGoodBaseUrl = loadLastGoodHubUrl(),
+            )
+        } else {
+            previousWorkspaceSnapshot = null
+            warmSubscribedSessionIds.clear()
+            switchSubscriptionTo(null)
+        }
+        val clipPreview = detectClipboardPairingPreview()
         _state.update {
             it.copy(
                 hasEnteredWorkspace = false,
+                canReturnToWorkspace = wasInWorkspace,
+                returnWorkspaceHostName = if (wasInWorkspace) prev.activeHostDisplayName else null,
+                clipboardPairingPreview = clipPreview,
                 connectionStatus = ConnectionStatus.NEEDS_AUTH,
                 oauthEnabled = false,
                 oauthChallenge = null,
@@ -1546,21 +1687,136 @@ class ConsoleStore(
                 connectingTsnetHubId = null,
                 pairedHosts = loadPairedHosts(),
                 sshConfigHosts = listSshConfigHosts(),
+                sshPairingInProgress = false,
                 tsnetLoggingIn = false,
                 tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
-                authStatusText = "可扫码配对新主机、使用 Tailscale 同账号发现，或点击已配对主机切换",
+                authStatusText = if (isDesktopPlatform()) {
+                    "可通过 SSH 一键连接、粘贴配对链接、使用 Tailscale 发现，或点击下方已配对主机切换"
+                } else {
+                    "可扫码配对新主机、使用 Tailscale 同账号发现，或点击下方已配对主机切换"
+                },
             )
         }
-        scope.launch {
-            rpc.disconnect()
+        discoverJob = scope.launch {
+            if (!wasInWorkspace) {
+                rpc.disconnect()
+            }
             if (isMobileTsnetAvailable() && loadSavedTsnetEnabled()) {
                 runCatching {
                     val st = startMobileTsnet(loadSavedTsnetControlUrl())
                     if (manualPairingMode && !_state.value.hasEnteredWorkspace) {
                         _state.update { it.copy(tsnetStatus = st) }
                     }
+                    if (wasInWorkspace && st.backendState == "Running") {
+                        probeTsnetHubsSilentlyForPicker(st)
+                    }
                 }
             }
+        }
+    }
+
+    private suspend fun probeTsnetHubsSilentlyForPicker(status: MobileTsnetStatus) {
+        val candidates = prioritizeTsnetPeers(
+            status.peers.filter { !it.localProxyUrl.isNullOrBlank() && !it.isMobileClientNode() },
+            loadPairedHosts(),
+            loadActiveHostId(),
+        )
+        if (candidates.isEmpty()) return
+        val probed = coroutineScope {
+            candidates.map { peer ->
+                async {
+                    val proxyUrl = peer.localProxyUrl ?: return@async null
+                    val ep = rpc.probeDirectEndpoint(proxyUrl, timeoutMs = 4_500L)
+                    if (ep != null) peer to ep else null
+                }
+            }.mapNotNull { it.await() }
+        }
+        if (probed.isEmpty()) return
+        if (!manualPairingMode || _state.value.hasEnteredWorkspace || _state.value.connectionStatus != ConnectionStatus.NEEDS_AUTH) {
+            return
+        }
+        val pairedHostIds = loadPairedHosts().map { it.hubId }.toSet()
+        val activeHostId = previousWorkspaceSnapshot?.hub?.id ?: loadActiveHostId()
+        val dedupedByHubId = linkedMapOf<String, Pair<MobileTsnetPeer, dev.lework.transport.DiscoveredEndpoint>>()
+        for (entry in probed) {
+            val key = entry.second.discover.hub.id.ifBlank { entry.second.baseUrl }
+            val existing = dedupedByHubId[key]
+            if (existing == null || (!existing.second.discover.tailscaleSameUser && entry.second.discover.tailscaleSameUser)) {
+                dedupedByHubId[key] = entry
+            }
+        }
+        val uniqueHubs = dedupedByHubId.values.map { (peer, ep) ->
+            val hub = ep.discover.hub
+            DiscoveredTsnetHub(
+                hub = hub,
+                baseUrl = ep.baseUrl,
+                wsUrl = ep.wsUrl,
+                hostName = peer.hostName.ifBlank { hub.name },
+                tailscaleIp = peer.tailscaleIp,
+                os = peer.os.takeIf { it.isNotBlank() },
+                tailscaleSameUser = ep.discover.tailscaleSameUser,
+                tailscaleUser = ep.discover.tailscaleUser,
+                oauthEnabled = ep.discover.oauthEnabled,
+                oauthProvider = ep.discover.oauthProvider,
+                oauthDisplayName = ep.discover.oauthDisplayName,
+                alreadyPaired = hub.id in pairedHostIds,
+                isCurrentActive = activeHostId != null && hub.id == activeHostId,
+            )
+        }
+        if (uniqueHubs.isNotEmpty() && manualPairingMode && !_state.value.hasEnteredWorkspace) {
+            _state.update { s ->
+                if (s.discoveredTsnetHubs.isEmpty() && s.connectionStatus == ConnectionStatus.NEEDS_AUTH) {
+                    s.copy(discoveredTsnetHubs = uniqueHubs)
+                } else {
+                    s
+                }
+            }
+        }
+    }
+
+    fun cancelPairAnotherHost() {
+        val snap = previousWorkspaceSnapshot ?: return
+        logRuntimeEvent("HOST", "cancelPairAnotherHost restoring hub=${snap.hub?.id ?: "none"}")
+        manualPairingMode = false
+        pairingInFlight = false
+        pairingSessionEpoch++
+        previousWorkspaceSnapshot = null
+        sshPairingJob?.cancel()
+        sshPairingJob = null
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        saveActiveHostId(snap.activeHostId)
+        if (!snap.savedAccessToken.isNullOrBlank()) {
+            saveAuthSession(snap.savedAccessToken, snap.savedUserName)
+        }
+        snap.lastGoodBaseUrl?.takeIf { it.isNotBlank() }?.let { saveLastGoodHubUrl(it) }
+        _state.update {
+            it.copy(
+                hasEnteredWorkspace = true,
+                canReturnToWorkspace = false,
+                returnWorkspaceHostName = null,
+                clipboardPairingPreview = null,
+                connectionStatus = snap.connectionStatus,
+                discoveredBaseUrl = snap.discoveredBaseUrl,
+                discoveredWsUrl = snap.discoveredWsUrl,
+                oauthEnabled = snap.oauthEnabled,
+                oauthProvider = snap.oauthProvider,
+                oauthDisplayName = snap.oauthDisplayName,
+                hub = snap.hub,
+                authUserName = snap.savedUserName ?: it.authUserName,
+                activeHostId = loadActiveHostId(),
+                pairedHosts = loadPairedHosts(),
+                authStatusText = snap.authStatusText,
+                connectionError = null,
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
+                sshPairingInProgress = false,
+                tsnetLoggingIn = false,
+            )
+        }
+        if (snap.connectionStatus != ConnectionStatus.CONNECTED) {
+            verifyAndResumeForegroundSession(fromNetworkHandoff = true)
         }
     }
 
@@ -1828,7 +2084,7 @@ class ConsoleStore(
                         it.copy(
                             hasEnteredWorkspace = false,
                             connectionStatus = ConnectionStatus.ERROR,
-                            connectionError = "唤醒校验未通过：未发现同一 Wi‑Fi 主机或 Tailscale 连接，请检查网络后点击重连",
+                            connectionError = "暂未连上主机，请确认网络正常且目标主机上的 Lework Hub 正在运行，然后重试",
                         )
                     }
                 }
@@ -1994,6 +2250,8 @@ class ConsoleStore(
 
     fun logout() {
         logRuntimeEvent("AUTH", "logout invoked")
+        manualPairingMode = false
+        previousWorkspaceSnapshot = null
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
@@ -2007,6 +2265,9 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 hasEnteredWorkspace = false,
+                canReturnToWorkspace = false,
+                returnWorkspaceHostName = null,
+                clipboardPairingPreview = null,
                 authUserName = null,
                 discoveredTsnetHubs = emptyList(),
                 connectingTsnetHubId = null,
@@ -2030,6 +2291,8 @@ class ConsoleStore(
     }
 
     fun resetCredentialsAndReconnect() {
+        manualPairingMode = false
+        previousWorkspaceSnapshot = null
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         resumeJob?.cancel()
@@ -2042,6 +2305,9 @@ class ConsoleStore(
         HubTrust.clearPins()
         _state.update {
             it.copy(
+                canReturnToWorkspace = false,
+                returnWorkspaceHostName = null,
+                clipboardPairingPreview = null,
                 discoveredTsnetHubs = emptyList(),
                 connectingTsnetHubId = null,
                 pairedHosts = emptyList(),
@@ -2078,6 +2344,11 @@ class ConsoleStore(
                     loadPairedHosts().firstOrNull { it.hubId == id }?.fingerprint?.takeIf { fp -> fp.length == 64 }
                 }
             rpc.ensureHubTrusted(baseUrl, token, pinnedFp)
+            if (previousWorkspaceSnapshot != null) {
+                previousWorkspaceSnapshot = previousWorkspaceSnapshot?.copy(
+                    connectionStatus = ConnectionStatus.RECONNECTING,
+                )
+            }
             val hello = rpc.connectAndHello(
                 wsUrl = wsUrl,
                 token = token,
@@ -2111,7 +2382,14 @@ class ConsoleStore(
             val validWs = workspaces.firstOrNull { it.path == current.selectedWorkspacePath }?.path
                 ?: workspaces.firstOrNull()?.path.orEmpty()
 
-            val prevActiveId = current.activeSessionId
+            val switchedDifferentHost = previousWorkspaceSnapshot != null &&
+                previousWorkspaceSnapshot?.hub?.id != status.hub.id
+            if (switchedDifferentHost) {
+                warmSubscribedSessionIds.clear()
+                sessionNavHistory.clear()
+                sessionNavIndex = -1
+            }
+            val prevActiveId = if (switchedDifferentHost) null else current.activeSessionId
             val prevActiveMeta = prevActiveId?.let { id -> current.sessions.firstOrNull { it.id == id } }
             val resolvedActiveId = when {
                 prevActiveId == null -> null
@@ -2129,7 +2407,8 @@ class ConsoleStore(
             }
             val resolvedActiveSession = resolvedActiveId?.let { id -> sessions.firstOrNull { it.id == id } }
             val preserveCurrentSelection =
-                (userManuallyPickedModel || isForegroundResume || current.hasEnteredWorkspace) &&
+                !switchedDifferentHost &&
+                    (userManuallyPickedModel || isForegroundResume || current.hasEnteredWorkspace) &&
                     current.selectedEngineId == chosenEngineId
 
             val previousModel = chosenEngine?.models?.firstOrNull {
@@ -2166,6 +2445,7 @@ class ConsoleStore(
             }
 
             manualPairingMode = false
+            previousWorkspaceSnapshot = null
             consecutiveReconnectFailures = 0
             consecutiveBonjourAutoRetries = 0
             lastBonjourAutoRetryMs = 0L
@@ -2177,6 +2457,9 @@ class ConsoleStore(
             _state.update {
                 it.copy(
                     hasEnteredWorkspace = true,
+                    canReturnToWorkspace = false,
+                    returnWorkspaceHostName = null,
+                    clipboardPairingPreview = null,
                     connectionStatus = ConnectionStatus.CONNECTED,
                     connectionError = null,
                     discoveredTsnetHubs = emptyList(),
@@ -2201,6 +2484,18 @@ class ConsoleStore(
                     currentBrowsePath = validWs,
                     sessions = sessions,
                     activeSessionId = resolvedActiveId,
+                    transcripts = if (switchedDifferentHost) emptyMap() else it.transcripts,
+                    checkpoints = if (switchedDifferentHost) emptyList() else it.checkpoints,
+                    activeSessionArtifacts = if (switchedDifferentHost) emptyList() else it.activeSessionArtifacts,
+                    openedArtifact = if (switchedDifferentHost) null else it.openedArtifact,
+                    sessionDrafts = if (switchedDifferentHost) emptyMap() else it.sessionDrafts,
+                    sessionAttachedImages = if (switchedDifferentHost) emptyMap() else it.sessionAttachedImages,
+                    filePreviewStack = if (switchedDifferentHost) emptyList() else it.filePreviewStack,
+                    promptNoticeText = if (switchedDifferentHost) null else it.promptNoticeText,
+                    promptNoticeActionLabel = if (switchedDifferentHost) null else it.promptNoticeActionLabel,
+                    promptNoticeUndoArchiveSessionId = if (switchedDifferentHost) null else it.promptNoticeUndoArchiveSessionId,
+                    promptNoticeRestoreDraftText = if (switchedDifferentHost) null else it.promptNoticeRestoreDraftText,
+                    promptNoticeRestoreDraftSessionId = if (switchedDifferentHost) null else it.promptNoticeRestoreDraftSessionId,
                 )
             }
             persistCurrentPrefs()
@@ -2305,7 +2600,7 @@ class ConsoleStore(
                     hasEnteredWorkspace = false,
                     connectionStatus = ConnectionStatus.ERROR,
                     connectionError = if (isForegroundResume) {
-                        "唤醒重连未通过: ${err.message ?: "请检查网络后重试"}"
+                        "暂未连上主机：${err.message ?: "请检查网络后重试"}"
                     } else {
                         err.message ?: "连接失败"
                     },
@@ -2315,8 +2610,10 @@ class ConsoleStore(
     }
 
     fun refreshHostSessions() {
+        if (_state.value.sessionsRefreshing) return
+        _state.update { it.copy(sessionsRefreshing = true) }
         scope.launch {
-            runCatching {
+            try {
                 val sessions = rpc.listSessions()
                 _state.update { s ->
                     val syncedSub = s.inspectedSubagent?.let { curSub ->
@@ -2325,6 +2622,12 @@ class ConsoleStore(
                     }
                     s.copy(sessions = sessions, inspectedSubagent = syncedSub)
                 }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                // Keep existing session list intact on transient refresh errors
+            } finally {
+                _state.update { it.copy(sessionsRefreshing = false) }
             }
         }
     }
@@ -2475,6 +2778,8 @@ class ConsoleStore(
     fun archiveSession(sessionId: String, archived: Boolean) {
         if (sessionId.isBlank()) return
         val prevSession = _state.value.sessions.firstOrNull { it.id == sessionId }
+        val shortTitle = (prevSession?.title ?: "会话").take(24)
+        val optimisticNotice = if (archived) "已归档「$shortTitle」" else "已将「$shortTitle」移出归档"
         val nowMs = epochMillis()
         val notice = if (archived) {
             "已归档会话，可在「已归档」视图随时恢复。"
@@ -2490,6 +2795,11 @@ class ConsoleStore(
                         item
                     }
                 },
+                promptNoticeText = optimisticNotice,
+                promptNoticeActionLabel = if (archived) "撤销" else null,
+                promptNoticeUndoArchiveSessionId = if (archived) sessionId else null,
+                promptNoticeRestoreDraftText = null,
+                promptNoticeRestoreDraftSessionId = null,
             )
         }
         showPromptNotice(notice)
@@ -2509,13 +2819,45 @@ class ConsoleStore(
             } catch (t: Throwable) {
                 if (prevSession != null) {
                     _state.update { s ->
+                        val sameOptimisticNotice = s.promptNoticeText == optimisticNotice &&
+                            (if (archived) s.promptNoticeUndoArchiveSessionId == sessionId else s.promptNoticeUndoArchiveSessionId == null)
                         s.copy(
                             sessions = s.sessions.map { item -> if (item.id == sessionId) prevSession else item },
+                            promptNoticeText = if (sameOptimisticNotice) null else s.promptNoticeText,
+                            promptNoticeActionLabel = if (sameOptimisticNotice) null else s.promptNoticeActionLabel,
+                            promptNoticeUndoArchiveSessionId = if (sameOptimisticNotice) null else s.promptNoticeUndoArchiveSessionId,
+                            promptNoticeRestoreDraftText = if (sameOptimisticNotice) null else s.promptNoticeRestoreDraftText,
+                            promptNoticeRestoreDraftSessionId = if (sameOptimisticNotice) null else s.promptNoticeRestoreDraftSessionId,
                             promptErrorText = "${if (archived) "归档" else "取消归档"}未成功: ${t.message ?: "请检查连接后重试"}",
                         )
                     }
                 }
             }
+        }
+    }
+
+    fun triggerPromptNoticeAction() {
+        val current = _state.value
+        val undoSid = current.promptNoticeUndoArchiveSessionId
+        if (undoSid != null) {
+            dismissPromptNotice()
+            archiveSession(undoSid, archived = false)
+            return
+        }
+        val restoreText = current.promptNoticeRestoreDraftText?.takeIf { it.isNotBlank() } ?: return
+        val targetSessionId = current.promptNoticeRestoreDraftSessionId
+        _state.update { s ->
+            val key = sessionDraftKey(targetSessionId ?: s.activeSessionId)
+            val existing = s.sessionDrafts[key].orEmpty()
+            val merged = if (existing.isBlank()) restoreText else "$existing\n$restoreText"
+            s.copy(
+                sessionDrafts = s.sessionDrafts + (key to merged),
+                promptNoticeText = null,
+                promptNoticeActionLabel = null,
+                promptNoticeUndoArchiveSessionId = null,
+                promptNoticeRestoreDraftText = null,
+                promptNoticeRestoreDraftSessionId = null,
+            )
         }
     }
 
@@ -2545,6 +2887,10 @@ class ConsoleStore(
                 checkpointNotice = null,
                 promptErrorText = null,
                 promptNoticeText = null,
+                promptNoticeActionLabel = null,
+                promptNoticeUndoArchiveSessionId = null,
+                promptNoticeRestoreDraftText = null,
+                promptNoticeRestoreDraftSessionId = null,
                 turnRecoveryBanner = null,
                 retryingTurn = false,
                 mentionQuery = null,
@@ -3014,6 +3360,10 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 promptNoticeText = null,
+                promptNoticeActionLabel = null,
+                promptNoticeUndoArchiveSessionId = null,
+                promptNoticeRestoreDraftText = null,
+                promptNoticeRestoreDraftSessionId = null,
                 selectedWorkspacePath = path,
                 selectedExtraWorkspaces = emptyList(),
                 currentBrowsePath = path,
@@ -3154,6 +3504,10 @@ class ConsoleStore(
                 approvalErrorText = null,
                 promptErrorText = null,
                 promptNoticeText = null,
+                promptNoticeActionLabel = null,
+                promptNoticeUndoArchiveSessionId = null,
+                promptNoticeRestoreDraftText = null,
+                promptNoticeRestoreDraftSessionId = null,
                 mentionQuery = null,
                 workspaceFileSuggestions = emptyList(),
                 turnRecoveryBanner = s.turnRecoveryBanner?.takeIf { it.sessionId == sessionId },
@@ -3505,7 +3859,15 @@ class ConsoleStore(
     }
 
     fun dismissPromptNotice() {
-        _state.update { it.copy(promptNoticeText = null) }
+        _state.update {
+            it.copy(
+                promptNoticeText = null,
+                promptNoticeActionLabel = null,
+                promptNoticeUndoArchiveSessionId = null,
+                promptNoticeRestoreDraftText = null,
+                promptNoticeRestoreDraftSessionId = null,
+            )
+        }
     }
 
     fun consumeRestoredDraft() {
@@ -3806,6 +4168,10 @@ class ConsoleStore(
                 workspaceFileSuggestions = emptyList(),
                 promptErrorText = null,
                 promptNoticeText = null,
+                promptNoticeActionLabel = null,
+                promptNoticeUndoArchiveSessionId = null,
+                promptNoticeRestoreDraftText = null,
+                promptNoticeRestoreDraftSessionId = null,
                 turnRecoveryBanner = null,
                 unsentDraftToRestore = null,
             )
@@ -4037,6 +4403,7 @@ class ConsoleStore(
         val prevLiveStatus = _state.value.sessions.firstOrNull { it.id == activeId }?.liveStatusText
         _state.update { s ->
             s.copy(
+                cancellingSessionId = activeId,
                 promptErrorText = null,
                 sessions = s.sessions.map { meta ->
                     if (meta.id == activeId) {
@@ -4116,6 +4483,9 @@ class ConsoleStore(
                 if (cancellingSessionId == activeId) {
                     cancellingSessionId = null
                 }
+                _state.update { s ->
+                    if (s.cancellingSessionId == activeId) s.copy(cancellingSessionId = null) else s
+                }
             }
         }
     }
@@ -4135,6 +4505,11 @@ class ConsoleStore(
         if (previousQueue.isEmpty()) return
         if (!all && (index == null || index !in previousQueue.indices)) return
 
+        val cancelledText = if (!all && index != null) {
+            previousQueue.getOrNull(index)?.trim().orEmpty()
+        } else {
+            ""
+        }
         val optimisticQueue = if (all) {
             emptyList()
         } else {
@@ -4145,6 +4520,10 @@ class ConsoleStore(
             s.copy(
                 promptErrorText = null,
                 promptNoticeText = null,
+                promptNoticeActionLabel = null,
+                promptNoticeUndoArchiveSessionId = null,
+                promptNoticeRestoreDraftText = null,
+                promptNoticeRestoreDraftSessionId = null,
                 sessions = s.sessions.map { meta ->
                     if (meta.id == sessionId) {
                         meta.copy(queuedPrompts = optimisticQueue.takeIf { it.isNotEmpty() })
@@ -4163,10 +4542,33 @@ class ConsoleStore(
                     all = all,
                 )
                 val reconciled = result.queuedPrompts.takeIf { it.isNotEmpty() }
-                val notice = result.notice?.trim()?.takeIf { it.isNotEmpty() }
+                val serverNotice = result.notice?.trim()?.takeIf { it.isNotEmpty() }
+                val isImagePlaceholder = cancelledText.matches(Regex("^（已发送 \\d+ 张图片）$"))
+                val canOfferRestore = !all && result.removedCount > 0 && cancelledText.isNotEmpty() && !isImagePlaceholder
+                val effectiveNotice = serverNotice ?: if (!all && result.removedCount > 0) "已取消排队消息" else null
                 _state.update { s ->
                     s.copy(
-                        promptNoticeText = if (s.activeSessionId == sessionId) notice else s.promptNoticeText,
+                        promptNoticeText = if (s.activeSessionId == sessionId) effectiveNotice else s.promptNoticeText,
+                        promptNoticeActionLabel = if (s.activeSessionId == sessionId) {
+                            if (canOfferRestore) "放回输入框" else null
+                        } else {
+                            s.promptNoticeActionLabel
+                        },
+                        promptNoticeUndoArchiveSessionId = if (s.activeSessionId == sessionId) {
+                            null
+                        } else {
+                            s.promptNoticeUndoArchiveSessionId
+                        },
+                        promptNoticeRestoreDraftText = if (s.activeSessionId == sessionId) {
+                            if (canOfferRestore) cancelledText else null
+                        } else {
+                            s.promptNoticeRestoreDraftText
+                        },
+                        promptNoticeRestoreDraftSessionId = if (s.activeSessionId == sessionId) {
+                            if (canOfferRestore) sessionId else null
+                        } else {
+                            s.promptNoticeRestoreDraftSessionId
+                        },
                         sessions = s.sessions.map { meta ->
                             if (meta.id == sessionId) {
                                 meta.copy(queuedPrompts = reconciled)
@@ -4302,15 +4704,45 @@ class ConsoleStore(
 
     fun browseDirectory(path: String = _state.value.currentBrowsePath.ifEmpty { _state.value.selectedWorkspacePath }) {
         if (path.isBlank()) return
+        val reqToken = ++fsRequestToken
+        lastFailedFsEntry = null
+        lastFailedFsDirPath = null
+        _state.update {
+            val changingPath = it.currentBrowsePath != path
+            it.copy(
+                currentBrowsePath = path,
+                dirEntries = if (changingPath) emptyList() else it.dirEntries,
+                openedFilePath = if (changingPath) null else it.openedFilePath,
+                openedFileContent = if (changingPath) null else it.openedFileContent,
+                fsLoading = true,
+                fsError = null,
+            )
+        }
         scope.launch {
-            runCatching {
+            try {
                 val res = rpc.listDirectory(path)
+                if (reqToken != fsRequestToken) return@launch
                 _state.update {
                     it.copy(
                         currentBrowsePath = res.path,
                         dirEntries = res.entries,
                         openedFilePath = null,
                         openedFileContent = null,
+                        fsLoading = false,
+                        fsError = null,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                if (reqToken != fsRequestToken) return@launch
+                lastFailedFsDirPath = path
+                lastFailedFsEntry = null
+                val msg = t.message?.takeIf { it.isNotBlank() } ?: "请检查主机连接后重试"
+                _state.update {
+                    it.copy(
+                        fsLoading = false,
+                        fsError = "无法读取目录：$msg",
                     )
                 }
             }
@@ -4329,13 +4761,33 @@ class ConsoleStore(
         if (entry.isDirectory) {
             browseDirectory(entry.path)
         } else {
+            val reqToken = ++fsRequestToken
+            lastFailedFsEntry = null
+            lastFailedFsDirPath = null
+            _state.update { it.copy(fsLoading = true, fsError = null) }
             scope.launch {
-                runCatching {
+                try {
                     val res = rpc.readFile(entry.path)
+                    if (reqToken != fsRequestToken) return@launch
                     _state.update {
                         it.copy(
                             openedFilePath = res.path,
                             openedFileContent = res.content,
+                            fsLoading = false,
+                            fsError = null,
+                        )
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    if (reqToken != fsRequestToken) return@launch
+                    lastFailedFsEntry = entry
+                    lastFailedFsDirPath = null
+                    val msg = t.message?.takeIf { it.isNotBlank() } ?: "请检查主机连接后重试"
+                    _state.update {
+                        it.copy(
+                            fsLoading = false,
+                            fsError = "无法读取文件：$msg",
                         )
                     }
                 }
@@ -4343,8 +4795,22 @@ class ConsoleStore(
         }
     }
 
+    fun retryLastFsOperation() {
+        val failedEntry = lastFailedFsEntry
+        if (failedEntry != null) {
+            openEntry(failedEntry)
+            return
+        }
+        val targetDir = lastFailedFsDirPath?.takeIf { it.isNotBlank() }
+            ?: _state.value.currentBrowsePath.ifBlank { _state.value.selectedWorkspacePath }
+        if (targetDir.isNotBlank()) {
+            browseDirectory(targetDir)
+        }
+    }
+
     fun closeOpenedFile() {
-        _state.update { it.copy(openedFilePath = null, openedFileContent = null) }
+        lastFailedFsEntry = null
+        _state.update { it.copy(openedFilePath = null, openedFileContent = null, fsError = null) }
     }
 
     // -------------------------------------------------------------------------

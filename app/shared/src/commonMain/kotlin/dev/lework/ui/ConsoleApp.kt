@@ -187,6 +187,7 @@ private fun MobileConsoleApp(
             onSelectTsnetHub = store::selectDiscoveredTsnetHub,
             onLogoutTsnet = store::logoutMobileTsnetAccount,
             onSelectPairedHost = store::switchPairedHost,
+            onCancelPairAnotherHost = store::cancelPairAnotherHost,
         )
     } else {
         CompositionLocalProvider(
@@ -340,7 +341,7 @@ private fun MobileConsoleApp(
                                 modifier = Modifier.size(12.dp),
                             )
                             Text(
-                                text = "正在校验权限并续连当前会话上下文…",
+                                text = "正在重新连接主机并同步最新消息…",
                                 fontSize = 12.sp,
                                 color = Everforest.BoldGold,
                             )
@@ -521,47 +522,61 @@ private fun MobileConsoleApp(
                     )
                 }
 
-                if (!state.promptNoticeText.isNullOrBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Everforest.BoldGold.copy(alpha = 0.12f),
-                        border = BorderStroke(1.dp, Everforest.BoldGold.copy(alpha = 0.4f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp)
-                            .testTag("prompt_notice_banner"),
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Info,
-                                contentDescription = null,
-                                tint = Everforest.BoldGold,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            SelectionContainer(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = state.promptNoticeText.orEmpty(),
-                                    fontSize = 12.5.sp,
-                                    lineHeight = 17.sp,
-                                    color = Everforest.Fg,
-                                )
-                            }
-                            Icon(
-                                imageVector = Icons.Rounded.Close,
-                                contentDescription = "关闭提示",
-                                tint = Everforest.CommentGrey,
+                        if (!state.promptNoticeText.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Everforest.BoldGold.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, Everforest.BoldGold.copy(alpha = 0.4f)),
                                 modifier = Modifier
-                                    .size(16.dp)
-                                    .clickable { store.dismissPromptNotice() }
-                                    .testTag("prompt_notice_dismiss_btn"),
-                            )
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 2.dp)
+                                    .testTag("prompt_notice_banner"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Info,
+                                        contentDescription = null,
+                                        tint = Everforest.BoldGold,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    SelectionContainer(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = state.promptNoticeText.orEmpty(),
+                                            fontSize = 12.5.sp,
+                                            lineHeight = 17.sp,
+                                            color = Everforest.Fg,
+                                        )
+                                    }
+                                    val actionLabel = state.promptNoticeActionLabel
+                                    if (!actionLabel.isNullOrBlank()) {
+                                        Text(
+                                            text = actionLabel,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Everforest.Green,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .clickable { store.triggerPromptNoticeAction() }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .testTag("prompt_notice_action_btn"),
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "关闭提示",
+                                        tint = Everforest.CommentGrey,
+                                        modifier = Modifier
+                                            .size(16.dp)
+                                            .clickable { store.dismissPromptNotice() }
+                                            .testTag("prompt_notice_dismiss_btn"),
+                                    )
+                                }
+                            }
                         }
-                    }
-                }
 
                 val recoveryBanner = state.turnRecoveryBanner
                 if (recoveryBanner != null) {
@@ -755,17 +770,33 @@ private fun MobileConsoleApp(
                         store.dismissMentionSuggestions()
                     },
                     onInsertAtMention = {
-                        val (nextText, nextCursor) = insertAtTriggerAtCursor(
-                            text = promptField.text,
-                            cursorIndex = promptField.selection.end,
-                        )
-                        promptField = TextFieldValue(
-                            text = nextText,
-                            selection = TextRange(nextCursor),
-                            composition = null,
-                        )
-                        cursorSyncRequest = Triple((cursorSyncRequest?.first ?: 0L) + 1L, nextText, nextCursor)
-                        store.updateSessionDraft(nextText, nextCursor)
+                        if (state.mentionQuery != null) {
+                            val cleaned = if (promptField.text.endsWith("@")) {
+                                promptField.text.dropLast(1).trimEnd(' ')
+                            } else {
+                                promptField.text
+                            }
+                            promptField = TextFieldValue(
+                                text = cleaned,
+                                selection = TextRange(cleaned.length),
+                                composition = null,
+                            )
+                            cursorSyncRequest = Triple((cursorSyncRequest?.first ?: 0L) + 1L, cleaned, cleaned.length)
+                            store.updateSessionDraft(cleaned, cleaned.length, updateMentions = false)
+                            store.dismissMentionSuggestions()
+                        } else {
+                            val (nextText, nextCursor) = insertAtTriggerAtCursor(
+                                text = promptField.text,
+                                cursorIndex = promptField.selection.end,
+                            )
+                            promptField = TextFieldValue(
+                                text = nextText,
+                                selection = TextRange(nextCursor),
+                                composition = null,
+                            )
+                            cursorSyncRequest = Triple((cursorSyncRequest?.first ?: 0L) + 1L, nextText, nextCursor)
+                            store.updateSessionDraft(nextText, nextCursor)
+                        }
                     },
                     onDismissMention = store::dismissMentionSuggestions,
                     onSelectSlashCommand = { cmd ->
@@ -865,6 +896,7 @@ private fun MobileConsoleApp(
                         showFilesSheet = false
                         showWorkspaceSheet = true
                     },
+                    onRetryFs = store::retryLastFsOperation,
                 )
             }
         }

@@ -109,7 +109,7 @@ internal fun EngineModelPickerSheet(
 
         // 2. Model List inside the chosen Engine
         val selectable = state.taskEngines.firstOrNull { it.id == state.selectedEngineId && it.canStartTask }
-        Text(if (selectable != null && selectable.models.isEmpty()) "模型由主机 CLI 决定" else "可用模型", fontSize = 12.sp, color = Everforest.Grey1)
+        Text(if (selectable != null && selectable.models.isEmpty()) "使用主机默认模型配置" else "可用模型", fontSize = 12.sp, color = Everforest.Grey1)
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
@@ -553,6 +553,7 @@ internal fun WorkspaceFileTreeSheet(
     onCloseFile: () -> Unit,
     onSelectActiveWorkspaceTab: (String) -> Unit,
     onSwitchWorkspace: () -> Unit,
+    onRetryFs: (() -> Unit)? = null,
 ) {
     val activeWsList = state.activeWorkspaces
     val normalizedCurPath = state.currentBrowsePath.trimEnd('/')
@@ -696,11 +697,132 @@ internal fun WorkspaceFileTreeSheet(
                     }
                 }
             }
-        } else {
-            LazyColumn(
+        } else if (state.fsLoading && state.dirEntries.isEmpty()) {
+            Box(
                 modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                contentAlignment = Alignment.Center,
             ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(
+                        color = Everforest.Green,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text("正在读取目录…", fontSize = 12.5.sp, color = Everforest.CommentGrey)
+                }
+            }
+        } else if (!state.fsError.isNullOrBlank() && state.dirEntries.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .testTag("workspace_files_error_state"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.ErrorOutline,
+                        contentDescription = null,
+                        tint = Everforest.Red,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Text(
+                        text = state.fsError,
+                        fontSize = 12.5.sp,
+                        color = Everforest.Grey2,
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            if (onRetryFs != null) {
+                                onRetryFs()
+                            } else {
+                                onSelectActiveWorkspaceTab(state.currentBrowsePath.ifBlank { state.selectedWorkspacePath })
+                            }
+                        },
+                        border = BorderStroke(1.dp, Everforest.Bg3),
+                    ) {
+                        Text("重试", fontSize = 12.sp, color = Everforest.Green)
+                    }
+                }
+            }
+        } else if (state.dirEntries.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("workspace_files_empty_state"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("此目录为空", fontSize = 12.5.sp, color = Everforest.CommentGrey)
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (!state.fsError.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Everforest.BgRed,
+                        border = BorderStroke(1.dp, Everforest.Red.copy(alpha = 0.45f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("workspace_files_error_state"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ErrorOutline,
+                                contentDescription = null,
+                                tint = Everforest.SoftRed,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = state.fsError,
+                                fontSize = 11.5.sp,
+                                color = Everforest.Fg,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            TextButton(
+                                onClick = {
+                                    if (onRetryFs != null) {
+                                        onRetryFs()
+                                    } else {
+                                        onSelectActiveWorkspaceTab(state.currentBrowsePath.ifBlank { state.selectedWorkspacePath })
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("重试", fontSize = 11.5.sp, color = Everforest.Green)
+                            }
+                            IconButton(
+                                onClick = onCloseFile,
+                                modifier = Modifier.size(22.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "关闭提示",
+                                    tint = Everforest.Grey1,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
                 items(state.dirEntries, key = { it.path }) { entry ->
                     Surface(
                         shape = RoundedCornerShape(8.dp),
@@ -746,6 +868,7 @@ internal fun WorkspaceFileTreeSheet(
                         }
                     }
                 }
+            }
             }
         }
     }

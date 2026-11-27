@@ -17,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -69,6 +70,12 @@ internal fun DesktopConsoleApp(
             state.inSessionFindOpen || state.inspectedSubagent != null ||
             state.activeFilePreview != null || state.pendingDeepLinkPairing != null ||
             state.appUpdate.showUpdateDialog || renamingSessionId != null
+
+    LaunchedEffect(state.activeSessionId) {
+        if (state.activeSessionId == null && activeInspectorTab == DesktopInspectorTab.ARTIFACTS) {
+            activeInspectorTab = null
+        }
+    }
 
     LaunchedEffect(
         state.hasEnteredWorkspace,
@@ -168,12 +175,15 @@ internal fun DesktopConsoleApp(
             onRetry = store::bootstrapOrConnect,
             onResetCredentials = store::resetCredentialsAndReconnect,
             onPasteClipboardPairing = store::pastePairingFromClipboard,
+            onConfirmClipboardPairing = store::confirmClipboardPairing,
+            onDismissClipboardPairing = store::dismissClipboardPairing,
             onPairViaSsh = store::pairViaSshHost,
             onStartTsnetLogin = store::startMobileTsnetLogin,
             onSearchTsnetPeers = store::searchAndConnectViaTsnet,
             onSelectTsnetHub = store::selectDiscoveredTsnetHub,
             onLogoutTsnet = store::logoutMobileTsnetAccount,
             onSelectPairedHost = store::switchPairedHost,
+            onCancelPairAnotherHost = store::cancelPairAnotherHost,
         )
     } else {
         BoxWithConstraints(
@@ -438,7 +448,7 @@ internal fun DesktopConsoleApp(
                                         modifier = Modifier.size(12.dp),
                                     )
                                     Text(
-                                        text = "正在校验权限并续连当前会话上下文…",
+                                        text = "正在重新连接主机并同步最新消息…",
                                         fontSize = 12.sp,
                                         color = Everforest.BoldGold,
                                     )
@@ -655,6 +665,20 @@ internal fun DesktopConsoleApp(
                                             fontSize = 12.5.sp,
                                             lineHeight = 17.sp,
                                             color = Everforest.Fg,
+                                        )
+                                    }
+                                    val actionLabel = state.promptNoticeActionLabel
+                                    if (!actionLabel.isNullOrBlank()) {
+                                        Text(
+                                            text = actionLabel,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Everforest.Green,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .clickable { store.triggerPromptNoticeAction() }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .testTag("prompt_notice_action_btn"),
                                         )
                                     }
                                     Icon(
@@ -888,6 +912,7 @@ internal fun DesktopConsoleApp(
                                 activeInspectorTab = null
                                 showWorkspaceDialog = true
                             },
+                            onRetryFs = store::retryLastFsOperation,
                         )
                         DesktopInspectorTab.ARTIFACTS -> ArtifactsInspectorSheet(
                             state = state,
@@ -1192,6 +1217,7 @@ private fun DesktopRightInspectorPane(
                         onCloseDiff = store::closeGitDiff,
                         onCreateCheckpoint = store::createManualCheckpoint,
                         onRestoreCheckpoint = store::restoreCheckpoint,
+                        showHeaderTitle = false,
                     )
                     DesktopInspectorTab.FILES -> WorkspaceFileTreeSheet(
                         state = state,
@@ -1200,6 +1226,7 @@ private fun DesktopRightInspectorPane(
                         onCloseFile = store::closeOpenedFile,
                         onSelectActiveWorkspaceTab = store::switchBrowseWorkspace,
                         onSwitchWorkspace = onOpenWorkspaceDialog,
+                        onRetryFs = store::retryLastFsOperation,
                     )
                     DesktopInspectorTab.ARTIFACTS -> ArtifactsInspectorSheet(
                         state = state,
@@ -1208,6 +1235,7 @@ private fun DesktopRightInspectorPane(
                         onCloseArtifact = store::closeOpenedArtifact,
                         onApprovePlan = { title -> store.approveAndExecutePlan(title) },
                         onRevisePlan = onPrefillRevisePrompt,
+                        showHeaderTitle = false,
                     )
                 }
             }

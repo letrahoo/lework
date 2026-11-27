@@ -342,7 +342,7 @@ internal fun FileLinkPreviewContent(
                 val hintText = if (!entry.companionMarkdownPath.isNullOrBlank()) {
                     "已关联同目录文档预览，点条目可直接展开"
                 } else {
-                    "桌面端内安全阅读视图"
+                    "应用内安全阅读视图"
                 }
                 Text(
                     text = hintText,

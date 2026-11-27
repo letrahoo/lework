@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -46,6 +47,7 @@ internal fun AuthEntryView(
     onSelectTsnetHub: (String) -> Unit = {},
     onLogoutTsnet: () -> Unit = {},
     onSelectPairedHost: (String) -> Unit = {},
+    onCancelPairAnotherHost: () -> Unit = {},
 ) {
     var showManualForm by remember(state.oauthEnabled, state.connectionStatus) {
         mutableStateOf(false)
@@ -60,8 +62,19 @@ internal fun AuthEntryView(
         mutableStateOf(state.discoveredBaseUrl)
     }
     var manualToken by remember { mutableStateOf("") }
+    var confirmResetCredentials by remember { mutableStateOf(false) }
+    var confirmLogoutTsnet by remember { mutableStateOf(false) }
     val qrSupported = remember { canScanQrCode() }
     val dismissKeyboard = rememberKeyboardDismisser()
+    val isPairingLinkInput = remember(manualHost) {
+        val trimmed = manualHost.trim()
+        trimmed.startsWith("lework://", ignoreCase = true) || trimmed.startsWith("{")
+    }
+
+    ModalEscapeEffect(
+        enabled = state.canReturnToWorkspace && !confirmResetCredentials && !confirmLogoutTsnet,
+        onDismiss = onCancelPairAnotherHost,
+    )
 
     Box(
         modifier = Modifier
@@ -88,10 +101,53 @@ internal fun AuthEntryView(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                if (state.canReturnToWorkspace) {
+                    val returnHost = state.returnWorkspaceHostName?.takeIf { it.isNotBlank() } ?: "当前主机"
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Start,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Everforest.Bg0,
+                            border = BorderStroke(1.dp, Everforest.Bg3),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    dismissKeyboard()
+                                    onCancelPairAnotherHost()
+                                }
+                                .testTag("auth_btn_return_workspace"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "返回工作台",
+                                    tint = Everforest.Green,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Text(
+                                    text = "返回「$returnHost」",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Everforest.Fg,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+
                 LeworkBrandMark(size = 54.dp)
 
                 Text(
-                    text = "Lework",
+                    text = if (state.canReturnToWorkspace) "连接其他 Lework Hub 主机" else "Lework",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Everforest.Fg,
@@ -291,7 +347,10 @@ internal fun AuthEntryView(
                                                 fontSize = 12.5.sp,
                                             )
                                         }
-                                        TextButton(onClick = onLogoutTsnet) {
+                                        TextButton(
+                                            onClick = { confirmLogoutTsnet = true },
+                                            modifier = Modifier.testTag("auth_btn_logout_tsnet"),
+                                        ) {
                                             Text("退出账号", fontSize = 12.sp, color = Everforest.Grey1)
                                         }
                                     }
@@ -306,7 +365,7 @@ internal fun AuthEntryView(
                                         OutlinedTextField(
                                             value = customControlUrl,
                                             onValueChange = { customControlUrl = it },
-                                            label = { Text("Headscale 控制面地址 (可选)", fontSize = 11.sp) },
+                                            label = { Text("自建服务器地址（如 Headscale，可选）", fontSize = 11.sp) },
                                             singleLine = true,
                                             modifier = Modifier.fillMaxWidth(),
                                         )
@@ -339,7 +398,7 @@ internal fun AuthEntryView(
                                         }
                                         TextButton(onClick = { showCustomControlUrl = !showCustomControlUrl }) {
                                             Text(
-                                                text = if (showCustomControlUrl) "默认官方" else "自建控制面",
+                                                text = if (showCustomControlUrl) "使用官方服务" else "使用自建服务器",
                                                 fontSize = 11.sp,
                                                 color = Everforest.CommentGrey,
                                             )
@@ -356,7 +415,7 @@ internal fun AuthEntryView(
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             Text(
-                                text = "已配对主机",
+                                text = "已配对的 Lework Hub 主机",
                                 fontSize = 11.5.sp,
                                 color = Everforest.Grey1,
                             )
@@ -412,7 +471,10 @@ internal fun AuthEntryView(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    TextButton(onClick = { showManualForm = !showManualForm }) {
+                    TextButton(
+                        onClick = { showManualForm = !showManualForm },
+                        modifier = Modifier.testTag("auth_btn_toggle_manual"),
+                    ) {
                         Text(
                             text = if (showManualForm) "收起手动连接配置" else "手动填写地址 / 粘贴配对链接",
                             fontSize = 12.sp,
@@ -420,7 +482,10 @@ internal fun AuthEntryView(
                         )
                     }
                     if (state.connectionStatus == ConnectionStatus.ERROR) {
-                        TextButton(onClick = onResetCredentials) {
+                        TextButton(
+                            onClick = { confirmResetCredentials = true },
+                            modifier = Modifier.testTag("auth_btn_reset_credentials"),
+                        ) {
                             Text("清除旧凭证", fontSize = 12.sp, color = Everforest.Grey1)
                         }
                     }
@@ -436,28 +501,39 @@ internal fun AuthEntryView(
                             onValueChange = { manualHost = it },
                             label = { Text("主机地址或 lework://pair 配对链接", fontSize = 11.5.sp) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("auth_manual_host_input"),
                         )
-                        OutlinedTextField(
-                            value = manualToken,
-                            onValueChange = { manualToken = it },
-                            label = { Text("访问令牌 (使用配对链接时可留空)", fontSize = 11.5.sp) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                        if (!isPairingLinkInput) {
+                            OutlinedTextField(
+                                value = manualToken,
+                                onValueChange = { manualToken = it },
+                                label = { Text("访问令牌", fontSize = 11.5.sp) },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("auth_manual_token_input"),
+                            )
+                        }
                         Button(
                             onClick = {
                                 dismissKeyboard()
-                                onManualConnect(manualHost, manualToken)
+                                onManualConnect(manualHost, if (isPairingLinkInput) "" else manualToken)
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = Everforest.Bg3,
                                 contentColor = Everforest.Fg,
                             ),
                             shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("auth_manual_submit_btn"),
                         ) {
-                            Text("保存并连接", fontWeight = FontWeight.Medium)
+                            Text(
+                                text = if (isPairingLinkInput) "验证并配对" else "保存并连接",
+                                fontWeight = FontWeight.Medium,
+                            )
                         }
                     }
                 }
@@ -469,6 +545,82 @@ internal fun AuthEntryView(
                 )
             }
         }
+    }
+
+    if (confirmResetCredentials) {
+        ModalEscapeEffect(onDismiss = { confirmResetCredentials = false })
+        AlertDialog(
+            onDismissRequest = { confirmResetCredentials = false },
+            containerColor = Everforest.Bg1,
+            titleContentColor = Everforest.Fg,
+            textContentColor = Everforest.Grey2,
+            title = { Text("清除所有已保存的主机凭证？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    text = "将删除全部已配对的 Lework Hub 主机记录、访问令牌和证书指纹，之后连接任意主机都需要重新配对。",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmResetCredentials = false
+                        onResetCredentials()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Everforest.Red,
+                        contentColor = Everforest.BgDim,
+                    ),
+                    modifier = Modifier.testTag("confirm_reset_credentials_btn"),
+                ) {
+                    Text("确认清除", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmResetCredentials = false }) {
+                    Text("取消", color = Everforest.Grey1)
+                }
+            },
+        )
+    }
+
+    if (confirmLogoutTsnet) {
+        ModalEscapeEffect(onDismiss = { confirmLogoutTsnet = false })
+        AlertDialog(
+            onDismissRequest = { confirmLogoutTsnet = false },
+            containerColor = Everforest.Bg1,
+            titleContentColor = Everforest.Fg,
+            textContentColor = Everforest.Grey2,
+            title = { Text("退出 Tailscale 账号？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    text = "退出后将停止当前客户端内置的 Tailscale 组网，可随时重新登录恢复。",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmLogoutTsnet = false
+                        onLogoutTsnet()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Everforest.Red,
+                        contentColor = Everforest.BgDim,
+                    ),
+                    modifier = Modifier.testTag("confirm_logout_tsnet_btn"),
+                ) {
+                    Text("确认退出", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmLogoutTsnet = false }) {
+                    Text("取消", color = Everforest.Grey1)
+                }
+            },
+        )
     }
 }
 

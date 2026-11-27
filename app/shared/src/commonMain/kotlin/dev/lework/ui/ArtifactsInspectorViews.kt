@@ -128,6 +128,7 @@ internal fun ArtifactsInspectorSheet(
     onCloseArtifact: () -> Unit,
     onApprovePlan: (String) -> Unit,
     onRevisePlan: (String) -> Unit,
+    showHeaderTitle: Boolean = true,
 ) {
     var copyCount by remember(state.openedArtifact?.artifact?.id) { mutableIntStateOf(0) }
     val copied = copyCount > 0
@@ -161,12 +162,14 @@ internal fun ArtifactsInspectorSheet(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "会话产物",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Everforest.Fg,
-                )
+                if (showHeaderTitle) {
+                    Text(
+                        text = "会话产物",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Everforest.Fg,
+                    )
+                }
                 val subtitle = state.activeSession?.let { sess ->
                     "${shortEngineLabel(sess.engineId)} · 共 ${artifacts.size} 项产物"
                 } ?: "选择会话后查看执行方案、清单与产物"
