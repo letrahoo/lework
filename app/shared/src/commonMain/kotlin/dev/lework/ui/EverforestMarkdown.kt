@@ -48,7 +48,10 @@ import androidx.compose.ui.unit.sp
 import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.openExternalUrl
 import dev.lework.security.isSafeExternalLink
+import dev.lework.store.parseLocalFileLink
 import kotlinx.coroutines.delay
+
+internal val LocalFileLinkClickHandler = compositionLocalOf<((String) -> Unit)?> { null }
 
 internal enum class MdTableAlign {
     START,
@@ -158,13 +161,15 @@ private fun HeadingBlockView(heading: MdBlock.Heading) {
     val headingColor = if (heading.level <= 2) Everforest.HeadingWarm else Everforest.BoldFg
     val highlightQuery = LocalSearchHighlightQuery.current
     val highlightPrimary = LocalSearchHighlightPrimary.current
-    val annotated = remember(heading.text, fontSize, headingColor, highlightQuery, highlightPrimary) {
+    val onFileLinkClick = LocalFileLinkClickHandler.current
+    val annotated = remember(heading.text, fontSize, headingColor, highlightQuery, highlightPrimary, onFileLinkClick) {
         applySearchTermHighlights(
             source = parseEverforestInline(
                 text = heading.text,
                 baseColor = headingColor,
                 baseWeight = FontWeight.SemiBold,
                 codeFontSizeSp = fontSize.value - 1.5f,
+                onFileLinkClick = onFileLinkClick,
             ),
             query = highlightQuery,
             primary = highlightPrimary,
@@ -189,9 +194,10 @@ private fun HeadingBlockView(heading: MdBlock.Heading) {
 private fun ParagraphBlockView(text: String) {
     val highlightQuery = LocalSearchHighlightQuery.current
     val highlightPrimary = LocalSearchHighlightPrimary.current
-    val annotated = remember(text, highlightQuery, highlightPrimary) {
+    val onFileLinkClick = LocalFileLinkClickHandler.current
+    val annotated = remember(text, highlightQuery, highlightPrimary, onFileLinkClick) {
         applySearchTermHighlights(
-            source = parseEverforestInline(text = text),
+            source = parseEverforestInline(text = text, onFileLinkClick = onFileLinkClick),
             query = highlightQuery,
             primary = highlightPrimary,
         )
@@ -251,9 +257,10 @@ private fun ListGroupBlockView(items: List<MdListItem>) {
 
                 val highlightQuery = LocalSearchHighlightQuery.current
                 val highlightPrimary = LocalSearchHighlightPrimary.current
-                val annotated = remember(item.text, highlightQuery, highlightPrimary) {
+                val onFileLinkClick = LocalFileLinkClickHandler.current
+                val annotated = remember(item.text, highlightQuery, highlightPrimary, onFileLinkClick) {
                     applySearchTermHighlights(
-                        source = parseEverforestInline(text = item.text),
+                        source = parseEverforestInline(text = item.text, onFileLinkClick = onFileLinkClick),
                         query = highlightQuery,
                         primary = highlightPrimary,
                     )
@@ -307,9 +314,14 @@ private fun QuoteBlockView(quote: MdBlock.Quote) {
             val joined = quote.lines.joinToString("\n")
             val highlightQuery = LocalSearchHighlightQuery.current
             val highlightPrimary = LocalSearchHighlightPrimary.current
-            val annotated = remember(joined, highlightQuery, highlightPrimary) {
+            val onFileLinkClick = LocalFileLinkClickHandler.current
+            val annotated = remember(joined, highlightQuery, highlightPrimary, onFileLinkClick) {
                 applySearchTermHighlights(
-                    source = parseEverforestInline(text = joined, baseColor = Everforest.Grey2),
+                    source = parseEverforestInline(
+                        text = joined,
+                        baseColor = Everforest.Grey2,
+                        onFileLinkClick = onFileLinkClick,
+                    ),
                     query = highlightQuery,
                     primary = highlightPrimary,
                 )
@@ -413,17 +425,19 @@ private fun TableBlockView(table: MdBlock.Table) {
                         // Row 0: Headers (emit invisible TSV/newline separators between cells in composition order)
                         val highlightQuery = LocalSearchHighlightQuery.current
                         val highlightPrimary = LocalSearchHighlightPrimary.current
+                        val onFileLinkClick = LocalFileLinkClickHandler.current
                         for (c in 0 until colCount) {
                             if (c > 0) MarkdownSelectionSeparator("\t")
                             val align = table.alignments.getOrElse(c) { MdTableAlign.START }
                             val cellText = table.headers.getOrElse(c) { "" }
-                            val annotated = remember(cellText, highlightQuery, highlightPrimary) {
+                            val annotated = remember(cellText, highlightQuery, highlightPrimary, onFileLinkClick) {
                                 applySearchTermHighlights(
                                     source = parseEverforestInline(
                                         text = cellText,
                                         baseColor = Everforest.BoldFg,
                                         baseWeight = FontWeight.SemiBold,
                                         codeFontSizeSp = 12f,
+                                        onFileLinkClick = onFileLinkClick,
                                     ),
                                     query = highlightQuery,
                                     primary = highlightPrimary,
@@ -446,12 +460,13 @@ private fun TableBlockView(table: MdBlock.Table) {
                                 MarkdownSelectionSeparator(if (c == 0) "\n" else "\t")
                                 val align = table.alignments.getOrElse(c) { MdTableAlign.START }
                                 val cellText = row.getOrElse(c) { "" }
-                                val annotated = remember(cellText, highlightQuery, highlightPrimary) {
+                                val annotated = remember(cellText, highlightQuery, highlightPrimary, onFileLinkClick) {
                                     applySearchTermHighlights(
                                         source = parseEverforestInline(
                                             text = cellText,
                                             baseColor = Everforest.Fg,
                                             codeFontSizeSp = 12f,
+                                            onFileLinkClick = onFileLinkClick,
                                         ),
                                         query = highlightQuery,
                                         primary = highlightPrimary,
@@ -1079,15 +1094,17 @@ internal fun parseEverforestInline(
     baseColor: Color = Everforest.Fg,
     baseWeight: FontWeight = FontWeight.Normal,
     codeFontSizeSp: Float = 13.5f,
+    onFileLinkClick: ((String) -> Unit)? = null,
 ): AnnotatedString = buildAnnotatedString {
     withStyle(SpanStyle(color = baseColor, fontWeight = baseWeight)) {
-        appendInlineRec(text, codeFontSizeSp)
+        appendInlineRec(text, codeFontSizeSp, onFileLinkClick)
     }
 }
 
 private fun AnnotatedString.Builder.appendInlineRec(
     text: String,
     codeFontSizeSp: Float,
+    onFileLinkClick: ((String) -> Unit)? = null,
 ) {
     var i = 0
     val n = text.length
@@ -1170,12 +1187,47 @@ private fun AnnotatedString.Builder.appendInlineRec(
                         color = Everforest.Fg,
                         textDecoration = TextDecoration.Underline,
                     )
+                    val interactiveLinkStyle = TextLinkStyles(
+                        style = linkStyle,
+                        hoveredStyle = SpanStyle(
+                            color = Everforest.CodeGreen,
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                        pressedStyle = SpanStyle(
+                            color = Everforest.BoldGold,
+                            textDecoration = TextDecoration.Underline,
+                        ),
+                    )
                     if (isSafeExternalLink(url)) {
                         withLink(
                             LinkAnnotation.Clickable(
                                 tag = url,
-                                styles = TextLinkStyles(style = linkStyle),
+                                styles = interactiveLinkStyle,
                                 linkInteractionListener = { if (isSafeExternalLink(url)) openExternalUrl(url) },
+                            ),
+                        ) {
+                            append(label)
+                        }
+                    } else if (onFileLinkClick != null && parseLocalFileLink(url) != null) {
+                        val fileLinkStyle = TextLinkStyles(
+                            style = SpanStyle(
+                                color = Everforest.InlineCode,
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                            hoveredStyle = SpanStyle(
+                                color = Everforest.CodeGreen,
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                            pressedStyle = SpanStyle(
+                                color = Everforest.BoldGold,
+                                textDecoration = TextDecoration.Underline,
+                            ),
+                        )
+                        withLink(
+                            LinkAnnotation.Clickable(
+                                tag = "file:$url",
+                                styles = fileLinkStyle,
+                                linkInteractionListener = { onFileLinkClick(url) },
                             ),
                         ) {
                             append(label)
@@ -1202,7 +1254,7 @@ private fun AnnotatedString.Builder.appendInlineRec(
                         fontStyle = FontStyle.Italic,
                     ),
                 ) {
-                    appendInlineRec(text.substring(i + 3, end), codeFontSizeSp)
+                    appendInlineRec(text.substring(i + 3, end), codeFontSizeSp, onFileLinkClick)
                 }
                 i = end + 3
                 continue
@@ -1219,7 +1271,7 @@ private fun AnnotatedString.Builder.appendInlineRec(
                         fontWeight = FontWeight.SemiBold,
                     ),
                 ) {
-                    appendInlineRec(text.substring(i + 2, end), codeFontSizeSp)
+                    appendInlineRec(text.substring(i + 2, end), codeFontSizeSp, onFileLinkClick)
                 }
                 i = end + 2
                 continue
@@ -1248,7 +1300,7 @@ private fun AnnotatedString.Builder.appendInlineRec(
             val end = text.indexOf('*', i + 1)
             if (end > i + 1 && text[end - 1] != ' ' && !text.substring(i + 1, end).contains('\n')) {
                 withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                    appendInlineRec(text.substring(i + 1, end), codeFontSizeSp)
+                    appendInlineRec(text.substring(i + 1, end), codeFontSizeSp, onFileLinkClick)
                 }
                 i = end + 1
                 continue

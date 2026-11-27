@@ -17,8 +17,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
@@ -57,8 +59,28 @@ internal fun DesktopConsoleApp(
     var activeInspectorTab by remember { mutableStateOf<DesktopInspectorTab?>(null) }
     var sidebarExpanded by remember { mutableStateOf(true) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
-    var promptText by remember { mutableStateOf("") }
+    var focusComposerNonce by remember { mutableIntStateOf(0) }
+    val composerFocusRequester = remember { FocusRequester() }
+    val promptText = state.activeDraftText
     val escapeDispatcher = LocalModalEscapeDispatcher.current ?: remember { ModalEscapeDispatcher() }
+    val anyModalBlockingComposerFocus =
+        showGlobalSearchDialog || showModelPicker || showWorkspaceDialog ||
+            showUsageDialog || showSettingsDialog ||
+            state.inSessionFindOpen || state.inspectedSubagent != null ||
+            state.activeFilePreview != null || state.pendingDeepLinkPairing != null ||
+            renamingSessionId != null
+
+    LaunchedEffect(
+        state.hasEnteredWorkspace,
+        state.activeDraftKey,
+        focusComposerNonce,
+        anyModalBlockingComposerFocus,
+    ) {
+        if (state.hasEnteredWorkspace && !anyModalBlockingComposerFocus) {
+            withFrameNanos {}
+            runCatching { composerFocusRequester.requestFocus() }
+        }
+    }
 
     fun openGlobalSearchPalette(prefill: String? = null) {
         val nextQuery = prefill?.trim()
@@ -114,14 +136,19 @@ internal fun DesktopConsoleApp(
     LaunchedEffect(state.unsentDraftToRestore) {
         val restore = state.unsentDraftToRestore
         if (!restore.isNullOrEmpty()) {
-            if (promptText.isBlank()) {
-                promptText = restore
+            if (state.activeDraftText.isBlank()) {
+                store.updateSessionDraft(restore, updateMentions = false)
             }
             store.consumeRestoredDraft()
         }
     }
 
-    CompositionLocalProvider(LocalModalEscapeDispatcher provides escapeDispatcher) {
+    CompositionLocalProvider(
+        LocalModalEscapeDispatcher provides escapeDispatcher,
+        LocalFileLinkClickHandler provides { rawTarget ->
+            store.openLinkedFilePreview(rawTarget)
+        },
+    ) {
     ModalEscapeEffect(
         enabled = state.inSessionFindOpen,
         onDismiss = store::closeInSessionFind,
@@ -157,8 +184,59 @@ internal fun DesktopConsoleApp(
                             return@onPreviewKeyEvent true
                         }
                     }
+                    // Option + ↑ / ↓: switch adjacent session in visible sidebar order (no conflict with macOS ⌘↑/⌘↓ cursor jump)
+                    if (
+                        ev.isAltPressed &&
+                        !ev.isMetaPressed &&
+                        !ev.isCtrlPressed &&
+                        !ev.isShiftPressed &&
+                        !anyModalBlockingComposerFocus
+                    ) {
+                        when (ev.key) {
+                            Key.DirectionUp -> {
+                                store.selectAdjacentSession(-1)
+                                focusComposerNonce++
+                                return@onPreviewKeyEvent true
+                            }
+                            Key.DirectionDown -> {
+                                store.selectAdjacentSession(+1)
+                                focusComposerNonce++
+                                return@onPreviewKeyEvent true
+                            }
+                            else -> Unit
+                        }
+                    }
                     val cmdOrCtrl = ev.isMetaPressed || ev.isCtrlPressed
-                    if (!cmdOrCtrl) return@onPreviewKeyEvent false
+                    if (!cmdOrCtrl || ev.isAltPressed) return@onPreviewKeyEvent false
+                    if (!ev.isShiftPressed && !anyModalBlockingComposerFocus) {
+                        val quickIndex = when (ev.key) {
+                            Key.One -> 0
+                            Key.Two -> 1
+                            Key.Three -> 2
+                            Key.Four -> 3
+                            Key.Five -> 4
+                            Key.Six -> 5
+                            Key.Seven -> 6
+                            Key.Eight -> 7
+                            Key.Nine -> 8
+                            else -> -1
+                        }
+                        if (quickIndex >= 0) {
+                            store.selectSessionByIndex(quickIndex)
+                            focusComposerNonce++
+                            return@onPreviewKeyEvent true
+                        }
+                        if (ev.key == Key.LeftBracket) {
+                            store.navigateSessionHistory(-1)
+                            focusComposerNonce++
+                            return@onPreviewKeyEvent true
+                        }
+                        if (ev.key == Key.RightBracket) {
+                            store.navigateSessionHistory(+1)
+                            focusComposerNonce++
+                            return@onPreviewKeyEvent true
+                        }
+                    }
                     when {
                         ev.key == Key.F && ev.isShiftPressed -> {
                             openGlobalSearchPalette()
@@ -175,6 +253,7 @@ internal fun DesktopConsoleApp(
                         }
                         ev.key == Key.N && !ev.isShiftPressed -> {
                             store.startNewDraftSession()
+                            focusComposerNonce++
                             true
                         }
                         ev.key == Key.B && !ev.isShiftPressed -> {
@@ -231,7 +310,10 @@ internal fun DesktopConsoleApp(
                     ) {
                         DesktopSidebar(
                             state = state,
-                            onNewSession = store::startNewDraftSession,
+                            onNewSession = {
+                                store.startNewDraftSession()
+                                focusComposerNonce++
+                            },
                             onOpenUsage = {
                                 store.refreshUsageDashboard()
                                 showUsageDialog = true
@@ -239,7 +321,10 @@ internal fun DesktopConsoleApp(
                             onOpenSettings = { showSettingsDialog = true },
                             onCollapseSidebar = { sidebarExpanded = false },
                             onSelectFilter = store::setDrawerEngineFilter,
-                            onSelectSession = store::selectSession,
+                            onSelectSession = { sid ->
+                                store.selectSession(sid)
+                                focusComposerNonce++
+                            },
                             onRefresh = store::refreshHostSessions,
                             onSwitchHost = store::switchPairedHost,
                             onRenameHost = store::renamePairedHost,
@@ -578,10 +663,11 @@ internal fun DesktopConsoleApp(
 
                         DesktopComposer(
                             state = state,
+                            draftKey = state.activeDraftKey,
+                            composerFocusRequester = composerFocusRequester,
                             text = promptText,
                             onTextChange = { next ->
-                                promptText = next
-                                store.updateComposerTextForMentions(next)
+                                store.updateSessionDraft(next)
                             },
                             onOpenWorkspaceDialog = { showWorkspaceDialog = true },
                             onOpenModelPicker = { showModelPicker = true },
@@ -592,9 +678,7 @@ internal fun DesktopConsoleApp(
                                 store.selectMode(next)
                             },
                             onSend = {
-                                val msg = promptText
-                                promptText = ""
-                                store.sendPrompt(msg)
+                                store.sendPrompt(state.activeDraftText)
                             },
                             onCancel = store::cancelActiveTurn,
                             onClearQueuedPrompts = store::clearQueuedPrompts,
@@ -602,7 +686,8 @@ internal fun DesktopConsoleApp(
                             onPasteClipboardImages = { store.pasteImagesFromClipboard(notifyWhenEmpty = false) },
                             onRemoveImage = store::removeAttachedImage,
                             onSelectMentionFile = { relPath ->
-                                promptText = replaceTrailingMention(promptText, relPath)
+                                val replaced = replaceTrailingMention(state.activeDraftText, relPath)
+                                store.updateSessionDraft(replaced, updateMentions = false)
                                 store.dismissMentionSuggestions()
                             },
                             onDismissMention = store::dismissMentionSuggestions,
@@ -633,7 +718,7 @@ internal fun DesktopConsoleApp(
                         onClose = { activeInspectorTab = null },
                         onOpenWorkspaceDialog = { showWorkspaceDialog = true },
                         onPrefillRevisePrompt = { title ->
-                            promptText = "关于方案《$title》，请调整以下部分："
+                            store.updateSessionDraft("关于方案《$title》，请调整以下部分：", updateMentions = false)
                         },
                         store = store,
                     )
@@ -679,7 +764,7 @@ internal fun DesktopConsoleApp(
                                 activeInspectorTab = null
                             },
                             onRevisePlan = { title ->
-                                promptText = "关于方案《$title》，请调整以下部分："
+                                store.updateSessionDraft("关于方案《$title》，请调整以下部分：", updateMentions = false)
                                 activeInspectorTab = null
                             },
                         )
@@ -801,6 +886,23 @@ internal fun DesktopConsoleApp(
                 error = state.inspectedSubagentError,
                 onRefresh = store::refreshInspectedSubagent,
                 onClose = store::closeSubagentInspector,
+            )
+        }
+
+        val activePreview = state.activeFilePreview
+        if (activePreview != null) {
+            DesktopFilePreviewDialog(
+                entry = activePreview,
+                canNavigateBack = state.canNavigateBackFilePreview,
+                onNavigateBack = store::navigateBackFilePreview,
+                onOpenNestedLink = { rawTarget, baseDir ->
+                    store.openLinkedFilePreview(
+                        rawTarget = rawTarget,
+                        baseDirectory = baseDir,
+                        pushToStack = true,
+                    )
+                },
+                onClose = store::closeFilePreview,
             )
         }
     }

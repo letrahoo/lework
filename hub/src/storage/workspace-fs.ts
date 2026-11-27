@@ -7,7 +7,7 @@ import { ErrorCode, type CheckpointInfo, type FsEntry, type SessionWorktreeInfo 
 import { defaultDataDir } from '../platform/index.ts'
 import { HubRpcError, assertNotSensitive, isSensitivePath, resolveAllowedWorkspacePath } from '../security/path-guard.ts'
 
-const MAX_READ_BYTES = 64 * 1024
+const MAX_READ_BYTES = 256 * 1024
 const MAX_DIFF_BYTES = 96 * 1024
 const MAX_DIR_ENTRIES = 120
 const MAX_CHANGED_FILES = 150
@@ -151,20 +151,49 @@ export function listWorkspaceDirectory(dirPath: string, workspaceRoots: string[]
   return { path: realDir, entries }
 }
 
+/**
+ * Returns the read-only root allowlist for `fs.read`.
+ * Includes all configured workspace roots plus safe user knowledge directories
+ * such as `~/.agent-memory` (Concept Memory cards & dashboards) when present,
+ * without adding them to workspace pickers or directory browsing.
+ * `assertNotSensitive` still applies to every symlink-resolved target.
+ */
+export function getReadableFileRoots(workspaceRoots: string[]): string[] {
+  const roots = [...workspaceRoots]
+  const agentMemoryDir = path.join(os.homedir(), '.agent-memory')
+  try {
+    if (fs.statSync(agentMemoryDir).isDirectory()) {
+      roots.push(agentMemoryDir)
+    }
+  } catch {
+    // ~/.agent-memory does not exist on this host
+  }
+  return [...new Set(roots)]
+}
+
+function expandHomeShortcut(filePath: string): string {
+  if (filePath === '~') return os.homedir()
+  if (filePath.startsWith('~/')) {
+    return path.join(os.homedir(), filePath.slice(2))
+  }
+  return filePath
+}
+
 export function readWorkspaceFile(filePath: string, workspaceRoots: string[]): {
   path: string
   content: string
   truncated: boolean
 } {
-  if (!filePath || !path.isAbsolute(filePath) || filePath.split(/[/\\]+/).includes('..')) {
+  const expandedPath = typeof filePath === 'string' ? expandHomeShortcut(filePath.trim()) : ''
+  if (!expandedPath || !path.isAbsolute(expandedPath) || expandedPath.split(/[/\\]+/).includes('..')) {
     throw new HubRpcError(ErrorCode.PathNotAllowed, 'Invalid file path.')
   }
-  const parentDir = path.dirname(filePath)
+  const parentDir = path.dirname(expandedPath)
   resolveAllowedWorkspacePath(parentDir, workspaceRoots)
 
   let realFile: string
   try {
-    realFile = fs.realpathSync(filePath)
+    realFile = fs.realpathSync(expandedPath)
     // Also verify real parent is inside workspaceRoots
     resolveAllowedWorkspacePath(path.dirname(realFile), workspaceRoots)
     assertNotSensitive(realFile)

@@ -103,8 +103,23 @@ private fun MobileConsoleApp(
     var showDiffSheet by remember { mutableStateOf(false) }
     var showArtifactsSheet by remember { mutableStateOf(false) }
     var renamingSessionId by remember { mutableStateOf<String?>(null) }
-    var promptField by remember { mutableStateOf(TextFieldValue("")) }
-    var cursorSyncRequest by remember { mutableStateOf<Triple<Long, String, Int>?>(null) }
+    val activeDraftKey = state.activeDraftKey
+    val activeDraftText = state.activeDraftText
+    var promptField by remember(activeDraftKey) {
+        mutableStateOf(TextFieldValue(text = activeDraftText, selection = TextRange(activeDraftText.length)))
+    }
+    var cursorSyncRequest by remember(activeDraftKey) { mutableStateOf<Triple<Long, String, Int>?>(null) }
+
+    LaunchedEffect(activeDraftKey, activeDraftText) {
+        if (promptField.text != activeDraftText) {
+            cursorSyncRequest = null
+            promptField = TextFieldValue(
+                text = activeDraftText,
+                selection = TextRange(activeDraftText.length),
+                composition = null,
+            )
+        }
+    }
 
     LaunchedEffect(cursorSyncRequest) {
         val req = cursorSyncRequest ?: return@LaunchedEffect
@@ -137,7 +152,8 @@ private fun MobileConsoleApp(
     // Automatically resign software keyboard before any modal bottom sheet or pairing dialog appears
     val anyOverlaySheetOpen =
         showModelSheet || showWorkspaceSheet || showFilesSheet || showUsageSheet || showDiffSheet ||
-            showArtifactsSheet || state.pendingDeepLinkPairing != null || state.inspectedSubagent != null
+            showArtifactsSheet || state.pendingDeepLinkPairing != null ||
+            state.inspectedSubagent != null || state.activeFilePreview != null
     LaunchedEffect(anyOverlaySheetOpen) {
         if (anyOverlaySheetOpen) {
             dismissKeyboard()
@@ -147,11 +163,8 @@ private fun MobileConsoleApp(
     LaunchedEffect(state.unsentDraftToRestore) {
         val restore = state.unsentDraftToRestore
         if (!restore.isNullOrEmpty()) {
-            if (promptField.text.isBlank()) {
-                promptField = TextFieldValue(
-                    text = restore,
-                    selection = TextRange(restore.length),
-                )
+            if (state.activeDraftText.isBlank()) {
+                store.updateSessionDraft(restore, updateMentions = false)
             }
             store.consumeRestoredDraft()
         }
@@ -172,6 +185,12 @@ private fun MobileConsoleApp(
             onSelectPairedHost = store::switchPairedHost,
         )
     } else {
+        CompositionLocalProvider(
+            LocalFileLinkClickHandler provides { rawTarget ->
+                dismissKeyboard()
+                store.openLinkedFilePreview(rawTarget)
+            },
+        ) {
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
@@ -557,7 +576,7 @@ private fun MobileConsoleApp(
                                 cursorSyncRequest = null
                             }
                             promptField = nextField
-                            store.updateComposerTextForMentions(nextField.text, nextField.selection.end)
+                            store.updateSessionDraft(nextField.text, nextField.selection.end)
                         }
                     },
                     onOpenWorkspaceSheet = {
@@ -611,6 +630,7 @@ private fun MobileConsoleApp(
                             composition = null,
                         )
                         cursorSyncRequest = Triple((cursorSyncRequest?.first ?: 0L) + 1L, nextText, nextCursor)
+                        store.updateSessionDraft(nextText, nextCursor, updateMentions = false)
                         store.dismissMentionSuggestions()
                     },
                     onInsertAtMention = {
@@ -624,7 +644,7 @@ private fun MobileConsoleApp(
                             composition = null,
                         )
                         cursorSyncRequest = Triple((cursorSyncRequest?.first ?: 0L) + 1L, nextText, nextCursor)
-                        store.updateComposerTextForMentions(nextText, nextCursor)
+                        store.updateSessionDraft(nextText, nextCursor)
                     },
                     onDismissMention = store::dismissMentionSuggestions,
                 )
@@ -748,6 +768,7 @@ private fun MobileConsoleApp(
                     onRevisePlan = { title ->
                         val prefix = "关于方案《$title》，请调整以下部分："
                         promptField = TextFieldValue(prefix, TextRange(prefix.length))
+                        store.updateSessionDraft(prefix, prefix.length, updateMentions = false)
                         showArtifactsSheet = false
                     },
                 )
@@ -764,6 +785,31 @@ private fun MobileConsoleApp(
                 onRefresh = store::refreshInspectedSubagent,
                 onClose = store::closeSubagentInspector,
             )
+        }
+
+        val activePreview = state.activeFilePreview
+        if (activePreview != null) {
+            ModalBottomSheet(
+                onDismissRequest = store::closeFilePreview,
+                containerColor = Everforest.Bg1,
+                contentColor = Everforest.Fg,
+            ) {
+                FileLinkPreviewContent(
+                    entry = activePreview,
+                    canNavigateBack = state.canNavigateBackFilePreview,
+                    showCloseButton = false,
+                    onNavigateBack = store::navigateBackFilePreview,
+                    onOpenNestedLink = { rawTarget, baseDir ->
+                        store.openLinkedFilePreview(
+                            rawTarget = rawTarget,
+                            baseDirectory = baseDir,
+                            pushToStack = true,
+                        )
+                    },
+                    onClose = store::closeFilePreview,
+                )
+            }
+        }
         }
     }
 

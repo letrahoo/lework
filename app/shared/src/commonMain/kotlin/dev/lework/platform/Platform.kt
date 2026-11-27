@@ -170,6 +170,8 @@ expect fun savePinnedHubFingerprints(fingerprints: Set<String>)
 expect fun loadSessionPrefs(): SavedSessionPrefs
 expect fun saveSessionPrefs(prefs: SavedSessionPrefs)
 expect fun openExternalUrl(url: String)
+expect fun canOpenLocalFileExternally(path: String): Boolean
+expect fun openLocalFileExternally(path: String): Boolean
 expect fun copyTextToClipboard(text: String): Boolean
 expect fun readTextFromClipboard(): String?
 expect fun readImagesFromClipboard(maxCount: Int = 4): List<PickedImagePayload>

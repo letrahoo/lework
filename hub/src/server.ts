@@ -51,6 +51,7 @@ import { SessionManager } from './session-manager.ts'
 import type { HostTaskInspector } from './storage/host-history.ts'
 import {
   getManagedWorktreesRoot,
+  getReadableFileRoots,
   inspectWorkspaceGitStatus,
   listWorkspaceDirectory,
   readWorkspaceFile,
@@ -1028,7 +1029,7 @@ export class HubServer {
       }
       case 'fs.read': {
         const p = params as { path: string }
-        return readWorkspaceFile(p.path, this.effectiveWorkspaceRoots())
+        return readWorkspaceFile(p.path, getReadableFileRoots(this.effectiveWorkspaceRoots()))
       }
       case 'session.list': {
         const p = (params ?? {}) as { engineId?: string }

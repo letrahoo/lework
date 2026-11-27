@@ -653,12 +653,25 @@ internal fun WorkspaceFileTreeSheet(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 if (ext == "md" || ext == "markdown") {
-                    Column(
-                        modifier = Modifier
-                            .padding(14.dp)
-                            .verticalScroll(rememberScrollState()),
+                    val parentHandler = LocalFileLinkClickHandler.current
+                    val fileBaseDir = remember(filePath) { dev.lework.store.parentDirectoryOf(filePath) }
+                    CompositionLocalProvider(
+                        LocalFileLinkClickHandler provides parentHandler?.let { handler ->
+                            { target ->
+                                val resolved = dev.lework.store.parseLocalFileLink(target)?.let { parsed ->
+                                    dev.lework.store.resolveLocalFilePath(parsed.path, fileBaseDir)
+                                } ?: target
+                                handler(resolved)
+                            }
+                        },
                     ) {
-                        EverforestMarkdownContent(markdown = content)
+                        Column(
+                            modifier = Modifier
+                                .padding(14.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            EverforestMarkdownContent(markdown = content)
+                        }
                     }
                 } else {
                     val highlightedFile = remember(content, ext) {
