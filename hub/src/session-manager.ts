@@ -72,6 +72,7 @@ interface ManagedSession {
   baseSeq: number
   queuedTurns: QueuedTurnItem[]
   turnGeneration: number
+  cancelInFlight?: Promise<void>
   cancelled?: boolean
   closed?: boolean
   nativeId?: string
@@ -601,6 +602,12 @@ export class SessionManager {
     if (!managed) {
       throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
     }
+    while (managed.cancelInFlight) {
+      await managed.cancelInFlight.catch(() => undefined)
+      if (managed.closed || !this.sessions.has(sessionId)) {
+        throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+      }
+    }
     if (managed.meta.state === 'waiting_permission') {
       throw new HubRpcError(ErrorCode.Conflict, '当前会话正在等待权限确认，请先完成审批后再发送。')
     }
@@ -631,7 +638,7 @@ export class SessionManager {
       )
     }
 
-    if (managed.meta.state === 'running' && !managed.cancelled) {
+    if (managed.meta.state === 'running') {
       if (managed.queuedTurns.length >= 8) {
         throw new HubRpcError(ErrorCode.Conflict, '待执行消息队列已满（最多 8 条），请等待当前轮次完成。')
       }
@@ -907,22 +914,33 @@ export class SessionManager {
     req.meta.queuedPrompts = undefined
     req.meta.liveStatusText = undefined
     req.meta.turnStartedAt = undefined
-    await req.handle.cancel()
-    if (req.closed || !this.sessions.has(sessionId) || req.turnGeneration !== cancelGen) {
-      return
-    }
-    req.meta.queuedPrompts = undefined
-    const lastEv = req.events[req.events.length - 1]
-    if (!lastEv || lastEv.type !== 'session.state' || lastEv.state !== 'idle') {
-      this.appendEvent(req, { type: 'session.state', state: 'idle' })
-    } else {
-      req.meta.state = 'idle'
-      req.meta.liveStatusText = undefined
-      req.meta.turnStartedAt = undefined
-      req.meta.updatedAt = Date.now()
-      req.meta = this.decorateManagedMeta(req)
-      this.callbacks.onSessionUpdated(req.meta)
-    }
+    let task!: Promise<void>
+    task = (async () => {
+      try {
+        await req.handle.cancel()
+        if (req.closed || !this.sessions.has(sessionId) || req.turnGeneration !== cancelGen) {
+          return
+        }
+        req.meta.queuedPrompts = undefined
+        const lastEv = req.events[req.events.length - 1]
+        if (!lastEv || lastEv.type !== 'session.state' || lastEv.state !== 'idle') {
+          this.appendEvent(req, { type: 'session.state', state: 'idle' })
+        } else {
+          req.meta.state = 'idle'
+          req.meta.liveStatusText = undefined
+          req.meta.turnStartedAt = undefined
+          req.meta.updatedAt = Date.now()
+          req.meta = this.decorateManagedMeta(req)
+          this.callbacks.onSessionUpdated(req.meta)
+        }
+      } finally {
+        if (req.cancelInFlight === task) {
+          req.cancelInFlight = undefined
+        }
+      }
+    })()
+    req.cancelInFlight = task
+    await task
   }
 
   cancelQueuedPrompt(

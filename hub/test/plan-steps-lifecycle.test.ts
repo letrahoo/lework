@@ -729,12 +729,13 @@ describe('Execution steps lifecycle & turn hygiene across Hub and host history',
     })
   })
 
-  it('SessionManager.cancel() skips late idle event if a new turn superseded turnGeneration while cancelling', async () => {
+  it('SessionManager.prompt() drains in-flight cancel() before starting Turn 2 and clears Turn 1 cancelled plan', async () => {
     const isolatedHome = mkTmpDir()
     process.env.LEWORK_HOME = isolatedHome
     const wsDir = mkTmpDir()
 
     let emitFn: ((ev: AgentEventBody) => void) | null = null
+    const timeline: string[] = []
     const deferred: {
       resolveCancel: (() => void) | null
       resolveTurn1: (() => void) | null
@@ -767,10 +768,18 @@ describe('Execution steps lifecycle & turn hygiene across Hub and host history',
             return {
               sessionId: init.sessionId,
               cwd: init.cwd,
-              prompt: async () => {
+              prompt: async (_turnId: string, text: string) => {
                 turnNumber++
+                timeline.push(`prompt:start:${turnNumber}:${text}`)
                 emitFn?.({ type: 'session.state', state: 'running' })
                 if (turnNumber === 1) {
+                  emitFn?.({
+                    type: 'plan.updated',
+                    entries: [
+                      { content: 'Turn 1 Step 1', status: 'completed' },
+                      { content: 'Turn 1 Step 2', status: 'in_progress' },
+                    ],
+                  })
                   await new Promise<void>(r => {
                     deferred.resolveTurn1 = r
                   })
@@ -781,10 +790,12 @@ describe('Execution steps lifecycle & turn hygiene across Hub and host history',
                 }
               },
               cancel: async () => {
+                timeline.push('cancel:start')
                 deferred.resolveTurn1?.()
                 await new Promise<void>(r => {
                   deferred.resolveCancel = r
                 })
+                timeline.push('cancel:done')
               },
               respondPermission: async () => {},
               close: async () => {
@@ -807,17 +818,119 @@ describe('Execution steps lifecycle & turn hygiene across Hub and host history',
       await sm.prompt(sess.id, 'Turn 1')
       // Begin cancel(), suspending inside req.handle.cancel()
       const cancelPromise = sm.cancel(sess.id)
-      // Before cancel resolves, a brand new Turn 2 starts and advances turnGeneration
-      await sm.prompt(sess.id, 'Turn 2')
-      expect(sm.getSessionMeta(sess.id)?.state).toBe('running')
+      // Immediately dispatch Turn 2 while cancel() is still suspended
+      const turn2PromptPromise = sm.prompt(sess.id, 'Turn 2')
+      await new Promise(r => setTimeout(r, 25))
 
-      // Now the stale cancel() resolves -> must NOT emit idle or clobber Turn 2's running state!
+      // Zero concurrent overlap: handle.prompt(Turn 2) MUST NOT have started yet!
+      expect(timeline).toEqual(['prompt:start:1:Turn 1', 'cancel:start'])
+
+      // Resolve cancel -> cancel records session.state('idle'), then Turn 2 begins cleanly
       deferred.resolveCancel?.()
       await cancelPromise
+      await turn2PromptPromise
+
+      expect(timeline).toEqual([
+        'prompt:start:1:Turn 1',
+        'cancel:start',
+        'cancel:done',
+        'prompt:start:2:Turn 2',
+      ])
       expect(sm.getSessionMeta(sess.id)?.state).toBe('running')
+
       const snap = sm.subscribeSnapshot(sess.id, -1)
-      expect(snap.events.at(-1)).toMatchObject({ type: 'session.state', state: 'running' })
+      // Turn 1's idle boundary was recorded BEFORE Turn 2's message.user, clearing Turn 1's stale plan!
+      const idleIdx = snap.events.findIndex(e => e.type === 'session.state' && e.state === 'idle')
+      const turn2UserIdx = snap.events.findIndex(e => e.type === 'message.user' && e.text === 'Turn 2')
+      expect(idleIdx).toBeGreaterThanOrEqual(0)
+      expect(turn2UserIdx).toBeGreaterThan(idleIdx)
+      expect(snap.latestPlan).toBeUndefined()
     } finally {
+      await sm.closeAll()
+    }
+  })
+
+  it('SessionManager.cancel() skips late idle event when superseded by another cancel or session close', async () => {
+    const isolatedHome = mkTmpDir()
+    process.env.LEWORK_HOME = isolatedHome
+    const wsDir = mkTmpDir()
+
+    const emittedEvents: AgentEvent[] = []
+    const cancelResolvers: Array<() => void> = []
+    let resolveTurn1: (() => void) | null = null
+
+    const sm = new SessionManager(
+      [wsDir],
+      [
+        {
+          id: 'claude',
+          displayName: 'Claude Code',
+          kind: 'cli',
+          probe: async () => ({ installed: true, ready: true }),
+          capabilities: () => ({
+            permissions: true,
+            images: true,
+            modelSwitch: true,
+            modes: true,
+            history: true,
+            cancel: true,
+          }),
+          openSession: async init => ({
+            sessionId: init.sessionId,
+            cwd: init.cwd,
+            prompt: async () => {
+              init.emit({ type: 'session.state', state: 'running' })
+              await new Promise<void>(r => {
+                resolveTurn1 = r
+              })
+            },
+            cancel: async () => {
+              resolveTurn1?.()
+              await new Promise<void>(r => {
+                cancelResolvers.push(r)
+              })
+            },
+            respondPermission: async () => {},
+            close: async () => {
+              resolveTurn1?.()
+            },
+          }),
+        },
+      ],
+      {
+        onEvent: ev => emittedEvents.push(ev),
+        onSessionUpdated: () => {},
+      },
+    )
+
+    try {
+      // Case 1: Superseding cancel() advances turnGeneration; only the latest cancel emits idle
+      const s1 = await sm.createSession({ engineId: 'claude', cwd: wsDir })
+      await sm.prompt(s1.id, 'Turn 1')
+      const firstCancel = sm.cancel(s1.id)
+      const secondCancel = sm.cancel(s1.id)
+      expect(cancelResolvers).toHaveLength(2)
+
+      // Resolving the stale first cancel must NOT emit idle
+      cancelResolvers[0]!()
+      await firstCancel
+      expect(emittedEvents.filter(e => e.sessionId === s1.id && e.type === 'session.state' && e.state === 'idle')).toHaveLength(0)
+
+      // Resolving the active second cancel emits exactly one idle event
+      cancelResolvers[1]!()
+      await secondCancel
+      expect(emittedEvents.filter(e => e.sessionId === s1.id && e.type === 'session.state' && e.state === 'idle')).toHaveLength(1)
+
+      // Case 2: Closing session while cancel() is suspended suppresses late idle emission
+      const s2 = await sm.createSession({ engineId: 'claude', cwd: wsDir })
+      await sm.prompt(s2.id, 'Turn 1')
+      const hangingCancel = sm.cancel(s2.id)
+      await sm.closeSession(s2.id)
+      cancelResolvers[2]!()
+      await hangingCancel
+      expect(emittedEvents.filter(e => e.sessionId === s2.id && e.type === 'session.state' && e.state === 'idle')).toHaveLength(0)
+    } finally {
+      for (const r of cancelResolvers) r()
       await sm.closeAll()
     }
   })
