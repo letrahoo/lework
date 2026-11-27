@@ -56,6 +56,9 @@ object JvmPlatformTestHooks {
     var sshConnectSupported: Boolean = false
     var sshConfigHosts: List<String> = emptyList()
     var nextSshPairingResult: Result<String> = Result.failure(IllegalStateException("No mock SSH pairing configured"))
+    var globalCliStatus: GlobalCliInstallStatus = GlobalCliInstallStatus(supported = false)
+    var onInstallGlobalCli: (() -> Result<GlobalCliInstallStatus>)? = null
+    var onUninstallGlobalCli: (() -> Result<GlobalCliInstallStatus>)? = null
     val runtimeLogs = mutableListOf<String>()
     var fakeRuntimeLogPath: String? = null
 
@@ -123,6 +126,9 @@ object JvmPlatformTestHooks {
         sshConnectSupported = false
         sshConfigHosts = emptyList()
         nextSshPairingResult = Result.failure(IllegalStateException("No mock SSH pairing configured"))
+        globalCliStatus = GlobalCliInstallStatus(supported = false)
+        onInstallGlobalCli = null
+        onUninstallGlobalCli = null
         synchronized(runtimeLogs) { runtimeLogs.clear() }
         fakeRuntimeLogPath = null
     }
@@ -276,6 +282,29 @@ actual suspend fun requestSshHostPairingLink(sshTarget: String): Result<String> 
         JvmDesktopRuntime.requestSshPairingLink(sshTarget)
     } else {
         JvmPlatformTestHooks.nextSshPairingResult
+    }
+
+actual fun inspectGlobalCliStatus(): GlobalCliInstallStatus =
+    if (JvmDesktopRuntime.isEnabled) {
+        DesktopCliInstaller.inspectStatus()
+    } else {
+        JvmPlatformTestHooks.globalCliStatus
+    }
+
+actual suspend fun installGlobalCliCommand(): Result<GlobalCliInstallStatus> =
+    if (JvmDesktopRuntime.isEnabled) {
+        DesktopCliInstaller.install()
+    } else {
+        JvmPlatformTestHooks.onInstallGlobalCli?.invoke()
+            ?: Result.success(JvmPlatformTestHooks.globalCliStatus)
+    }
+
+actual suspend fun uninstallGlobalCliCommand(): Result<GlobalCliInstallStatus> =
+    if (JvmDesktopRuntime.isEnabled) {
+        DesktopCliInstaller.uninstall()
+    } else {
+        JvmPlatformTestHooks.onUninstallGlobalCli?.invoke()
+            ?: Result.success(JvmPlatformTestHooks.globalCliStatus.copy(installed = false, installedPath = null))
     }
 
 actual fun loadPinnedHubFingerprints(): Set<String> =

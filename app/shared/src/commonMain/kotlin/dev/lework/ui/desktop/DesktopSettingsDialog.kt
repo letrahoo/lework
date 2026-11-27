@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,10 +26,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import dev.lework.platform.GlobalCliInstallStatus
 import dev.lework.platform.PairedHost
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.copyTextToClipboard
+import dev.lework.platform.inspectGlobalCliStatus
+import dev.lework.platform.installGlobalCliCommand
 import dev.lework.platform.runtimeLogFilePath
+import dev.lework.platform.uninstallGlobalCliCommand
 import dev.lework.protocol.ProviderConfigInput
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.EngineGlyphIcon
@@ -38,6 +43,7 @@ import dev.lework.ui.RenameHostDialog
 import dev.lework.ui.connectionChannelLabel
 import dev.lework.ui.dialogEscapeDismiss
 import dev.lework.ui.shortEngineLabel
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun DesktopSettingsDialog(
@@ -52,13 +58,68 @@ internal fun DesktopSettingsDialog(
     onUpsertProvider: (ProviderConfigInput, onSuccess: () -> Unit) -> Unit = { _, _ -> },
     onRemoveProvider: (providerId: String) -> Unit = {},
     onClearProviderFeedback: () -> Unit = {},
+    autoInstallGlobalCliNonce: Int = 0,
     onLogout: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     var copiedFingerprint by remember { mutableStateOf(false) }
     var copiedLogPath by remember { mutableStateOf(false) }
+    var copiedPathExport by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
+    var cliStatus by remember { mutableStateOf(inspectGlobalCliStatus()) }
+    var cliBusy by remember { mutableStateOf(false) }
+    var cliFeedback by remember { mutableStateOf<String?>(null) }
+    var cliFeedbackIsError by remember { mutableStateOf(false) }
     val onlineCount = state.engines.count { it.status.ready }
     val logPath = remember { runtimeLogFilePath() }
+
+    fun triggerGlobalCliInstall() {
+        if (cliBusy) return
+        cliBusy = true
+        cliFeedback = null
+        cliFeedbackIsError = false
+        copiedPathExport = false
+        scope.launch {
+            val result = installGlobalCliCommand()
+            result.onSuccess { next ->
+                cliStatus = next
+                cliFeedback = next.detail ?: "已注册全局 lework 命令"
+                cliFeedbackIsError = false
+            }.onFailure { err ->
+                cliStatus = inspectGlobalCliStatus()
+                cliFeedback = err.message ?: "注册全局 lework 命令失败"
+                cliFeedbackIsError = true
+            }
+            cliBusy = false
+        }
+    }
+
+    fun triggerGlobalCliUninstall() {
+        if (cliBusy) return
+        cliBusy = true
+        cliFeedback = null
+        cliFeedbackIsError = false
+        copiedPathExport = false
+        scope.launch {
+            val result = uninstallGlobalCliCommand()
+            result.onSuccess { next ->
+                cliStatus = next
+                cliFeedback = "已移除全局 lework 命令链接"
+                cliFeedbackIsError = false
+            }.onFailure { err ->
+                cliStatus = inspectGlobalCliStatus()
+                cliFeedback = err.message ?: "移除全局 lework 命令失败"
+                cliFeedbackIsError = true
+            }
+            cliBusy = false
+        }
+    }
+
+    LaunchedEffect(autoInstallGlobalCliNonce) {
+        if (autoInstallGlobalCliNonce > 0 && cliStatus.supported) {
+            triggerGlobalCliInstall()
+        }
+    }
 
     ModalEscapeEffect(onDismiss = onDismiss)
 
@@ -443,6 +504,22 @@ internal fun DesktopSettingsDialog(
                         }
                     }
 
+                    if (cliStatus.supported) {
+                        DesktopGlobalCliSection(
+                            status = cliStatus,
+                            busy = cliBusy,
+                            feedback = cliFeedback,
+                            feedbackIsError = cliFeedbackIsError,
+                            copiedPathExport = copiedPathExport,
+                            onInstall = ::triggerGlobalCliInstall,
+                            onUninstall = ::triggerGlobalCliUninstall,
+                            onCopyPathExport = { exportLine ->
+                                copyTextToClipboard(exportLine)
+                                copiedPathExport = true
+                            },
+                        )
+                    }
+
                     if (!logPath.isNullOrBlank()) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -574,6 +651,201 @@ private fun DesktopShortcutRow(
                 fontFamily = FontFamily.Monospace,
                 color = Everforest.BoldGold,
             )
+        }
+    }
+}
+
+@Composable
+private fun DesktopGlobalCliSection(
+    status: GlobalCliInstallStatus,
+    busy: Boolean,
+    feedback: String?,
+    feedbackIsError: Boolean,
+    copiedPathExport: Boolean,
+    onInstall: () -> Unit,
+    onUninstall: () -> Unit,
+    onCopyPathExport: (String) -> Unit,
+) {
+    val badgeBg = when {
+        status.installed && status.inShellPath -> Everforest.BgGreen
+        status.installed -> Everforest.Bg2
+        else -> Everforest.Bg1
+    }
+    val badgeBorder = when {
+        status.installed && status.inShellPath -> Everforest.Green.copy(alpha = 0.35f)
+        status.installed -> Everforest.BoldGold.copy(alpha = 0.45f)
+        else -> Everforest.Bg3
+    }
+    val badgeColor = when {
+        status.installed && status.inShellPath -> Everforest.Green
+        status.installed -> Everforest.BoldGold
+        else -> Everforest.Grey0
+    }
+    val badgeText = when {
+        status.installed && status.inShellPath -> "已注册"
+        status.installed -> "需配置 PATH"
+        else -> "未注册"
+    }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = Everforest.Bg0,
+        border = BorderStroke(1.dp, Everforest.Bg2),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("settings_global_cli_section"),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Terminal,
+                        contentDescription = null,
+                        tint = Everforest.BoldGold,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = "全局命令行工具 (lework)",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Everforest.Fg,
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = badgeBg,
+                    border = BorderStroke(1.dp, badgeBorder),
+                ) {
+                    Text(
+                        text = badgeText,
+                        fontSize = 11.sp,
+                        color = badgeColor,
+                        modifier = Modifier
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                            .testTag("settings_global_cli_badge"),
+                    )
+                }
+            }
+
+            Text(
+                text = "注册后可在任意终端直接执行 lework tsnet status、lework pair、lework serve 等命令，无需手动运行 node hub。",
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp,
+                color = Everforest.Grey1,
+            )
+
+            status.installedPath?.takeIf { it.isNotBlank() }?.let { path ->
+                Text(
+                    text = "命令路径：$path",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Everforest.Grey2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.testTag("settings_global_cli_path"),
+                )
+            }
+
+            if (status.installed && !status.inShellPath) {
+                val dir = status.installDirectory?.takeIf { it.isNotBlank() }
+                if (dir != null) {
+                    val exportLine = "export PATH=\"$dir:\$PATH\""
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = exportLine,
+                            fontSize = 10.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = Everforest.BoldGold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = if (copiedPathExport) "已复制" else "复制 PATH 配置",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Everforest.Green,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onCopyPathExport(exportLine) }
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .testTag("settings_btn_copy_cli_path_export"),
+                        )
+                    }
+                }
+            }
+
+            val feedbackText = feedback?.takeIf { it.isNotBlank() }
+                ?: status.detail?.takeIf { !status.installed && it.isNotBlank() }
+            if (feedbackText != null) {
+                val feedbackColor = when {
+                    feedbackIsError -> Everforest.Red
+                    !feedback.isNullOrBlank() -> Everforest.Green
+                    else -> Everforest.Grey1
+                }
+                Text(
+                    text = feedbackText,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    color = feedbackColor,
+                    modifier = Modifier.testTag("settings_global_cli_feedback"),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(
+                    onClick = onInstall,
+                    enabled = !busy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (status.installed && status.inShellPath) Everforest.Bg2 else Everforest.BgGreen,
+                        contentColor = if (status.installed && status.inShellPath) Everforest.Fg else Everforest.Green,
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.testTag("settings_btn_install_global_cli"),
+                ) {
+                    Text(
+                        text = when {
+                            busy -> "正在处理…"
+                            status.installed && status.inShellPath -> "重新注册命令"
+                            else -> "注册全局 lework 命令"
+                        },
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                if (status.installed) {
+                    TextButton(
+                        onClick = onUninstall,
+                        enabled = !busy,
+                        modifier = Modifier.testTag("settings_btn_uninstall_global_cli"),
+                    ) {
+                        Text(
+                            text = "移除命令",
+                            fontSize = 12.sp,
+                            color = Everforest.Grey1,
+                        )
+                    }
+                }
+            }
         }
     }
 }
