@@ -1328,6 +1328,7 @@ private fun DesktopSidebarViewBar(
                     runningCount = runningCount,
                     active = onlyRunning,
                     onClick = onToggleOnlyRunning,
+                    modifier = Modifier.height(22.dp),
                 )
             }
             if (showCollapseAll) {
@@ -1365,6 +1366,7 @@ private fun DesktopProjectGroupHeader(
             .background(if (hovered) Everforest.Bg1.copy(alpha = 0.85f) else Color.Transparent)
             .hoverable(hoverSource)
             .clickable(interactionSource = hoverSource, indication = null, onClick = onToggleCollapse)
+            .heightIn(min = 28.dp)
             .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
             .testTag("project_group_header_${group.key}"),
         verticalAlignment = Alignment.CenterVertically,
@@ -1382,21 +1384,25 @@ private fun DesktopProjectGroupHeader(
             tint = if (group.isFallback) Everforest.Grey1 else Everforest.Aqua.copy(alpha = 0.88f),
             modifier = Modifier.size(13.5.dp),
         )
-        LeworkTooltip(
-            label = group.displayName,
-            subtitle = group.compactPath.ifEmpty { "未关联特定项目目录" },
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.CenterStart,
         ) {
-            Text(
-                text = group.displayName,
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = if (group.isFallback) Everforest.Grey1 else Everforest.HeadingWarm,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
+            LeworkTooltip(
+                label = group.displayName,
+                subtitle = group.compactPath.ifEmpty { "未关联特定项目目录" },
+            ) {
+                Text(
+                    text = group.displayName,
+                    fontSize = 11.5.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (group.isFallback) Everforest.Grey1 else Everforest.HeadingWarm,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
-        Spacer(Modifier.weight(1f))
         SidebarHeaderActivityBadges(
             runningCount = group.runningCount,
             waitingCount = group.waitingPermissionCount,
@@ -1409,25 +1415,37 @@ private fun DesktopProjectGroupHeader(
                     .background(Everforest.SoftRed),
             )
         }
-        if (showNewSessionButton && hovered) {
-            LeworkIconActionButton(
-                icon = Icons.Rounded.Add,
-                tooltip = "在 ${group.displayName} 中新建会话",
-                idleTint = Everforest.Grey1,
-                hoverTint = Everforest.Green,
-                size = 20.dp,
-                iconSize = 13.5.dp,
-                testTag = "project_group_new_${group.key}",
-                onClick = onNewSessionInProject,
-            )
-        } else {
-            Text(
-                text = "${group.sessions.size}",
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
-                color = Everforest.CommentGrey,
-                modifier = Modifier.padding(horizontal = 3.dp),
-            )
+        Box(
+            modifier = Modifier
+                .height(20.dp)
+                .widthIn(min = 20.dp),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            if (showNewSessionButton && hovered) {
+                LeworkIconActionButton(
+                    icon = Icons.Rounded.Add,
+                    tooltip = "在 ${group.displayName} 中新建会话",
+                    idleTint = Everforest.Grey1,
+                    hoverTint = Everforest.Green,
+                    size = 20.dp,
+                    iconSize = 13.5.dp,
+                    testTag = "project_group_new_${group.key}",
+                    onClick = onNewSessionInProject,
+                )
+            } else {
+                Text(
+                    text = "${group.sessions.size}",
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Everforest.CommentGrey,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                        .padding(horizontal = 3.dp)
+                        .testTag("project_group_count_${group.key}"),
+                )
+            }
         }
     }
 }

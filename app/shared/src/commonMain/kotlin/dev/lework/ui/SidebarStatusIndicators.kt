@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -286,10 +287,13 @@ internal fun SidebarHeaderActivityBadges(
                 Text(
                     text = "! $waitingCount",
                     fontSize = 9.5.sp,
+                    lineHeight = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                     fontFamily = FontFamily.Monospace,
                     color = Everforest.BoldGold,
-                    modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 1.dp),
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 2.dp),
                 )
             }
         }
@@ -300,7 +304,7 @@ internal fun SidebarHeaderActivityBadges(
                 border = BorderStroke(0.8.dp, Everforest.CodeGreen.copy(alpha = 0.34f)),
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 1.5.dp),
+                    modifier = Modifier.padding(horizontal = 5.5.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(3.5.dp),
                 ) {
@@ -312,9 +316,12 @@ internal fun SidebarHeaderActivityBadges(
                     Text(
                         text = "$runningCount",
                         fontSize = 9.5.sp,
+                        lineHeight = 13.sp,
                         fontWeight = FontWeight.SemiBold,
                         fontFamily = FontFamily.Monospace,
                         color = Everforest.CodeGreen,
+                        maxLines = 1,
+                        softWrap = false,
                     )
                 }
             }
@@ -341,12 +348,13 @@ internal fun SidebarRunningFilterPill(
         color = containerColor,
         border = BorderStroke(1.dp, borderColor),
         modifier = modifier
+            .heightIn(min = 22.dp)
             .clip(RoundedCornerShape(999.dp))
             .clickable(onClick = onClick)
             .testTag("drawer_btn_filter_running"),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.5.dp),
         ) {
@@ -361,8 +369,11 @@ internal fun SidebarRunningFilterPill(
             Text(
                 text = if (runningCount > 0) "$runningCount 进行中" else "仅看进行中",
                 fontSize = 10.sp,
+                lineHeight = 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = contentColor,
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }
