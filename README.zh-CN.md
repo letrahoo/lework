@@ -67,6 +67,8 @@ lework pair
 lework tsnet login
 ```
 
+在内置 Pi 会话中，输入 `/skills` 可查看当前 Hub 主机 `~/.agents/skills` 下已安装的技能，输入 `/skill 技能名` 可阅读其 `SKILL.md`。每次查询都会重新扫描或读取，同一会话也能看到新安装的技能。结果显示在会话记录中，不会自动发给模型、运行脚本或授予业务权限；不是让模型执行技能的命令。
+
 ### 2. 客户端
 
 可直接从 [GitHub Releases](https://github.com/letrahoo/lework/releases) 下载 **macOS Desktop (`.dmg`)** 与 **Android (`.apk`)** 安装包，或从源码构建（需 **JDK 17**）：

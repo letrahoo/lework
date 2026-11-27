@@ -67,6 +67,8 @@ lework pair
 lework tsnet login
 ```
 
+In an embedded Pi session, use `/skills` to list skills installed in the connected Hub's `~/.agents/skills`, or `/skill NAME` to read its `SKILL.md`. Each lookup reads the current installation, even in an existing session. Results appear in the session transcript; these commands do not send guides to the model, execute scripts, or grant permissions.
+
 ### 2. Clients
 
 Pre-built **macOS Desktop (`.dmg`)** and **Android (`.apk`)** binaries are published in [GitHub Releases](https://github.com/letrahoo/lework/releases).
