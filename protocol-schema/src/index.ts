@@ -280,6 +280,7 @@ export const SessionMeta = z.object({
   workspaces: z.array(z.string()).optional(),
   worktree: SessionWorktreeInfo.optional(),
   title: z.string(),
+  autoTitle: z.string().optional(),
   customTitle: z.string().optional(),
   archived: z.boolean().optional(),
   archivedAt: z.number().int().optional(),
@@ -815,6 +816,10 @@ export const Methods = {
   },
   'session.rename': {
     params: z.object({ sessionId: z.string().min(1).max(256), title: z.string().max(160) }),
+    result: z.object({ session: SessionMeta }),
+  },
+  'session.regenerateTitle': {
+    params: z.object({ sessionId: z.string().min(1).max(256) }),
     result: z.object({ session: SessionMeta }),
   },
   'session.archive': {

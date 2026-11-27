@@ -45,6 +45,12 @@ import { ConversationSearchIndex, type SearchableSessionSource } from './storage
 import { extractLatestPlanFromEvents } from './storage/host-history/plan-steps.ts'
 import { SessionMetadataStore } from './storage/session-metadata.ts'
 import {
+  extractSessionTitleSignals,
+  generateHeuristicSessionTitle,
+  generateLlmSessionTitle,
+  shouldAttemptAutoTitleRefresh,
+} from './storage/session-title.ts'
+import {
   CheckpointManager,
   cleanupSessionWorktree,
   createSessionWorktree,
@@ -97,6 +103,12 @@ export class SessionManager {
   private readonly hostInspector: HostTaskInspector
   private readonly searchIndex = new ConversationSearchIndex()
   private archivedAttachmentSweepTimer: ReturnType<typeof setInterval> | null = null
+  private titleBackfillTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly titleRefreshInFlight = new Set<string>()
+  private readonly titleAbortControllers = new Set<AbortController>()
+  private titleActiveLlmCount = 0
+  private readonly titlePendingQueue: string[] = []
+  private closedAll = false
 
   constructor(
     private readonly workspaceRoots: string[],
@@ -116,7 +128,11 @@ export class SessionManager {
       },
       onSessionUpdated: (meta: SessionMeta) => {
         if (!this.isSupersededByHubSession(meta.id)) {
-          this.callbacks.onSessionUpdated(this.metaStore.applyToMeta(meta))
+          const decorated = this.metaStore.applyToMeta(meta)
+          this.callbacks.onSessionUpdated(decorated)
+          if (meta.state === 'idle' && !decorated.customTitle) {
+            this.scheduleAutoTitleRefresh(meta.id)
+          }
         }
       },
     }
@@ -847,11 +863,43 @@ export class SessionManager {
       ...(stagedImages.length > 0 ? { imageCount: stagedImages.length } : {}),
       ...(previews.length > 0 ? { imagePreviews: previews } : {}),
     })
-    if (managed.meta.lastSeq <= 2 && managed.autoTitle.includes(' · ')) {
-      managed.autoTitle =
-        displayUserText.slice(0, 48).replace(/\s+/g, ' ').trim() || managed.autoTitle
-      managed.meta = this.decorateManagedMeta(managed)
-      this.callbacks.onSessionUpdated(managed.meta)
+    const existingRec = this.metaStore.get(sessionId)
+    if (!existingRec?.customTitle) {
+      const heuristic = generateHeuristicSessionTitle(
+        managed.meta,
+        managed.events,
+        this.hostInspector.getHomeDir(),
+      )
+      if (heuristic && (!existingRec?.autoTitle || existingRec.autoTitleSource !== 'llm')) {
+        managed.autoTitle = heuristic.title
+        const hostAliasId =
+          managed.nativeId && !sessionId.startsWith('host:')
+            ? `host:${managed.meta.engineId}:${managed.nativeId}`
+            : undefined
+        const hostEntry = sessionId.startsWith('host:')
+          ? this.hostInspector.getHostSession(sessionId)
+          : hostAliasId
+            ? this.hostInspector.getHostSession(hostAliasId)
+            : undefined
+        this.metaStore.setAutoTitle(
+          sessionId,
+          heuristic.title,
+          { source: 'heuristic', signalCount: heuristic.signals.signalCount },
+          {
+            hostAliasId,
+            filePath: hostEntry?.filePath,
+            nativeId: hostEntry?.nativeId ?? managed.nativeId,
+            baseMeta: hostEntry?.meta ?? managed.meta,
+          },
+        )
+        managed.meta = this.decorateManagedMeta(managed)
+        this.callbacks.onSessionUpdated(managed.meta)
+      } else if (managed.meta.lastSeq <= 2 && managed.autoTitle.includes(' · ')) {
+        managed.autoTitle =
+          displayUserText.slice(0, 48).replace(/\s+/g, ' ').trim() || managed.autoTitle
+        managed.meta = this.decorateManagedMeta(managed)
+        this.callbacks.onSessionUpdated(managed.meta)
+      }
     }
 
     // Auto-snapshot working tree right before launching a new turn so the user can always roll back
@@ -924,6 +972,9 @@ export class SessionManager {
           managed.meta.turnStartedAt = undefined
           managed.meta = this.decorateManagedMeta(managed)
           this.callbacks.onSessionUpdated(managed.meta)
+        }
+        if (!turnHadError && !managed.cancelled) {
+          this.scheduleAutoTitleRefresh(sessionId)
         }
       })
   }
@@ -1221,11 +1272,252 @@ export class SessionManager {
     if (managed) {
       managed.meta = this.decorateManagedMeta(managed)
       this.callbacks.onSessionUpdated(managed.meta)
+      if (!title.trim()) {
+        this.scheduleAutoTitleRefresh(sessionId)
+      }
       return managed.meta
     }
     const updated = this.metaStore.applyToMeta(hostEntry!.meta)
     this.callbacks.onSessionUpdated(updated)
+    if (!title.trim()) {
+      this.scheduleAutoTitleRefresh(sessionId)
+    }
     return updated
+  }
+
+  private resolveTitleTarget(sessionId: string): {
+    managed?: ManagedSession
+    hostAliasId?: string
+    hostEntry?: ReturnType<HostTaskInspector['getHostSession']>
+    meta: SessionMeta
+    events: AgentEvent[]
+  } | null {
+    const managed = this.sessions.get(sessionId)
+    const hostAliasId =
+      managed?.nativeId && !sessionId.startsWith('host:')
+        ? `host:${managed.meta.engineId}:${managed.nativeId}`
+        : undefined
+    const hostEntry = sessionId.startsWith('host:')
+      ? this.hostInspector.getHostSession(sessionId)
+      : hostAliasId
+        ? this.hostInspector.getHostSession(hostAliasId)
+        : undefined
+
+    if (managed) {
+      return {
+        managed,
+        hostAliasId,
+        hostEntry,
+        meta: this.decorateManagedMeta(managed),
+        events: managed.events,
+      }
+    }
+    if (hostEntry) {
+      const loaded = this.hostInspector.readHostSessionEvents(sessionId)
+      return {
+        hostAliasId,
+        hostEntry,
+        meta: this.metaStore.applyToMeta(loaded?.session ?? hostEntry.meta),
+        events: loaded?.events ?? [],
+      }
+    }
+    return null
+  }
+
+  private persistAndBroadcastAutoTitle(
+    sessionId: string,
+    nextTitle: string,
+    source: 'llm' | 'heuristic',
+    signalCount: number,
+    clearCustomTitle = false,
+  ): SessionMeta | undefined {
+    const managed = this.sessions.get(sessionId)
+    const hostAliasId =
+      managed?.nativeId && !sessionId.startsWith('host:')
+        ? `host:${managed.meta.engineId}:${managed.nativeId}`
+        : undefined
+    const hostEntry = sessionId.startsWith('host:')
+      ? this.hostInspector.getHostSession(sessionId)
+      : hostAliasId
+        ? this.hostInspector.getHostSession(hostAliasId)
+        : undefined
+    if (!managed && !hostEntry) return undefined
+
+    const existing = this.metaStore.get(sessionId)
+    if (!clearCustomTitle && existing?.customTitle) {
+      return managed ? this.decorateManagedMeta(managed) : this.metaStore.applyToMeta(hostEntry!.meta)
+    }
+    const prevEffectiveTitle = managed
+      ? this.decorateManagedMeta(managed).title
+      : this.metaStore.applyToMeta(hostEntry!.meta).title
+
+    const baseMeta = hostEntry?.meta ?? (managed ? { ...managed.meta, title: managed.autoTitle } : undefined)
+    this.metaStore.setAutoTitle(
+      sessionId,
+      nextTitle,
+      { source, signalCount, clearCustomTitle },
+      {
+        hostAliasId,
+        filePath: hostEntry?.filePath,
+        nativeId: hostEntry?.nativeId ?? managed?.nativeId,
+        baseMeta,
+      },
+    )
+
+    if (managed) {
+      managed.autoTitle = nextTitle
+      managed.meta = this.decorateManagedMeta(managed)
+      if (managed.meta.title !== prevEffectiveTitle || clearCustomTitle) {
+        this.callbacks.onSessionUpdated(managed.meta)
+      }
+      return managed.meta
+    }
+    const updated = this.metaStore.applyToMeta(hostEntry!.meta)
+    if (updated.title !== prevEffectiveTitle || clearCustomTitle) {
+      this.callbacks.onSessionUpdated(updated)
+    }
+    return updated
+  }
+
+  async regenerateSessionTitle(sessionId: string): Promise<SessionMeta> {
+    const target = this.resolveTitleTarget(sessionId)
+    if (!target) {
+      throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
+    }
+    const homeDir = this.hostInspector.getHomeDir()
+    const signals = extractSessionTitleSignals(target.meta, target.events, homeDir)
+    const heuristic = generateHeuristicSessionTitle(target.meta, target.events, homeDir)
+    const llmCandidate = this.registry?.resolveAutoTitleCandidate()
+
+    let finalTitle = heuristic?.title
+    let finalSource: 'llm' | 'heuristic' = 'heuristic'
+
+    if (llmCandidate && signals.signalCount > 0) {
+      const ctl = new AbortController()
+      this.titleAbortControllers.add(ctl)
+      try {
+        const llmTitle = await generateLlmSessionTitle(llmCandidate, signals, {
+          currentAutoTitle: target.meta.autoTitle,
+          signal: ctl.signal,
+        })
+        if (llmTitle) {
+          finalTitle = llmTitle
+          finalSource = 'llm'
+        }
+      } finally {
+        this.titleAbortControllers.delete(ctl)
+      }
+    }
+
+    if (!finalTitle) {
+      // Clear customTitle if present so user sees the natural title even for empty sessions
+      if (target.meta.customTitle) {
+        return this.renameSession(sessionId, '')
+      }
+      return target.meta
+    }
+
+    return (
+      this.persistAndBroadcastAutoTitle(
+        sessionId,
+        finalTitle,
+        finalSource,
+        signals.signalCount,
+        true,
+      ) ?? target.meta
+    )
+  }
+
+  scheduleAutoTitleRefresh(sessionId: string): void {
+    if (this.closedAll || !sessionId) return
+    if (this.titleRefreshInFlight.has(sessionId)) return
+
+    const rec = this.metaStore.get(sessionId)
+    if (rec?.customTitle) return
+
+    const target = this.resolveTitleTarget(sessionId)
+    if (!target || target.meta.customTitle) return
+
+    const homeDir = this.hostInspector.getHomeDir()
+    const signals = extractSessionTitleSignals(target.meta, target.events, homeDir)
+    const llmCandidate = this.registry?.resolveAutoTitleCandidate()
+    const decision = shouldAttemptAutoTitleRefresh({
+      hasCustomTitle: Boolean(rec?.customTitle),
+      existingAutoTitle: rec?.autoTitle,
+      existingSource: rec?.autoTitleSource,
+      existingSignalCount: rec?.autoTitleSignalCount,
+      lastUpdatedAt: rec?.autoTitleUpdatedAt,
+      currentSignalCount: signals.signalCount,
+      hasLlmCandidate: Boolean(llmCandidate),
+    })
+
+    if (!decision.shouldRunHeuristic && !decision.shouldRunLlm) return
+
+    if (decision.shouldRunHeuristic) {
+      const heuristic = generateHeuristicSessionTitle(target.meta, target.events, homeDir)
+      if (heuristic && heuristic.title !== rec?.autoTitle) {
+        this.persistAndBroadcastAutoTitle(
+          sessionId,
+          heuristic.title,
+          'heuristic',
+          heuristic.signals.signalCount,
+          false,
+        )
+      }
+    }
+
+    if (!decision.shouldRunLlm || !llmCandidate) return
+
+    if (this.titleActiveLlmCount >= 2) {
+      if (!this.titlePendingQueue.includes(sessionId) && this.titlePendingQueue.length < 24) {
+        this.titlePendingQueue.push(sessionId)
+      }
+      return
+    }
+
+    this.titleRefreshInFlight.add(sessionId)
+    this.titleActiveLlmCount++
+    const ctl = new AbortController()
+    this.titleAbortControllers.add(ctl)
+
+    void generateLlmSessionTitle(llmCandidate, signals, {
+      currentAutoTitle: this.metaStore.get(sessionId)?.autoTitle,
+      signal: ctl.signal,
+    })
+      .then(llmTitle => {
+        if (this.closedAll || !llmTitle) return
+        if (this.metaStore.get(sessionId)?.customTitle) return
+        this.persistAndBroadcastAutoTitle(sessionId, llmTitle, 'llm', signals.signalCount, false)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.titleAbortControllers.delete(ctl)
+        this.titleRefreshInFlight.delete(sessionId)
+        this.titleActiveLlmCount = Math.max(0, this.titleActiveLlmCount - 1)
+        if (!this.closedAll && this.titlePendingQueue.length > 0) {
+          const nextId = this.titlePendingQueue.shift()
+          if (nextId) this.scheduleAutoTitleRefresh(nextId)
+        }
+      })
+  }
+
+  private scheduleHostAutoTitleBackfill(): void {
+    if (this.closedAll || this.titleBackfillTimer) return
+    this.titleBackfillTimer = setTimeout(() => {
+      this.titleBackfillTimer = null
+      if (this.closedAll) return
+      const recentHost = this.hostInspector
+        .discoverHostSessions()
+        .filter(s => !s.archived && !this.isSupersededByHubSession(s.id))
+        .slice(0, 12)
+      for (const s of recentHost) {
+        if (this.closedAll) break
+        const rec = this.metaStore.get(s.id)
+        if (rec?.customTitle || rec?.autoTitle) continue
+        this.scheduleAutoTitleRefresh(s.id)
+      }
+    }, 3_500)
+    this.titleBackfillTimer.unref?.()
   }
 
   archiveSession(sessionId: string, archived: boolean): SessionMeta {
@@ -1546,6 +1838,15 @@ export class SessionManager {
         if (activePerm) {
           sliced.events = [...sliced.events, activePerm]
         }
+        if (
+          opts?.beforeSeq === undefined &&
+          opts?.aroundSeq === undefined &&
+          !decoratedSession.customTitle &&
+          !decoratedSession.autoTitle &&
+          !this.hostInspector.isSubagentSession(sessionId)
+        ) {
+          this.scheduleAutoTitleRefresh(sessionId)
+        }
         return sliced
       }
     }
@@ -1575,6 +1876,7 @@ export class SessionManager {
     this.hostInspector.startGlobalMonitor()
     this.sweepArchivedAttachments()
     this.searchIndex.scheduleBackgroundSync(this.collectSearchableSources(), 2_500)
+    this.scheduleHostAutoTitleBackfill()
     if (!this.archivedAttachmentSweepTimer) {
       this.archivedAttachmentSweepTimer = setInterval(
         () => {
@@ -1592,9 +1894,19 @@ export class SessionManager {
       clearInterval(this.archivedAttachmentSweepTimer)
       this.archivedAttachmentSweepTimer = null
     }
+    if (this.titleBackfillTimer) {
+      clearTimeout(this.titleBackfillTimer)
+      this.titleBackfillTimer = null
+    }
   }
 
   async closeAll(): Promise<void> {
+    this.closedAll = true
+    this.titlePendingQueue.length = 0
+    for (const ctl of this.titleAbortControllers) {
+      ctl.abort()
+    }
+    this.titleAbortControllers.clear()
     this.stopGlobalHostMonitor()
     this.searchIndex.close()
     this.sleepInhibitor.dispose()

@@ -752,6 +752,9 @@
         "title": {
           "type": "string"
         },
+        "autoTitle": {
+          "type": "string"
+        },
         "customTitle": {
           "type": "string"
         },
@@ -5848,6 +5851,9 @@
                   "title": {
                     "type": "string"
                   },
+                  "autoTitle": {
+                    "type": "string"
+                  },
                   "customTitle": {
                     "type": "string"
                   },
@@ -6371,6 +6377,9 @@
                 "title": {
                   "type": "string"
                 },
+                "autoTitle": {
+                  "type": "string"
+                },
                 "customTitle": {
                   "type": "string"
                 },
@@ -6874,6 +6883,9 @@
                 "title": {
                   "type": "string"
                 },
+                "autoTitle": {
+                  "type": "string"
+                },
                 "customTitle": {
                   "type": "string"
                 },
@@ -7179,6 +7191,312 @@
                 "title": {
                   "type": "string"
                 },
+                "autoTitle": {
+                  "type": "string"
+                },
+                "customTitle": {
+                  "type": "string"
+                },
+                "archived": {
+                  "type": "boolean"
+                },
+                "archivedAt": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "idle",
+                    "running",
+                    "waiting_permission",
+                    "error",
+                    "closed"
+                  ]
+                },
+                "createdAt": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "updatedAt": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "lastSeq": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "reasoningEffort": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "acceptEdits",
+                    "plan",
+                    "auto",
+                    "bypassPermissions"
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "hub",
+                    "host"
+                  ]
+                },
+                "liveStatusText": {
+                  "type": "string"
+                },
+                "turnStartedAt": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "queuedPrompts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "models": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "subagents": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "idle",
+                          "running",
+                          "waiting_permission",
+                          "error",
+                          "closed"
+                        ]
+                      },
+                      "statusText": {
+                        "type": "string"
+                      },
+                      "createdAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "updatedAt": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "workspace": {
+                        "type": "string"
+                      },
+                      "parentId": {
+                        "type": "string"
+                      },
+                      "depth": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "stepsDone": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "stepsTotal": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "state",
+                      "updatedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "artifactCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "slashCommands": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "description": {
+                        "type": "string",
+                        "maxLength": 400
+                      },
+                      "inputHint": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "builtin",
+                          "skill",
+                          "workflow",
+                          "local"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "engineId",
+                "cwd",
+                "title",
+                "state",
+                "createdAt",
+                "updatedAt",
+                "lastSeq"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "session"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "session.regenerateTitle": {
+        "params": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "sessionId"
+          ],
+          "additionalProperties": false
+        },
+        "result": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {
+            "session": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "engineId": {
+                  "type": "string"
+                },
+                "cwd": {
+                  "type": "string"
+                },
+                "workspaces": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "worktree": {
+                  "type": "object",
+                  "properties": {
+                    "baseRepoPath": {
+                      "type": "string"
+                    },
+                    "worktreePath": {
+                      "type": "string"
+                    },
+                    "branch": {
+                      "type": "string"
+                    },
+                    "baseBranch": {
+                      "type": "string"
+                    },
+                    "baseCommitSha": {
+                      "type": "string"
+                    },
+                    "cleanedUp": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "baseRepoPath",
+                    "worktreePath",
+                    "branch"
+                  ],
+                  "additionalProperties": false
+                },
+                "title": {
+                  "type": "string"
+                },
+                "autoTitle": {
+                  "type": "string"
+                },
                 "customTitle": {
                   "type": "string"
                 },
@@ -7481,6 +7799,9 @@
                   "additionalProperties": false
                 },
                 "title": {
+                  "type": "string"
+                },
+                "autoTitle": {
                   "type": "string"
                 },
                 "customTitle": {
@@ -8045,6 +8366,9 @@
                   "additionalProperties": false
                 },
                 "title": {
+                  "type": "string"
+                },
+                "autoTitle": {
                   "type": "string"
                 },
                 "customTitle": {
@@ -10525,6 +10849,9 @@
                 "additionalProperties": false
               },
               "title": {
+                "type": "string"
+              },
+              "autoTitle": {
                 "type": "string"
               },
               "customTitle": {

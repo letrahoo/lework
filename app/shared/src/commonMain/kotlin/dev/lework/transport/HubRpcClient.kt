@@ -184,6 +184,9 @@ interface HubTransport {
         provider: ProviderConfigInput? = null,
     ): ProviderProbeResult = ProviderProbeResult()
     suspend fun renameSession(sessionId: String, title: String): SessionMeta
+    suspend fun regenerateSessionTitle(sessionId: String): SessionMeta {
+        throw UnsupportedOperationException("session.regenerateTitle not implemented in this transport")
+    }
     suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMeta
     suspend fun listArtifacts(sessionId: String): List<ArtifactInfo> = emptyList()
     suspend fun readArtifact(sessionId: String, artifactId: String): ArtifactContentResult {
@@ -794,6 +797,12 @@ class HubRpcClient(
         call<SessionCreateResult>(
             "session.rename",
             encodeParams(SessionRenameParams(sessionId = sessionId, title = title)),
+        ).session
+
+    override suspend fun regenerateSessionTitle(sessionId: String): SessionMeta =
+        call<SessionCreateResult>(
+            "session.regenerateTitle",
+            encodeParams(SessionRegenerateTitleParams(sessionId = sessionId)),
         ).session
 
     override suspend fun archiveSession(sessionId: String, archived: Boolean): SessionMeta =

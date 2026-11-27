@@ -212,6 +212,10 @@ private fun MobileConsoleApp(
                                 store.startNewDraftSession()
                                 scope.launch { drawerState.close() }
                             },
+                            onNewSessionInWorkspace = { path ->
+                                store.startNewDraftInWorkspace(path)
+                                scope.launch { drawerState.close() }
+                            },
                             onOpenUsage = {
                                 store.refreshUsageDashboard()
                                 showUsageSheet = true
@@ -236,7 +240,11 @@ private fun MobileConsoleApp(
                             onDismissSigningReminder = store::dismissSigningExpiryReminder,
                             onSearchQueryChange = store::setDrawerSearchQuery,
                             onToggleArchivedView = store::setDrawerShowArchived,
+                            onToggleOnlyRunning = store::toggleDrawerOnlyRunning,
+                            onToggleGroupingMode = store::toggleSidebarGroupingMode,
+                            onToggleProjectGroupCollapsed = store::toggleProjectGroupCollapsed,
                             onRequestRenameSession = { sess -> renamingSessionId = sess.id },
+                            onRegenerateSessionTitle = store::regenerateSessionTitle,
                             onToggleArchiveSession = store::archiveSession,
                             onOpenAppUpdate = {
                                 scope.launch { drawerState.close() }
@@ -982,6 +990,11 @@ private fun MobileConsoleApp(
     if (renamingTarget != null) {
         RenameSessionDialog(
             session = renamingTarget,
+            isRegeneratingTitle = state.regeneratingTitleSessionId == renamingTarget.id,
+            onRegenerateTitle = {
+                renamingSessionId = null
+                store.regenerateSessionTitle(renamingTarget.id)
+            },
             onDismiss = { renamingSessionId = null },
             onConfirm = { nextTitle ->
                 renamingSessionId = null

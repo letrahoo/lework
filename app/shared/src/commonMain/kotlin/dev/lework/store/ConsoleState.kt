@@ -387,6 +387,11 @@ data class ConsoleUiState(
     val selectedMode: SessionMode = SessionMode.AUTO,
     val favoriteModelKeys: List<String> = emptyList(),
     val pinnedSessionIds: List<String> = emptyList(),
+    val sidebarGroupingMode: SidebarGroupingMode = SidebarGroupingMode.PROJECT,
+    val collapsedProjectGroupKeys: Set<String> = emptySet(),
+    val pinnedSectionCollapsed: Boolean = false,
+    val drawerOnlyRunning: Boolean = false,
+    val regeneratingTitleSessionId: String? = null,
     val selectedWorkspacePath: String = "",
     val selectedExtraWorkspaces: List<String> = emptyList(),
     val draftUseWorktree: Boolean = false,
@@ -623,6 +628,7 @@ data class ConsoleUiState(
         val q = rawQuery.trim().lowercase()
         if (q.isEmpty()) return true
         if (title.lowercase().contains(q)) return true
+        if (autoTitle?.lowercase()?.contains(q) == true) return true
         if (customTitle?.lowercase()?.contains(q) == true) return true
         if (cwd.lowercase().contains(q)) return true
         if (engineId.lowercase().contains(q)) return true
@@ -672,21 +678,129 @@ data class ConsoleUiState(
             }
             .sortedByDescending { it.archivedAt ?: it.updatedAt }
 
+    /** Total non-archived running or waiting-permission sessions matching the active engine filter. */
+    val totalActiveRunningCount: Int
+        get() = runningSessions.count { drawerEngineFilter == null || it.engineId == drawerEngineFilter }
+
+    /** When filtering via the sidebar search box or running-only filter, temporarily auto-expand all project groups. */
+    val effectiveCollapsedProjectGroupKeys: Set<String>
+        get() = if (drawerSearchQuery.isNotBlank() || drawerOnlyRunning) emptySet() else collapsedProjectGroupKeys
+
+    /** Auto-expand the pinned section during search or running-only filter so matching pinned tasks stay visible. */
+    val effectivePinnedSectionCollapsed: Boolean
+        get() = pinnedSectionCollapsed && drawerSearchQuery.isBlank() && !drawerOnlyRunning
+
+    fun filteredActiveSessionsForSidebar(): List<SessionMeta> {
+        val allActive = filteredRunningSessions + filteredHistorySessions
+        return if (drawerOnlyRunning) {
+            allActive.filter {
+                it.state == SessionState.RUNNING || it.state == SessionState.WAITING_PERMISSION
+            }
+        } else {
+            allActive
+        }
+    }
+
+    fun pinnedSidebarSessions(): List<SessionMeta> {
+        if (pinnedSessionIds.isEmpty()) return emptyList()
+        val byId = filteredActiveSessionsForSidebar().associateBy { it.id }
+        return pinnedSessionIds.mapNotNull { byId[it] }
+    }
+
     /**
-     * Canonical session display order matching `DesktopSidebar` (pinned -> running -> history, or archived).
+     * Non-pinned sessions blocked on user approval (`WAITING_PERMISSION`), floated above project groups
+     * unless the user is already in the running-only filter where all active groups are expanded.
+     */
+    fun floatingWaitingSessions(excludePinned: Boolean = true): List<SessionMeta> {
+        if (drawerOnlyRunning) return emptyList()
+        val pinnedSet = if (excludePinned) pinnedSessionIds.toSet() else emptySet()
+        return filteredRunningSessions.filter {
+            it.state == SessionState.WAITING_PERMISSION && it.id !in pinnedSet
+        }
+    }
+
+    /**
+     * Project-first groups containing both running and idle sessions for each project,
+     * with projects that have active/waiting sessions automatically floated to the top.
+     */
+    fun sidebarProjectGroups(
+        excludePinned: Boolean = true,
+        excludeFloatingWaiting: Boolean = true,
+    ): List<SessionProjectGroup> {
+        val pinnedSet = if (excludePinned) pinnedSessionIds.toSet() else emptySet()
+        val waitingIds = if (excludeFloatingWaiting) {
+            floatingWaitingSessions(excludePinned = excludePinned).mapTo(HashSet()) { it.id }
+        } else {
+            emptySet()
+        }
+        val list = filteredActiveSessionsForSidebar().filter {
+            it.id !in pinnedSet && it.id !in waitingIds
+        }
+        return buildSessionProjectGroups(
+            sessions = list,
+            workspaces = workspaces,
+            hasDraftForSession = { sid -> sid != activeSessionId && hasDraft(sid) },
+            prioritizeActiveProjects = true,
+        )
+    }
+
+    fun historyProjectGroups(excludePinned: Boolean = true): List<SessionProjectGroup> =
+        sidebarProjectGroups(excludePinned = excludePinned, excludeFloatingWaiting = true)
+
+    fun flatTimeSidebarSessions(
+        excludePinned: Boolean = true,
+        excludeFloatingWaiting: Boolean = true,
+    ): List<SessionMeta> {
+        val pinnedSet = if (excludePinned) pinnedSessionIds.toSet() else emptySet()
+        val waitingIds = if (excludeFloatingWaiting) {
+            floatingWaitingSessions(excludePinned = excludePinned).mapTo(HashSet()) { it.id }
+        } else {
+            emptySet()
+        }
+        return filteredActiveSessionsForSidebar()
+            .filter { it.id !in pinnedSet && it.id !in waitingIds }
+            .sortedWith(
+                compareBy<SessionMeta> { sidebarSessionStatePriority(it.state) }
+                    .thenByDescending { it.updatedAt },
+            )
+    }
+
+    val archivedProjectGroups: List<SessionProjectGroup>
+        get() = buildSessionProjectGroups(
+            sessions = filteredArchivedSessions,
+            workspaces = workspaces,
+            hasDraftForSession = { sid -> sid != activeSessionId && hasDraft(sid) },
+            prioritizeActiveProjects = false,
+        )
+
+    /**
+     * Canonical session display order matching `DesktopSidebar`
+     * (pinned -> floating waiting approval -> project groups or flat time list, or archived).
      * Shared by sidebar rendering and keyboard shortcuts (`⌥↑`/`⌥↓`, `⌘1`..`⌘9`) so visual order and shortcut
      * order never drift apart.
      */
     val visibleSidebarSessions: List<SessionMeta>
         get() {
-            if (drawerShowArchived) return filteredArchivedSessions
-            val pinnedSet = pinnedSessionIds.toSet()
-            val allVisibleActive = filteredRunningSessions + filteredHistorySessions
-            val byId = allVisibleActive.associateBy { it.id }
-            val pinnedList = pinnedSessionIds.mapNotNull { byId[it] }
-            val runningList = filteredRunningSessions.filterNot { it.id in pinnedSet }
-            val historyList = filteredHistorySessions.filterNot { it.id in pinnedSet }
-            return pinnedList + runningList + historyList
+            val collapsed = effectiveCollapsedProjectGroupKeys
+            if (drawerShowArchived) {
+                return if (sidebarGroupingMode == SidebarGroupingMode.PROJECT) {
+                    archivedProjectGroups
+                        .filterNot { it.key in collapsed }
+                        .flatMap { it.sessions }
+                } else {
+                    filteredArchivedSessions
+                }
+            }
+            val pinnedList = if (effectivePinnedSectionCollapsed) emptyList() else pinnedSidebarSessions()
+            val waitingList = floatingWaitingSessions(excludePinned = true)
+            val mainList = if (sidebarGroupingMode == SidebarGroupingMode.PROJECT) {
+                sidebarProjectGroups(excludePinned = true, excludeFloatingWaiting = true)
+                    .filterNot { it.key in collapsed }
+                    .flatMap { it.sessions }
+            } else {
+                flatTimeSidebarSessions(excludePinned = true, excludeFloatingWaiting = true)
+            }
+            return pinnedList + waitingList + mainList
         }
 }
 

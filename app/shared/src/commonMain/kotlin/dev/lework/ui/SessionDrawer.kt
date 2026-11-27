@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.sp
 import dev.lework.platform.PairedHost
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.copyTextToClipboard
+import dev.lework.platform.epochMillis
 import dev.lework.platform.signingExpiryRemainingHours
 import dev.lework.protocol.*
 import dev.lework.store.*
@@ -51,6 +53,7 @@ import kotlinx.coroutines.delay
 internal fun TasksSidebarContent(
     state: ConsoleUiState,
     onNewSession: () -> Unit,
+    onNewSessionInWorkspace: (String) -> Unit = { onNewSession() },
     onOpenUsage: () -> Unit,
     onSelectFilter: (String?) -> Unit,
     onSelectSession: (String) -> Unit,
@@ -62,7 +65,11 @@ internal fun TasksSidebarContent(
     onDismissSigningReminder: () -> Unit = {},
     onSearchQueryChange: (String) -> Unit = {},
     onToggleArchivedView: (Boolean) -> Unit = {},
+    onToggleOnlyRunning: () -> Unit = {},
+    onToggleGroupingMode: () -> Unit = {},
+    onToggleProjectGroupCollapsed: (String) -> Unit = {},
     onRequestRenameSession: (SessionMeta) -> Unit = {},
+    onRegenerateSessionTitle: (String) -> Unit = {},
     onToggleArchiveSession: (sessionId: String, archived: Boolean) -> Unit = { _, _ -> },
     onOpenAppUpdate: () -> Unit = {},
     onCheckAppUpdate: () -> Unit = {},
@@ -87,16 +94,23 @@ internal fun TasksSidebarContent(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .clickable(
-                indication = null,
-                interactionSource = remember { MutableInteractionSource() },
-            ) { dismissKeyboard() }
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+    val hasRunning = state.runningSessions.any { it.state == SessionState.RUNNING }
+    val hasWaiting = state.runningSessions.any { it.state == SessionState.WAITING_PERMISSION }
+
+    ProvideSidebarAnimationPhase(
+        hasRunning = hasRunning,
+        hasWaiting = hasWaiting,
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                ) { dismissKeyboard() }
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
         if (remainingSignHours != null && remainingSignHours <= 36 && !state.signingExpiryDismissed) {
             Surface(
                 shape = RoundedCornerShape(10.dp),
@@ -537,6 +551,41 @@ internal fun TasksSidebarContent(
 
         Spacer(Modifier.height(10.dp))
 
+        val isGroupedByProject = state.sidebarGroupingMode == SidebarGroupingMode.PROJECT
+        val collapsedGroupKeys = state.effectiveCollapsedProjectGroupKeys
+        val waitingList = remember(
+            state.sessions,
+            state.drawerSearchQuery,
+            state.drawerEngineFilter,
+            state.drawerOnlyRunning,
+        ) {
+            state.floatingWaitingSessions(excludePinned = false)
+        }
+        val projectGroups = remember(
+            state.sessions,
+            state.drawerSearchQuery,
+            state.drawerEngineFilter,
+            state.drawerOnlyRunning,
+            state.workspaces,
+            state.sessionDrafts,
+            state.sessionAttachedImages,
+            state.activeSessionId,
+        ) {
+            state.sidebarProjectGroups(excludePinned = false, excludeFloatingWaiting = true)
+        }
+        val flatTimeList = remember(
+            state.sessions,
+            state.drawerSearchQuery,
+            state.drawerEngineFilter,
+            state.drawerOnlyRunning,
+        ) {
+            state.flatTimeSidebarSessions(excludePinned = false, excludeFloatingWaiting = true)
+        }
+        val archivedList = state.filteredArchivedSessions
+        val archivedGroups = remember(archivedList, state.workspaces, state.sessionDrafts, state.sessionAttachedImages, state.activeSessionId) {
+            state.archivedProjectGroups
+        }
+
         LazyColumn(
             state = drawerListState,
             modifier = Modifier.weight(1f),
@@ -544,14 +593,16 @@ internal fun TasksSidebarContent(
         ) {
             if (state.drawerShowArchived) {
                 item(key = "hdr_archived_hint") {
-                    Text(
-                        text = "已归档会话（永久保留，点击可查看历史或继续对话）",
-                        fontSize = 10.5.sp,
-                        color = Everforest.CommentGrey,
-                        modifier = Modifier.padding(vertical = 3.dp, horizontal = 4.dp),
+                    MobileSidebarSectionHeader(
+                        title = if (isGroupedByProject && archivedGroups.isNotEmpty()) {
+                            "已归档 · ${archivedGroups.size} 个项目"
+                        } else {
+                            "已归档会话"
+                        },
+                        isGroupedByProject = isGroupedByProject,
+                        onToggleGroupingMode = onToggleGroupingMode,
                     )
                 }
-                val archivedList = state.filteredArchivedSessions
                 if (archivedList.isEmpty()) {
                     item(key = "empty_archived") {
                         Text(
@@ -565,6 +616,46 @@ internal fun TasksSidebarContent(
                             color = Everforest.Grey0,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 14.dp),
                         )
+                    }
+                } else if (isGroupedByProject) {
+                    for (group in archivedGroups) {
+                        val collapsed = group.key in collapsedGroupKeys
+                        item(key = "arch_grp_${group.key}") {
+                            MobileProjectGroupHeader(
+                                group = group,
+                                collapsed = collapsed,
+                                showNewSessionButton = false,
+                                onToggleCollapse = { onToggleProjectGroupCollapsed(group.key) },
+                                onNewSessionInProject = {},
+                            )
+                        }
+                        if (!collapsed) {
+                            items(group.sessions, key = { "arch_${it.id}" }) { sess ->
+                                SessionDrawerRow(
+                                    session = sess,
+                                    selected = sess.id == state.activeSessionId,
+                                    showQuickUnarchive = true,
+                                    groupedProjectDisplayName = group.displayName,
+                                    draftPreview = state.draftPreviewFor(sess.id),
+                                    onClick = {
+                                        dismissKeyboard()
+                                        onSelectSession(sess.id)
+                                    },
+                                    onRename = {
+                                        dismissKeyboard()
+                                        onRequestRenameSession(sess)
+                                    },
+                                    onRegenerateTitle = {
+                                        dismissKeyboard()
+                                        onRegenerateSessionTitle(sess.id)
+                                    },
+                                    onToggleArchive = {
+                                        dismissKeyboard()
+                                        onToggleArchiveSession(sess.id, false)
+                                    },
+                                )
+                            }
+                        }
                     }
                 } else {
                     items(archivedList, key = { "arch_${it.id}" }) { sess ->
@@ -580,6 +671,10 @@ internal fun TasksSidebarContent(
                             onRename = {
                                 dismissKeyboard()
                                 onRequestRenameSession(sess)
+                            },
+                            onRegenerateTitle = {
+                                dismissKeyboard()
+                                onRegenerateSessionTitle(sess.id)
                             },
                             onToggleArchive = {
                                 dismissKeyboard()
@@ -606,18 +701,30 @@ internal fun TasksSidebarContent(
                         )
                     }
                 }
-                val runningList = state.filteredRunningSessions
-                if (runningList.isNotEmpty()) {
-                    item(key = "hdr_running") {
-                        Text(
-                            text = "进行中",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Everforest.Orange,
-                            modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp),
-                        )
+                if (waitingList.isNotEmpty()) {
+                    item(key = "hdr_waiting") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp, horizontal = 4.dp)
+                                .testTag("drawer_hdr_waiting"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                text = "等待确认",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Everforest.BoldGold,
+                            )
+                            Text(
+                                text = "${waitingList.size}",
+                                fontSize = 10.sp,
+                                color = Everforest.BoldGold.copy(alpha = 0.78f),
+                            )
+                        }
                     }
-                    items(runningList, key = { "run_${it.id}" }) { sess ->
+                    items(waitingList, key = { "wait_${it.id}" }) { sess ->
                         SessionDrawerRow(
                             session = sess,
                             selected = sess.id == state.activeSessionId,
@@ -629,6 +736,10 @@ internal fun TasksSidebarContent(
                             onRename = {
                                 dismissKeyboard()
                                 onRequestRenameSession(sess)
+                            },
+                            onRegenerateTitle = {
+                                dismissKeyboard()
+                                onRegenerateSessionTitle(sess.id)
                             },
                             onToggleArchive = {
                                 dismissKeyboard()
@@ -636,35 +747,83 @@ internal fun TasksSidebarContent(
                             },
                         )
                     }
-                    item(key = "sp_running") { Spacer(Modifier.height(8.dp)) }
+                    item(key = "sp_waiting") { Spacer(Modifier.height(6.dp)) }
                 }
 
                 item(key = "hdr_history") {
-                    Text(
-                        text = "历史会话",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Everforest.Grey1,
-                        modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp),
+                    MobileSidebarSectionHeader(
+                        title = if (isGroupedByProject && projectGroups.isNotEmpty()) {
+                            "项目 · ${projectGroups.size}"
+                        } else {
+                            "会话"
+                        },
+                        isGroupedByProject = isGroupedByProject,
+                        runningCount = state.totalActiveRunningCount,
+                        onlyRunning = state.drawerOnlyRunning,
+                        showRunningFilter = state.totalActiveRunningCount > 0 || state.drawerOnlyRunning,
+                        onToggleOnlyRunning = onToggleOnlyRunning,
+                        onToggleGroupingMode = onToggleGroupingMode,
                     )
                 }
 
-                val historyList = state.filteredHistorySessions
-                if (historyList.isEmpty()) {
+                val noMainItems = if (isGroupedByProject) projectGroups.isEmpty() else flatTimeList.isEmpty()
+                if (noMainItems && waitingList.isEmpty()) {
                     item(key = "empty_history") {
                         Text(
-                            text = if (state.drawerSearchQuery.isNotBlank()) {
-                                "未找到匹配的会话记录"
-                            } else {
-                                "暂无该引擎的历史记录"
+                            text = when {
+                                state.drawerOnlyRunning -> "当前没有进行中或待审批的会话"
+                                state.drawerSearchQuery.isNotBlank() -> "未找到匹配的会话记录"
+                                else -> "暂无该引擎的历史记录"
                             },
                             fontSize = 12.sp,
                             color = Everforest.Grey0,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp),
                         )
                     }
+                } else if (isGroupedByProject) {
+                    for (group in projectGroups) {
+                        val collapsed = group.key in collapsedGroupKeys
+                        item(key = "grp_${group.key}") {
+                            MobileProjectGroupHeader(
+                                group = group,
+                                collapsed = collapsed,
+                                showNewSessionButton = !group.isFallback && group.fullPath.isNotEmpty(),
+                                onToggleCollapse = { onToggleProjectGroupCollapsed(group.key) },
+                                onNewSessionInProject = {
+                                    dismissKeyboard()
+                                    onNewSessionInWorkspace(group.fullPath)
+                                },
+                            )
+                        }
+                        if (!collapsed) {
+                            items(group.sessions, key = { it.id }) { sess ->
+                                SessionDrawerRow(
+                                    session = sess,
+                                    selected = sess.id == state.activeSessionId,
+                                    groupedProjectDisplayName = group.displayName,
+                                    draftPreview = state.draftPreviewFor(sess.id),
+                                    onClick = {
+                                        dismissKeyboard()
+                                        onSelectSession(sess.id)
+                                    },
+                                    onRename = {
+                                        dismissKeyboard()
+                                        onRequestRenameSession(sess)
+                                    },
+                                    onRegenerateTitle = {
+                                        dismissKeyboard()
+                                        onRegenerateSessionTitle(sess.id)
+                                    },
+                                    onToggleArchive = {
+                                        dismissKeyboard()
+                                        onToggleArchiveSession(sess.id, !sess.archived)
+                                    },
+                                )
+                            }
+                        }
+                    }
                 } else {
-                    items(historyList, key = { it.id }) { sess ->
+                    items(flatTimeList, key = { it.id }) { sess ->
                         SessionDrawerRow(
                             session = sess,
                             selected = sess.id == state.activeSessionId,
@@ -676,6 +835,10 @@ internal fun TasksSidebarContent(
                             onRename = {
                                 dismissKeyboard()
                                 onRequestRenameSession(sess)
+                            },
+                            onRegenerateTitle = {
+                                dismissKeyboard()
+                                onRegenerateSessionTitle(sess.id)
                             },
                             onToggleArchive = {
                                 dismissKeyboard()
@@ -768,6 +931,7 @@ internal fun TasksSidebarContent(
             ) {
                 Text("断开连接", fontSize = 12.sp, color = Everforest.Grey1)
             }
+        }
         }
     }
 
@@ -927,35 +1091,202 @@ private fun MobileNewSessionDraftRow(
     }
 }
 
+@Composable
+private fun MobileSidebarSectionHeader(
+    title: String,
+    isGroupedByProject: Boolean,
+    runningCount: Int = 0,
+    onlyRunning: Boolean = false,
+    showRunningFilter: Boolean = false,
+    onToggleOnlyRunning: () -> Unit = {},
+    onToggleGroupingMode: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            text = title,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Everforest.Grey1,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (showRunningFilter) {
+                SidebarRunningFilterPill(
+                    runningCount = runningCount,
+                    active = onlyRunning,
+                    onClick = onToggleOnlyRunning,
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = if (isGroupedByProject) Everforest.Bg1 else Color.Transparent,
+                border = BorderStroke(
+                    1.dp,
+                    if (isGroupedByProject) Everforest.Green.copy(alpha = 0.4f) else Everforest.Bg2,
+                ),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .clickable(onClick = onToggleGroupingMode)
+                    .testTag("drawer_btn_toggle_grouping"),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        imageVector = if (isGroupedByProject) Icons.Rounded.FolderCopy else Icons.Rounded.Schedule,
+                        contentDescription = null,
+                        tint = if (isGroupedByProject) Everforest.Green else Everforest.CommentGrey,
+                        modifier = Modifier.size(12.dp),
+                    )
+                    Text(
+                        text = if (isGroupedByProject) "按项目" else "按时间",
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (isGroupedByProject) Everforest.Green else Everforest.Grey1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MobileProjectGroupHeader(
+    group: SessionProjectGroup,
+    collapsed: Boolean,
+    showNewSessionButton: Boolean,
+    onToggleCollapse: () -> Unit,
+    onNewSessionInProject: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 1.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Everforest.Bg1.copy(alpha = 0.45f))
+            .clickable(onClick = onToggleCollapse)
+            .padding(start = 6.dp, end = 4.dp, top = 5.dp, bottom = 5.dp)
+            .testTag("project_group_header_${group.key}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Icon(
+            imageVector = if (collapsed) Icons.AutoMirrored.Rounded.KeyboardArrowRight else Icons.Rounded.KeyboardArrowDown,
+            contentDescription = if (collapsed) "展开项目" else "折叠项目",
+            tint = Everforest.CommentGrey,
+            modifier = Modifier.size(15.dp),
+        )
+        Icon(
+            imageVector = if (collapsed) Icons.Rounded.Folder else Icons.Rounded.FolderOpen,
+            contentDescription = null,
+            tint = if (group.isFallback) Everforest.Grey1 else Everforest.Aqua.copy(alpha = 0.88f),
+            modifier = Modifier.size(14.dp),
+        )
+        Text(
+            text = group.displayName,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = if (group.isFallback) Everforest.Grey1 else Everforest.HeadingWarm,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        Spacer(Modifier.weight(1f))
+        SidebarHeaderActivityBadges(
+            runningCount = group.runningCount,
+            waitingCount = group.waitingPermissionCount,
+        )
+        if (collapsed && group.draftCount > 0) {
+            Box(
+                modifier = Modifier
+                    .size(5.5.dp)
+                    .clip(CircleShape)
+                    .background(Everforest.SoftRed),
+            )
+        }
+        Text(
+            text = "${group.sessions.size}",
+            fontSize = 10.5.sp,
+            color = Everforest.CommentGrey,
+        )
+        if (showNewSessionButton) {
+            IconButton(
+                onClick = onNewSessionInProject,
+                modifier = Modifier
+                    .size(24.dp)
+                    .testTag("project_group_new_${group.key}"),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Add,
+                    contentDescription = "在 ${group.displayName} 中新建会话",
+                    tint = Everforest.Green,
+                    modifier = Modifier.size(15.dp),
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionDrawerRow(
     session: SessionMeta,
     selected: Boolean,
     showQuickUnarchive: Boolean = false,
+    groupedProjectDisplayName: String? = null,
     draftPreview: String? = null,
     onClick: () -> Unit,
     onRename: () -> Unit = {},
+    onRegenerateTitle: () -> Unit = {},
     onToggleArchive: () -> Unit = {},
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    val wsList = session.workspaces?.filter { it.isNotBlank() }?.distinct().orEmpty()
-    val primaryPath = session.worktree?.baseRepoPath ?: wsList.firstOrNull() ?: session.cwd
-    val wsShort = primaryPath.trimEnd('/').substringAfterLast('/').ifBlank { "~" }
-    val branchSuffix = session.worktree?.let { wt ->
-        val shortBranch = wt.branch.removePrefix("lework/")
-        if (wt.cleanedUp == true) " · ⎇ $shortBranch (已清理目录)" else " · ⎇ $shortBranch"
-    }.orEmpty()
-    val wsBadge = (if (wsList.size > 1 && session.worktree == null) "$wsShort +${wsList.size - 1}" else wsShort) + branchSuffix
     val isWaiting = session.state == SessionState.WAITING_PERMISSION
     val isRunning = session.state == SessionState.RUNNING
+    val titleColor = if (selected) Everforest.BoldGold else Everforest.Fg
+    val scopeSplit = remember(session.title, groupedProjectDisplayName) {
+        splitMatchingScopePrefix(session.title, groupedProjectDisplayName)
+    }
+    val nowMs = if (isRunning) {
+        LocalSidebarAnimationPhase.current.nowMs.value
+    } else {
+        remember(session.id, session.updatedAt) { epochMillis() }
+    }
+    val subtitleAnnotated = remember(session, selected, groupedProjectDisplayName, draftPreview, nowMs) {
+        buildSidebarSessionSubtitle(
+            session = session,
+            selected = selected,
+            groupedProjectDisplayName = groupedProjectDisplayName,
+            draftPreview = draftPreview,
+            nowMs = nowMs,
+        )
+    }
+    val showsDraftPreviewTag = !selected && draftPreview != null && !isWaiting && !isRunning
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Surface(
             shape = RoundedCornerShape(10.dp),
-            color = if (selected) Everforest.Bg2 else Color.Transparent,
+            color = when {
+                selected -> Everforest.Bg2
+                isWaiting -> Everforest.BgYellow.copy(alpha = 0.24f)
+                else -> Color.Transparent
+            },
             modifier = Modifier
                 .fillMaxWidth()
+                .testTag("session_row_${session.id}")
                 .clip(RoundedCornerShape(10.dp))
                 .combinedClickable(
                     onClick = onClick,
@@ -963,70 +1294,56 @@ private fun SessionDrawerRow(
                 ),
         ) {
             Row(
-                modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                modifier = Modifier.padding(
+                    start = if (groupedProjectDisplayName != null) 18.dp else 9.dp,
+                    end = 6.dp,
+                    top = 7.5.dp,
+                    bottom = 7.5.dp,
+                ),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(
-                            when {
-                                isWaiting -> Everforest.Yellow
-                                isRunning -> Everforest.Orange
-                                session.archived -> Everforest.CommentGrey.copy(alpha = 0.65f)
-                                else -> engineAccentColor(session.engineId).copy(alpha = 0.75f)
-                            },
-                        ),
-                )
+                SidebarSessionLeadingIndicator(session = session)
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = session.title,
-                        fontSize = 13.sp,
-                        color = if (selected) Everforest.BoldGold else Everforest.Fg,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    )
-                    val hasLiveStatus = isRunning && !session.liveStatusText.isNullOrBlank()
-                    val visibleDraftPreview = draftPreview?.takeUnless { selected }
-                    if (visibleDraftPreview != null && !hasLiveStatus) {
-                        val draftSubtitle = remember(visibleDraftPreview) {
+                    if (scopeSplit != null) {
+                        val annotatedTitle = remember(scopeSplit, selected) {
                             buildAnnotatedString {
-                                withStyle(SpanStyle(color = Everforest.SoftRed, fontWeight = FontWeight.SemiBold)) {
-                                    append("[草稿] ")
+                                withStyle(SpanStyle(color = if (selected) Everforest.BoldGold.copy(alpha = 0.65f) else Everforest.CommentGrey)) {
+                                    append(scopeSplit.first)
                                 }
-                                withStyle(SpanStyle(color = Everforest.Grey2)) {
-                                    append(visibleDraftPreview)
+                                withStyle(SpanStyle(color = titleColor)) {
+                                    append(scopeSplit.second)
                                 }
                             }
                         }
                         Text(
-                            text = draftSubtitle,
-                            fontSize = 11.sp,
+                            text = annotatedTitle,
+                            fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("session_draft_preview_${session.id}"),
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                         )
                     } else {
-                        val subtitle = if (hasLiveStatus) {
-                            session.liveStatusText.orEmpty()
-                        } else {
-                            "${shortEngineLabel(session.engineId)} · $wsBadge"
-                        }
                         Text(
-                            text = subtitle,
-                            fontSize = 11.sp,
-                            color = if (hasLiveStatus) {
-                                Everforest.BoldGold
-                            } else {
-                                Everforest.Grey0
-                            },
+                            text = session.title,
+                            fontSize = 13.sp,
+                            color = titleColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                         )
                     }
+                    Text(
+                        text = subtitleAnnotated,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = if (showsDraftPreviewTag) {
+                            Modifier.testTag("session_draft_preview_${session.id}")
+                        } else {
+                            Modifier
+                        },
+                    )
                 }
                 if (isWaiting) {
                     Surface(
@@ -1123,6 +1440,21 @@ private fun SessionDrawerRow(
                 },
             )
             DropdownMenuItem(
+                text = { Text("智能生成标题", fontSize = 13.sp, color = Everforest.Fg) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = Everforest.Green,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
+                onClick = {
+                    menuExpanded = false
+                    onRegenerateTitle()
+                },
+            )
+            DropdownMenuItem(
                 text = {
                     Text(
                         text = if (session.archived) "移出归档" else "归档会话",
@@ -1150,6 +1482,8 @@ private fun SessionDrawerRow(
 @Composable
 internal fun RenameSessionDialog(
     session: SessionMeta,
+    isRegeneratingTitle: Boolean = false,
+    onRegenerateTitle: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
 ) {
@@ -1239,16 +1573,52 @@ internal fun RenameSessionDialog(
                         }
                     }
                 }
-                if (!session.customTitle.isNullOrBlank()) {
-                    Text(
-                        text = "恢复自动标题",
-                        fontSize = 12.sp,
-                        color = Everforest.BoldGold,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .clickable { onConfirm("") }
-                            .padding(vertical = 2.dp),
-                    )
+                if (onRegenerateTitle != null || !session.customTitle.isNullOrBlank()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (onRegenerateTitle != null) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable(enabled = !isRegeneratingTitle) {
+                                        dismissKeyboard()
+                                        onRegenerateTitle()
+                                    }
+                                    .padding(vertical = 2.dp, horizontal = 2.dp)
+                                    .testTag("rename_session_regenerate"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = Everforest.Green,
+                                    modifier = Modifier.size(13.5.dp),
+                                )
+                                Text(
+                                    text = if (isRegeneratingTitle) "正在生成标题…" else "智能生成标题",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Everforest.Green,
+                                )
+                            }
+                        }
+                        if (!session.customTitle.isNullOrBlank()) {
+                            Text(
+                                text = "恢复自动标题",
+                                fontSize = 12.sp,
+                                color = Everforest.BoldGold,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable { onConfirm("") }
+                                    .padding(vertical = 2.dp)
+                                    .testTag("rename_session_restore_auto"),
+                            )
+                        }
+                    }
                 }
             }
         },

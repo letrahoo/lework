@@ -15,6 +15,8 @@ data class SavedSessionPrefs(
     val favoriteModelKeys: List<String> = emptyList(),
     val pinnedSessionIds: List<String> = emptyList(),
     val dismissedUpdateTag: String? = null,
+    val sidebarGroupByProject: Boolean = true,
+    val collapsedProjectGroupKeys: List<String> = emptyList(),
 )
 
 @Serializable

@@ -335,6 +335,7 @@ data class SessionMeta(
     val workspaces: List<String>? = null,
     val worktree: SessionWorktreeInfo? = null,
     val title: String,
+    val autoTitle: String? = null,
     val customTitle: String? = null,
     val archived: Boolean = false,
     val archivedAt: Long? = null,
@@ -763,6 +764,11 @@ data class SessionSetModelParams(
 data class SessionRenameParams(
     val sessionId: String,
     val title: String,
+)
+
+@Serializable
+data class SessionRegenerateTitleParams(
+    val sessionId: String,
 )
 
 @Serializable
