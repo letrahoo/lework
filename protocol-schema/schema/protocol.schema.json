@@ -86,6 +86,49 @@
       ],
       "additionalProperties": false
     },
+    "SlashCommandSource": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "string",
+      "enum": [
+        "builtin",
+        "skill",
+        "workflow",
+        "local"
+      ]
+    },
+    "SlashCommandInfo": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "inputHint": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "builtin",
+            "skill",
+            "workflow",
+            "local"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "additionalProperties": false
+    },
     "EngineInfo": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",
@@ -249,6 +292,41 @@
               "auto",
               "bypassPermissions"
             ]
+          }
+        },
+        "slashCommands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 400
+              },
+              "inputHint": {
+                "type": "string",
+                "maxLength": 160
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "builtin",
+                  "skill",
+                  "workflow",
+                  "local"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "description"
+            ],
+            "additionalProperties": false
           }
         }
       },
@@ -848,6 +926,41 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "slashCommands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 400
+              },
+              "inputHint": {
+                "type": "string",
+                "maxLength": 160
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "builtin",
+                  "skill",
+                  "workflow",
+                  "local"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "description"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
@@ -1046,6 +1159,14 @@
         "truncated"
       ],
       "additionalProperties": false
+    },
+    "InteractionKind": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "string",
+      "enum": [
+        "permission",
+        "question"
+      ]
     },
     "SearchRoleFilter": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2245,6 +2366,16 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "interactionKind": {
+              "type": "string",
+              "enum": [
+                "permission",
+                "question"
+              ]
+            },
+            "allowCustomInput": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -2975,6 +3106,41 @@
                         "bypassPermissions"
                       ]
                     }
+                  },
+                  "slashCommands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "description": {
+                          "type": "string",
+                          "maxLength": 400
+                        },
+                        "inputHint": {
+                          "type": "string",
+                          "maxLength": 160
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "builtin",
+                            "skill",
+                            "workflow",
+                            "local"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description"
+                      ],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [
@@ -3689,6 +3855,41 @@
                         "bypassPermissions"
                       ]
                     }
+                  },
+                  "slashCommands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "description": {
+                          "type": "string",
+                          "maxLength": 400
+                        },
+                        "inputHint": {
+                          "type": "string",
+                          "maxLength": 160
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "builtin",
+                            "skill",
+                            "workflow",
+                            "local"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description"
+                      ],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [
@@ -4203,6 +4404,41 @@
                         "bypassPermissions"
                       ]
                     }
+                  },
+                  "slashCommands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "description": {
+                          "type": "string",
+                          "maxLength": 400
+                        },
+                        "inputHint": {
+                          "type": "string",
+                          "maxLength": 160
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "builtin",
+                            "skill",
+                            "workflow",
+                            "local"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description"
+                      ],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [
@@ -4523,6 +4759,41 @@
                         "auto",
                         "bypassPermissions"
                       ]
+                    }
+                  },
+                  "slashCommands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "description": {
+                          "type": "string",
+                          "maxLength": 400
+                        },
+                        "inputHint": {
+                          "type": "string",
+                          "maxLength": 160
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "builtin",
+                            "skill",
+                            "workflow",
+                            "local"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description"
+                      ],
+                      "additionalProperties": false
                     }
                   }
                 },
@@ -5040,6 +5311,41 @@
                         "bypassPermissions"
                       ]
                     }
+                  },
+                  "slashCommands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "description": {
+                          "type": "string",
+                          "maxLength": 400
+                        },
+                        "inputHint": {
+                          "type": "string",
+                          "maxLength": 160
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "builtin",
+                            "skill",
+                            "workflow",
+                            "local"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description"
+                      ],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [
@@ -5235,6 +5541,41 @@
                         "auto",
                         "bypassPermissions"
                       ]
+                    }
+                  },
+                  "slashCommands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "description": {
+                          "type": "string",
+                          "maxLength": 400
+                        },
+                        "inputHint": {
+                          "type": "string",
+                          "maxLength": 160
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "builtin",
+                            "skill",
+                            "workflow",
+                            "local"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description"
+                      ],
+                      "additionalProperties": false
                     }
                   }
                 },
@@ -5681,6 +6022,41 @@
                     "type": "integer",
                     "minimum": 0,
                     "maximum": 9007199254740991
+                  },
+                  "slashCommands": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "description": {
+                          "type": "string",
+                          "maxLength": 400
+                        },
+                        "inputHint": {
+                          "type": "string",
+                          "maxLength": 160
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "builtin",
+                            "skill",
+                            "workflow",
+                            "local"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "description"
+                      ],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [
@@ -6169,6 +6545,41 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
+                },
+                "slashCommands": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "description": {
+                        "type": "string",
+                        "maxLength": 400
+                      },
+                      "inputHint": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "builtin",
+                          "skill",
+                          "workflow",
+                          "local"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -6637,6 +7048,41 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
+                },
+                "slashCommands": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "description": {
+                        "type": "string",
+                        "maxLength": 400
+                      },
+                      "inputHint": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "builtin",
+                          "skill",
+                          "workflow",
+                          "local"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -6907,6 +7353,41 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
+                },
+                "slashCommands": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "description": {
+                        "type": "string",
+                        "maxLength": 400
+                      },
+                      "inputHint": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "builtin",
+                          "skill",
+                          "workflow",
+                          "local"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -7176,6 +7657,41 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
+                },
+                "slashCommands": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "description": {
+                        "type": "string",
+                        "maxLength": 400
+                      },
+                      "inputHint": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "builtin",
+                          "skill",
+                          "workflow",
+                          "local"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -7705,6 +8221,41 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
+                },
+                "slashCommands": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "description": {
+                        "type": "string",
+                        "maxLength": 400
+                      },
+                      "inputHint": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "builtin",
+                          "skill",
+                          "workflow",
+                          "local"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -8070,6 +8621,16 @@
                           ],
                           "additionalProperties": false
                         }
+                      },
+                      "interactionKind": {
+                        "type": "string",
+                        "enum": [
+                          "permission",
+                          "question"
+                        ]
+                      },
+                      "allowCustomInput": {
+                        "type": "boolean"
                       }
                     },
                     "required": [
@@ -8403,6 +8964,10 @@
                 "string",
                 "null"
               ]
+            },
+            "customInput": {
+              "type": "string",
+              "maxLength": 4000
             }
           },
           "required": [
@@ -9654,6 +10219,16 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "interactionKind": {
+                    "type": "string",
+                    "enum": [
+                      "permission",
+                      "question"
+                    ]
+                  },
+                  "allowCustomInput": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -10126,6 +10701,41 @@
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "slashCommands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 400
+                    },
+                    "inputHint": {
+                      "type": "string",
+                      "maxLength": 160
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "builtin",
+                        "skill",
+                        "workflow",
+                        "local"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "description"
+                  ],
+                  "additionalProperties": false
+                }
               }
             },
             "required": [

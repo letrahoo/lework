@@ -33,7 +33,6 @@ import dev.lework.platform.isDesktopPlatform
 import dev.lework.protocol.*
 import dev.lework.store.ConsoleUiState
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
  * Compact Everforest quick-access strip surfacing Proposed Plans & session artifacts
@@ -130,9 +129,15 @@ internal fun ArtifactsInspectorSheet(
     onApprovePlan: (String) -> Unit,
     onRevisePlan: (String) -> Unit,
 ) {
-    var copied by remember { mutableStateOf(false) }
+    var copyCount by remember(state.openedArtifact?.artifact?.id) { mutableIntStateOf(0) }
+    val copied = copyCount > 0
+    LaunchedEffect(state.openedArtifact?.artifact?.id, copyCount) {
+        if (copyCount > 0) {
+            delay(1_600L)
+            copyCount = 0
+        }
+    }
     var lightboxImage by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
     val opened = state.openedArtifact
     val artifacts = state.activeSessionArtifacts
 
@@ -246,11 +251,8 @@ internal fun ArtifactsInspectorSheet(
                 if (!opened.isBase64) {
                     TextButton(
                         onClick = {
-                            copyTextToClipboard(opened.content)
-                            copied = true
-                            scope.launch {
-                                delay(1_500L)
-                                copied = false
+                            if (copyTextToClipboard(opened.content)) {
+                                copyCount++
                             }
                         },
                     ) {
@@ -437,7 +439,7 @@ internal fun ArtifactsInspectorSheet(
                         color = Everforest.Grey2,
                     )
                     Text(
-                        text = "AGY 执行方案/清单/验收总结、Claude 规划文档与 Artifact、Codex 任务计划都会统一沉淀在此处",
+                        text = "各引擎生成的执行方案、任务清单与验收总结都会统一归集在这里",
                         fontSize = 11.5.sp,
                         color = Everforest.CommentGrey,
                     )

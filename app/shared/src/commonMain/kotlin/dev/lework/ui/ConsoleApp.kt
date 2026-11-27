@@ -3,8 +3,10 @@ package dev.lework.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.LocalTextSelectionColors
@@ -370,6 +372,45 @@ private fun MobileConsoleApp(
                                 dismissKeyboard()
                                 store.selectSession(sid)
                             },
+                            onQuickPrompt = { starter ->
+                                val localAct = parseLocalSlashAction(starter, state)
+                                if (localAct != null) {
+                                    dismissKeyboard()
+                                    executeLocalSlashAction(
+                                        action = localAct,
+                                        state = state,
+                                        onNewSession = store::startNewDraftSession,
+                                        onOpenModelPicker = { showModelSheet = true },
+                                        onOpenDiff = {
+                                            store.refreshDiffAndCheckpoints()
+                                            showDiffSheet = true
+                                        },
+                                        onOpenFiles = {
+                                            store.browseDirectory()
+                                            showFilesSheet = true
+                                        },
+                                        onOpenArtifacts = {
+                                            store.refreshSessionArtifacts()
+                                            showArtifactsSheet = true
+                                        },
+                                        onOpenUsage = {
+                                            store.refreshUsageDashboard()
+                                            showUsageSheet = true
+                                        },
+                                        onOpenSearch = { q ->
+                                            store.setDrawerSearchQuery(q)
+                                            scope.launch { drawerState.open() }
+                                        },
+                                        onRenameSession = {},
+                                        onSelectMode = store::selectMode,
+                                        onSelectEffort = store::selectEffort,
+                                        onShowNotice = store::showPromptNotice,
+                                    )
+                                } else {
+                                    promptField = TextFieldValue(starter, TextRange(starter.length))
+                                    store.updateSessionDraft(starter, starter.length, updateMentions = false)
+                                }
+                            },
                         )
                     } else if (
                         state.activeSessionId != null &&
@@ -436,7 +477,7 @@ private fun MobileConsoleApp(
                             sessionId = activeSessForPerm.id,
                             ts = 0L,
                             requestId = "fallback_waiting_${activeSessForPerm.id}",
-                            title = "Agent 正在等待确认\n正在同步终端选项，若未显示操作按钮请点击右侧刷新或回电脑窗口确认。",
+                            title = "正在等待你的确认\n正在同步操作选项，若未显示按钮请点击右侧刷新或回主机终端确认。",
                             options = emptyList(),
                         )
                     } else {
@@ -452,6 +493,9 @@ private fun MobileConsoleApp(
                         },
                         onDecision = { reqId, optId, sessId ->
                             store.respondApproval(reqId, optId, sessId)
+                        },
+                        onCustomAnswer = { reqId, customInput, sessId ->
+                            store.respondApproval(reqId, "__custom__", sessId, customInput)
                         },
                     )
                 }
@@ -564,6 +608,49 @@ private fun MobileConsoleApp(
                     }
                 }
 
+                val runMobileLocalSlash: (LocalSlashAction) -> Unit = { localAct ->
+                    executeLocalSlashAction(
+                        action = localAct,
+                        state = state,
+                        onNewSession = store::startNewDraftSession,
+                        onOpenModelPicker = { showModelSheet = true },
+                        onOpenDiff = {
+                            store.refreshDiffAndCheckpoints()
+                            showDiffSheet = true
+                        },
+                        onOpenFiles = {
+                            store.browseDirectory()
+                            showFilesSheet = true
+                        },
+                        onOpenArtifacts = {
+                            store.refreshSessionArtifacts()
+                            showArtifactsSheet = true
+                        },
+                        onOpenUsage = {
+                            store.refreshUsageDashboard()
+                            showUsageSheet = true
+                        },
+                        onOpenSearch = { q ->
+                            store.setDrawerSearchQuery(q)
+                            scope.launch { drawerState.open() }
+                        },
+                        onRenameSession = { title ->
+                            val sid = state.activeSessionId
+                            if (sid != null) {
+                                if (!title.isNullOrBlank()) {
+                                    store.renameSession(sid, title)
+                                    store.showPromptNotice("已将当前会话重命名为「$title」")
+                                } else {
+                                    renamingSessionId = sid
+                                }
+                            }
+                        },
+                        onSelectMode = store::selectMode,
+                        onSelectEffort = store::selectEffort,
+                        onShowNotice = store::showPromptNotice,
+                    )
+                }
+
                 ClaudeStyleComposer(
                     state = state,
                     value = promptField,
@@ -586,7 +673,11 @@ private fun MobileConsoleApp(
                                 cursorSyncRequest = null
                             }
                             promptField = nextField
-                            store.updateSessionDraft(nextField.text, nextField.selection.end)
+                            store.updateSessionDraft(
+                                nextField.text,
+                                nextField.selection.end,
+                                expectedDraftKey = activeDraftKey,
+                            )
                         }
                     },
                     onOpenWorkspaceSheet = {
@@ -609,9 +700,21 @@ private fun MobileConsoleApp(
                         dismissKeyboard()
                         val msg = promptField.text
                         cursorSyncRequest = null
-                        promptField = TextFieldValue("")
-                        store.dismissMentionSuggestions()
-                        store.sendPrompt(msg)
+                        val localAct = if (state.composerAttachedImages.isEmpty()) {
+                            parseLocalSlashAction(msg, state)
+                        } else {
+                            null
+                        }
+                        if (localAct != null) {
+                            promptField = TextFieldValue("")
+                            store.updateSessionDraft("", 0, updateMentions = false)
+                            store.dismissMentionSuggestions()
+                            runMobileLocalSlash(localAct)
+                        } else {
+                            promptField = TextFieldValue("")
+                            store.dismissMentionSuggestions()
+                            store.sendPrompt(msg)
+                        }
                     },
                     onCancel = store::cancelActiveTurn,
                     onClearQueuedPrompts = store::clearQueuedPrompts,
@@ -657,6 +760,36 @@ private fun MobileConsoleApp(
                         store.updateSessionDraft(nextText, nextCursor)
                     },
                     onDismissMention = store::dismissMentionSuggestions,
+                    onSelectSlashCommand = { cmd ->
+                        val cur = promptField.text
+                        val isTypingCommand = extractSlashCommandQuery(cur) != null
+                        if (cmd.executeImmediatelyOnSelect) {
+                            val localAct = parseLocalSlashAction("/${cmd.name}", state)
+                            if (localAct != null) {
+                                dismissKeyboard()
+                                if (isTypingCommand) {
+                                    promptField = TextFieldValue("")
+                                    store.updateSessionDraft("", 0, updateMentions = false)
+                                }
+                                store.dismissMentionSuggestions()
+                                runMobileLocalSlash(localAct)
+                            }
+                        } else if (!cmd.isLocal || isTypingCommand || cur.isBlank()) {
+                            val nextText = if (isTypingCommand || cur.isBlank()) {
+                                "/${cmd.name} "
+                            } else {
+                                "/${cmd.name} ${cur.trimStart()}"
+                            }
+                            promptField = TextFieldValue(
+                                text = nextText,
+                                selection = TextRange(nextText.length),
+                                composition = null,
+                            )
+                            cursorSyncRequest = Triple((cursorSyncRequest?.first ?: 0L) + 1L, nextText, nextText.length)
+                            store.updateSessionDraft(nextText, nextText.length, updateMentions = false)
+                            store.dismissMentionSuggestions()
+                        }
+                    },
                 )
             }
         }
@@ -1012,26 +1145,28 @@ private fun ActiveSessionTitleStrip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .clickable { onOpenArtifacts() }
-                    .padding(horizontal = 6.dp, vertical = 3.dp)
-                    .testTag("mobile_btn_artifacts"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Description,
-                    contentDescription = "会话产物",
-                    tint = if (artifactCount > 0) Everforest.BoldGold else Everforest.CommentGrey,
-                    modifier = Modifier.size(13.5.dp),
-                )
-                Text(
-                    text = if (artifactCount > 0) "产物($artifactCount)" else "产物",
-                    fontSize = 11.5.sp,
-                    color = if (artifactCount > 0) Everforest.BoldGold else Everforest.CommentGrey,
-                )
+            if (artifactCount > 0) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onOpenArtifacts() }
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                        .testTag("mobile_btn_artifacts"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Description,
+                        contentDescription = "会话产物",
+                        tint = Everforest.BoldGold,
+                        modifier = Modifier.size(13.5.dp),
+                    )
+                    Text(
+                        text = "产物($artifactCount)",
+                        fontSize = 11.5.sp,
+                        color = Everforest.BoldGold,
+                    )
+                }
             }
 
             Row(
@@ -1177,6 +1312,7 @@ private fun MinimalTopBar(
 internal fun CalmHomeEmptyState(
     state: ConsoleUiState,
     onOpenRunningSession: (String) -> Unit,
+    onQuickPrompt: ((String) -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -1213,9 +1349,9 @@ internal fun CalmHomeEmptyState(
 
         Text(
             text = if (isDesktopPlatform()) {
-                "在下方直接发起新对话，或从左侧切换本机与远程开发机会话"
+                "输入消息或 / 命令直接开始，也可从左侧切换本机与远程主机会话"
             } else {
-                "在下方直接发起新对话，或从左上角接管本机会话"
+                "输入消息或 / 命令直接开始，也可从左上角切换主机会话"
             },
             fontSize = 12.5.sp,
             color = Everforest.CommentGrey,
@@ -1223,6 +1359,51 @@ internal fun CalmHomeEmptyState(
         )
 
         val activeList = state.runningSessions.take(3)
+        if (activeList.isEmpty() && onQuickPrompt != null) {
+            Spacer(Modifier.height(18.dp))
+            val starters = remember(
+                state.selectedEngineId,
+                state.selectedEngine?.slashCommands,
+                state.availableEfforts,
+                state.availableModes,
+            ) {
+                val availableNames = buildAvailableSlashCommands(state).map { it.name }.toSet()
+                buildList {
+                    if ("plan" in availableNames) add("/plan " to "/plan 规划方案")
+                    if ("goal" in availableNames) {
+                        add("/goal " to "/goal 目标推进")
+                    } else if ("review" in availableNames) {
+                        add("/review " to "/review 代码审查")
+                    }
+                    add("/diff" to "/diff 查看变更")
+                    if (size < 3) add("/files" to "/files 浏览文件")
+                }.take(3)
+            }
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                for ((cmdText, label) in starters) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.Bg1,
+                        border = BorderStroke(1.dp, Everforest.Bg3),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable { onQuickPrompt(cmdText) }
+                            .testTag("home_starter_${cmdText.trim().removePrefix("/")}"),
+                    ) {
+                        Text(
+                            text = label,
+                            fontSize = 12.sp,
+                            color = Everforest.Grey2,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
+                    }
+                }
+            }
+        }
         if (activeList.isNotEmpty()) {
             Spacer(Modifier.height(20.dp))
             Column(

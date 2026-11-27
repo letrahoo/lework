@@ -191,6 +191,17 @@ export const EngineCapabilities = z.object({
 })
 export type EngineCapabilities = z.infer<typeof EngineCapabilities>
 
+export const SlashCommandSource = z.enum(['builtin', 'skill', 'workflow', 'local'])
+export type SlashCommandSource = z.infer<typeof SlashCommandSource>
+
+export const SlashCommandInfo = z.object({
+  name: z.string().min(1).max(128),
+  description: z.string().max(400),
+  inputHint: z.string().max(160).optional(),
+  source: SlashCommandSource.optional(),
+})
+export type SlashCommandInfo = z.infer<typeof SlashCommandInfo>
+
 export const EngineInfo = z.object({
   id: z.string(),
   displayName: z.string(),
@@ -202,6 +213,7 @@ export const EngineInfo = z.object({
   defaultMode: SessionMode.optional(),
   defaultEffort: ReasoningEffort.optional(),
   supportedModes: z.array(SessionMode).optional(),
+  slashCommands: z.array(SlashCommandInfo).optional(),
 })
 export type EngineInfo = z.infer<typeof EngineInfo>
 
@@ -286,6 +298,7 @@ export const SessionMeta = z.object({
   models: z.array(ModelOption).optional(),
   subagents: z.array(SubagentSummary).optional(),
   artifactCount: z.number().int().nonnegative().optional(),
+  slashCommands: z.array(SlashCommandInfo).optional(),
 })
 export type SessionMeta = z.infer<typeof SessionMeta>
 
@@ -332,6 +345,9 @@ export const ArtifactContentResult = z.object({
   truncated: z.boolean(),
 })
 export type ArtifactContentResult = z.infer<typeof ArtifactContentResult>
+
+export const InteractionKind = z.enum(['permission', 'question'])
+export type InteractionKind = z.infer<typeof InteractionKind>
 
 export const PermissionOptionKind = z.enum(['allow_once', 'allow_always', 'reject_once', 'reject_always'])
 export const PermissionOption = z.object({
@@ -514,6 +530,8 @@ export const AgentEvent = z.discriminatedUnion('type', [
   z.object({
     ...base, type: z.literal('permission.requested'),
     requestId: z.string(), toolCallId: z.string().optional(), title: z.string(), options: z.array(PermissionOption),
+    interactionKind: InteractionKind.optional(),
+    allowCustomInput: z.boolean().optional(),
   }),
   z.object({
     ...base, type: z.literal('permission.resolved'),
@@ -841,7 +859,12 @@ export const Methods = {
     result: z.object({ ok: z.literal(true) }),
   },
   'approval.respond': {
-    params: z.object({ sessionId: z.string(), requestId: z.string(), optionId: z.string().nullish() }),
+    params: z.object({
+      sessionId: z.string(),
+      requestId: z.string(),
+      optionId: z.string().nullish(),
+      customInput: z.string().max(4000).optional(),
+    }),
     result: z.object({ ok: z.literal(true) }),
   },
   'checkpoint.list': {

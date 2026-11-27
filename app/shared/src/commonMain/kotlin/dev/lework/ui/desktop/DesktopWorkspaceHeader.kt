@@ -260,24 +260,24 @@ internal fun DesktopWorkspaceHeader(
                         testTag = "active_session_archive_btn",
                         onClick = onToggleArchiveSession,
                     )
+
+                    val hasArtifacts = state.activeSessionArtifacts.isNotEmpty() ||
+                        ((activeSession.artifactCount ?: 0) > 0)
+
+                    LeworkIconActionButton(
+                        icon = Icons.Rounded.Description,
+                        tooltip = if (activeInspectorTab == DesktopInspectorTab.ARTIFACTS) "收起会话产物面板" else "查看执行方案与产物",
+                        shortcut = "⇧⌘A",
+                        active = activeInspectorTab == DesktopInspectorTab.ARTIFACTS,
+                        activeTint = Everforest.BoldGold,
+                        showBadgeDot = hasArtifacts,
+                        badgeColor = Everforest.BoldGold,
+                        size = DesktopControlSize,
+                        iconSize = 16.5.dp,
+                        testTag = "topbar_btn_artifacts",
+                        onClick = onToggleArtifactsInspector,
+                    )
                 }
-
-                val hasArtifacts = state.activeSessionArtifacts.isNotEmpty() ||
-                    ((activeSession?.artifactCount ?: 0) > 0)
-
-                LeworkIconActionButton(
-                    icon = Icons.Rounded.Description,
-                    tooltip = if (activeInspectorTab == DesktopInspectorTab.ARTIFACTS) "收起会话产物面板" else "查看执行方案与产物",
-                    shortcut = "⇧⌘A",
-                    active = activeInspectorTab == DesktopInspectorTab.ARTIFACTS,
-                    activeTint = Everforest.BoldGold,
-                    showBadgeDot = hasArtifacts,
-                    badgeColor = Everforest.BoldGold,
-                    size = DesktopControlSize,
-                    iconSize = 16.5.dp,
-                    testTag = "topbar_btn_artifacts",
-                    onClick = onToggleArtifactsInspector,
-                )
 
                 LeworkIconActionButton(
                     icon = Icons.AutoMirrored.Rounded.CompareArrows,

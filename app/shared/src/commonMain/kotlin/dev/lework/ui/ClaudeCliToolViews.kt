@@ -40,7 +40,6 @@ import dev.lework.protocol.ToolKind
 import dev.lework.protocol.ToolStatus
 import dev.lework.store.ChatTimelineItem
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -87,9 +86,9 @@ internal fun parseSubagentToolMeta(item: ChatTimelineItem.Tool): ParsedSubagentT
     val jsonObj = parseInputJsonObject(item.input)
 
     val kindLabel = when (lowerTitle) {
-        "swarm" -> "Swarm"
-        "run_workflow", "workflow" -> "Workflow"
-        else -> "SubAgent"
+        "swarm" -> "多智能体"
+        "run_workflow", "workflow" -> "工作流"
+        else -> "子任务"
     }
 
     val swarmAction = jsonObj?.str("action")?.lowercase()
@@ -105,15 +104,28 @@ internal fun parseSubagentToolMeta(item: ChatTimelineItem.Tool): ParsedSubagentT
         else -> null
     }
 
+    val swarmActionLabel = when (swarmAction?.lowercase()) {
+        "add" -> "启动"
+        "status" -> "状态"
+        "kill" -> "终止"
+        "model" -> "切换模型"
+        "models" -> "模型列表"
+        "title" -> "命名"
+        "wait" -> "等待"
+        "stop" -> "停止"
+        "remove" -> "移除"
+        else -> swarmAction
+    }
+
     val primaryTitle = when (lowerTitle) {
         "swarm" -> {
             val workerLabel = swarmName?.let { if (targetCount != null) "$it ×$targetCount" else it }
             when {
-                !workerLabel.isNullOrBlank() && !swarmAction.isNullOrBlank() && swarmAction != "add" ->
-                    "$swarmAction · $workerLabel"
+                !workerLabel.isNullOrBlank() && !swarmActionLabel.isNullOrBlank() && swarmAction != "add" ->
+                    "$swarmActionLabel · $workerLabel"
                 !workerLabel.isNullOrBlank() -> workerLabel
-                !swarmAction.isNullOrBlank() -> "Swarm · $swarmAction"
-                else -> "协作集群任务"
+                !swarmActionLabel.isNullOrBlank() -> "多智能体 · $swarmActionLabel"
+                else -> "多智能体协作"
             }
         }
         "run_workflow", "workflow" -> descField ?: jsonObj?.str("ScriptPath")?.substringAfterLast('/') ?: "工作流编排"
@@ -121,7 +133,7 @@ internal fun parseSubagentToolMeta(item: ChatTimelineItem.Tool): ParsedSubagentT
     }
 
     val roleBadge = when (lowerTitle) {
-        "swarm" -> swarmAction?.takeIf { it.isNotBlank() && it != "add" }
+        "swarm" -> swarmActionLabel?.takeIf { it.isNotBlank() && swarmAction != "add" }
         "run_workflow", "workflow" -> null
         else -> typeField?.takeIf { !it.equals(primaryTitle, ignoreCase = true) }
     }
@@ -457,7 +469,7 @@ internal fun buildProcessHeadline(
     if (skills.isNotEmpty()) {
         sep()
         withStyle(SpanStyle(color = Everforest.CommentGrey)) {
-            append("Skill ")
+            append("技能 ")
         }
         withStyle(SpanStyle(color = Everforest.Fg, fontWeight = FontWeight.Medium)) {
             append("${skills.take(2).joinToString(", ")}${if (skills.size > 2) "…" else ""}")
@@ -555,7 +567,7 @@ private fun CompactThoughtStepRow(text: String) {
             Text(
                 text = buildAnnotatedString {
                     withStyle(SpanStyle(color = Everforest.CommentGrey, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Medium)) {
-                        append("Thinking")
+                        append("思考过程")
                     }
                     if (!expanded) {
                         withStyle(SpanStyle(color = Everforest.FaintGrey, fontStyle = FontStyle.Italic)) {
@@ -606,15 +618,15 @@ private fun CompactReadClusterRow(entries: List<Pair<ChatTimelineItem.Tool, Pars
             )
             Text(
                 text = buildAnnotatedString {
-                    withStyle(SpanStyle(color = Everforest.Fg, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)) {
-                        append("Read")
+                    withStyle(SpanStyle(color = Everforest.Fg, fontWeight = FontWeight.SemiBold)) {
+                        append("查阅")
                     }
                     withStyle(SpanStyle(color = Everforest.FaintGrey)) {
                         val preview = names.take(2).joinToString(", ")
                         if (preview.isNotEmpty()) {
                             append("($preview${if (entries.size > 2) " +${entries.size - 2}" else ""})")
                         } else {
-                            append("(${entries.size} files)")
+                            append("(${entries.size} 个文件)")
                         }
                     }
                 },
@@ -648,9 +660,15 @@ internal fun ClaudeCliToolCallRow(
     parsed: ParsedCliTool = remember(item) { parseCliTool(item) },
     isSessionRunning: Boolean = false,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    var copied by remember { mutableStateOf(false) }
+    var expanded by remember(item.id) { mutableStateOf(false) }
+    var copyCount by remember(item.id) { mutableIntStateOf(0) }
+    val copied = copyCount > 0
+    LaunchedEffect(item.id, copyCount) {
+        if (copyCount > 0) {
+            delay(1_600L)
+            copyCount = 0
+        }
+    }
 
     val dotColor = when (item.status) {
         ToolStatus.COMPLETED -> Everforest.CommentGrey
@@ -751,8 +769,8 @@ internal fun ClaudeCliToolCallRow(
                             ) {
                                 Text(
                                     text = when (parsed.category) {
-                                        CliToolCategory.BASH -> parsed.description?.let { "# $it" } ?: "Shell"
-                                        CliToolCategory.SKILL -> "Skill · ${parsed.conciseLabel}"
+                                        CliToolCategory.BASH -> parsed.description?.let { "# $it" } ?: "终端命令"
+                                        CliToolCategory.SKILL -> "技能 · ${parsed.conciseLabel}"
                                         else -> parsed.badge
                                     },
                                     fontSize = 10.5.sp,
@@ -777,11 +795,8 @@ internal fun ClaudeCliToolCallRow(
                                                     append(item.output)
                                                 }
                                             }
-                                            copyTextToClipboard(payload)
-                                            copied = true
-                                            scope.launch {
-                                                delay(1_500L)
-                                                copied = false
+                                            if (copyTextToClipboard(payload)) {
+                                                copyCount++
                                             }
                                         }
                                         .padding(horizontal = 4.dp, vertical = 1.dp),
@@ -958,7 +973,7 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
         }
         return ParsedCliTool(
             category = CliToolCategory.SKILL,
-            badge = "Skill",
+            badge = "技能",
             badgeColor = Everforest.Purple,
             conciseLabel = skillName,
             microTag = shortSkill,
@@ -992,7 +1007,7 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
 
         return ParsedCliTool(
             category = CliToolCategory.BASH,
-            badge = "Bash",
+            badge = "终端",
             badgeColor = Everforest.Green,
             conciseLabel = oneLine(concise, 46),
             microTag = micro,
@@ -1008,7 +1023,7 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
         val base = fileNameOnly(p)
         return ParsedCliTool(
             category = CliToolCategory.READ,
-            badge = "Read",
+            badge = "读取",
             badgeColor = Everforest.Blue,
             conciseLabel = compactPath(p),
             microTag = base,
@@ -1023,7 +1038,7 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
         item.kind == ToolKind.EDIT ||
         lowerTitle in setOf("update", "edit", "multiedit", "write", "edit_file", "write_file", "apply_patch", "codex file patch")
     ) {
-        val badge = if (lowerTitle.contains("write")) "Write" else "Update"
+        val badge = if (lowerTitle.contains("write")) "写入" else "修改"
         val p = pathField ?: extractPatchPath(item.input) ?: rawTitle
         val synthesized = synthesizeEditToolDiff(p, jsonObj, item.input)
         val statDesc = synthesized?.second
@@ -1049,7 +1064,7 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
         val q = jsonObj?.str("pattern") ?: jsonObj?.str("Query") ?: jsonObj?.str("Pattern") ?: pathField.orEmpty()
         return ParsedCliTool(
             category = CliToolCategory.SEARCH,
-            badge = "Search",
+            badge = "搜索",
             badgeColor = Everforest.Aqua,
             conciseLabel = oneLine(q.ifEmpty { rawTitle }, 42),
             microTag = oneLine(q.ifEmpty { "检索" }, 14),
@@ -1074,15 +1089,15 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
     ) {
         val meta = parseSubagentToolMeta(item)
         val badge = when (lowerTitle) {
-            "swarm" -> "Swarm"
-            "run_workflow", "workflow" -> "Workflow"
-            else -> "Task"
+            "swarm" -> "多智能体"
+            "run_workflow", "workflow" -> "工作流"
+            else -> "子任务"
         }
         val role = meta.title
         return ParsedCliTool(
             category = CliToolCategory.TASK,
             badge = badge,
-            badgeColor = if (badge == "Workflow") Everforest.Aqua else Everforest.Orange,
+            badgeColor = if (badge == "工作流") Everforest.Aqua else Everforest.Orange,
             conciseLabel = oneLine(role, 42),
             microTag = oneLine(role, 22),
             description = role,
@@ -1091,10 +1106,78 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
         )
     }
 
+    // 6b. Interactive question, scheduled tasks, agent messaging & MCP tools
+    if (lowerTitle == "ask_question" || lowerTitle == "question") {
+        val firstQuestion = (jsonObj?.get("questions") as? JsonArray)
+            ?.firstOrNull()
+            ?.let { it as? JsonObject }
+            ?.str("question")
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val statusLabel = when (item.status) {
+            ToolStatus.COMPLETED -> "已确认"
+            ToolStatus.FAILED -> "已取消"
+            ToolStatus.PENDING, ToolStatus.IN_PROGRESS -> "等待你的确认"
+        }
+        return ParsedCliTool(
+            category = CliToolCategory.OTHER,
+            badge = "提问",
+            badgeColor = Everforest.Aqua,
+            conciseLabel = oneLine(firstQuestion ?: statusLabel, 42),
+            microTag = "提问",
+            description = null,
+            fullCommandOrDetail = item.input,
+            outputLineCount = outLines,
+        )
+    }
+    if (lowerTitle == "schedule") {
+        val hint = jsonObj?.str("CronExpression")
+            ?: jsonObj?.str("Prompt")?.let { oneLine(it, 36) }
+            ?: "定时任务"
+        return ParsedCliTool(
+            category = CliToolCategory.OTHER,
+            badge = "定时",
+            badgeColor = Everforest.BoldGold,
+            conciseLabel = oneLine(hint, 40),
+            microTag = "定时",
+            description = null,
+            fullCommandOrDetail = item.input,
+            outputLineCount = outLines,
+        )
+    }
+    if (lowerTitle == "send_message" || lowerTitle == "message") {
+        val msg = jsonObj?.str("Message")?.let { oneLine(it, 36) } ?: "智能体通信"
+        return ParsedCliTool(
+            category = CliToolCategory.TASK,
+            badge = "协作消息",
+            badgeColor = Everforest.Orange,
+            conciseLabel = msg,
+            microTag = "协作",
+            description = null,
+            fullCommandOrDetail = item.input,
+            outputLineCount = outLines,
+        )
+    }
+    if (lowerTitle in setOf("call_mcp_tool", "read_resource", "list_resources", "mcp")) {
+        val server = jsonObj?.str("ServerName")
+        val toolName = jsonObj?.str("ToolName") ?: jsonObj?.str("Uri")
+        val label = listOfNotNull(server, toolName).joinToString(" · ").ifEmpty { rawTitle }
+        return ParsedCliTool(
+            category = CliToolCategory.OTHER,
+            badge = "外部工具",
+            badgeColor = Everforest.Aqua,
+            conciseLabel = oneLine(label, 42),
+            microTag = server ?: "外部工具",
+            description = null,
+            fullCommandOrDetail = item.input,
+            outputLineCount = outLines,
+        )
+    }
+
     // 7. Generic Tool
     return ParsedCliTool(
         category = CliToolCategory.OTHER,
-        badge = rawTitle.ifEmpty { "Tool" },
+        badge = rawTitle.ifEmpty { "工具" },
         badgeColor = Everforest.Aqua,
         conciseLabel = pathField?.let { compactPath(it) }.orEmpty(),
         microTag = rawTitle.take(14),
@@ -1106,7 +1189,7 @@ private fun parseCliToolUncached(item: ChatTimelineItem.Tool): ParsedCliTool {
 
 private fun summarizeCommandExecutable(cmd: String, maxChars: Int = 34): String {
     val firstSegment = cmd.trim().substringBefore('\n').substringBefore(';').substringBefore("&&").trim()
-    if (firstSegment.isEmpty()) return "command"
+    if (firstSegment.isEmpty()) return "命令"
     val tokens = firstSegment.split(Regex("\\s+")).filter {
         it.isNotEmpty() && !it.contains('=') && it !in setOf("sudo", "env", "nohup", "time")
     }

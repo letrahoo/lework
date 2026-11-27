@@ -22,6 +22,7 @@ import {
 } from '@lework/protocol'
 import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/types.ts'
 import { formatEngineTurnError } from './engines/network-error.ts'
+import { discoverEngineSlashCommands } from './engines/slash-commands.ts'
 import { SleepInhibitor } from './platform/index.ts'
 import type { ModelRegistry } from './registry/model-registry.ts'
 import { isExternalProviderId } from './registry/provider-adapters.ts'
@@ -148,6 +149,9 @@ export class SessionManager {
       )
       const hasExternalRoute = models.some(m => isExternalProviderId(m.providerId))
       const hostDefaults = this.hostInspector.getEngineHostDefaults(adapter.id)
+      const slashCommands = status.installed
+        ? discoverEngineSlashCommands(adapter.id, { cwd: this.workspaceRoots[0] })
+        : []
       out.push({
         id: adapter.id,
         displayName: adapter.displayName,
@@ -159,6 +163,7 @@ export class SessionManager {
         defaultMode: hostDefaults.defaultMode,
         defaultEffort: hostDefaults.defaultEffort,
         supportedModes: hostDefaults.supportedModes,
+        ...(slashCommands.length > 0 ? { slashCommands } : {}),
       })
     }
     return out
@@ -383,6 +388,29 @@ export class SessionManager {
             const aliasId = `host:${adapter.id}:${clean}`
             this.metaStore.linkAlias(sessionId, aliasId)
             linkSessionAttachmentAlias(sessionId, aliasId)
+          }
+        },
+        onSlashCommandsChanged: commands => {
+          managed.meta.slashCommands = commands.length > 0 ? commands : undefined
+          managed.meta = this.decorateManagedMeta(managed)
+          this.callbacks.onSessionUpdated(managed.meta)
+        },
+        onModeChanged: nextMode => {
+          if (managed.meta.mode !== nextMode) {
+            managed.meta.mode = nextMode
+            managed.meta = this.decorateManagedMeta(managed)
+            this.callbacks.onSessionUpdated(managed.meta)
+          }
+        },
+        onSubagentsHint: () => {
+          if (!managed.nativeId) return
+          const prevJson = JSON.stringify(managed.meta.subagents ?? null)
+          const hostKey = `host:${managed.meta.engineId}:${managed.nativeId}`
+          this.hostInspector.refreshDiscoveredSubagents?.(hostKey)
+          const refreshed = this.decorateManagedMeta(managed)
+          managed.meta = refreshed
+          if (JSON.stringify(refreshed.subagents ?? null) !== prevJson) {
+            this.callbacks.onSessionUpdated(refreshed)
           }
         },
       })
@@ -709,6 +737,29 @@ export class SessionManager {
             linkSessionAttachmentAlias(sessionId, aliasId)
           }
         },
+        onSlashCommandsChanged: commands => {
+          managed.meta.slashCommands = commands.length > 0 ? commands : undefined
+          managed.meta = this.decorateManagedMeta(managed)
+          this.callbacks.onSessionUpdated(managed.meta)
+        },
+        onModeChanged: nextMode => {
+          if (managed.meta.mode !== nextMode) {
+            managed.meta.mode = nextMode
+            managed.meta = this.decorateManagedMeta(managed)
+            this.callbacks.onSessionUpdated(managed.meta)
+          }
+        },
+        onSubagentsHint: () => {
+          if (!managed.nativeId) return
+          const prevJson = JSON.stringify(managed.meta.subagents ?? null)
+          const hostKey = `host:${managed.meta.engineId}:${managed.nativeId}`
+          this.hostInspector.refreshDiscoveredSubagents?.(hostKey)
+          const refreshed = this.decorateManagedMeta(managed)
+          managed.meta = refreshed
+          if (JSON.stringify(refreshed.subagents ?? null) !== prevJson) {
+            this.callbacks.onSessionUpdated(refreshed)
+          }
+        },
       })
       managed.handle = freshHandle
     } catch (err) {
@@ -986,6 +1037,7 @@ export class SessionManager {
     sessionId: string,
     requestId: string,
     optionId: string | null,
+    customInput?: string,
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if ((!managed || requestId.startsWith('tty_perm_')) && sessionId.startsWith('host:')) {
@@ -1003,7 +1055,7 @@ export class SessionManager {
       throw new HubRpcError(ErrorCode.NotFound, `Session "${sessionId}" not found`)
     }
     try {
-      await managed.handle.respondPermission(requestId, optionId)
+      await managed.handle.respondPermission(requestId, optionId, customInput)
     } catch (err) {
       throw new HubRpcError(
         ErrorCode.InvalidParams,
@@ -1092,13 +1144,20 @@ export class SessionManager {
         if (!managed.handle.setModel) {
           throw new HubRpcError(ErrorCode.EngineError, 'Engine does not support changing models.')
         }
-        await managed.handle.setModel(cleanModel)
-        managed.meta.model = cleanModel
+        const modelChanged = cleanModel !== managed.meta.model
+        if (opts?.reasoningEffort && !modelChanged) {
+          await managed.handle.setEffort?.(opts.reasoningEffort)
+          managed.meta.reasoningEffort = opts.reasoningEffort
+        }
+        if (modelChanged || (!opts?.reasoningEffort && !opts?.mode)) {
+          await managed.handle.setModel(cleanModel)
+          managed.meta.model = cleanModel
+        }
         if (cleanProvider) {
           managed.providerId = cleanProvider
           managed.meta.providerId = cleanProvider
         }
-        if (opts?.reasoningEffort) {
+        if (opts?.reasoningEffort && modelChanged) {
           await managed.handle.setEffort?.(opts.reasoningEffort)
           managed.meta.reasoningEffort = opts.reasoningEffort
         }

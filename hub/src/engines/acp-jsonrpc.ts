@@ -21,7 +21,7 @@ export type JsonRpcInbound = JsonRpcNotification | JsonRpcInboundRequest
 interface PendingCall {
   resolve: (value: unknown) => void
   reject: (err: Error) => void
-  timer: ReturnType<typeof setTimeout>
+  timer?: ReturnType<typeof setTimeout>
 }
 
 export interface StdioJsonRpcOptions {
@@ -104,16 +104,19 @@ export class StdioJsonRpcProcess {
   request(method: string, params: unknown, timeoutMs = 60_000): Promise<unknown> {
     const id = this.nextId++
     return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`JSON-RPC request "${method}" timed out after ${timeoutMs}ms`))
-      }, timeoutMs)
-      timer.unref?.()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          this.pending.delete(id)
+          reject(new Error(`JSON-RPC request "${method}" timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+        timer.unref?.()
+      }
       this.pending.set(id, { resolve, reject, timer })
       try {
         this.write({ jsonrpc: '2.0', id, method, params })
       } catch (err) {
-        clearTimeout(timer)
+        if (timer) clearTimeout(timer)
         this.pending.delete(id)
         reject(err instanceof Error ? err : new Error(String(err)))
       }
@@ -196,7 +199,7 @@ export class StdioJsonRpcProcess {
       const entry = this.pending.get(obj.id)
       if (!entry) return
       this.pending.delete(obj.id)
-      clearTimeout(entry.timer)
+      if (entry.timer) clearTimeout(entry.timer)
       if (obj.error !== undefined && obj.error !== null) {
         const errObj = obj.error as { message?: string }
         entry.reject(new Error(typeof errObj?.message === 'string' ? errObj.message : 'Upstream ACP error'))
@@ -221,7 +224,7 @@ export class StdioJsonRpcProcess {
 
   private failAll(err: Error): void {
     for (const [id, entry] of this.pending.entries()) {
-      clearTimeout(entry.timer)
+      if (entry.timer) clearTimeout(entry.timer)
       entry.reject(err)
       this.pending.delete(id)
     }

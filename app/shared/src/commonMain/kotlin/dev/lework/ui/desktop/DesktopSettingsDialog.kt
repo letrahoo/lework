@@ -44,6 +44,7 @@ import dev.lework.ui.RenameHostDialog
 import dev.lework.ui.connectionChannelLabel
 import dev.lework.ui.dialogEscapeDismiss
 import dev.lework.ui.shortEngineLabel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -69,12 +70,33 @@ internal fun DesktopSettingsDialog(
     var copiedLogPath by remember { mutableStateOf(false) }
     var copiedPathExport by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
+    var confirmingRemoveHost by remember { mutableStateOf<PairedHost?>(null) }
+    var confirmingLogout by remember { mutableStateOf(false) }
     var cliStatus by remember { mutableStateOf(inspectGlobalCliStatus()) }
     var cliBusy by remember { mutableStateOf(false) }
     var cliFeedback by remember { mutableStateOf<String?>(null) }
     var cliFeedbackIsError by remember { mutableStateOf(false) }
     val onlineCount = state.engines.count { it.status.ready }
     val logPath = remember { runtimeLogFilePath() }
+
+    LaunchedEffect(copiedFingerprint) {
+        if (copiedFingerprint) {
+            delay(1_600L)
+            copiedFingerprint = false
+        }
+    }
+    LaunchedEffect(copiedLogPath) {
+        if (copiedLogPath) {
+            delay(1_600L)
+            copiedLogPath = false
+        }
+    }
+    LaunchedEffect(copiedPathExport) {
+        if (copiedPathExport) {
+            delay(1_600L)
+            copiedPathExport = false
+        }
+    }
 
     fun triggerGlobalCliInstall() {
         if (cliBusy) return
@@ -158,7 +180,7 @@ internal fun DesktopSettingsDialog(
                             color = Everforest.Fg,
                         )
                         Text(
-                            text = "管理当前开发机连接、安全凭证与桌面端快捷键",
+                            text = "管理当前主机连接、安全凭证与桌面端快捷键",
                             fontSize = 12.sp,
                             color = Everforest.CommentGrey,
                         )
@@ -360,13 +382,13 @@ internal fun DesktopSettingsDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = "已配对开发机",
+                                    text = "已配对主机",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = Everforest.Fg,
                                 )
                                 Text(
-                                    text = "＋ 连接其他开发机",
+                                    text = "＋ 连接其他主机",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = Everforest.BoldGold,
@@ -383,7 +405,7 @@ internal fun DesktopSettingsDialog(
 
                             if (state.pairedHosts.isEmpty()) {
                                 Text(
-                                    text = "当前使用本机工作站直连，可通过右上按钮一键 SSH 连接远程 Linux 开发机。",
+                                    text = "当前使用本机直连，可通过右上按钮一键 SSH 连接远程 Linux 主机。",
                                     fontSize = 11.5.sp,
                                     color = Everforest.Grey1,
                                 )
@@ -474,10 +496,11 @@ internal fun DesktopSettingsDialog(
                                                     if (!isCurrent) {
                                                         LeworkIconActionButton(
                                                             icon = Icons.Rounded.Close,
-                                                            tooltip = "移除此开发机记录",
+                                                            tooltip = "移除此主机记录",
                                                             size = 24.dp,
                                                             iconSize = 14.dp,
-                                                            onClick = { onRemoveHost(host.hubId) },
+                                                            testTag = "settings_btn_remove_host_${host.hubId}",
+                                                            onClick = { confirmingRemoveHost = host },
                                                         )
                                                     }
                                                 }
@@ -509,9 +532,10 @@ internal fun DesktopSettingsDialog(
                             DesktopShortcutRow("全局唤起 / 隐藏窗口", "⌃⌘E", "关闭窗口到后台", "⌘W")
                             DesktopShortcutRow("关闭当前弹层", "Esc", "打开设置", "⌘,")
                             DesktopShortcutRow("新建会话", "⌘N", "收起 / 展开侧边栏", "⌘B")
-                            DesktopShortcutRow("全局搜索历史对话", "⇧⌘F", "当前会话内查找", "⌘F")
-                            DesktopShortcutRow("切换引擎与模型", "⌘K", "查看代码变更与快照", "⇧⌘D")
-                            DesktopShortcutRow("刷新会话列表", "⌘R", "发送 / 换行", "Enter / ⇧↩")
+                            DesktopShortcutRow("切换相邻会话", "⌥↑ / ⌥↓", "切换前 9 个会话", "⌘1~9")
+                            DesktopShortcutRow("会话历史后退 / 前进", "⌘[ / ⌘]", "全局搜索 / 会话内查找", "⇧⌘F / ⌘F")
+                            DesktopShortcutRow("切换引擎与模型", "⌘K", "代码变更 / 会话产物", "⇧⌘D / ⇧⌘A")
+                            DesktopShortcutRow("命令面板 / 引用文件", "/ / @", "发送 / 换行", "Enter / ⇧↩")
                         }
                     }
 
@@ -604,10 +628,7 @@ internal fun DesktopSettingsDialog(
                         color = Everforest.Grey0,
                     )
                     TextButton(
-                        onClick = {
-                            onDismiss()
-                            onLogout()
-                        },
+                        onClick = { confirmingLogout = true },
                         modifier = Modifier.testTag("settings_btn_logout"),
                     ) {
                         Text(
@@ -619,6 +640,84 @@ internal fun DesktopSettingsDialog(
                 }
             }
         }
+    }
+
+    if (confirmingLogout) {
+        ModalEscapeEffect(onDismiss = { confirmingLogout = false })
+        AlertDialog(
+            onDismissRequest = { confirmingLogout = false },
+            containerColor = Everforest.Bg1,
+            titleContentColor = Everforest.Fg,
+            textContentColor = Everforest.Grey2,
+            title = { Text("确认断开当前主机连接？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    text = "断开后将退出当前连接，你的历史会话和项目文件均安全保留在主机上，可随时重新连接。",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmingLogout = false
+                        onDismiss()
+                        onLogout()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Everforest.Red,
+                        contentColor = Everforest.BgDim,
+                    ),
+                    modifier = Modifier.testTag("settings_confirm_logout_btn"),
+                ) {
+                    Text("确认断开", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingLogout = false }) {
+                    Text("取消", color = Everforest.Grey1)
+                }
+            },
+        )
+    }
+
+    val hostToRemove = confirmingRemoveHost
+    if (hostToRemove != null) {
+        ModalEscapeEffect(onDismiss = { confirmingRemoveHost = null })
+        AlertDialog(
+            onDismissRequest = { confirmingRemoveHost = null },
+            containerColor = Everforest.Bg1,
+            titleContentColor = Everforest.Fg,
+            textContentColor = Everforest.Grey2,
+            title = { Text("移除主机记录？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    text = "将移除「${hostToRemove.displayName}」的本地配对记录与访问凭证，后续连接需重新配对。",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmingRemoveHost = null
+                        onRemoveHost(hostToRemove.hubId)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Everforest.Red,
+                        contentColor = Everforest.BgDim,
+                    ),
+                    modifier = Modifier.testTag("settings_confirm_remove_host_btn"),
+                ) {
+                    Text("确认移除", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingRemoveHost = null }) {
+                    Text("取消", color = Everforest.Grey1)
+                }
+            },
+        )
     }
 
     val targetHost = renamingHost
@@ -757,7 +856,7 @@ private fun DesktopGlobalCliSection(
             }
 
             Text(
-                text = "注册后可在任意终端直接执行 lework tsnet status、lework pair、lework serve 等命令，无需手动运行 node hub。",
+                text = "注册后可在任意终端直接执行 lework tsnet status、lework pair、lework serve 等命令，无需手动启动后台服务。",
                 fontSize = 11.5.sp,
                 lineHeight = 16.sp,
                 color = Everforest.Grey1,

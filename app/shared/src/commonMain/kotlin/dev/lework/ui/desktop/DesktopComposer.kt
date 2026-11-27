@@ -83,6 +83,7 @@ internal fun DesktopComposer(
     onRemoveImage: (Int) -> Unit,
     onSelectMentionFile: (String) -> Unit,
     onDismissMention: () -> Unit,
+    onSelectSlashCommand: (ResolvedSlashCommand) -> Unit = {},
 ) {
     val activeSess = state.activeSession?.takeIf { it.id == state.activeSessionId }
     val isSessionRunning = activeSess != null &&
@@ -91,13 +92,108 @@ internal fun DesktopComposer(
     val imageSupported = remember { canPickImages() } && (state.selectedEngine?.capabilities?.images != false)
     var lightboxIndex by remember { mutableStateOf<Int?>(null) }
 
+    var browseSlashManually by remember(draftKey) { mutableStateOf(false) }
+    var dismissedSlashForText by remember(draftKey) { mutableStateOf<String?>(null) }
+    var slashInsertedByButton by remember(draftKey) { mutableStateOf(false) }
+    var mentionInsertedByButton by remember(draftKey) { mutableStateOf(false) }
+    val typedSlashQuery = remember(text) { extractSlashCommandQuery(text) }
+    val effectiveSlashQuery = typedSlashQuery ?: if (browseSlashManually) "" else null
+    val availableSlashCommands = remember(
+        state.selectedEngineId,
+        activeSess?.id,
+        activeSess?.slashCommands,
+        state.selectedEngine?.slashCommands,
+        state.availableEfforts,
+        state.availableModes,
+    ) {
+        buildAvailableSlashCommands(state, includeDesktopOnly = true)
+    }
+    val filteredSlashCommands = remember(availableSlashCommands, effectiveSlashQuery) {
+        effectiveSlashQuery?.let { filterSlashCommands(availableSlashCommands, it) }.orEmpty()
+    }
+    val slashPopupVisible =
+        effectiveSlashQuery != null && dismissedSlashForText != text && filteredSlashCommands.isNotEmpty()
+    var slashSelectedIndex by remember(draftKey) { mutableIntStateOf(0) }
+    LaunchedEffect(effectiveSlashQuery, filteredSlashCommands.size) {
+        slashSelectedIndex = 0
+    }
+
+    val visibleMentions = remember(state.workspaceFileSuggestions) {
+        state.workspaceFileSuggestions.take(6)
+    }
+    val mentionPopupVisible = !slashPopupVisible && state.mentionQuery != null && visibleMentions.isNotEmpty()
+    var mentionSelectedIndex by remember(draftKey) { mutableIntStateOf(0) }
+    LaunchedEffect(state.mentionQuery, visibleMentions.size) {
+        mentionSelectedIndex = 0
+    }
+
+    var fieldValue by remember(draftKey) {
+        mutableStateOf(TextFieldValue(text = text, selection = TextRange(text.length)))
+    }
+    var lastSyncedExternalText by remember(draftKey) { mutableStateOf(text) }
+    if (text != lastSyncedExternalText) {
+        lastSyncedExternalText = text
+        if (fieldValue.text != text) {
+            fieldValue = TextFieldValue(
+                text = text,
+                selection = TextRange(text.length),
+            )
+        }
+    }
+
+    val dismissSlashPopup = {
+        browseSlashManually = false
+        if (slashInsertedByButton && text == "/") {
+            slashInsertedByButton = false
+            dismissedSlashForText = null
+            onTextChange("")
+        } else {
+            slashInsertedByButton = false
+            dismissedSlashForText = text
+        }
+    }
+    val dismissMentionPopup = {
+        onDismissMention()
+        if (mentionInsertedByButton && text == "@") {
+            mentionInsertedByButton = false
+            onTextChange("")
+        } else {
+            mentionInsertedByButton = false
+        }
+    }
+
+    ModalEscapeEffect(
+        enabled = (slashPopupVisible || mentionPopupVisible) && fieldValue.composition == null,
+        onDismiss = {
+            if (slashPopupVisible) {
+                dismissSlashPopup()
+            } else if (mentionPopupVisible) {
+                dismissMentionPopup()
+            }
+        },
+    )
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (state.mentionQuery != null && state.workspaceFileSuggestions.isNotEmpty()) {
+        if (slashPopupVisible) {
+            SlashCommandPopup(
+                commands = filteredSlashCommands,
+                selectedIndex = slashSelectedIndex,
+                isDesktop = true,
+                onSelect = { cmd ->
+                    browseSlashManually = false
+                    dismissedSlashForText = null
+                    slashInsertedByButton = false
+                    onSelectSlashCommand(cmd)
+                },
+                onDismiss = dismissSlashPopup,
+            )
+        } else if (mentionPopupVisible) {
+            val safeMentionIdx = mentionSelectedIndex.coerceIn(0, (visibleMentions.size - 1).coerceAtLeast(0))
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = Everforest.Bg1,
@@ -115,7 +211,7 @@ internal fun DesktopComposer(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            text = "选择要引用的工作区文件（Enter 选中首项）",
+                            text = "选择要引用的工作区文件（↑↓ 选择 · ↩ 确认 · Esc 关闭）",
                             fontSize = 11.sp,
                             color = Everforest.CommentGrey,
                         )
@@ -126,13 +222,20 @@ internal fun DesktopComposer(
                             modifier = Modifier.clickable { onDismissMention() },
                         )
                     }
-                    state.workspaceFileSuggestions.take(6).forEach { relPath ->
+                    visibleMentions.forEachIndexed { idx, relPath ->
                         val itemHover = remember { MutableInteractionSource() }
                         val hovered by itemHover.collectIsHoveredAsState()
+                        val highlighted = idx == safeMentionIdx
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(if (hovered) Everforest.Bg2 else Color.Transparent)
+                                .background(
+                                    when {
+                                        highlighted -> Everforest.Bg2
+                                        hovered -> Everforest.Bg2.copy(alpha = 0.65f)
+                                        else -> Color.Transparent
+                                    },
+                                )
                                 .hoverable(itemHover)
                                 .clickable(interactionSource = itemHover, indication = null) {
                                     onSelectMentionFile(relPath)
@@ -151,7 +254,7 @@ internal fun DesktopComposer(
                                 text = relPath,
                                 fontSize = 12.5.sp,
                                 fontFamily = FontFamily.Monospace,
-                                color = Everforest.Fg,
+                                color = if (highlighted) Everforest.CodeGreen else Everforest.Fg,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -277,20 +380,6 @@ internal fun DesktopComposer(
                 val canSubmitNow =
                     hasDraft && (!isSessionRunning || activeSess?.state == SessionState.RUNNING)
 
-                var fieldValue by remember(draftKey) {
-                    mutableStateOf(TextFieldValue(text = text, selection = TextRange(text.length)))
-                }
-                var lastSyncedExternalText by remember(draftKey) { mutableStateOf(text) }
-                if (text != lastSyncedExternalText) {
-                    lastSyncedExternalText = text
-                    if (fieldValue.text != text) {
-                        fieldValue = TextFieldValue(
-                            text = text,
-                            selection = TextRange(text.length),
-                        )
-                    }
-                }
-
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -298,18 +387,24 @@ internal fun DesktopComposer(
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     if (text.isEmpty()) {
+                        val imageHint = if (imageSupported) " · ⌘V 贴图" else ""
                         Text(
-                            text = "发消息给 ${shortEngineLabel(state.selectedEngineId)}（Enter 发送 · Shift+Enter 换行 · ⌘V 粘贴图片 · @ 引用文件）…",
+                            text = "发消息给 ${shortEngineLabel(state.selectedEngineId)}（/ 命令 · @ 文件$imageHint · Enter 发送）…",
                             color = Everforest.CommentGrey,
                             fontSize = 14.5.sp,
                             lineHeight = 20.sp,
                         )
                     }
+                    key(draftKey) {
                     BasicTextField(
                         value = fieldValue,
                         onValueChange = { next ->
                             fieldValue = next
                             if (next.text != text) {
+                                browseSlashManually = false
+                                dismissedSlashForText = null
+                                if (next.text != "/") slashInsertedByButton = false
+                                if (next.text != "@") mentionInsertedByButton = false
                                 onTextChange(next.text)
                             }
                         },
@@ -333,6 +428,63 @@ internal fun DesktopComposer(
                                 if (isPasteShortcut) {
                                     return@onPreviewKeyEvent onPasteClipboardImages()
                                 }
+                                val noMods = !keyEvent.isMetaPressed &&
+                                    !keyEvent.isCtrlPressed &&
+                                    !keyEvent.isAltPressed &&
+                                    !keyEvent.isShiftPressed
+                                if (fieldValue.composition == null) {
+                                    if (slashPopupVisible) {
+                                        val count = filteredSlashCommands.size
+                                        if (keyEvent.key == Key.DirectionUp && noMods) {
+                                            if (count > 0) slashSelectedIndex = (slashSelectedIndex - 1 + count) % count
+                                            return@onPreviewKeyEvent true
+                                        }
+                                        if (keyEvent.key == Key.DirectionDown && noMods) {
+                                            if (count > 0) slashSelectedIndex = (slashSelectedIndex + 1) % count
+                                            return@onPreviewKeyEvent true
+                                        }
+                                        if (keyEvent.key == Key.Escape) {
+                                            dismissSlashPopup()
+                                            return@onPreviewKeyEvent true
+                                        }
+                                        if (keyEvent.key == Key.Tab && noMods) {
+                                            val chosen = filteredSlashCommands.getOrNull(
+                                                slashSelectedIndex.coerceIn(0, (count - 1).coerceAtLeast(0)),
+                                            )
+                                            if (chosen != null) {
+                                                browseSlashManually = false
+                                                dismissedSlashForText = null
+                                                slashInsertedByButton = false
+                                                onSelectSlashCommand(chosen)
+                                                return@onPreviewKeyEvent true
+                                            }
+                                        }
+                                    } else if (mentionPopupVisible) {
+                                        val count = visibleMentions.size
+                                        if (keyEvent.key == Key.DirectionUp && noMods) {
+                                            if (count > 0) mentionSelectedIndex = (mentionSelectedIndex - 1 + count) % count
+                                            return@onPreviewKeyEvent true
+                                        }
+                                        if (keyEvent.key == Key.DirectionDown && noMods) {
+                                            if (count > 0) mentionSelectedIndex = (mentionSelectedIndex + 1) % count
+                                            return@onPreviewKeyEvent true
+                                        }
+                                        if (keyEvent.key == Key.Escape) {
+                                            dismissMentionPopup()
+                                            return@onPreviewKeyEvent true
+                                        }
+                                        if (keyEvent.key == Key.Tab && noMods) {
+                                            val chosen = visibleMentions.getOrNull(
+                                                mentionSelectedIndex.coerceIn(0, (count - 1).coerceAtLeast(0)),
+                                            )
+                                            if (chosen != null) {
+                                                mentionInsertedByButton = false
+                                                onSelectMentionFile(chosen)
+                                                return@onPreviewKeyEvent true
+                                            }
+                                        }
+                                    }
+                                }
                                 val isEnter = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
                                 if (!isEnter) return@onPreviewKeyEvent false
                                 // Let active IME composition (e.g. Chinese Pinyin) confirm characters first.
@@ -347,8 +499,24 @@ internal fun DesktopComposer(
                                     onTextChange(inserted.text)
                                     return@onPreviewKeyEvent true
                                 }
-                                if (state.mentionQuery != null && state.workspaceFileSuggestions.isNotEmpty()) {
-                                    onSelectMentionFile(state.workspaceFileSuggestions.first())
+                                if (slashPopupVisible) {
+                                    val chosen = filteredSlashCommands.getOrNull(
+                                        slashSelectedIndex.coerceIn(0, (filteredSlashCommands.size - 1).coerceAtLeast(0)),
+                                    )
+                                    if (chosen != null) {
+                                        browseSlashManually = false
+                                        dismissedSlashForText = null
+                                        slashInsertedByButton = false
+                                        onSelectSlashCommand(chosen)
+                                    }
+                                } else if (mentionPopupVisible) {
+                                    val chosen = visibleMentions.getOrNull(
+                                        mentionSelectedIndex.coerceIn(0, (visibleMentions.size - 1).coerceAtLeast(0)),
+                                    )
+                                    if (chosen != null) {
+                                        mentionInsertedByButton = false
+                                        onSelectMentionFile(chosen)
+                                    }
                                 } else if (canSubmitNow) {
                                     onSend()
                                 }
@@ -356,9 +524,10 @@ internal fun DesktopComposer(
                             }
                             .testTag("composer_input"),
                     )
+                    }
                 }
 
-                // Bottom Controls Bar (Iconified Attachments + Workspace + Unified Model/Reasoning Trigger + Mode)
+                // Bottom Controls Bar (Attachments + `/` Commands + `@` Files + Workspace + Model/Effort + Mode)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -403,16 +572,54 @@ internal fun DesktopComposer(
                         }
 
                         LeworkIconActionButton(
+                            icon = Icons.Rounded.Terminal,
+                            tooltip = if (slashPopupVisible) "收起命令面板" else "命令与技能",
+                            shortcut = "/",
+                            subtitle = "查看 ${shortEngineLabel(state.selectedEngineId)} 内置命令、协作指令与快捷操作",
+                            active = slashPopupVisible,
+                            activeTint = Everforest.CodeGreen,
+                            size = 28.dp,
+                            iconSize = 15.5.dp,
+                            testTag = "composer_slash_btn",
+                            onClick = {
+                                if (slashPopupVisible) {
+                                    dismissSlashPopup()
+                                } else {
+                                    if (mentionPopupVisible) onDismissMention()
+                                    dismissedSlashForText = null
+                                    if (text.isEmpty()) {
+                                        slashInsertedByButton = true
+                                        onTextChange("/")
+                                    } else {
+                                        slashInsertedByButton = false
+                                        browseSlashManually = true
+                                    }
+                                    runCatching { composerFocusRequester.requestFocus() }
+                                }
+                            },
+                        )
+
+                        LeworkIconActionButton(
                             icon = Icons.Rounded.AlternateEmail,
-                            tooltip = "引用工作区文件",
+                            tooltip = if (mentionPopupVisible) "收起文件引用" else "引用工作区文件",
                             shortcut = "@",
                             subtitle = "插入 @ 搜索并引用项目内文件",
+                            active = mentionPopupVisible,
+                            activeTint = Everforest.Green,
                             size = 28.dp,
                             iconSize = 16.dp,
                             testTag = "composer_mention_btn",
                             onClick = {
-                                val next = if (text.isEmpty() || text.last().isWhitespace()) "$text@" else "$text @"
-                                onTextChange(next)
+                                if (mentionPopupVisible) {
+                                    dismissMentionPopup()
+                                } else {
+                                    browseSlashManually = false
+                                    slashInsertedByButton = false
+                                    mentionInsertedByButton = text.isEmpty()
+                                    val next = if (text.isEmpty() || text.last().isWhitespace()) "$text@" else "$text @"
+                                    onTextChange(next)
+                                    runCatching { composerFocusRequester.requestFocus() }
+                                }
                             },
                         )
 
@@ -504,12 +711,14 @@ internal fun DesktopComposer(
                                             )
                                         }
                                     }
-                                    Text(
-                                        text = "· ${effortDisplayLabel(state.selectedEffort)}",
-                                        fontSize = 11.sp,
-                                        color = Everforest.Grey1,
-                                        maxLines = 1,
-                                    )
+                                    if (state.availableEfforts.size > 1) {
+                                        Text(
+                                            text = "· ${effortDisplayLabel(state.selectedEffort)}",
+                                            fontSize = 11.sp,
+                                            color = Everforest.Grey1,
+                                            maxLines = 1,
+                                        )
+                                    }
                                     Icon(
                                         imageVector = Icons.Rounded.KeyboardArrowDown,
                                         contentDescription = null,

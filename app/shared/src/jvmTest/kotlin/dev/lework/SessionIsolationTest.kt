@@ -255,7 +255,12 @@ class SessionIsolationTest {
             val sentPrompts = mutableListOf<Pair<String, String>>()
 
             val transport = object : HubTransport by base {
-                override suspend fun respondApproval(sessionId: String, requestId: String, optionId: String?) {
+                override suspend fun respondApproval(
+                    sessionId: String,
+                    requestId: String,
+                    optionId: String?,
+                    customInput: String?,
+                ) {
                     releaseApproval.await()
                     error("终端审批已过期")
                 }

@@ -44,6 +44,7 @@ import dev.lework.platform.copyTextToClipboard
 import dev.lework.platform.signingExpiryRemainingHours
 import dev.lework.protocol.*
 import dev.lework.store.*
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -68,6 +69,14 @@ internal fun TasksSidebarContent(
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
+    var confirmingLogout by remember { mutableStateOf(false) }
+    var copiedResignCmd by remember { mutableStateOf(false) }
+    LaunchedEffect(copiedResignCmd) {
+        if (copiedResignCmd) {
+            delay(1_600L)
+            copiedResignCmd = false
+        }
+    }
     val remainingSignHours = remember { signingExpiryRemainingHours() }
     val dismissKeyboard = rememberKeyboardDismisser()
     val drawerListState = rememberLazyListState()
@@ -129,12 +138,13 @@ internal fun TasksSidebarContent(
                         color = Everforest.Grey2,
                     )
                     Text(
-                        text = "复制续签命令",
+                        text = if (copiedResignCmd) "已复制续签命令" else "复制续签命令",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                         color = Everforest.Green,
                         modifier = Modifier.clickable {
                             copyTextToClipboard("./scripts/ios-install.sh --install")
+                            copiedResignCmd = true
                         },
                     )
                 }
@@ -752,10 +762,51 @@ internal fun TasksSidebarContent(
                     }
                 }
             }
-            TextButton(onClick = onLogout) {
-                Text("退出登录", fontSize = 12.sp, color = Everforest.Grey1)
+            TextButton(
+                onClick = { confirmingLogout = true },
+                modifier = Modifier.testTag("drawer_btn_logout"),
+            ) {
+                Text("断开连接", fontSize = 12.sp, color = Everforest.Grey1)
             }
         }
+    }
+
+    if (confirmingLogout) {
+        ModalEscapeEffect(onDismiss = { confirmingLogout = false })
+        AlertDialog(
+            onDismissRequest = { confirmingLogout = false },
+            containerColor = Everforest.Bg1,
+            titleContentColor = Everforest.Fg,
+            textContentColor = Everforest.Grey2,
+            title = { Text("确认断开当前主机连接？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    text = "断开后将退出当前连接，主机上的历史会话和项目文件均不受影响。",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmingLogout = false
+                        onLogout()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Everforest.Red,
+                        contentColor = Everforest.BgDim,
+                    ),
+                    modifier = Modifier.testTag("drawer_confirm_logout_btn"),
+                ) {
+                    Text("确认断开", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingLogout = false }) {
+                    Text("取消", color = Everforest.Grey1)
+                }
+            },
+        )
     }
 
     val targetHost = renamingHost
@@ -1130,7 +1181,7 @@ internal fun RenameSessionDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "设置清晰的任务名称便于随时查找（同步保存在本机 Hub，不会影响底层会话数据）：",
+                    text = "设置清晰的任务名称便于随时查找（仅修改显示名称，不影响原始对话记录）：",
                     fontSize = 12.sp,
                     lineHeight = 17.sp,
                     color = Everforest.CommentGrey,

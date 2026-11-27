@@ -585,19 +585,15 @@ export class TerminalBridge {
     )
     if (byExplicitFlag) return byExplicitFlag
 
-    // 3. Unambiguous open SQLite conversation database (`conversations/<convId>.db`),
-    //    ONLY when the process does not hold a conflicting active presence lock.
-    const byOpenDb = candidates.filter(
-      p =>
-        p.openConvIds.includes(nativeId) &&
-        (p.presenceConvIds.length === 0 || p.presenceConvIds.includes(nativeId)),
+    // 3. Strictly unambiguous single-open-DB match: ONLY when the process holds no conflicting
+    // presence lock AND has `nativeId` as its SOLE open conversation `.db` descriptor.
+    // Never match multi-DB background/subagent processes or fall back to `cwd` alone, otherwise
+    // prompts for a closed/other conversation in the same repo would inject into the wrong live TUI!
+    const bySoleOpenDb = candidates.filter(
+      p => p.presenceConvIds.length === 0 && p.openConvIds.length === 1 && p.openConvIds[0] === nativeId,
     )
-    if (byOpenDb.length === 1) return byOpenDb[0]!
+    if (bySoleOpenDb.length === 1) return bySoleOpenDb[0]!
 
-    // Strict session isolation (aligned with Claude): NEVER fall back to matching by working
-    // directory (`cwd`). Multiple AGY sessions frequently share one repository without git worktrees;
-    // a `cwd` fallback causes idle/other sessions to hijack a live background terminal's spinner
-    // status, permission prompts, and prompt input.
     return null
   }
 
@@ -652,7 +648,7 @@ export class TerminalBridge {
           cmd.includes('Antigravity Helper') ||
           cmd.includes('--input-format') ||
           cmd.includes('stream-json') ||
-          /\s(-p|--print|--prompt)(\s|$)/.test(cmd)
+          /\s(acp|-p|--print|--prompt)(\s|$)/.test(cmd)
         ) {
           continue
         }

@@ -95,6 +95,7 @@ class ConsoleStore(
     private var pairingInFlight: Boolean = false
     private var pendingDeepLinkSessionId: String? = null
     private var mentionJob: Job? = null
+    private var promptNoticeAutoClearJob: Job? = null
     private var filePreviewJob: Job? = null
     private var filePreviewRequestToken: Long = 0L
     private var appUpdateCheckJob: Job? = null
@@ -1273,7 +1274,7 @@ class ConsoleStore(
             _state.update {
                 it.copy(
                     connectionStatus = ConnectionStatus.ERROR,
-                    connectionError = "剪贴板中未检测到配对链接：请在开发机运行 lework pair 并复制 lework://pair?... 链接",
+                    connectionError = "剪贴板中未检测到配对链接：请在主机运行 lework pair 并复制 lework://pair?... 链接",
                 )
             }
         }
@@ -2376,6 +2377,11 @@ class ConsoleStore(
         if (sessionId.isBlank()) return
         val prevSession = _state.value.sessions.firstOrNull { it.id == sessionId }
         val nowMs = epochMillis()
+        val notice = if (archived) {
+            "已归档会话，可在「已归档」视图随时恢复。"
+        } else {
+            "已将会话移出归档。"
+        }
         _state.update { s ->
             s.copy(
                 sessions = s.sessions.map { item ->
@@ -2387,6 +2393,7 @@ class ConsoleStore(
                 },
             )
         }
+        showPromptNotice(notice)
         scope.launch {
             try {
                 if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) {
@@ -2419,6 +2426,7 @@ class ConsoleStore(
         userManuallyPickedEffort = false
         userManuallyPickedMode = false
         mentionJob?.cancel()
+        promptNoticeAutoClearJob?.cancel()
         switchSubscriptionTo(null)
         _state.update { s ->
             val eng = s.taskEngines.draftEngine(s.selectedEngineId)
@@ -2437,6 +2445,7 @@ class ConsoleStore(
                 openedDiffTitle = null,
                 checkpointNotice = null,
                 promptErrorText = null,
+                promptNoticeText = null,
                 turnRecoveryBanner = null,
                 retryingTurn = false,
                 mentionQuery = null,
@@ -3144,9 +3153,15 @@ class ConsoleStore(
         text: String,
         cursorIndex: Int = text.length,
         updateMentions: Boolean = true,
+        expectedDraftKey: String? = null,
     ) {
+        var applied = false
         _state.update { s ->
             val key = s.activeDraftKey
+            if (expectedDraftKey != null && expectedDraftKey != key) {
+                return@update s
+            }
+            applied = true
             val nextDrafts = if (text.isEmpty()) {
                 s.sessionDrafts - key
             } else {
@@ -3154,7 +3169,7 @@ class ConsoleStore(
             }
             if (nextDrafts == s.sessionDrafts) s else s.copy(sessionDrafts = nextDrafts)
         }
-        if (updateMentions) {
+        if (applied && updateMentions) {
             updateComposerTextForMentions(text, cursorIndex)
         }
     }
@@ -3515,19 +3530,31 @@ class ConsoleStore(
     private fun capturePromptDispatchSnapshot(
         state: ConsoleUiState,
         targetSessionId: String?,
-    ): PromptDispatchSnapshot = PromptDispatchSnapshot(
-        targetSessionId = targetSessionId,
-        engineId = state.selectedEngineId,
-        workspacePath = state.selectedWorkspacePath,
-        extraWorkspaces = state.selectedExtraWorkspaces,
-        useWorktree = state.draftUseWorktree,
-        worktreeBranch = state.draftWorktreeBranch,
-        providerId = state.selectedProviderId,
-        modelId = state.selectedModelId,
-        effort = state.selectedEffort,
-        mode = state.selectedMode,
-        targetSessionMeta = targetSessionId?.let { sid -> state.sessions.firstOrNull { it.id == sid } },
-    )
+    ): PromptDispatchSnapshot {
+        val meta = targetSessionId?.let { sid -> state.sessions.firstOrNull { it.id == sid } }
+        val isCrossSessionTarget = targetSessionId != null && targetSessionId != state.activeSessionId
+        return PromptDispatchSnapshot(
+            targetSessionId = targetSessionId,
+            engineId = meta?.engineId ?: state.selectedEngineId,
+            workspacePath = meta?.cwd?.takeIf { it.isNotBlank() } ?: state.selectedWorkspacePath,
+            extraWorkspaces = if (isCrossSessionTarget) emptyList() else state.selectedExtraWorkspaces,
+            useWorktree = if (isCrossSessionTarget) false else state.draftUseWorktree,
+            worktreeBranch = if (isCrossSessionTarget) "" else state.draftWorktreeBranch,
+            providerId = if (isCrossSessionTarget) meta?.providerId else state.selectedProviderId,
+            modelId = if (isCrossSessionTarget) meta?.model else state.selectedModelId,
+            effort = if (isCrossSessionTarget) {
+                meta?.reasoningEffort ?: ReasoningEffort.MEDIUM
+            } else {
+                state.selectedEffort
+            },
+            mode = if (isCrossSessionTarget) {
+                meta?.mode ?: SessionMode.DEFAULT
+            } else {
+                state.selectedMode
+            },
+            targetSessionMeta = meta,
+        )
+    }
 
     private suspend fun dispatchPromptRpc(
         trimmed: String,
@@ -3631,8 +3658,12 @@ class ConsoleStore(
         val originatingSessionId = s.activeSessionId
         val originatingDraftKey = sessionDraftKey(originatingSessionId)
         val attached = s.attachedImagesFor(originatingSessionId)
-        val dispatchSnapshot = capturePromptDispatchSnapshot(s, originatingSessionId)
         if (trimmed.isEmpty() && attached.isEmpty()) return
+        val dispatchSnapshot = capturePromptDispatchSnapshot(s, originatingSessionId)
+        logRuntimeEvent(
+            "PROMPT",
+            "send sid=${originatingSessionId ?: "new"} engine=${dispatchSnapshot.engineId} len=${trimmed.length} images=${attached.size}",
+        )
         mentionJob?.cancel()
         _state.update {
             it.copy(
@@ -3734,10 +3765,11 @@ class ConsoleStore(
         val snap = _state.value
         if (snap.retryingTurn) return
         val banner = snap.turnRecoveryBanner
-        val activeSid = snap.activeSessionId ?: banner?.sessionId
+        val targetSid = banner?.sessionId ?: snap.activeSessionId
         val failedText = banner?.failedPromptText?.trim().orEmpty()
         val failedImages = banner?.failedImages.orEmpty()
         val hasUnsentPrompt = failedText.isNotEmpty() || failedImages.isNotEmpty()
+        val dispatchSnapshot = capturePromptDispatchSnapshot(snap, targetSid)
 
         _state.update { it.copy(retryingTurn = true, promptErrorText = null) }
         scope.launch {
@@ -3746,7 +3778,7 @@ class ConsoleStore(
                     val reconnected = ensureConnectedForSend(forceReconnect = true)
                     if (!reconnected) {
                         recordTurnError(
-                            sessionId = _state.value.activeSessionId ?: activeSid,
+                            sessionId = targetSid,
                             rawMessage = _state.value.connectionError ?: "网络仍未恢复，重连主机失败",
                             failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                             failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
@@ -3755,13 +3787,11 @@ class ConsoleStore(
                         )
                         return@launch
                     }
-                    val currentSid = _state.value.activeSessionId ?: activeSid
-                    if (currentSid != null) {
-                        runCatching { subscribeAndCatchUp(currentSid) }
+                    if (targetSid != null && _state.value.activeSessionId == targetSid) {
+                        runCatching { subscribeAndCatchUp(targetSid) }
                     }
                 }
 
-                val targetSid = activeSid ?: _state.value.activeSessionId
                 if (!hasUnsentPrompt && targetSid == null) {
                     consecutiveReconnectFailures = 0
                     _state.update { it.copy(turnRecoveryBanner = null, promptErrorText = null) }
@@ -3770,7 +3800,6 @@ class ConsoleStore(
 
                 val promptToSend = if (hasUnsentPrompt) failedText else SEAMLESS_CONTINUE_PROMPT
                 val imagesToSend = if (hasUnsentPrompt) failedImages else emptyList()
-                val dispatchSnapshot = capturePromptDispatchSnapshot(_state.value, targetSid)
 
                 val preSendSessionId = targetSid
                 val preSendTranscript = preSendSessionId?.let { _state.value.transcripts[it] }
@@ -3835,7 +3864,7 @@ class ConsoleStore(
             } catch (ce: CancellationException) {
                 if (!isActive) throw ce
                 recordTurnError(
-                    sessionId = _state.value.activeSessionId ?: activeSid,
+                    sessionId = targetSid,
                     rawMessage = "重试已中断，请检查网络后再次点击重试",
                     failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                     failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
@@ -3845,7 +3874,7 @@ class ConsoleStore(
             } catch (e: RpcCallException) {
                 val errMsg = e.message.takeIf { it.isNotBlank() } ?: "重试发送失败，请检查网络连接"
                 recordTurnError(
-                    sessionId = _state.value.activeSessionId ?: activeSid,
+                    sessionId = targetSid,
                     rawMessage = errMsg,
                     failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                     failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
@@ -3855,7 +3884,7 @@ class ConsoleStore(
             } catch (t: Throwable) {
                 val errMsg = t.message?.takeIf { it.isNotBlank() } ?: "重试发送失败，请检查网络连接"
                 recordTurnError(
-                    sessionId = _state.value.activeSessionId ?: activeSid,
+                    sessionId = targetSid,
                     rawMessage = errMsg,
                     failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                     failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
@@ -4038,9 +4067,33 @@ class ConsoleStore(
         }
     }
 
-    fun respondApproval(requestId: String, optionId: String?, sessionId: String? = null) {
+    fun showPromptNotice(message: String, autoClearMs: Long = if (message.length > 48) 8_000L else 4_500L) {
+        val clean = message.trim()
+        if (clean.isEmpty()) return
+        promptNoticeAutoClearJob?.cancel()
+        _state.update { it.copy(promptNoticeText = clean, promptErrorText = null) }
+        if (autoClearMs > 0L) {
+            promptNoticeAutoClearJob = scope.launch {
+                delay(autoClearMs)
+                _state.update { s ->
+                    if (s.promptNoticeText == clean) s.copy(promptNoticeText = null) else s
+                }
+            }
+        }
+    }
+
+    fun respondApproval(
+        requestId: String,
+        optionId: String?,
+        sessionId: String? = null,
+        customInput: String? = null,
+    ) {
         val targetSessionId = sessionId ?: _state.value.activeSessionId ?: return
         if (_state.value.submittingApprovalRequestId == requestId) return
+        val existingPerm = _state.value.transcripts[targetSessionId]?.pendingPermissions
+            ?.lastOrNull { it.requestId == requestId }
+        val isQuestion = existingPerm?.interactionKind == InteractionKind.QUESTION ||
+            requestId.startsWith("elicit_")
         _state.update {
             it.copy(
                 submittingApprovalRequestId = requestId,
@@ -4053,26 +4106,36 @@ class ConsoleStore(
                     sessionId = targetSessionId,
                     requestId = requestId,
                     optionId = optionId,
+                    customInput = customInput,
                 )
                 _state.update { s ->
                     val prev = s.transcripts[targetSessionId]
-                    val updatedTranscripts = if (prev != null) {
-                        val updated = prev.copy(
-                            pendingPermissions = prev.pendingPermissions.filterNot {
-                                it.requestId == requestId ||
-                                    (requestId.startsWith("tty_perm_") && it.requestId.startsWith("tty_perm_"))
-                            },
-                        )
-                        s.transcripts + (targetSessionId to updated)
+                    val updatedTranscript = prev?.copy(
+                        pendingPermissions = prev.pendingPermissions.filterNot {
+                            it.requestId == requestId ||
+                                (requestId.startsWith("tty_perm_") && it.requestId.startsWith("tty_perm_"))
+                        },
+                    )
+                    val updatedTranscripts = if (updatedTranscript != null) {
+                        s.transcripts + (targetSessionId to updatedTranscript)
                     } else {
                         s.transcripts
                     }
-                    // Optimistically clear WAITING_PERMISSION on the session until the next Hub update arrives
-                    val updatedSessions = s.sessions.map { meta ->
-                        if (meta.id == targetSessionId && meta.state == SessionState.WAITING_PERMISSION) {
-                            meta.copy(state = SessionState.RUNNING, liveStatusText = "已提交审批，继续执行中…")
-                        } else {
-                            meta
+                    // Only optimistically transition WAITING_PERMISSION -> RUNNING when NO follow-up
+                    // prompt (e.g. Q2 of a multi-question ask_question elicitation) is already queued!
+                    val stillHasPending = updatedTranscript?.pendingPermissions?.isNotEmpty() == true
+                    val updatedSessions = if (stillHasPending) {
+                        s.sessions
+                    } else {
+                        s.sessions.map { meta ->
+                            if (meta.id == targetSessionId && meta.state == SessionState.WAITING_PERMISSION) {
+                                meta.copy(
+                                    state = SessionState.RUNNING,
+                                    liveStatusText = if (isQuestion) "已提交回答，继续执行中…" else "已提交确认，继续执行中…",
+                                )
+                            } else {
+                                meta
+                            }
                         }
                     }
                     s.copy(
@@ -4088,7 +4151,8 @@ class ConsoleStore(
                 }
                 throw ce
             } catch (t: Throwable) {
-                val msg = t.message?.takeIf { it.isNotBlank() } ?: "审批提交未成功，正在同步最新终端状态…"
+                val msg = t.message?.takeIf { it.isNotBlank() }
+                    ?: if (isQuestion) "回答提交未成功，请重试…" else "确认提交未成功，正在同步最新状态…"
                 _state.update { s ->
                     s.copy(
                         submittingApprovalRequestId = if (s.submittingApprovalRequestId == requestId) null else s.submittingApprovalRequestId,
@@ -5006,7 +5070,7 @@ class ConsoleStore(
                     if (s.inspectedSubagent?.id != subagentId) return@update s
                     s.copy(
                         inspectedSubagentLoading = false,
-                        inspectedSubagentError = t.message?.takeIf { it.isNotBlank() } ?: "无法读取 SubAgent 执行记录",
+                        inspectedSubagentError = t.message?.takeIf { it.isNotBlank() } ?: "无法读取子任务执行记录",
                     )
                 }
             }
@@ -5809,11 +5873,11 @@ internal fun findRemappedHostSession(
         if (byTitle.size == 1) return byTitle.first()
     }
 
-    if (prevCwd.isNotEmpty() && prevMeta != null) {
+    if (!hasSpecificTitle && prevCwd.isNotEmpty() && prevMeta != null) {
         val byCwd = hostCandidates.filter { it.cwd.trim() == prevCwd }
         if (byCwd.size == 1) {
             val sole = byCwd.first()
-            if (prevMeta.createdAt <= 0L || sole.createdAt >= prevMeta.createdAt - 10_000L) {
+            if (prevMeta.createdAt > 0L && sole.createdAt >= prevMeta.createdAt - 10_000L) {
                 return sole
             }
         }

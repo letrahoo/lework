@@ -7,6 +7,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -111,7 +113,7 @@ class ExecutionStepsAndInlineSubagentTest {
         )
         assertTrue(isSubagentDispatchTool(invokeTool))
         val meta = parseSubagentToolMeta(invokeTool)
-        assertEquals("SubAgent", meta.kindLabel)
+        assertEquals("子任务", meta.kindLabel)
         assertEquals("Codebase Researcher", meta.title)
         assertEquals("research", meta.roleBadge)
         assertEquals("conv-child-99", meta.referencedId)
@@ -126,7 +128,7 @@ class ExecutionStepsAndInlineSubagentTest {
             seq = 6,
         )
         assertTrue(isSubagentDispatchTool(swarmAdd))
-        assertEquals("Swarm", parseSubagentToolMeta(swarmAdd).kindLabel)
+        assertEquals("多智能体", parseSubagentToolMeta(swarmAdd).kindLabel)
         assertEquals("auditor ×2", parseSubagentToolMeta(swarmAdd).title)
 
         val swarmStatus = swarmAdd.copy(id = "tc_sw_2", input = """{"action":"status"}""")
@@ -142,7 +144,7 @@ class ExecutionStepsAndInlineSubagentTest {
             seq = 7,
         )
         assertTrue(isSubagentDispatchTool(workflow))
-        assertEquals("Workflow", parseSubagentToolMeta(workflow).kindLabel)
+        assertEquals("工作流", parseSubagentToolMeta(workflow).kindLabel)
 
         val sub = SubagentSummary(
             id = "host:agy:conv-child-99",
@@ -349,7 +351,7 @@ class ExecutionStepsAndInlineSubagentTest {
 
         // Inline subagent card is visible directly in the timeline with step pill and live activity
         onNodeWithTag("inline_subagent_card_tc_sub_inline", useUnmergedTree = true).assertIsDisplayed()
-        onNodeWithText("SubAgent", useUnmergedTree = true).assertIsDisplayed()
+        onAllNodesWithText("子任务", useUnmergedTree = true).onFirst().assertIsDisplayed()
         onNodeWithText("查阅 ProtocolModels.kt", useUnmergedTree = true).assertIsDisplayed()
         onNodeWithTag("inline_subagent_open_tc_sub_inline", useUnmergedTree = true).assertIsDisplayed()
 

@@ -111,8 +111,8 @@ class InlineApprovalBannerTest {
         waitForIdle()
         assertEquals(Triple("tty_perm_devbox_1", "tty_key:3", "host:agy:conv_approval"), picked)
 
-        // Header Esc cancel action remains clickable and sends null optionId
-        onNodeWithText("取消 (Esc)").assertIsDisplayed().performClick()
+        // Header cancel action remains clickable and sends null optionId
+        onNodeWithText("取消").assertIsDisplayed().performClick()
         waitForIdle()
         assertEquals(Triple("tty_perm_devbox_1", null, "host:agy:conv_approval"), picked)
     }
