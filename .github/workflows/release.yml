@@ -87,6 +87,7 @@ jobs:
     outputs:
       apk_name: ${{ steps.build.outputs.apk_name }}
       apk_signed_release: ${{ steps.build.outputs.apk_signed_release }}
+      apk_cert_sha256: ${{ steps.build.outputs.apk_cert_sha256 }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -120,17 +121,44 @@ jobs:
           LEWORK_VERSION_CODE: ${{ needs.version.outputs.android_version_code }}
         run: |
           mkdir -p dist-android
-          if [[ -n "$KEYSTORE_B64" && -n "$LEWORK_KEYSTORE_PASSWORD" && -n "$LEWORK_KEY_ALIAS" ]]; then
-            echo "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/android-release.jks"
+          cleanup_keystore() {
+            rm -f "$RUNNER_TEMP/android-release.jks"
+          }
+          trap cleanup_keystore EXIT
+
+          HAS_KS=0
+          HAS_PW=0
+          HAS_ALIAS=0
+          [[ -n "$KEYSTORE_B64" ]] && HAS_KS=1
+          [[ -n "$LEWORK_KEYSTORE_PASSWORD" ]] && HAS_PW=1
+          [[ -n "$LEWORK_KEY_ALIAS" ]] && HAS_ALIAS=1
+
+          if [[ $((HAS_KS + HAS_PW + HAS_ALIAS)) -eq 3 ]]; then
+            printf '%s' "$KEYSTORE_B64" | tr -d '\r\n ' | base64 --decode > "$RUNNER_TEMP/android-release.jks"
+            chmod 600 "$RUNNER_TEMP/android-release.jks"
             export LEWORK_KEYSTORE_FILE="$RUNNER_TEMP/android-release.jks"
             ./app/gradlew -p ./app :androidApp:assembleRelease \
               -PleworkVersion="$LEWORK_VERSION" \
               -PleworkVersionCode="$LEWORK_VERSION_CODE" \
               --no-daemon
             APK_SRC="$(find app/androidApp/build/outputs/apk/release -name '*.apk' ! -name '*-unsigned.apk' | head -n 1)"
+            if [[ -z "$APK_SRC" ]]; then
+              echo "Error: Signed Release APK not found after :androidApp:assembleRelease" >&2
+              exit 1
+            fi
+            CERT_SHA256="$(keytool -printcert -jarfile "$APK_SRC" | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' | head -n 1)"
+            if [[ -z "$CERT_SHA256" ]]; then
+              echo "Error: Failed to verify signing certificate on $APK_SRC" >&2
+              exit 1
+            fi
+            echo "Verified signed Release APK certificate SHA-256: $CERT_SHA256"
             APK_NAME="lework-v${LEWORK_VERSION}-android-release.apk"
             cp "$APK_SRC" "dist-android/$APK_NAME"
             echo "apk_signed_release=true" >> "$GITHUB_OUTPUT"
+            echo "apk_cert_sha256=$CERT_SHA256" >> "$GITHUB_OUTPUT"
+          elif [[ $((HAS_KS + HAS_PW + HAS_ALIAS)) -gt 0 ]]; then
+            echo "Error: Incomplete Android release signing secrets (keystore=$HAS_KS, password=$HAS_PW, alias=$HAS_ALIAS). Refusing to fall back to an incompatible ephemeral Debug signature." >&2
+            exit 1
           else
             echo "::notice::Android release signing secrets (LEWORK_ANDROID_KEYSTORE_BASE64 / LEWORK_KEYSTORE_PASSWORD / LEWORK_KEY_ALIAS) are not configured; building installable Debug APK."
             ./app/gradlew -p ./app :androidApp:assembleDebug \
@@ -141,6 +169,7 @@ jobs:
             APK_NAME="lework-v${LEWORK_VERSION}-android-debug.apk"
             cp "$APK_SRC" "dist-android/$APK_NAME"
             echo "apk_signed_release=false" >> "$GITHUB_OUTPUT"
+            echo "apk_cert_sha256=" >> "$GITHUB_OUTPUT"
           fi
           echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
           ls -lh "dist-android/$APK_NAME"
@@ -237,11 +266,14 @@ jobs:
           DESKTOP_PKG_VER: ${{ needs.version.outputs.desktop_package_version }}
           APK_NAME: ${{ needs.build-android.outputs.apk_name }}
           APK_SIGNED: ${{ needs.build-android.outputs.apk_signed_release }}
+          APK_CERT_SHA256: ${{ needs.build-android.outputs.apk_cert_sha256 }}
           DMG_NAME: ${{ needs.build-desktop-macos.outputs.dmg_name }}
           IS_PRERELEASE: ${{ inputs.prerelease || false }}
         run: |
           SIGN_NOTE=""
-          if [[ "$APK_SIGNED" != "true" ]]; then
+          if [[ "$APK_SIGNED" == "true" ]]; then
+            SIGN_NOTE="> Android APK is signed with the pinned Lework release certificate (SHA-256: \`${APK_CERT_SHA256}\`) for seamless in-place upgrades preserving local \`tsnet\` identity and paired hosts."
+          else
             SIGN_NOTE="> Note: Android APK in this build uses Debug signing because repository release keystore secrets (\`LEWORK_ANDROID_KEYSTORE_BASE64\`, \`LEWORK_KEYSTORE_PASSWORD\`, \`LEWORK_KEY_ALIAS\`) are not yet configured. It is directly installable; configure those secrets to automatically switch CI to R8-minified signed Release APKs."
           fi
 

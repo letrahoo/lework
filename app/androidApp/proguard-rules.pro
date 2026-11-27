@@ -14,6 +14,10 @@
 -keepclasseswithmembers class dev.lework.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+-keepclassmembers enum dev.lework.** {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
 
 # Ktor & OkHttp
 -dontwarn io.ktor.**

@@ -38,6 +38,9 @@ val hasReleaseSigning =
         File(releaseKeystorePath).isFile &&
         !releaseStorePassword.isNullOrBlank() &&
         !releaseKeyAlias.isNullOrBlank()
+val useDefaultDebugSigning =
+    (findProperty("leworkDebugDefaultSigning") as String?)?.equals("true", ignoreCase = true) == true ||
+        System.getenv("LEWORK_DEBUG_DEFAULT_SIGNING")?.trim() in setOf("1", "true", "TRUE")
 
 fun resolveRepoVersion(): String {
     val explicit = (findProperty("leworkVersion") as String?)?.trim()?.takeIf { it.isNotEmpty() }
@@ -96,6 +99,12 @@ android {
     buildTypes {
         getByName("debug") {
             isMinifyEnabled = false
+            if (hasReleaseSigning && !useDefaultDebugSigning) {
+                // Keep local debug builds on the same pinned signing certificate as Release APKs
+                // whenever a local/env release keystore is configured, so in-place upgrades preserve
+                // app data (embedded tsnet identity & paired hubs) without uninstalling.
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         getByName("release") {
             isDebuggable = false

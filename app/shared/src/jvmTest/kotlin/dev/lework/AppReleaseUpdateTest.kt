@@ -152,6 +152,7 @@ class AppReleaseUpdateTest {
         assertNotNull(fallback)
         assertEquals("v0.8.25", fallback.tagName)
         assertEquals("Lework-v0.8.25-macos-arm64.dmg", fallback.macDmgAsset?.name)
+        assertEquals("lework-v0.8.25-android-release.apk", fallback.androidApkAsset?.name)
     }
 
     @Test
