@@ -59,6 +59,12 @@ class ConsoleStore(
             selectedMode = parseMode(initialPrefs.mode),
             favoriteModelKeys = initialPrefs.favoriteModelKeys,
             pinnedSessionIds = initialPrefs.pinnedSessionIds,
+            sidebarGroupingMode = if (initialPrefs.sidebarGroupByProject) {
+                SidebarGroupingMode.PROJECT
+            } else {
+                SidebarGroupingMode.TIME
+            },
+            collapsedProjectGroupKeys = initialPrefs.collapsedProjectGroupKeys.toSet(),
             selectedWorkspacePath = initialPrefs.workspacePath,
             currentBrowsePath = initialPrefs.workspacePath,
             appUpdate = AppUpdateState(
@@ -623,6 +629,8 @@ class ConsoleStore(
                 favoriteModelKeys = st.favoriteModelKeys,
                 pinnedSessionIds = st.pinnedSessionIds,
                 dismissedUpdateTag = st.appUpdate.dismissedTag,
+                sidebarGroupByProject = st.sidebarGroupingMode == SidebarGroupingMode.PROJECT,
+                collapsedProjectGroupKeys = st.collapsedProjectGroupKeys.sorted(),
             ),
         )
     }
@@ -2334,6 +2342,81 @@ class ConsoleStore(
         _state.update { it.copy(drawerSearchQuery = query) }
     }
 
+    fun setSidebarGroupingMode(mode: SidebarGroupingMode) {
+        if (_state.value.sidebarGroupingMode == mode) return
+        _state.update { it.copy(sidebarGroupingMode = mode) }
+        persistCurrentPrefs()
+    }
+
+    fun toggleSidebarGroupingMode() {
+        val next = if (_state.value.sidebarGroupingMode == SidebarGroupingMode.PROJECT) {
+            SidebarGroupingMode.TIME
+        } else {
+            SidebarGroupingMode.PROJECT
+        }
+        setSidebarGroupingMode(next)
+    }
+
+    fun toggleProjectGroupCollapsed(groupKey: String) {
+        val clean = groupKey.trim()
+        if (clean.isEmpty()) return
+        _state.update { s ->
+            val next = if (clean in s.collapsedProjectGroupKeys) {
+                s.collapsedProjectGroupKeys - clean
+            } else {
+                s.collapsedProjectGroupKeys + clean
+            }
+            s.copy(collapsedProjectGroupKeys = next)
+        }
+        persistCurrentPrefs()
+    }
+
+    fun setAllProjectGroupsCollapsed(collapsed: Boolean) {
+        _state.update { s ->
+            val next = if (!collapsed) {
+                emptySet()
+            } else {
+                val activeGroups = if (s.drawerShowArchived) {
+                    s.archivedProjectGroups
+                } else {
+                    s.historyProjectGroups(excludePinned = isDesktopPlatform())
+                }
+                activeGroups.map { it.key }.toSet()
+            }
+            s.copy(collapsedProjectGroupKeys = next)
+        }
+        persistCurrentPrefs()
+    }
+
+    fun regenerateSessionTitle(sessionId: String) {
+        if (sessionId.isBlank()) return
+        if (_state.value.regeneratingTitleSessionId == sessionId) return
+        _state.update { it.copy(regeneratingTitleSessionId = sessionId) }
+        scope.launch {
+            try {
+                if (_state.value.connectionStatus != ConnectionStatus.CONNECTED) {
+                    ensureConnectedForSend(forceReconnect = false)
+                }
+                val updated = rpc.regenerateSessionTitle(sessionId)
+                _state.update { s ->
+                    s.copy(
+                        sessions = s.sessions.map { item -> if (item.id == updated.id) updated else item },
+                        regeneratingTitleSessionId = if (s.regeneratingTitleSessionId == sessionId) null else s.regeneratingTitleSessionId,
+                    )
+                }
+            } catch (ce: CancellationException) {
+                if (!isActive) throw ce
+            } catch (t: Throwable) {
+                _state.update { s ->
+                    s.copy(
+                        regeneratingTitleSessionId = if (s.regeneratingTitleSessionId == sessionId) null else s.regeneratingTitleSessionId,
+                        promptErrorText = "自动生成标题未成功: ${t.message ?: "请检查连接后重试"}",
+                    )
+                }
+            }
+        }
+    }
+
     fun renameSession(sessionId: String, newTitle: String) {
         if (sessionId.isBlank()) return
         val clean = newTitle.replace(Regex("\\s+"), " ").trim().take(120)
@@ -2996,6 +3079,7 @@ class ConsoleStore(
         mentionJob?.cancel()
         switchSubscriptionTo(sessionId)
         val meta = _state.value.sessions.firstOrNull { it.id == sessionId }
+        var uncollapsedGroup = false
         _state.update { s ->
             val targetEngineId = meta?.engineId ?: s.selectedEngineId
             val eng = s.engines.firstOrNull { it.id == targetEngineId }
@@ -3009,8 +3093,21 @@ class ConsoleStore(
                 ?: eng?.models?.firstOrNull { it.id == resolvedModel }?.providerId
                 ?: s.selectedProviderId
             val alreadyCached = s.transcripts[sessionId]?.let { t -> t.lastSeq >= 0 || t.items.isNotEmpty() } == true
+            val nextCollapsed = if (meta != null && s.collapsedProjectGroupKeys.isNotEmpty()) {
+                val roots = collectKnownProjectRoots(s.sessions, s.workspaces)
+                val targetGroupKey = resolveSessionProjectGroupKey(meta, roots)
+                if (targetGroupKey in s.collapsedProjectGroupKeys) {
+                    uncollapsedGroup = true
+                    s.collapsedProjectGroupKeys - targetGroupKey
+                } else {
+                    s.collapsedProjectGroupKeys
+                }
+            } else {
+                s.collapsedProjectGroupKeys
+            }
             s.copy(
                 activeSessionId = sessionId,
+                collapsedProjectGroupKeys = nextCollapsed,
                 loadingSessionId = if (alreadyCached) null else sessionId,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,
@@ -3039,6 +3136,9 @@ class ConsoleStore(
                 currentBrowsePath = meta?.cwd ?: s.currentBrowsePath,
                 currentDiffWorkspacePath = meta?.cwd ?: s.selectedWorkspacePath,
             )
+        }
+        if (uncollapsedGroup) {
+            persistCurrentPrefs()
         }
         scope.launch {
             try {

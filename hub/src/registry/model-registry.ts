@@ -10,6 +10,7 @@ import type {
   ProviderInfo,
   WireApi,
 } from '@lework/protocol'
+import type { ResolvedTitleModelCandidate } from '../storage/session-title.ts'
 import { defaultDataDir } from '../platform/index.ts'
 import {
   createProviderAdapters,
@@ -316,6 +317,53 @@ export class ModelRegistry {
       apiKey: this.resolveKeyForConfig(target),
       wireApis: [...target.wireApis],
     }
+  }
+
+  resolveAutoTitleCandidate(): ResolvedTitleModelCandidate | undefined {
+    const scoreModel = (modelId: string): number => {
+      const lower = modelId.toLowerCase()
+      if (
+        /(?:flash-lite|haiku|gpt-4o-mini|gpt-4\.1-mini|gpt-5-mini|nano|mini|flash|deepseek-chat|qwen[-_a-z0-9]*turbo|glm-4-flash)/i.test(
+          lower,
+        )
+      ) {
+        return 0
+      }
+      if (/(?:opus|thinking|reasoner|\bo1\b|\bo3\b|\br1\b|pro-max)/i.test(lower)) {
+        return 2
+      }
+      return 1
+    }
+
+    let best: { score: number; candidate: ResolvedTitleModelCandidate } | undefined
+    for (const provider of this.providers) {
+      if (!provider.enabled) continue
+      const supportsTextApi = provider.wireApis.some(
+        api => api === 'openai-chat' || api === 'openai-responses' || api === 'anthropic-messages',
+      )
+      if (!supportsTextApi) continue
+      const models = this.getEffectiveProviderModels(provider, this.probeStates.get(provider.id))
+      if (models.length === 0) continue
+      const apiKey = this.resolveKeyForConfig(provider)
+      for (const modelId of models) {
+        const s = scoreModel(modelId)
+        if (!best || s < best.score) {
+          best = {
+            score: s,
+            candidate: {
+              providerId: provider.id,
+              providerName: provider.name,
+              baseUrl: provider.baseUrl,
+              apiKey,
+              wireApis: [...provider.wireApis],
+              modelId,
+            },
+          }
+          if (s === 0) return best.candidate
+        }
+      }
+    }
+    return best?.candidate
   }
 
   listProviders(engines: EngineInfo[]): ProviderInfo[] {

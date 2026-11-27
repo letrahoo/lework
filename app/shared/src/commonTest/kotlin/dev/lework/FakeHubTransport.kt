@@ -533,17 +533,33 @@ class FakeHubTransport : HubTransport {
     private fun currentEnginesSnapshot(): List<EngineInfo> =
         customEngines ?: enginesOverride ?: emptyList()
 
+    val regeneratedTitleSessionIds = mutableListOf<String>()
+    var regenerateTitleHandler: ((SessionMeta) -> String)? = null
+
     override suspend fun renameSession(sessionId: String, title: String): SessionMeta {
         val idx = sessions.indexOfFirst { it.id == sessionId }
         if (idx < 0) throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Session not found")
         val prev = sessions[idx]
         val clean = title.trim()
         val updated = if (clean.isEmpty()) {
-            prev.copy(customTitle = null)
+            prev.copy(title = prev.autoTitle ?: prev.title, customTitle = null)
         } else {
             prev.copy(title = clean, customTitle = clean)
         }
         sessions[idx] = updated
+        return updated
+    }
+
+    override suspend fun regenerateSessionTitle(sessionId: String): SessionMeta {
+        regeneratedTitleSessionIds.add(sessionId)
+        val idx = sessions.indexOfFirst { it.id == sessionId }
+        if (idx < 0) throw dev.lework.transport.RpcCallException(ErrorCode.NOT_FOUND, "Session not found")
+        val prev = sessions[idx]
+        val scope = prev.cwd.trimEnd('/').substringAfterLast('/').ifBlank { "session" }
+        val nextAuto = regenerateTitleHandler?.invoke(prev) ?: "$scope-自动摘要标题"
+        val updated = prev.copy(title = nextAuto, autoTitle = nextAuto, customTitle = null)
+        sessions[idx] = updated
+        _sessionUpdates.tryEmit(updated)
         return updated
     }
 

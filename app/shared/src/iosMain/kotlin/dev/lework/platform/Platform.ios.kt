@@ -607,6 +607,15 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         .split('|')
         .map { it.trim() }
         .filter { it.isNotEmpty() }
+    val collapsedGroups = d.stringForKey("lework_pref_collapsed_project_groups")
+        .orEmpty()
+        .split('|')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+    val groupByProject = when (d.stringForKey("lework_pref_sidebar_group_by_project")?.trim()?.lowercase()) {
+        "false" -> false
+        else -> true
+    }
     return SavedSessionPrefs(
         engineId = d.stringForKey(KEY_PREF_ENGINE)?.ifBlank { null } ?: "claude",
         providerId = d.stringForKey(KEY_PREF_PROVIDER)?.ifBlank { null },
@@ -617,6 +626,8 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         favoriteModelKeys = favs,
         pinnedSessionIds = pinned,
         dismissedUpdateTag = d.stringForKey("lework_pref_dismissed_update_tag")?.ifBlank { null },
+        sidebarGroupByProject = groupByProject,
+        collapsedProjectGroupKeys = collapsedGroups,
     )
 }
 
@@ -644,6 +655,15 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
         d.setObject(prefs.dismissedUpdateTag, forKey = "lework_pref_dismissed_update_tag")
     } else {
         d.removeObjectForKey("lework_pref_dismissed_update_tag")
+    }
+    d.setObject(if (prefs.sidebarGroupByProject) "true" else "false", forKey = "lework_pref_sidebar_group_by_project")
+    if (prefs.collapsedProjectGroupKeys.isNotEmpty()) {
+        d.setObject(
+            prefs.collapsedProjectGroupKeys.joinToString("|"),
+            forKey = "lework_pref_collapsed_project_groups",
+        )
+    } else {
+        d.removeObjectForKey("lework_pref_collapsed_project_groups")
     }
     d.synchronize()
 }

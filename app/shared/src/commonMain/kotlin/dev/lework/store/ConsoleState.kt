@@ -387,6 +387,9 @@ data class ConsoleUiState(
     val selectedMode: SessionMode = SessionMode.AUTO,
     val favoriteModelKeys: List<String> = emptyList(),
     val pinnedSessionIds: List<String> = emptyList(),
+    val sidebarGroupingMode: SidebarGroupingMode = SidebarGroupingMode.PROJECT,
+    val collapsedProjectGroupKeys: Set<String> = emptySet(),
+    val regeneratingTitleSessionId: String? = null,
     val selectedWorkspacePath: String = "",
     val selectedExtraWorkspaces: List<String> = emptyList(),
     val draftUseWorktree: Boolean = false,
@@ -623,6 +626,7 @@ data class ConsoleUiState(
         val q = rawQuery.trim().lowercase()
         if (q.isEmpty()) return true
         if (title.lowercase().contains(q)) return true
+        if (autoTitle?.lowercase()?.contains(q) == true) return true
         if (customTitle?.lowercase()?.contains(q) == true) return true
         if (cwd.lowercase().contains(q)) return true
         if (engineId.lowercase().contains(q)) return true
@@ -672,20 +676,60 @@ data class ConsoleUiState(
             }
             .sortedByDescending { it.archivedAt ?: it.updatedAt }
 
+    /** When filtering via the sidebar search box, temporarily auto-expand all matching project groups. */
+    val effectiveCollapsedProjectGroupKeys: Set<String>
+        get() = if (drawerSearchQuery.isNotBlank()) emptySet() else collapsedProjectGroupKeys
+
+    fun historyProjectGroups(excludePinned: Boolean = true): List<SessionProjectGroup> {
+        val pinnedSet = if (excludePinned) pinnedSessionIds.toSet() else emptySet()
+        val historyList = if (pinnedSet.isEmpty()) {
+            filteredHistorySessions
+        } else {
+            filteredHistorySessions.filterNot { it.id in pinnedSet }
+        }
+        return buildSessionProjectGroups(
+            sessions = historyList,
+            workspaces = workspaces,
+            hasDraftForSession = { sid -> sid != activeSessionId && hasDraft(sid) },
+        )
+    }
+
+    val archivedProjectGroups: List<SessionProjectGroup>
+        get() = buildSessionProjectGroups(
+            sessions = filteredArchivedSessions,
+            workspaces = workspaces,
+            hasDraftForSession = { sid -> sid != activeSessionId && hasDraft(sid) },
+        )
+
     /**
-     * Canonical session display order matching `DesktopSidebar` (pinned -> running -> history, or archived).
+     * Canonical session display order matching `DesktopSidebar` (pinned -> running -> history/project groups, or archived).
      * Shared by sidebar rendering and keyboard shortcuts (`⌥↑`/`⌥↓`, `⌘1`..`⌘9`) so visual order and shortcut
      * order never drift apart.
      */
     val visibleSidebarSessions: List<SessionMeta>
         get() {
-            if (drawerShowArchived) return filteredArchivedSessions
+            val collapsed = effectiveCollapsedProjectGroupKeys
+            if (drawerShowArchived) {
+                return if (sidebarGroupingMode == SidebarGroupingMode.PROJECT) {
+                    archivedProjectGroups
+                        .filterNot { it.key in collapsed }
+                        .flatMap { it.sessions }
+                } else {
+                    filteredArchivedSessions
+                }
+            }
             val pinnedSet = pinnedSessionIds.toSet()
             val allVisibleActive = filteredRunningSessions + filteredHistorySessions
             val byId = allVisibleActive.associateBy { it.id }
             val pinnedList = pinnedSessionIds.mapNotNull { byId[it] }
             val runningList = filteredRunningSessions.filterNot { it.id in pinnedSet }
-            val historyList = filteredHistorySessions.filterNot { it.id in pinnedSet }
+            val historyList = if (sidebarGroupingMode == SidebarGroupingMode.PROJECT) {
+                historyProjectGroups(excludePinned = true)
+                    .filterNot { it.key in collapsed }
+                    .flatMap { it.sessions }
+            } else {
+                filteredHistorySessions.filterNot { it.id in pinnedSet }
+            }
             return pinnedList + runningList + historyList
         }
 }

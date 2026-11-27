@@ -932,6 +932,7 @@ export class HubServer {
             'workspace.worktree.v1',
             'usage.stats.v1',
             'session.organize.v1',
+            'session.auto-title.v1',
             'feature.artifacts.v1',
             'feature.search.v1',
           ],
@@ -1117,6 +1118,11 @@ export class HubServer {
       case 'session.rename': {
         const p = params as { sessionId: string; title: string }
         const session = this.sessionManager.renameSession(p.sessionId, p.title)
+        return { session }
+      }
+      case 'session.regenerateTitle': {
+        const p = params as { sessionId: string }
+        const session = await this.sessionManager.regenerateSessionTitle(p.sessionId)
         return { session }
       }
       case 'session.archive': {

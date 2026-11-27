@@ -3,8 +3,14 @@ import path from 'node:path'
 import type { ReasoningEffort, SessionMeta, SessionMode, SessionWorktreeInfo } from '@lework/protocol'
 import { defaultDataDir } from '../platform/index.ts'
 
+export type AutoTitleSource = 'llm' | 'heuristic'
+
 export interface SessionMetadataRecord {
   customTitle?: string
+  autoTitle?: string
+  autoTitleSource?: AutoTitleSource
+  autoTitleSignalCount?: number
+  autoTitleUpdatedAt?: number
   archived?: boolean
   archivedAt?: number
   worktree?: SessionWorktreeInfo
@@ -80,6 +86,7 @@ export class SessionMetadataStore {
     this.ensureLoaded()
     const rec = this.records.get(meta.id)
     const cleanCustom = rec?.customTitle?.trim()
+    const cleanAuto = rec?.autoTitle?.trim() || meta.autoTitle?.trim()
     const isArchived = rec?.archived === true
     const persistedWorktree = rec?.worktree ?? meta.worktree
     const diskModelChangedSinceOverride =
@@ -103,6 +110,7 @@ export class SessionMetadataStore {
 
     if (
       !cleanCustom &&
+      !cleanAuto &&
       !isArchived &&
       !persistedWorktree &&
       effectiveProviderId === meta.providerId &&
@@ -110,9 +118,18 @@ export class SessionMetadataStore {
       effectiveEffort === meta.reasoningEffort &&
       effectiveMode === meta.mode
     ) {
-      if (!meta.customTitle && !meta.archived && meta.archivedAt === undefined && !meta.worktree) return meta
+      if (
+        !meta.customTitle &&
+        !meta.autoTitle &&
+        !meta.archived &&
+        meta.archivedAt === undefined &&
+        !meta.worktree
+      ) {
+        return meta
+      }
       const copy = { ...meta }
       delete copy.customTitle
+      delete copy.autoTitle
       delete copy.archived
       delete copy.archivedAt
       delete copy.worktree
@@ -120,7 +137,7 @@ export class SessionMetadataStore {
     }
     const copy: SessionMeta = {
       ...meta,
-      title: cleanCustom || meta.title,
+      title: cleanCustom || cleanAuto || meta.title,
       ...(effectiveProviderId ? { providerId: effectiveProviderId } : {}),
       ...(effectiveModel ? { model: effectiveModel } : {}),
       ...(effectiveEffort ? { reasoningEffort: effectiveEffort } : {}),
@@ -130,6 +147,11 @@ export class SessionMetadataStore {
       copy.customTitle = cleanCustom
     } else {
       delete copy.customTitle
+    }
+    if (cleanAuto) {
+      copy.autoTitle = cleanAuto
+    } else {
+      delete copy.autoTitle
     }
     if (isArchived) {
       copy.archived = true
@@ -149,6 +171,7 @@ export class SessionMetadataStore {
   private hasPersistedFields(rec: SessionMetadataRecord): boolean {
     return Boolean(
       rec.customTitle ||
+        rec.autoTitle ||
         rec.archived ||
         rec.worktree ||
         rec.preferredProviderId ||
@@ -280,6 +303,57 @@ export class SessionMetadataStore {
     this.persist()
   }
 
+  setAutoTitle(
+    sessionId: string,
+    rawTitle: string,
+    opts: {
+      source: AutoTitleSource
+      signalCount: number
+      clearCustomTitle?: boolean
+    },
+    ctx?: {
+      hostAliasId?: string
+      filePath?: string
+      nativeId?: string
+      baseMeta?: SessionMeta
+    },
+  ): void {
+    this.ensureLoaded()
+    const cleanTitle = rawTitle.replace(/\s+/g, ' ').trim().slice(0, 120)
+    const now = Date.now()
+    const ids = [sessionId, ctx?.hostAliasId].filter((v): v is string => Boolean(v && v.trim()))
+    for (const id of new Set(ids)) {
+      const prev = this.records.get(id)
+      const next: SessionMetadataRecord = {
+        ...prev,
+        updatedAt: now,
+        ...(ctx?.filePath ? { filePath: ctx.filePath } : {}),
+        ...(ctx?.nativeId ? { nativeId: ctx.nativeId } : {}),
+        ...(ctx?.baseMeta ? { snapshotMeta: stripOverrides(ctx.baseMeta, id) } : {}),
+      }
+      if (opts.clearCustomTitle) {
+        delete next.customTitle
+      }
+      if (cleanTitle) {
+        next.autoTitle = cleanTitle
+        next.autoTitleSource = opts.source
+        next.autoTitleSignalCount = opts.signalCount
+        next.autoTitleUpdatedAt = now
+      } else {
+        delete next.autoTitle
+        delete next.autoTitleSource
+        delete next.autoTitleSignalCount
+        delete next.autoTitleUpdatedAt
+      }
+      if (!this.hasPersistedFields(next)) {
+        this.records.delete(id)
+      } else {
+        this.records.set(id, next)
+      }
+    }
+    this.persist()
+  }
+
   setArchived(
     sessionId: string,
     archived: boolean,
@@ -323,10 +397,25 @@ export class SessionMetadataStore {
     const hubRec = this.records.get(hubSessionId)
     const hostRec = this.records.get(hostSessionId)
     if (!hubRec && !hostRec) return
+    const preferHubAuto =
+      hubRec?.autoTitle &&
+      (!hostRec?.autoTitle ||
+        (hubRec.autoTitleSource === 'llm' && hostRec.autoTitleSource !== 'llm') ||
+        (hubRec.autoTitleUpdatedAt ?? 0) >= (hostRec.autoTitleUpdatedAt ?? 0))
     const merged: SessionMetadataRecord = {
       ...hostRec,
       ...hubRec,
       customTitle: hubRec?.customTitle ?? hostRec?.customTitle,
+      autoTitle: preferHubAuto ? hubRec?.autoTitle : (hostRec?.autoTitle ?? hubRec?.autoTitle),
+      autoTitleSource: preferHubAuto
+        ? hubRec?.autoTitleSource
+        : (hostRec?.autoTitleSource ?? hubRec?.autoTitleSource),
+      autoTitleSignalCount: preferHubAuto
+        ? hubRec?.autoTitleSignalCount
+        : (hostRec?.autoTitleSignalCount ?? hubRec?.autoTitleSignalCount),
+      autoTitleUpdatedAt: preferHubAuto
+        ? hubRec?.autoTitleUpdatedAt
+        : (hostRec?.autoTitleUpdatedAt ?? hubRec?.autoTitleUpdatedAt),
       archived: hubRec?.archived ?? hostRec?.archived,
       archivedAt: hubRec?.archivedAt ?? hostRec?.archivedAt,
       worktree: hubRec?.worktree ?? hostRec?.worktree,
@@ -374,6 +463,7 @@ export class SessionMetadataStore {
 function stripOverrides(meta: SessionMeta, overrideId: string): SessionMeta {
   const copy: SessionMeta = { ...meta, id: overrideId }
   delete copy.customTitle
+  delete copy.autoTitle
   delete copy.archived
   delete copy.archivedAt
   return copy

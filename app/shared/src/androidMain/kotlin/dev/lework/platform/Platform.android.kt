@@ -714,6 +714,11 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         ?.map { it.trim() }
         ?.filter { it.isNotEmpty() }
         ?: memPrefs.pinnedSessionIds
+    val collapsedGroups = p.getString("pref_collapsed_project_groups", null)
+        ?.split('|')
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?: memPrefs.collapsedProjectGroupKeys
     return SavedSessionPrefs(
         engineId = p.getString("pref_engine", null)?.ifBlank { null } ?: memPrefs.engineId,
         providerId = p.getString("pref_provider", null)?.ifBlank { null },
@@ -724,6 +729,8 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         favoriteModelKeys = favs,
         pinnedSessionIds = pinned,
         dismissedUpdateTag = p.getString("pref_dismissed_update_tag", null)?.ifBlank { null },
+        sidebarGroupByProject = p.getBoolean("pref_sidebar_group_by_project", memPrefs.sidebarGroupByProject),
+        collapsedProjectGroupKeys = collapsedGroups,
     )
 }
 
@@ -739,6 +746,8 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
         ?.putString("pref_fav_models", prefs.favoriteModelKeys.joinToString("|"))
         ?.putString("pref_pinned_sessions", prefs.pinnedSessionIds.joinToString("|"))
         ?.putString("pref_dismissed_update_tag", prefs.dismissedUpdateTag)
+        ?.putBoolean("pref_sidebar_group_by_project", prefs.sidebarGroupByProject)
+        ?.putString("pref_collapsed_project_groups", prefs.collapsedProjectGroupKeys.joinToString("|"))
         ?.apply()
 }
 

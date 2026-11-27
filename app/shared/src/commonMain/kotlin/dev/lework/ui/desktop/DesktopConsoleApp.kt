@@ -321,6 +321,10 @@ internal fun DesktopConsoleApp(
                                 store.startNewDraftSession()
                                 focusComposerNonce++
                             },
+                            onNewSessionInWorkspace = { path ->
+                                store.startNewDraftInWorkspace(path)
+                                focusComposerNonce++
+                            },
                             onOpenUsage = {
                                 store.refreshUsageDashboard()
                                 showUsageDialog = true
@@ -339,6 +343,9 @@ internal fun DesktopConsoleApp(
                             onSearchQueryChange = store::setDrawerSearchQuery,
                             onOpenGlobalSearch = { query -> openGlobalSearchPalette(query) },
                             onToggleArchivedView = store::setDrawerShowArchived,
+                            onToggleGroupingMode = store::toggleSidebarGroupingMode,
+                            onToggleProjectGroupCollapsed = store::toggleProjectGroupCollapsed,
+                            onSetAllProjectGroupsCollapsed = store::setAllProjectGroupsCollapsed,
                             onTogglePinSession = store::togglePinSession,
                             onRequestRenameSession = { sess -> renamingSessionId = sess.id },
                             onToggleArchiveSession = store::archiveSession,
@@ -1064,6 +1071,11 @@ internal fun DesktopConsoleApp(
     if (renamingTarget != null) {
         RenameSessionDialog(
             session = renamingTarget,
+            isRegeneratingTitle = state.regeneratingTitleSessionId == renamingTarget.id,
+            onRegenerateTitle = {
+                renamingSessionId = null
+                store.regenerateSessionTitle(renamingTarget.id)
+            },
             onDismiss = { renamingSessionId = null },
             onConfirm = { nextTitle ->
                 renamingSessionId = null
