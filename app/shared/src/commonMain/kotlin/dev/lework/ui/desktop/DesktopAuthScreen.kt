@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -25,6 +26,7 @@ import dev.lework.platform.loadSavedTsnetControlUrl
 import dev.lework.store.ConnectionStatus
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.Everforest
+import dev.lework.ui.TsnetDiscoveredHubList
 
 @Composable
 internal fun DesktopAuthScreen(
@@ -38,6 +40,7 @@ internal fun DesktopAuthScreen(
     onPairViaSsh: (String) -> Unit,
     onStartTsnetLogin: (String?) -> Unit,
     onSearchTsnetPeers: () -> Unit,
+    onSelectTsnetHub: (String) -> Unit = {},
     onLogoutTsnet: () -> Unit,
     onSelectPairedHost: (String) -> Unit,
 ) {
@@ -132,6 +135,14 @@ internal fun DesktopAuthScreen(
                                 )
                             }
                         }
+                        if (!state.connectionError.isNullOrBlank()) {
+                            Text(
+                                text = state.connectionError,
+                                fontSize = 12.5.sp,
+                                color = Everforest.Red,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
                         Text(
                             text = state.authStatusText,
                             fontSize = 12.sp,
@@ -161,7 +172,10 @@ internal fun DesktopAuthScreen(
                     ConnectionStatus.CONNECTED -> Unit
                 }
 
-                if (state.connectionStatus == ConnectionStatus.NEEDS_AUTH || state.connectionStatus == ConnectionStatus.ERROR) {
+                val showAuthOptions = state.connectionStatus == ConnectionStatus.NEEDS_AUTH ||
+                    state.connectionStatus == ConnectionStatus.ERROR ||
+                    (state.connectionStatus == ConnectionStatus.CONNECTING && state.discoveredTsnetHubs.isNotEmpty())
+                if (showAuthOptions) {
                     if (sshSupported) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -305,20 +319,45 @@ internal fun DesktopAuthScreen(
                                     )
                                 }
                                 if (state.tsnetStatus.backendState == "Running") {
+                                    val totalPeers = state.tsnetStatus.peers.size
+                                    val onlinePeers = state.tsnetStatus.peers.count { it.online }
+                                    val peerHint = when {
+                                        onlinePeers > 0 -> "同账号在线节点 $onlinePeers 台"
+                                        totalPeers > 0 -> "同账号已注册节点 $totalPeers 台"
+                                        else -> "暂未发现其他同账号节点"
+                                    }
+                                    Text(
+                                        text = "当前账号：${state.tsnetStatus.loginName ?: "已登录"} · $peerHint",
+                                        fontSize = 11.5.sp,
+                                        color = Everforest.Green,
+                                    )
+                                    if (state.discoveredTsnetHubs.isNotEmpty()) {
+                                        TsnetDiscoveredHubList(
+                                            hubs = state.discoveredTsnetHubs,
+                                            connectingHubId = state.connectingTsnetHubId,
+                                            onSelectHub = onSelectTsnetHub,
+                                        )
+                                    }
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
                                         Button(
                                             onClick = onSearchTsnetPeers,
+                                            enabled = state.connectingTsnetHubId == null,
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = Everforest.Bg3,
                                                 contentColor = Everforest.Fg,
                                             ),
                                             shape = RoundedCornerShape(10.dp),
-                                            modifier = Modifier.weight(1f),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("tsnet_search_button"),
                                         ) {
-                                            Text("搜索并握手", fontSize = 12.5.sp)
+                                            Text(
+                                                text = if (state.discoveredTsnetHubs.isNotEmpty()) "重新搜索节点" else "搜索并握手",
+                                                fontSize = 12.5.sp,
+                                            )
                                         }
                                         TextButton(onClick = onLogoutTsnet) {
                                             Text("退出账号", fontSize = 12.sp, color = Everforest.Grey1)
