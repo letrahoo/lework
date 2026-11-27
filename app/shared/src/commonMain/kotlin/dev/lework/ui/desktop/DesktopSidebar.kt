@@ -637,7 +637,7 @@ internal fun DesktopSidebar(
                     }
                 }
             } else {
-                val newDraftPreview = state.draftPreviewFor(null)
+                val newDraftPreview = if (state.activeSessionId != null) state.draftPreviewFor(null) else null
                 val query = state.drawerSearchQuery.trim()
                 if (
                     newDraftPreview != null &&
@@ -1028,14 +1028,15 @@ private fun DesktopSessionRow(
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 )
                 val hasLiveStatus = isRunning && !session.liveStatusText.isNullOrBlank()
-                if (draftPreview != null && !hasLiveStatus) {
-                    val draftSubtitle = remember(draftPreview) {
+                val visibleDraftPreview = draftPreview?.takeUnless { selected }
+                if (visibleDraftPreview != null && !hasLiveStatus) {
+                    val draftSubtitle = remember(visibleDraftPreview) {
                         buildAnnotatedString {
                             withStyle(SpanStyle(color = Everforest.SoftRed, fontWeight = FontWeight.SemiBold)) {
                                 append("[草稿] ")
                             }
                             withStyle(SpanStyle(color = Everforest.Grey2)) {
-                                append(draftPreview)
+                                append(visibleDraftPreview)
                             }
                         }
                     }
@@ -1136,7 +1137,7 @@ private fun DesktopSessionRow(
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                         )
                     }
-                } else if (draftPreview != null) {
+                } else if (!selected && draftPreview != null) {
                     Surface(
                         shape = RoundedCornerShape(999.dp),
                         color = Everforest.BgRed,

@@ -231,13 +231,22 @@ class PerSessionDraftAndFilePreviewTest {
             }
             waitUntil(timeoutMillis = 5_000L) { store.state.value.activeSessionId == "sess_alpha" }
 
-            // Type unsent text into Session Alpha
+            // Type unsent text into Session Alpha — while still active on Alpha, do NOT show draft badge/preview on Alpha
             onNodeWithTag("composer_input").performTextInput("Alpha 未发送想法")
             waitUntil(timeoutMillis = 3_000L) {
                 store.state.value.draftTextFor("sess_alpha") == "Alpha 未发送想法"
             }
+            waitForIdle()
+            assertTrue(
+                onAllNodesWithTag("session_draft_badge_sess_alpha", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isEmpty(),
+            )
+            assertTrue(
+                onAllNodesWithTag("session_draft_preview_sess_alpha", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isEmpty(),
+            )
 
-            // Switch to Session Beta -> composer must be empty, and Alpha row shows [草稿] badge & snippet
+            // Switch to Session Beta -> composer must be empty, and Alpha row now shows [草稿] badge & snippet
             onNodeWithTag("session_row_sess_beta").performClick()
             waitUntil(timeoutMillis = 5_000L) { store.state.value.activeSessionId == "sess_beta" }
 
@@ -246,20 +255,35 @@ class PerSessionDraftAndFilePreviewTest {
                 .assertTextContains("Alpha 未发送想法", substring = true)
             assertEquals("", store.state.value.activeDraftText)
 
-            // Type unsent text into New Session, switch back to Beta -> top new-session draft row appears
+            // Type unsent text into New Session -> while still on New Session, top new-session draft row stays hidden
             onNodeWithTag("drawer_btn_new_session").performClick()
             waitUntil(timeoutMillis = 3_000L) { store.state.value.activeSessionId == null }
             onNodeWithTag("composer_input").performTextInput("全新任务草稿")
             waitUntil(timeoutMillis = 3_000L) { store.state.value.draftTextFor(null) == "全新任务草稿" }
+            waitForIdle()
+            assertTrue(
+                onAllNodesWithTag("session_row_new_draft", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isEmpty(),
+            )
 
+            // Switch away to Beta -> top new-session draft row immediately appears
             onNodeWithTag("session_row_sess_beta").performClick()
             waitUntil(timeoutMillis = 3_000L) { store.state.value.activeSessionId == "sess_beta" }
             onNodeWithTag("session_row_new_draft").assertIsDisplayed()
 
-            // Click back to Session Alpha -> exact unsent draft restored
+            // Click back to Session Alpha -> exact unsent draft restored AND Alpha draft badge hides again
             onNodeWithTag("session_row_sess_alpha").performClick()
             waitUntil(timeoutMillis = 3_000L) { store.state.value.activeSessionId == "sess_alpha" }
+            waitForIdle()
             assertEquals("Alpha 未发送想法", store.state.value.activeDraftText)
+            assertTrue(
+                onAllNodesWithTag("session_draft_badge_sess_alpha", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isEmpty(),
+            )
+            assertTrue(
+                onAllNodesWithTag("session_draft_preview_sess_alpha", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isEmpty(),
+            )
         }
 
     @Test
@@ -445,13 +469,20 @@ class PerSessionDraftAndFilePreviewTest {
                 store.state.value.draftTextFor("sess_alpha") == "移动端 Alpha 草稿"
             }
 
+            // While still active on Alpha, opening the drawer must NOT show draft badge on Alpha
+            onNodeWithTag("topbar_btn_menu").performClick()
+            waitForIdle()
+            assertTrue(
+                onAllNodesWithTag("session_draft_badge_sess_alpha", useUnmergedTree = true)
+                    .fetchSemanticsNodes().isEmpty(),
+            )
+
             runOnIdle { store.selectSession("sess_beta") }
             waitUntil(timeoutMillis = 3_000L) { store.state.value.activeSessionId == "sess_beta" }
             assertEquals("", store.state.value.activeDraftText)
             assertEquals("移动端 Alpha 草稿", store.state.value.draftTextFor("sess_alpha"))
 
-            // Open drawer and verify draft badge + preview appear on Alpha row
-            onNodeWithTag("topbar_btn_menu").performClick()
+            // Now on Beta, Alpha row shows draft badge + preview in drawer
             waitUntil(timeoutMillis = 3_000L) {
                 onAllNodesWithTag("session_draft_badge_sess_alpha", useUnmergedTree = true)
                     .fetchSemanticsNodes().isNotEmpty()
