@@ -189,7 +189,7 @@ internal fun parseGitHubRedirectReleaseTag(finalUrl: String): AppReleaseInfo? {
     val semVer = parseSemVer(match.groupValues[1]) ?: return null
     val tag = semVer.tagName
     val dmgName = "Lework-$tag-macos-arm64.dmg"
-    val apkName = "lework-$tag-android-debug.apk"
+    val apkName = "lework-$tag-android-release.apk"
     val baseDownload = "https://github.com/$LEWORK_GITHUB_REPO/releases/download/$tag"
     return AppReleaseInfo(
         tagName = tag,
