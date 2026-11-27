@@ -23,6 +23,14 @@ Lework pairs a lightweight **Host Hub** daemon (`hubd`, TypeScript / Node 22+) o
 - **Workspace tools**: Isolated Git worktree sessions, inline & workspace diffs, lossless `git stash create` checkpoints/rollback, `@file` mentions, and image inputs.
 - **Telemetry & alerts**: Context window meter, incremental multi-engine usage/quota stats, and offline push notifications (Bark, Telegram, Feishu, Webhook).
 
+## Architecture
+
+<p align="center">
+  <img src="./assets/architecture/lework-architecture.en.png" alt="Lework System Architecture" width="100%" />
+</p>
+
+See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the full module breakdown, supported scenarios, capability matrix, and security invariants.
+
 ## Repository Layout
 
 ```text
@@ -31,9 +39,9 @@ lework/
 ├─ app/               # KMP + Compose Multiplatform clients (shared / desktopApp / iosApp / androidApp)
 ├─ protocol-schema/   # Shared Zod schema -> JSON Schema + Kotlin @Serializable codegen
 ├─ tsnet-bridge/      # Embedded Go Tailscale tsnet bridge (Host binary + iOS/Android libs)
-├─ assets/brand/      # SVG brand mark & generator assets
+├─ assets/            # Brand icons & architecture diagrams (assets/brand/, assets/architecture/)
 ├─ scripts/           # Setup, tsnet build, iOS/Desktop install, release helpers
-└─ docs/              # Architecture design notes (docs/PLAN.md)
+└─ docs/              # Architecture overview & design notes (docs/ARCHITECTURE.md, docs/PLAN.md)
 ```
 
 ## Quick Start
