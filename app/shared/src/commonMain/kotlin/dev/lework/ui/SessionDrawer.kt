@@ -45,9 +45,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -235,7 +237,10 @@ internal fun TasksSidebarContent(
                     )
                 }
             } else {
-                IconButton(onClick = onRefresh) {
+                IconButton(
+                    onClick = onRefresh,
+                    modifier = Modifier.size(40.dp),
+                ) {
                     Icon(
                         imageVector = Icons.Rounded.Refresh,
                         contentDescription = "刷新会话",
@@ -379,16 +384,21 @@ internal fun TasksSidebarContent(
                 .clickable { onNewSession() },
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Add,
-                    contentDescription = null,
-                    tint = Everforest.Green,
+                Box(
                     modifier = Modifier.size(18.dp),
-                )
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = null,
+                        tint = Everforest.Green,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
                 Text(
                     text = "新建会话",
                     fontSize = 14.sp,
@@ -411,20 +421,25 @@ internal fun TasksSidebarContent(
                 .testTag("drawer_btn_usage"),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.5.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.QueryStats,
-                        contentDescription = null,
-                        tint = Everforest.Green,
-                        modifier = Modifier.size(16.dp),
-                    )
+                    Box(
+                        modifier = Modifier.size(18.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.QueryStats,
+                            contentDescription = null,
+                            tint = Everforest.Green,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
                     Text(
                         text = "用量与额度",
                         fontSize = 13.sp,
@@ -451,16 +466,21 @@ internal fun TasksSidebarContent(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.5.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Search,
-                    contentDescription = "搜索会话",
-                    tint = Everforest.CommentGrey,
-                    modifier = Modifier.size(15.dp),
-                )
+                Box(
+                    modifier = Modifier.size(18.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Search,
+                        contentDescription = "搜索会话",
+                        tint = Everforest.CommentGrey,
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
                 Box(modifier = Modifier.weight(1f)) {
                     if (state.drawerSearchQuery.isEmpty()) {
                         Text(
@@ -830,6 +850,7 @@ internal fun TasksSidebarContent(
                         )
                     }
                 } else if (isGroupedByProject) {
+                    val anyGroupShowsNewButton = projectGroups.any { !it.isFallback && it.fullPath.isNotEmpty() }
                     for (group in projectGroups) {
                         val collapsed = group.key in collapsedGroupKeys
                         item(key = "grp_${group.key}") {
@@ -837,6 +858,7 @@ internal fun TasksSidebarContent(
                                 group = group,
                                 collapsed = collapsed,
                                 showNewSessionButton = !group.isFallback && group.fullPath.isNotEmpty(),
+                                reserveNewSessionSlot = anyGroupShowsNewButton,
                                 onToggleCollapse = { onToggleProjectGroupCollapsed(group.key) },
                                 onNewSessionInProject = {
                                     dismissKeyboard()
@@ -901,85 +923,110 @@ internal fun TasksSidebarContent(
         }
 
         HorizontalDivider(color = Everforest.Bg2)
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Computer,
+                        contentDescription = null,
+                        tint = Everforest.Green,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                        text = "${state.engines.count { it.status.ready }} 个引擎在线",
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        color = Everforest.Grey2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { confirmingLogout = true }
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                        .testTag("drawer_btn_logout"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "断开连接",
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Everforest.Red,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Computer,
-                    contentDescription = null,
-                    tint = Everforest.Green,
-                    modifier = Modifier.size(15.dp),
+                Text(
+                    text = appVersionLabel(),
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = Everforest.Grey0,
                 )
-                Column {
-                    Text(
-                        text = "${state.engines.count { it.status.ready }} 个引擎在线",
-                        fontSize = 12.sp,
-                        color = Everforest.Grey2,
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                val latest = state.appUpdate.latestRelease
+                if (state.appUpdate.hasUpdate && latest != null) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.BgGreen,
+                        border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.45f)),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable { onOpenAppUpdate() }
+                            .testTag("drawer_update_pill"),
                     ) {
                         Text(
-                            text = appVersionLabel(),
-                            fontSize = 10.sp,
-                            color = Everforest.Grey0,
-                        )
-                        val latest = state.appUpdate.latestRelease
-                        if (state.appUpdate.hasUpdate && latest != null) {
-                            Surface(
-                                shape = RoundedCornerShape(999.dp),
-                                color = Everforest.BgGreen,
-                                border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.45f)),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .clickable { onOpenAppUpdate() }
-                                    .testTag("drawer_update_pill"),
-                            ) {
-                                Text(
-                                    text = "新版本 ${latest.tagName}",
-                                    fontSize = 9.5.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Everforest.Green,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-                                )
-                            }
-                        } else {
-                            Text(
-                                text = if (state.appUpdate.checking) "检查更新中…" else "检查更新",
-                                fontSize = 10.sp,
-                                color = Everforest.CommentGrey,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .clickable(enabled = !state.appUpdate.checking) { onCheckAppUpdate() }
-                                    .padding(horizontal = 3.dp, vertical = 1.dp)
-                                    .testTag("drawer_check_update_btn"),
-                            )
-                        }
-                    }
-                    state.hubFingerprint?.let { fp ->
-                        // Same short code as `lework pair` prints on the host — compare to rule out impostors
-                        Text(
-                            text = "已加密 · 主机指纹 $fp",
-                            fontSize = 10.sp,
-                            color = Everforest.Grey0,
+                            text = "新版本 ${latest.tagName}",
+                            fontSize = 9.5.sp,
+                            lineHeight = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.Green,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
                         )
                     }
+                } else {
+                    Text(
+                        text = if (state.appUpdate.checking) "检查更新中…" else "检查更新",
+                        fontSize = 10.sp,
+                        lineHeight = 14.sp,
+                        color = Everforest.CommentGrey,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable(enabled = !state.appUpdate.checking) { onCheckAppUpdate() }
+                            .padding(horizontal = 3.dp, vertical = 1.dp)
+                            .testTag("drawer_check_update_btn"),
+                    )
                 }
             }
-            TextButton(
-                onClick = { confirmingLogout = true },
-                modifier = Modifier.testTag("drawer_btn_logout"),
-            ) {
-                Text("断开连接", fontSize = 12.sp, color = Everforest.Red)
+            state.hubFingerprint?.let { fp ->
+                // Same short code as `lework pair` prints on the host — compare to rule out impostors
+                Text(
+                    text = "已加密 · 主机指纹 $fp",
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    color = Everforest.Grey0,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
         }
@@ -1154,7 +1201,7 @@ private fun MobileSidebarSectionHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp, horizontal = 4.dp),
+            .padding(start = 4.dp, end = 0.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
@@ -1176,6 +1223,7 @@ private fun MobileSidebarSectionHeader(
                     runningCount = runningCount,
                     active = onlyRunning,
                     onClick = onToggleOnlyRunning,
+                    modifier = Modifier.height(26.dp),
                 )
             }
             Surface(
@@ -1186,12 +1234,13 @@ private fun MobileSidebarSectionHeader(
                     if (isGroupedByProject) Everforest.Green.copy(alpha = 0.4f) else Everforest.Bg2,
                 ),
                 modifier = Modifier
+                    .height(26.dp)
                     .clip(RoundedCornerShape(999.dp))
                     .clickable(onClick = onToggleGroupingMode)
                     .testTag("drawer_btn_toggle_grouping"),
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    modifier = Modifier.padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
@@ -1204,8 +1253,11 @@ private fun MobileSidebarSectionHeader(
                     Text(
                         text = if (isGroupedByProject) "按项目" else "按时间",
                         fontSize = 10.5.sp,
+                        lineHeight = 13.sp,
                         fontWeight = FontWeight.Medium,
                         color = if (isGroupedByProject) Everforest.Green else Everforest.Grey1,
+                        maxLines = 1,
+                        softWrap = false,
                     )
                 }
             }
@@ -1218,6 +1270,7 @@ private fun MobileProjectGroupHeader(
     group: SessionProjectGroup,
     collapsed: Boolean,
     showNewSessionButton: Boolean,
+    reserveNewSessionSlot: Boolean = false,
     onToggleCollapse: () -> Unit,
     onNewSessionInProject: () -> Unit,
 ) {
@@ -1228,7 +1281,8 @@ private fun MobileProjectGroupHeader(
             .clip(RoundedCornerShape(8.dp))
             .background(Everforest.Bg1.copy(alpha = 0.45f))
             .clickable(onClick = onToggleCollapse)
-            .padding(start = 6.dp, end = 4.dp, top = 5.dp, bottom = 5.dp)
+            .heightIn(min = 36.dp)
+            .padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
             .testTag("project_group_header_${group.key}"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -1248,13 +1302,13 @@ private fun MobileProjectGroupHeader(
         Text(
             text = group.displayName,
             fontSize = 12.sp,
+            lineHeight = 16.sp,
             fontWeight = FontWeight.SemiBold,
             color = if (group.isFallback) Everforest.Grey1 else Everforest.HeadingWarm,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
+            modifier = Modifier.weight(1f),
         )
-        Spacer(Modifier.weight(1f))
         SidebarHeaderActivityBadges(
             runningCount = group.runningCount,
             waitingCount = group.waitingPermissionCount,
@@ -1269,23 +1323,34 @@ private fun MobileProjectGroupHeader(
         }
         Text(
             text = "${group.sessions.size}",
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
+            lineHeight = 14.sp,
+            fontFamily = FontFamily.Monospace,
+            textAlign = TextAlign.End,
             color = Everforest.CommentGrey,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier
+                .widthIn(min = 20.dp)
+                .let { if (!showNewSessionButton && !reserveNewSessionSlot) it.padding(end = 4.dp) else it }
+                .testTag("project_group_count_${group.key}"),
         )
         if (showNewSessionButton) {
             IconButton(
                 onClick = onNewSessionInProject,
                 modifier = Modifier
-                    .size(24.dp)
+                    .size(28.dp)
                     .testTag("project_group_new_${group.key}"),
             ) {
                 Icon(
                     imageVector = Icons.Rounded.Add,
                     contentDescription = "在 ${group.displayName} 中新建会话",
                     tint = Everforest.Green,
-                    modifier = Modifier.size(15.dp),
+                    modifier = Modifier.size(16.dp),
                 )
             }
+        } else if (reserveNewSessionSlot) {
+            Spacer(Modifier.size(28.dp))
         }
     }
 }
