@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.platform.canCaptureCameraImage
@@ -320,9 +321,16 @@ internal fun ClaudeStyleComposer(
                 ) {
                     if (text.isEmpty()) {
                         Text(
-                            text = "发消息给 ${shortEngineLabel(state.selectedEngineId)}（输入 / 命令 或 @ 文件）…",
+                            text = mobileComposerPlaceholder(
+                                engineId = state.selectedEngineId,
+                                hasAttachedImages = state.composerAttachedImages.isNotEmpty(),
+                                canQueueFollowUp = isSessionRunning && activeSess?.state == SessionState.RUNNING,
+                            ),
                             color = Everforest.CommentGrey,
                             fontSize = 15.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("composer_placeholder"),
                         )
                     }
                     BasicTextField(
@@ -374,27 +382,37 @@ internal fun ClaudeStyleComposer(
                         modifier = Modifier
                             .weight(1f)
                             .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (imageSupported) {
                             val remainingSlots = (4 - state.composerAttachedImages.size).coerceAtLeast(0)
                             Box {
-                                ComposerMetaChip(
-                                    icon = Icons.Rounded.AddPhotoAlternate,
-                                    label = if (state.composerAttachedImages.isEmpty()) {
-                                        "添加图片"
-                                    } else {
-                                        "图片 ${state.composerAttachedImages.size}/4"
-                                    },
-                                    tint = if (remainingSlots > 0) Everforest.Green else Everforest.CommentGrey,
-                                    labelColor = if (remainingSlots > 0) Everforest.Fg else Everforest.CommentGrey,
-                                    testTag = "composer_add_image_btn",
-                                    onClick = {
-                                        if (remainingSlots <= 0) return@ComposerMetaChip
-                                        showImageSourceMenu = true
-                                    },
-                                )
+                                if (state.composerAttachedImages.isEmpty()) {
+                                    ComposerIconButton(
+                                        icon = Icons.Rounded.AddPhotoAlternate,
+                                        contentDescription = "添加图片",
+                                        tint = Everforest.Green,
+                                        active = showImageSourceMenu,
+                                        activeTint = Everforest.Green,
+                                        iconSize = 16.dp,
+                                        testTag = "composer_add_image_btn",
+                                        onClick = { showImageSourceMenu = true },
+                                    )
+                                } else {
+                                    ComposerMetaChip(
+                                        icon = Icons.Rounded.AddPhotoAlternate,
+                                        label = "${state.composerAttachedImages.size}/4",
+                                        tint = if (remainingSlots > 0) Everforest.Green else Everforest.CommentGrey,
+                                        labelColor = if (remainingSlots > 0) Everforest.Fg else Everforest.CommentGrey,
+                                        iconContentDescription = "添加图片",
+                                        testTag = "composer_add_image_btn",
+                                        onClick = {
+                                            if (remainingSlots <= 0) return@ComposerMetaChip
+                                            showImageSourceMenu = true
+                                        },
+                                    )
+                                }
                                 DropdownMenu(
                                     expanded = showImageSourceMenu,
                                     onDismissRequest = { showImageSourceMenu = false },
@@ -463,11 +481,13 @@ internal fun ClaudeStyleComposer(
                                 }
                             }
                         }
-                        ComposerMetaChip(
+                        ComposerIconButton(
                             icon = Icons.Rounded.Terminal,
-                            label = "命令",
-                            tint = if (slashPopupVisible) Everforest.CodeGreen else Everforest.CommentGrey,
-                            labelColor = if (slashPopupVisible) Everforest.CodeGreen else Everforest.Fg,
+                            contentDescription = if (slashPopupVisible) "收起命令面板" else "命令",
+                            tint = Everforest.CommentGrey,
+                            active = slashPopupVisible,
+                            activeTint = Everforest.CodeGreen,
+                            iconSize = 15.dp,
                             testTag = "composer_slash_btn",
                             onClick = {
                                 if (slashPopupVisible) {
@@ -480,11 +500,13 @@ internal fun ClaudeStyleComposer(
                                 }
                             },
                         )
-                        ComposerMetaChip(
+                        ComposerIconButton(
                             icon = Icons.Rounded.AlternateEmail,
-                            label = "引用文件",
-                            tint = if (mentionPopupVisible) Everforest.Green else Everforest.CommentGrey,
-                            labelColor = if (mentionPopupVisible) Everforest.Green else Everforest.Fg,
+                            contentDescription = if (mentionPopupVisible) "收起文件引用" else "引用文件",
+                            tint = Everforest.CommentGrey,
+                            active = mentionPopupVisible,
+                            activeTint = Everforest.Green,
+                            iconSize = 15.5.dp,
                             testTag = "composer_mention_btn",
                             onClick = {
                                 if (mentionPopupVisible) {
@@ -496,6 +518,13 @@ internal fun ClaudeStyleComposer(
                                     keyboardController?.show()
                                 }
                             },
+                        )
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .width(1.dp)
+                                .height(14.dp)
+                                .background(Everforest.Bg3),
                         )
                         val isWorktreeActive =
                             activeSess?.worktree != null || (activeSess == null && state.draftUseWorktree)
@@ -607,12 +636,55 @@ internal fun ClaudeStyleComposer(
     }
 }
 
+internal fun mobileComposerPlaceholder(
+    engineId: String,
+    hasAttachedImages: Boolean,
+    canQueueFollowUp: Boolean,
+): String = when {
+    hasAttachedImages -> "添加图片说明，或直接发送…"
+    canQueueFollowUp -> "补充下一条指令，结束后自动发送…"
+    else -> "发消息给 ${shortEngineLabel(engineId)}…"
+}
+
+@Composable
+private fun ComposerIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    tint: Color,
+    active: Boolean = false,
+    activeTint: Color = tint,
+    iconSize: Dp = 16.dp,
+    testTag: String? = null,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = CircleShape,
+        color = if (active) activeTint.copy(alpha = 0.16f) else Everforest.Bg2,
+        border = if (active) BorderStroke(1.dp, activeTint.copy(alpha = 0.45f)) else null,
+        modifier = Modifier
+            .size(30.dp)
+            .let { mod -> if (testTag != null) mod.testTag(testTag) else mod }
+            .clip(CircleShape)
+            .clickable { onClick() },
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = if (active) activeTint else tint,
+                modifier = Modifier.size(iconSize),
+            )
+        }
+    }
+}
+
 @Composable
 private fun ComposerMetaChip(
     icon: ImageVector?,
     label: String,
     tint: Color,
     labelColor: Color = Everforest.Fg,
+    iconContentDescription: String? = null,
     testTag: String? = null,
     onClick: () -> Unit,
 ) {
@@ -630,7 +702,7 @@ private fun ComposerMetaChip(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             if (icon != null) {
-                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(13.dp))
+                Icon(icon, contentDescription = iconContentDescription, tint = tint, modifier = Modifier.size(13.dp))
             }
             Text(
                 text = label,
