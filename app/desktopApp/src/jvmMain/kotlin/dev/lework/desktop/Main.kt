@@ -73,6 +73,7 @@ fun main(args: Array<String>) {
         var toggleSidebarSignal by remember { mutableIntStateOf(0) }
         var openGlobalSearchSignal by remember { mutableIntStateOf(0) }
         var openInSessionFindSignal by remember { mutableIntStateOf(0) }
+        var registerGlobalCliSignal by remember { mutableIntStateOf(0) }
         val toggleDebouncer = remember { ToggleHotkeyDebouncer() }
         val modalEscapeDispatcher = remember { ModalEscapeDispatcher() }
         var windowRef by remember { mutableStateOf<ComposeWindow?>(null) }
@@ -289,6 +290,10 @@ fun main(args: Array<String>) {
                         shortcut = KeyShortcut(Key.Comma, meta = true),
                         onClick = { openSettingsSignal++ },
                     )
+                    Item(
+                        text = "注册全局命令行 (lework)…",
+                        onClick = { registerGlobalCliSignal++ },
+                    )
                     Separator()
                     Item(
                         text = "连接其他开发机…",
@@ -345,6 +350,7 @@ fun main(args: Array<String>) {
                     toggleSidebarSignal = toggleSidebarSignal,
                     openGlobalSearchSignal = openGlobalSearchSignal,
                     openInSessionFindSignal = openInSessionFindSignal,
+                    registerGlobalCliSignal = registerGlobalCliSignal,
                 )
             }
         }

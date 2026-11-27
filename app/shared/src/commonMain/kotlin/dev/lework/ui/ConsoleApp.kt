@@ -47,6 +47,7 @@ fun ConsoleApp(
     toggleSidebarSignal: Int = 0,
     openGlobalSearchSignal: Int = 0,
     openInSessionFindSignal: Int = 0,
+    registerGlobalCliSignal: Int = 0,
 ) {
     val scope = rememberCoroutineScope()
     val store = remember(externalStore) { externalStore ?: ConsoleStore(scope) }
@@ -73,6 +74,7 @@ fun ConsoleApp(
                         toggleSidebarSignal = toggleSidebarSignal,
                         openGlobalSearchSignal = openGlobalSearchSignal,
                         openInSessionFindSignal = openInSessionFindSignal,
+                        registerGlobalCliSignal = registerGlobalCliSignal,
                     )
                 } else {
                     MobileConsoleApp(

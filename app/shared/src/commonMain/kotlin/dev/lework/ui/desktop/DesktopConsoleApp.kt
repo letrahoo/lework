@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lework.platform.installGlobalCliCommand
 import dev.lework.protocol.AgentEvent
 import dev.lework.protocol.SessionMode
 import dev.lework.protocol.SessionState
@@ -43,11 +44,13 @@ internal fun DesktopConsoleApp(
     toggleSidebarSignal: Int = 0,
     openGlobalSearchSignal: Int = 0,
     openInSessionFindSignal: Int = 0,
+    registerGlobalCliSignal: Int = 0,
 ) {
     var showModelPicker by remember { mutableStateOf(false) }
     var showWorkspaceDialog by remember { mutableStateOf(false) }
     var showUsageDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var autoInstallGlobalCliNonce by remember { mutableIntStateOf(0) }
     var showGlobalSearchDialog by remember { mutableStateOf(false) }
     var globalSearchOpenNonce by remember { mutableIntStateOf(0) }
     var inSessionFindOpenNonce by remember { mutableIntStateOf(0) }
@@ -71,6 +74,17 @@ internal fun DesktopConsoleApp(
     LaunchedEffect(openSettingsSignal) {
         if (openSettingsSignal > 0 && state.hasEnteredWorkspace) {
             showSettingsDialog = true
+        }
+    }
+
+    LaunchedEffect(registerGlobalCliSignal) {
+        if (registerGlobalCliSignal > 0) {
+            if (state.hasEnteredWorkspace) {
+                showSettingsDialog = true
+                autoInstallGlobalCliNonce++
+            } else {
+                installGlobalCliCommand()
+            }
         }
     }
 
@@ -761,6 +775,7 @@ internal fun DesktopConsoleApp(
                 state = state,
                 onDismiss = {
                     store.clearProviderFeedback()
+                    autoInstallGlobalCliNonce = 0
                     showSettingsDialog = false
                 },
                 onSwitchHost = store::switchPairedHost,
@@ -772,6 +787,7 @@ internal fun DesktopConsoleApp(
                 onUpsertProvider = store::upsertProvider,
                 onRemoveProvider = store::removeProvider,
                 onClearProviderFeedback = store::clearProviderFeedback,
+                autoInstallGlobalCliNonce = autoInstallGlobalCliNonce,
                 onLogout = store::logout,
             )
         }

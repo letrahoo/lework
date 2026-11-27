@@ -63,6 +63,7 @@ function callLocalHubAdmin<T>(opts: {
   method: 'GET' | 'POST'
   pathname: string
   body?: unknown
+  timeoutMs?: number
 }): Promise<T | null> {
   return new Promise(resolve => {
     const req = https.request(
@@ -72,7 +73,7 @@ function callLocalHubAdmin<T>(opts: {
         method: opts.method,
         path: opts.pathname,
         rejectUnauthorized: false,
-        timeout: 4_000,
+        timeout: opts.timeoutMs ?? 4_000,
         headers: {
           authorization: `Bearer ${opts.token}`,
           ...(opts.body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -355,6 +356,7 @@ async function main(): Promise<void> {
         method: 'POST',
         pathname: '/v1/tsnet/login',
         body: { controlUrl, authKey },
+        timeoutMs: 22_000,
       })
       if (remote) {
         printStatus(remote)

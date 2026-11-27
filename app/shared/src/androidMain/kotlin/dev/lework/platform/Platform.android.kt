@@ -992,6 +992,14 @@ actual fun listSshConfigHosts(): List<String> = emptyList()
 actual suspend fun requestSshHostPairingLink(sshTarget: String): Result<String> =
     Result.failure(UnsupportedOperationException("仅桌面端支持通过本机 SSH 直连远程开发机"))
 
+actual fun inspectGlobalCliStatus(): GlobalCliInstallStatus = GlobalCliInstallStatus(supported = false)
+
+actual suspend fun installGlobalCliCommand(): Result<GlobalCliInstallStatus> =
+    Result.failure(UnsupportedOperationException("仅桌面端支持注册全局 lework 命令"))
+
+actual suspend fun uninstallGlobalCliCommand(): Result<GlobalCliInstallStatus> =
+    Result.failure(UnsupportedOperationException("仅桌面端支持移除全局 lework 命令"))
+
 private val androidRuntimeLogLock = Any()
 private const val ANDROID_MAX_RUNTIME_LOG_BYTES = 2L * 1024L * 1024L
 

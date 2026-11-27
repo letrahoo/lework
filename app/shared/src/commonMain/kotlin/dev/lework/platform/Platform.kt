@@ -174,10 +174,26 @@ expect fun copyTextToClipboard(text: String): Boolean
 expect fun readTextFromClipboard(): String?
 expect fun readImagesFromClipboard(maxCount: Int = 4): List<PickedImagePayload>
 
+@Serializable
+data class GlobalCliInstallStatus(
+    val supported: Boolean = false,
+    val installed: Boolean = false,
+    val installedPath: String? = null,
+    val launcherTargetPath: String? = null,
+    val inShellPath: Boolean = false,
+    val installDirectory: String? = null,
+    val detail: String? = null,
+)
+
 // Desktop SSH direct-pairing helpers for remote Linux Devboxes
 expect fun canConnectViaSsh(): Boolean
 expect fun listSshConfigHosts(): List<String>
 expect suspend fun requestSshHostPairingLink(sshTarget: String): Result<String>
+
+// Desktop global `lework` CLI registration helpers
+expect fun inspectGlobalCliStatus(): GlobalCliInstallStatus
+expect suspend fun installGlobalCliCommand(): Result<GlobalCliInstallStatus>
+expect suspend fun uninstallGlobalCliCommand(): Result<GlobalCliInstallStatus>
 
 // Embedded Tailscale `tsnet` client & same-account discovery
 expect fun isMobileTsnetAvailable(): Boolean
