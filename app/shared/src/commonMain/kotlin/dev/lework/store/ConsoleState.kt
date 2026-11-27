@@ -474,6 +474,8 @@ data class ConsoleUiState(
     val inSessionFindLoading: Boolean = false,
     // In-app Local File Link Preview Stack (Markdown, Code with line anchors, HTML dashboards)
     val filePreviewStack: List<LinkedFilePreviewEntry> = emptyList(),
+    // GitHub Release update checker & Desktop one-click DMG installer state
+    val appUpdate: AppUpdateState = AppUpdateState(),
 ) {
     val activeDraftKey: String
         get() = sessionDraftKey(activeSessionId)

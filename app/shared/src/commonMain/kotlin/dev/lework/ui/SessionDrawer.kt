@@ -63,6 +63,8 @@ internal fun TasksSidebarContent(
     onToggleArchivedView: (Boolean) -> Unit = {},
     onRequestRenameSession: (SessionMeta) -> Unit = {},
     onToggleArchiveSession: (sessionId: String, archived: Boolean) -> Unit = { _, _ -> },
+    onOpenAppUpdate: () -> Unit = {},
+    onCheckAppUpdate: () -> Unit = {},
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
@@ -699,11 +701,47 @@ internal fun TasksSidebarContent(
                         fontSize = 12.sp,
                         color = Everforest.Grey2,
                     )
-                    Text(
-                        text = appVersionLabel(),
-                        fontSize = 10.sp,
-                        color = Everforest.Grey0,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = appVersionLabel(),
+                            fontSize = 10.sp,
+                            color = Everforest.Grey0,
+                        )
+                        val latest = state.appUpdate.latestRelease
+                        if (state.appUpdate.hasUpdate && latest != null) {
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = Everforest.BgGreen,
+                                border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.45f)),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .clickable { onOpenAppUpdate() }
+                                    .testTag("drawer_update_pill"),
+                            ) {
+                                Text(
+                                    text = "新版本 ${latest.tagName}",
+                                    fontSize = 9.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Everforest.Green,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = if (state.appUpdate.checking) "检查更新中…" else "检查更新",
+                                fontSize = 10.sp,
+                                color = Everforest.CommentGrey,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable(enabled = !state.appUpdate.checking) { onCheckAppUpdate() }
+                                    .padding(horizontal = 3.dp, vertical = 1.dp)
+                                    .testTag("drawer_check_update_btn"),
+                            )
+                        }
+                    }
                     state.hubFingerprint?.let { fp ->
                         // Same short code as `hub pair` prints on the computer — compare to rule out impostors
                         Text(

@@ -29,6 +29,8 @@ import dev.lework.platform.appVersionLabel
 import dev.lework.platform.logRuntimeEvent
 import dev.lework.platform.runtimeLogFilePath
 import dev.lework.store.ConsoleStore
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import dev.lework.ui.ConsoleApp
 import dev.lework.ui.LocalModalEscapeDispatcher
 import dev.lework.ui.ModalEscapeDispatcher
@@ -152,6 +154,15 @@ fun main(args: Array<String>) {
         LaunchedEffect(incomingPairingUri) {
             if (!incomingPairingUri.isNullOrBlank()) {
                 showAndFocusWindow(reason = "deep-link")
+            }
+        }
+
+        // Politely check GitHub Releases for newer Lework builds on launch and every 2 hours while open.
+        LaunchedEffect(store) {
+            delay(3_500L)
+            while (isActive) {
+                store.checkForAppUpdates(manual = false)
+                delay(ConsoleStore.APP_UPDATE_CHECK_INTERVAL_MS)
             }
         }
 
@@ -305,6 +316,14 @@ fun main(args: Array<String>) {
                         text = "设置…",
                         shortcut = KeyShortcut(Key.Comma, meta = true),
                         onClick = { openSettingsSignal++ },
+                    )
+                    Item(
+                        text = if (uiState.appUpdate.hasUpdate && uiState.appUpdate.latestRelease != null) {
+                            "检查更新（发现 ${uiState.appUpdate.latestRelease?.tagName}）…"
+                        } else {
+                            "检查更新…"
+                        },
+                        onClick = { store.checkForAppUpdates(manual = true, openDialog = true) },
                     )
                     Item(
                         text = "注册全局命令行 (lework)…",

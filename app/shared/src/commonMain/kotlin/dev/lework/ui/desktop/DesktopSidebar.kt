@@ -46,6 +46,7 @@ import dev.lework.store.ConsoleUiState
 import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
 import dev.lework.ui.RenameHostDialog
+import dev.lework.ui.SidebarAppUpdateBanner
 import dev.lework.ui.connectionChannelLabel
 import dev.lework.ui.engineAccentColor
 import dev.lework.ui.shortEngineLabel
@@ -69,6 +70,8 @@ internal fun DesktopSidebar(
     onTogglePinSession: (String) -> Unit,
     onRequestRenameSession: (SessionMeta) -> Unit,
     onToggleArchiveSession: (sessionId: String, archived: Boolean) -> Unit,
+    onOpenAppUpdate: () -> Unit = {},
+    onDismissAppUpdate: () -> Unit = {},
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
@@ -798,6 +801,15 @@ internal fun DesktopSidebar(
             }
         }
 
+        if (state.appUpdate.hasVisibleBanner) {
+            SidebarAppUpdateBanner(
+                updateState = state.appUpdate,
+                onOpenUpdate = onOpenAppUpdate,
+                onDismiss = onDismissAppUpdate,
+                modifier = Modifier.padding(top = 6.dp, bottom = 6.dp),
+            )
+        }
+
         // ── Bottom Footer: Left = [1. 设置, 2. 用量] · Far-Right = [刷新] (Uniform 30.dp Grid) ──
         HorizontalDivider(color = Everforest.Bg2.copy(alpha = 0.75f))
         Row(
@@ -813,9 +825,15 @@ internal fun DesktopSidebar(
             ) {
                 LeworkIconActionButton(
                     icon = Icons.Rounded.Settings,
-                    tooltip = "设置",
+                    tooltip = if (state.appUpdate.hasUpdate && state.appUpdate.latestRelease != null) {
+                        "设置（有新版本 ${state.appUpdate.latestRelease.tagName}）"
+                    } else {
+                        "设置"
+                    },
                     shortcut = "⌘,",
                     subtitle = "${state.engines.count { it.status.ready }} 个引擎在线 · $hostName",
+                    showBadgeDot = state.appUpdate.hasUpdate,
+                    badgeColor = Everforest.Green,
                     size = DesktopControlSize,
                     iconSize = 17.dp,
                     testTag = "drawer_btn_settings",

@@ -14,6 +14,7 @@ data class SavedSessionPrefs(
     val workspacePath: String = "",
     val favoriteModelKeys: List<String> = emptyList(),
     val pinnedSessionIds: List<String> = emptyList(),
+    val dismissedUpdateTag: String? = null,
 )
 
 @Serializable
@@ -237,3 +238,24 @@ expect fun dismissNativeKeyboard()
 // Cross-platform rolling runtime diagnostic log (secret-free)
 expect fun logRuntimeEvent(tag: String, message: String)
 expect fun runtimeLogFilePath(): String?
+
+@Serializable
+data class GitHubReleaseFetchPayload(
+    val jsonBody: String? = null,
+    val resolvedWebUrl: String? = null,
+)
+
+// GitHub Releases update checker & Desktop one-click macOS DMG updater
+expect suspend fun fetchLatestGitHubReleasePayload(
+    apiUrl: String,
+    fallbackWebUrl: String,
+): Result<GitHubReleaseFetchPayload>
+
+expect fun canInstallDesktopDmgUpdate(): Boolean
+expect suspend fun installDesktopDmgUpdate(
+    downloadUrl: String,
+    expectedFileName: String,
+    expectedSha256: String?,
+    checksumsUrl: String?,
+    onProgress: (fraction: Float?, statusText: String) -> Unit,
+): Result<String>

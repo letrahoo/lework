@@ -153,7 +153,8 @@ private fun MobileConsoleApp(
     val anyOverlaySheetOpen =
         showModelSheet || showWorkspaceSheet || showFilesSheet || showUsageSheet || showDiffSheet ||
             showArtifactsSheet || state.pendingDeepLinkPairing != null ||
-            state.inspectedSubagent != null || state.activeFilePreview != null
+            state.inspectedSubagent != null || state.activeFilePreview != null ||
+            state.appUpdate.showUpdateDialog
     LaunchedEffect(anyOverlaySheetOpen) {
         if (anyOverlaySheetOpen) {
             dismissKeyboard()
@@ -235,6 +236,14 @@ private fun MobileConsoleApp(
                             onToggleArchivedView = store::setDrawerShowArchived,
                             onRequestRenameSession = { sess -> renamingSessionId = sess.id },
                             onToggleArchiveSession = store::archiveSession,
+                            onOpenAppUpdate = {
+                                scope.launch { drawerState.close() }
+                                store.openAppUpdateDialog()
+                            },
+                            onCheckAppUpdate = {
+                                scope.launch { drawerState.close() }
+                                store.checkForAppUpdates(manual = true, openDialog = true)
+                            },
                         )
                     } else {
                         Box(modifier = Modifier.fillMaxSize().background(Everforest.BgDim))
@@ -810,6 +819,17 @@ private fun MobileConsoleApp(
                     onClose = store::closeFilePreview,
                 )
             }
+        }
+
+        if (state.appUpdate.showUpdateDialog) {
+            AppUpdateDialog(
+                updateState = state.appUpdate,
+                onCheckAgain = { store.checkForAppUpdates(manual = true, openDialog = true) },
+                onStartUpdate = store::startAppUpdateAction,
+                onOpenReleasePage = store::openLatestReleasePage,
+                onDismissVersion = store::dismissAppUpdateReminder,
+                onClose = store::closeAppUpdateDialog,
+            )
         }
         }
     }

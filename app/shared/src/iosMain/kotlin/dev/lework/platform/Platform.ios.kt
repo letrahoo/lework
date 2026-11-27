@@ -50,6 +50,8 @@ import platform.Security.kSecValueData
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import dev.lework.protocol.ProtocolJson
+import dev.lework.store.isTrustedGitHubReleaseUrl
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -77,6 +79,8 @@ import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.Foundation.NSFileManager
 import platform.Foundation.NSFileSize
+import platform.Foundation.NSHTTPURLResponse
+import platform.Foundation.NSMutableURLRequest
 import platform.Foundation.NSNetService
 import platform.Foundation.NSNetServiceBrowser
 import platform.Foundation.NSNetServiceBrowserDelegateProtocol
@@ -89,10 +93,14 @@ import platform.Foundation.NSSelectorFromString
 import platform.Foundation.NSString
 import platform.Foundation.NSURL
 import platform.Foundation.NSURLIsExcludedFromBackupKey
+import platform.Foundation.NSURLSession
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.NSUserDefaults
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.create
+import platform.Foundation.dataTaskWithRequest
+import platform.Foundation.setHTTPMethod
+import platform.Foundation.setValue
 import platform.Foundation.timeIntervalSince1970
 import platform.UIKit.UIApplication
 import platform.UIKit.UIApplicationDidBecomeActiveNotification
@@ -608,6 +616,7 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         workspacePath = d.stringForKey(KEY_PREF_WORKSPACE).orEmpty(),
         favoriteModelKeys = favs,
         pinnedSessionIds = pinned,
+        dismissedUpdateTag = d.stringForKey("lework_pref_dismissed_update_tag")?.ifBlank { null },
     )
 }
 
@@ -630,6 +639,11 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
         d.setObject(prefs.pinnedSessionIds.joinToString("|"), forKey = "lework_pref_pinned_sessions")
     } else {
         d.removeObjectForKey("lework_pref_pinned_sessions")
+    }
+    if (!prefs.dismissedUpdateTag.isNullOrBlank()) {
+        d.setObject(prefs.dismissedUpdateTag, forKey = "lework_pref_dismissed_update_tag")
+    } else {
+        d.removeObjectForKey("lework_pref_dismissed_update_tag")
     }
     d.synchronize()
 }
@@ -1172,3 +1186,71 @@ actual fun logRuntimeEvent(tag: String, message: String) {
 }
 
 actual fun runtimeLogFilePath(): String? = IosRuntimeLogger.logPath()
+
+private suspend fun iosFetchHttps(
+    url: String,
+    accept: String,
+    method: String = "GET",
+): Triple<Int, String, String?> = suspendCancellableCoroutine { cont ->
+    val nsUrl = NSURL.URLWithString(url)
+    if (nsUrl == null) {
+        cont.resume(Triple(0, "", null))
+        return@suspendCancellableCoroutine
+    }
+    val req = NSMutableURLRequest.requestWithURL(nsUrl).apply {
+        setHTTPMethod(method)
+        setValue(accept, forHTTPHeaderField = "Accept")
+        setValue("Lework-iOS/${appVersionLabel()}", forHTTPHeaderField = "User-Agent")
+        setTimeoutInterval(12.0)
+    }
+    val task = NSURLSession.sharedSession.dataTaskWithRequest(req) { data, response, _ ->
+        val httpResp = response as? NSHTTPURLResponse
+        val code = httpResp?.statusCode?.toInt() ?: 0
+        val finalUrl = httpResp?.URL?.absoluteString
+        val body = if (data != null && data.length.toInt() > 0) {
+            NSString.create(data = data, encoding = NSUTF8StringEncoding) as? String ?: ""
+        } else {
+            ""
+        }
+        if (cont.isActive) {
+            cont.resume(Triple(code, body, finalUrl))
+        }
+    }
+    cont.invokeOnCancellation { task.cancel() }
+    task.resume()
+}
+
+actual suspend fun fetchLatestGitHubReleasePayload(
+    apiUrl: String,
+    fallbackWebUrl: String,
+): Result<GitHubReleaseFetchPayload> = try {
+    if (!isTrustedGitHubReleaseUrl(apiUrl) || !isTrustedGitHubReleaseUrl(fallbackWebUrl)) {
+        Result.failure(IllegalArgumentException("更新源地址不受信任"))
+    } else {
+        val (apiCode, apiBody, _) = iosFetchHttps(apiUrl, accept = "application/vnd.github+json")
+        if (apiCode in 200..299 && apiBody.isNotBlank()) {
+            Result.success(GitHubReleaseFetchPayload(jsonBody = apiBody))
+        } else {
+            val (webCode, _, finalUrl) = iosFetchHttps(fallbackWebUrl, accept = "text/html", method = "HEAD")
+            if (webCode in 200..399 && !finalUrl.isNullOrBlank() && isTrustedGitHubReleaseUrl(finalUrl)) {
+                Result.success(GitHubReleaseFetchPayload(resolvedWebUrl = finalUrl))
+            } else {
+                Result.failure(IllegalStateException("无法获取最新 Release 信息"))
+            }
+        }
+    }
+} catch (ce: CancellationException) {
+    throw ce
+} catch (e: Exception) {
+    Result.failure(e)
+}
+
+actual fun canInstallDesktopDmgUpdate(): Boolean = false
+
+actual suspend fun installDesktopDmgUpdate(
+    downloadUrl: String,
+    expectedFileName: String,
+    expectedSha256: String?,
+    checksumsUrl: String?,
+    onProgress: (fraction: Float?, statusText: String) -> Unit,
+): Result<String> = Result.failure(UnsupportedOperationException("iOS 请前往 GitHub Release 或通过 Mac 更新"))
