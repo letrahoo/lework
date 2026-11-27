@@ -84,7 +84,7 @@ internal fun DesktopAuthScreen(
                 )
 
                 Text(
-                    text = "本机自动直连 · SSH 一键连开发机 · Tailscale 跨网组网",
+                    text = "本机自动直连 · SSH 一键连远程主机 · Tailscale 跨网组网",
                     fontSize = 12.5.sp,
                     color = Everforest.Grey2,
                     textAlign = TextAlign.Center,
@@ -198,7 +198,7 @@ internal fun DesktopAuthScreen(
                                         modifier = Modifier.size(17.dp),
                                     )
                                     Text(
-                                        text = "通过 SSH 一键连接远程开发机",
+                                        text = "通过 SSH 一键连接远程主机",
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = Everforest.Fg,
@@ -264,7 +264,7 @@ internal fun DesktopAuthScreen(
                                         shape = RoundedCornerShape(10.dp),
                                         modifier = Modifier.height(48.dp),
                                     ) {
-                                        Text("连接开发机", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                                        Text("连接主机", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
                                     }
                                 }
                             }
@@ -407,7 +407,7 @@ internal fun DesktopAuthScreen(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Text("已配对开发机", fontSize = 11.5.sp, color = Everforest.Grey1)
+                            Text("已配对主机", fontSize = 11.5.sp, color = Everforest.Grey1)
                             for (host in state.pairedHosts.take(4)) {
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),

@@ -189,7 +189,7 @@ export class HostTaskInspector {
         defaultModel: agyCfg.model,
         defaultMode: agyCfg.defaultMode,
         defaultEffort: agyCfg.effort,
-        supportedModes: ['auto', 'plan', 'default'],
+        supportedModes: ['auto', 'acceptEdits', 'plan', 'default', 'bypassPermissions'],
       }
     }
     return {
@@ -445,6 +445,13 @@ export class HostTaskInspector {
   }
 
   getDiscoveredSubagents(sessionId: string): SubagentSummary[] | undefined {
+    return this.hostIndex.get(sessionId)?.meta.subagents
+  }
+
+  refreshDiscoveredSubagents(sessionId: string): SubagentSummary[] | undefined {
+    if (Date.now() - this.lastScanAt >= 1_500) {
+      this.discoverHostSessions(true)
+    }
     return this.hostIndex.get(sessionId)?.meta.subagents
   }
 

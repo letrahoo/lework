@@ -66,6 +66,7 @@ internal fun ClaudeStyleComposer(
     onSelectMentionFile: (String) -> Unit = {},
     onInsertAtMention: () -> Unit = {},
     onDismissMention: () -> Unit = {},
+    onSelectSlashCommand: (ResolvedSlashCommand) -> Unit = {},
     focusRequester: FocusRequester = remember { FocusRequester() },
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -79,13 +80,52 @@ internal fun ClaudeStyleComposer(
     var showImageSourceMenu by remember { mutableStateOf(false) }
     var lightboxIndex by remember { mutableStateOf<Int?>(null) }
 
+    var browseSlashManually by remember(state.activeDraftKey) { mutableStateOf(false) }
+    var dismissedSlashForText by remember(state.activeDraftKey) { mutableStateOf<String?>(null) }
+    val typedSlashQuery = remember(text) { extractSlashCommandQuery(text) }
+    val effectiveSlashQuery = typedSlashQuery ?: if (browseSlashManually) "" else null
+    val availableSlashCommands = remember(
+        state.selectedEngineId,
+        activeSess?.id,
+        activeSess?.slashCommands,
+        state.selectedEngine?.slashCommands,
+        state.availableEfforts,
+    ) {
+        buildAvailableSlashCommands(state, includeDesktopOnly = false)
+    }
+    val filteredSlashCommands = remember(availableSlashCommands, effectiveSlashQuery) {
+        effectiveSlashQuery?.let { filterSlashCommands(availableSlashCommands, it) }.orEmpty()
+    }
+    val slashPopupVisible =
+        effectiveSlashQuery != null && dismissedSlashForText != text && filteredSlashCommands.isNotEmpty()
+    val mentionPopupVisible = !slashPopupVisible && state.mentionQuery != null && state.workspaceFileSuggestions.isNotEmpty()
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (state.mentionQuery != null && state.workspaceFileSuggestions.isNotEmpty()) {
+        if (slashPopupVisible) {
+            SlashCommandPopup(
+                commands = filteredSlashCommands,
+                selectedIndex = 0,
+                isDesktop = false,
+                onSelect = { cmd ->
+                    browseSlashManually = false
+                    dismissedSlashForText = null
+                    onSelectSlashCommand(cmd)
+                    if (!cmd.executeImmediatelyOnSelect) {
+                        runCatching { focusRequester.requestFocus() }
+                        keyboardController?.show()
+                    }
+                },
+                onDismiss = {
+                    browseSlashManually = false
+                    dismissedSlashForText = text
+                },
+            )
+        } else if (mentionPopupVisible) {
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = Everforest.Bg1,
@@ -280,14 +320,20 @@ internal fun ClaudeStyleComposer(
                 ) {
                     if (text.isEmpty()) {
                         Text(
-                            text = "发消息给 ${shortEngineLabel(state.selectedEngineId)}（输入 @ 可引用文件）…",
+                            text = "发消息给 ${shortEngineLabel(state.selectedEngineId)}（输入 / 命令 或 @ 文件）…",
                             color = Everforest.CommentGrey,
                             fontSize = 15.sp,
                         )
                     }
                     BasicTextField(
                         value = value,
-                        onValueChange = onValueChange,
+                        onValueChange = { next ->
+                            if (next.text != text) {
+                                browseSlashManually = false
+                                dismissedSlashForText = null
+                            }
+                            onValueChange(next)
+                        },
                         textStyle = TextStyle(
                             color = Everforest.Fg,
                             fontSize = 15.sp,
@@ -418,14 +464,37 @@ internal fun ClaudeStyleComposer(
                             }
                         }
                         ComposerMetaChip(
+                            icon = Icons.Rounded.Terminal,
+                            label = "命令",
+                            tint = if (slashPopupVisible) Everforest.CodeGreen else Everforest.CommentGrey,
+                            labelColor = if (slashPopupVisible) Everforest.CodeGreen else Everforest.Fg,
+                            testTag = "composer_slash_btn",
+                            onClick = {
+                                if (slashPopupVisible) {
+                                    browseSlashManually = false
+                                    dismissedSlashForText = text
+                                } else {
+                                    if (mentionPopupVisible) onDismissMention()
+                                    dismissedSlashForText = null
+                                    browseSlashManually = true
+                                }
+                            },
+                        )
+                        ComposerMetaChip(
                             icon = Icons.Rounded.AlternateEmail,
                             label = "引用文件",
-                            tint = Everforest.CommentGrey,
-                            labelColor = Everforest.Fg,
+                            tint = if (mentionPopupVisible) Everforest.Green else Everforest.CommentGrey,
+                            labelColor = if (mentionPopupVisible) Everforest.Green else Everforest.Fg,
+                            testTag = "composer_mention_btn",
                             onClick = {
-                                onInsertAtMention()
-                                runCatching { focusRequester.requestFocus() }
-                                keyboardController?.show()
+                                if (mentionPopupVisible) {
+                                    onDismissMention()
+                                } else {
+                                    browseSlashManually = false
+                                    onInsertAtMention()
+                                    runCatching { focusRequester.requestFocus() }
+                                    keyboardController?.show()
+                                }
                             },
                         )
                         val isWorktreeActive =
@@ -451,13 +520,15 @@ internal fun ClaudeStyleComposer(
                             labelColor = modeColor,
                             onClick = onCycleMode,
                         )
-                        ComposerMetaChip(
-                            icon = Icons.Rounded.Bolt,
-                            label = effortDisplayLabel(state.selectedEffort),
-                            tint = Everforest.CommentGrey,
-                            labelColor = Everforest.Grey2,
-                            onClick = onCycleEffort,
-                        )
+                        if (state.availableEfforts.size > 1) {
+                            ComposerMetaChip(
+                                icon = Icons.Rounded.Bolt,
+                                label = effortDisplayLabel(state.selectedEffort),
+                                tint = Everforest.CommentGrey,
+                                labelColor = Everforest.Grey2,
+                                onClick = onCycleEffort,
+                            )
+                        }
                     }
 
                     Spacer(Modifier.width(8.dp))

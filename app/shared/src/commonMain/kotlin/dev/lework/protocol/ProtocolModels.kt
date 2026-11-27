@@ -232,6 +232,22 @@ data class EngineCapabilities(
 )
 
 @Serializable
+enum class SlashCommandSource {
+    @SerialName("builtin") BUILTIN,
+    @SerialName("skill") SKILL,
+    @SerialName("workflow") WORKFLOW,
+    @SerialName("local") LOCAL,
+}
+
+@Serializable
+data class SlashCommandInfo(
+    val name: String,
+    val description: String,
+    val inputHint: String? = null,
+    val source: SlashCommandSource? = null,
+)
+
+@Serializable
 data class EngineInfo(
     val id: String,
     val displayName: String,
@@ -243,6 +259,7 @@ data class EngineInfo(
     val defaultMode: SessionMode? = null,
     val defaultEffort: ReasoningEffort? = null,
     val supportedModes: List<SessionMode> = emptyList(),
+    val slashCommands: List<SlashCommandInfo> = emptyList(),
 )
 
 @Serializable
@@ -336,6 +353,7 @@ data class SessionMeta(
     val models: List<ModelOption>? = null,
     val subagents: List<SubagentSummary>? = null,
     val artifactCount: Int? = null,
+    val slashCommands: List<SlashCommandInfo>? = null,
 )
 
 @Serializable
@@ -381,6 +399,12 @@ data class ArtifactContentResult(
     val isBase64: Boolean = false,
     val truncated: Boolean = false,
 )
+
+@Serializable
+enum class InteractionKind {
+    @SerialName("permission") PERMISSION,
+    @SerialName("question") QUESTION,
+}
 
 @Serializable
 enum class PermissionOptionKind {
@@ -509,6 +533,8 @@ sealed interface AgentEvent {
         val toolCallId: String? = null,
         val title: String,
         val options: List<PermissionOption>,
+        val interactionKind: InteractionKind? = null,
+        val allowCustomInput: Boolean = false,
     ) : AgentEvent
 
     @Serializable
@@ -843,6 +869,7 @@ data class ApprovalRespondParams(
     val sessionId: String,
     val requestId: String,
     val optionId: String? = null,
+    val customInput: String? = null,
 )
 
 @Serializable

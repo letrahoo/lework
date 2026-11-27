@@ -56,6 +56,7 @@ internal fun DesktopProvidersSection(
 ) {
     var editingProvider by remember { mutableStateOf<ProviderInfo?>(null) }
     var filteringProvider by remember { mutableStateOf<ProviderInfo?>(null) }
+    var confirmingRemoveProvider by remember { mutableStateOf<ProviderInfo?>(null) }
     var showCreateDialog by remember { mutableStateOf(false) }
 
     val externalProviders = state.externalProviders
@@ -88,7 +89,7 @@ internal fun DesktopProvidersSection(
                         color = Everforest.Fg,
                     )
                     Text(
-                        text = "仅作用于「${state.activeHostDisplayName}」，每台开发机独立保存；AGY 保持仅官方登录",
+                        text = "仅作用于「${state.activeHostDisplayName}」，每台主机独立保存；AGY 保持仅官方登录",
                         fontSize = 11.sp,
                         color = Everforest.CommentGrey,
                     )
@@ -315,7 +316,7 @@ internal fun DesktopProvidersSection(
                                             size = 24.dp,
                                             iconSize = 13.5.dp,
                                             testTag = "settings_provider_remove_${provider.id}",
-                                            onClick = { onRemoveProvider(provider.id) },
+                                            onClick = { confirmingRemoveProvider = provider },
                                         )
                                     }
                                 }
@@ -358,6 +359,45 @@ internal fun DesktopProvidersSection(
                 }
             }
         }
+    }
+
+    val targetRemoveProvider = confirmingRemoveProvider
+    if (targetRemoveProvider != null) {
+        ModalEscapeEffect(onDismiss = { confirmingRemoveProvider = null })
+        AlertDialog(
+            onDismissRequest = { confirmingRemoveProvider = null },
+            containerColor = Everforest.Bg1,
+            titleContentColor = Everforest.Fg,
+            textContentColor = Everforest.Grey2,
+            title = { Text("移除模型服务？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    text = "将从当前主机移除「${targetRemoveProvider.name}」及其访问配置，移除后不可恢复。",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmingRemoveProvider = null
+                        onRemoveProvider(targetRemoveProvider.id)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Everforest.Red,
+                        contentColor = Everforest.BgDim,
+                    ),
+                    modifier = Modifier.testTag("settings_confirm_remove_provider_btn"),
+                ) {
+                    Text("确认移除", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingRemoveProvider = null }) {
+                    Text("取消", color = Everforest.Grey1)
+                }
+            },
+        )
     }
 
     if (showCreateDialog || editingProvider != null) {
@@ -1022,13 +1062,20 @@ private fun DesktopProviderEditorDialog(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                text = if (isEditing && initial?.hasApiKey == true && !clearApiKey) {
-                                    "访问密钥（主机已保存，留空保持不变）"
-                                } else {
-                                    "访问密钥（可选）"
+                                text = when {
+                                    isEditing && initial?.hasApiKey == true && clearApiKey ->
+                                        "保存后将清除已存密钥"
+                                    isEditing && initial?.hasApiKey == true ->
+                                        "访问密钥（主机已保存，留空保持不变）"
+                                    else ->
+                                        "访问密钥（可选）"
                                 },
                                 fontSize = 11.5.sp,
-                                color = Everforest.Grey1,
+                                color = if (isEditing && initial?.hasApiKey == true && clearApiKey) {
+                                    Everforest.SoftRed
+                                } else {
+                                    Everforest.Grey1
+                                },
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (apiKey.isNotEmpty()) {
@@ -1039,16 +1086,27 @@ private fun DesktopProviderEditorDialog(
                                         modifier = Modifier.clickable { showApiKey = !showApiKey },
                                     )
                                 }
-                                if (isEditing && initial?.hasApiKey == true && !clearApiKey) {
-                                    Text(
-                                        text = "清除已存密钥",
-                                        fontSize = 11.sp,
-                                        color = Everforest.SoftRed,
-                                        modifier = Modifier.clickable {
-                                            clearApiKey = true
-                                            apiKey = ""
-                                        },
-                                    )
+                                if (isEditing && initial?.hasApiKey == true) {
+                                    if (clearApiKey) {
+                                        Text(
+                                            text = "撤销",
+                                            fontSize = 11.sp,
+                                            color = Everforest.Aqua,
+                                            modifier = Modifier
+                                                .clickable { clearApiKey = false }
+                                                .testTag("provider_undo_clear_key_btn"),
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "清除已存密钥",
+                                            fontSize = 11.sp,
+                                            color = Everforest.SoftRed,
+                                            modifier = Modifier.clickable {
+                                                clearApiKey = true
+                                                apiKey = ""
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }

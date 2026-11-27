@@ -771,7 +771,7 @@ private fun ClaudeLiveSpinnerRow(
         val glyph = CLAUDE_SPINNER_FRAMES[tick % CLAUDE_SPINNER_FRAMES.size]
         buildAnnotatedString {
             withStyle(SpanStyle(color = Everforest.SoftSand, fontWeight = FontWeight.Medium)) {
-                append("$glyph Thinking…")
+                append("$glyph 思考中…")
             }
             withStyle(SpanStyle(color = Everforest.CommentGrey)) {
                 append(" ($elapsedStr$tokenStr)")

@@ -7,6 +7,7 @@ import type {
   PromptImageAttachment,
   ReasoningEffort,
   SessionMode,
+  SlashCommandInfo,
 } from '@lework/protocol'
 
 export type EmitAgentEvent = (body: AgentEventBody) => void
@@ -28,6 +29,9 @@ export interface EngineSessionInit {
   emit: EmitAgentEvent
   onModelsChanged?: (currentModel: string | undefined, models: ModelOption[]) => void
   onNativeSessionLinked?: (nativeId: string) => void
+  onSlashCommandsChanged?: (commands: SlashCommandInfo[]) => void
+  onModeChanged?: (mode: SessionMode) => void
+  onSubagentsHint?: () => void
 }
 
 export interface EngineSession {
@@ -35,7 +39,7 @@ export interface EngineSession {
   readonly cwd: string
   prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void>
   cancel(): Promise<void>
-  respondPermission(requestId: string, optionId: string | null): Promise<void>
+  respondPermission(requestId: string, optionId: string | null, customInput?: string): Promise<void>
   setModel?(modelId: string): Promise<void>
   setEffort?(effort: ReasoningEffort): Promise<void>
   setMode?(mode: SessionMode): Promise<void>

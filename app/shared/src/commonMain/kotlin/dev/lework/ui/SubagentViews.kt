@@ -62,7 +62,7 @@ private fun SubagentSummary.displayStatusLabel(): String =
         SessionState.WAITING_PERMISSION -> "等待审批…"
         SessionState.ERROR -> "执行出错"
         SessionState.CLOSED -> "已结束"
-        SessionState.IDLE -> "尚未确认结束"
+        SessionState.IDLE -> "已暂停 · 待确认"
     }
 
 private fun SubagentSummary.stepProgressLabel(): String? {
@@ -219,10 +219,9 @@ internal fun SubagentStatusStrip(
                         modifier = Modifier.size(14.dp),
                     )
                     Text(
-                        text = "SubAgents",
+                        text = "子任务",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
-                        fontFamily = FontFamily.Monospace,
                         color = Everforest.HeadingWarm,
                     )
                     Surface(
@@ -562,7 +561,7 @@ internal fun InlineSubagentDispatchCard(
     }
     val canDrillDown = matchedSubagent != null && onOpenSubagent != null
     val hasInlineDetail = !meta.brief.isNullOrBlank() || !tool.output.isNullOrBlank()
-    val kindAccent = if (meta.kindLabel == "Workflow") Everforest.Aqua else Everforest.Orange
+    val kindAccent = if (meta.kindLabel == "工作流") Everforest.Aqua else Everforest.Orange
     val borderColor = when {
         active -> kindAccent.copy(alpha = 0.42f)
         resolvedState == SessionState.ERROR -> Everforest.Red.copy(alpha = 0.42f)
@@ -1027,7 +1026,7 @@ internal fun SubagentInspectorDialog(
                                     modifier = Modifier.size(22.dp),
                                 )
                                 Text(
-                                    text = "正在加载 SubAgent 执行记录…",
+                                    text = "正在加载子任务执行记录…",
                                     fontSize = 12.5.sp,
                                     color = Everforest.CommentGrey,
                                 )

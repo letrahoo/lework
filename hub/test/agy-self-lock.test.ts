@@ -72,6 +72,29 @@ describe('AGY self-lock false positive prevention', () => {
 
       const res = await bridge.checkAgyPresenceLock(convId)
       expect(res).toEqual({ locked: false })
+
+      // Also verify `agy acp` Hub child processes are ignored (not treated as external TUI windows)
+      const acpBridge = new TerminalBridge({
+        homeDir: tmpHome,
+        lsofBin: '/usr/sbin/lsof',
+        selfPid: hubPid,
+        isPidAlive: pid => pid === workerPid || pid === hubPid,
+        runCommand: async (bin, args) => {
+          if (bin === 'ps' && args[0] === '-axo') {
+            return `${workerPid} ?? /usr/local/bin/agy acp\n`
+          }
+          if (bin === '/usr/sbin/lsof' && args.includes(lockFile)) {
+            return `p${workerPid}\nf14\n`
+          }
+          if (bin === 'ps' && args[0] === '-o' && args[1] === 'ppid=,command=') {
+            if (args[3] === String(workerPid)) {
+              return `${hubPid} /usr/local/bin/agy acp\n`
+            }
+          }
+          return ''
+        },
+      })
+      expect(await acpBridge.checkAgyPresenceLock(convId)).toEqual({ locked: false })
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true })
     }

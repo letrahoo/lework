@@ -52,6 +52,8 @@ class FakeHubTransport : HubTransport {
     var connectHelloException: Throwable? = null
     var sendPromptException: Throwable? = null
     var sendPromptFailuresRemaining: Int = 0
+    var sendPromptDelayMs: Long = 0L
+    var createSessionDelayMs: Long = 0L
     var cancelSessionException: Throwable? = null
     var cancelSessionDelayMs: Long = 0L
     val cancelledSessionIds = mutableListOf<String>()
@@ -315,6 +317,7 @@ class FakeHubTransport : HubTransport {
             null
         }
         val effectiveCwd = wtInfo?.worktreePath ?: cwd
+        if (createSessionDelayMs > 0L) delay(createSessionDelayMs)
         val created = SessionMeta(
             id = "sess_${sessions.size + 1}",
             engineId = engineId,
@@ -343,6 +346,7 @@ class FakeHubTransport : HubTransport {
         reasoningEffort: ReasoningEffort?,
         mode: SessionMode?,
     ): String {
+        if (sendPromptDelayMs > 0L) delay(sendPromptDelayMs)
         if (sendPromptFailuresRemaining > 0) {
             sendPromptFailuresRemaining--
             throw sendPromptException ?: RuntimeException("ECONNRESET: socket hang up")
@@ -796,8 +800,18 @@ class FakeHubTransport : HubTransport {
         unsubscribedIds.add(sessionId)
     }
 
-    override suspend fun respondApproval(sessionId: String, requestId: String, optionId: String?) {
+    val respondedCustomInputs = mutableMapOf<String, String>()
+
+    override suspend fun respondApproval(
+        sessionId: String,
+        requestId: String,
+        optionId: String?,
+        customInput: String?,
+    ) {
         respondedApprovals.add(Triple(sessionId, requestId, optionId))
+        if (!customInput.isNullOrBlank()) {
+            respondedCustomInputs[requestId] = customInput
+        }
     }
 
     private val checkpointsBySession = mutableMapOf<String, MutableList<CheckpointInfo>>()

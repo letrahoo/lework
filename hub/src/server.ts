@@ -1173,10 +1173,20 @@ export class HubServer {
         return { ok: true as const }
       }
       case 'approval.respond': {
-        const p = params as { sessionId: string; requestId: string; optionId?: string | null }
+        const p = params as {
+          sessionId: string
+          requestId: string
+          optionId?: string | null
+          customInput?: string
+        }
         const normalizedOptionId = p.optionId ?? null
         try {
-          await this.sessionManager.respondPermission(p.sessionId, p.requestId, normalizedOptionId)
+          await this.sessionManager.respondPermission(
+            p.sessionId,
+            p.requestId,
+            normalizedOptionId,
+            p.customInput,
+          )
           console.log(
             `[lework-approval] OK session=${p.sessionId} requestId=${p.requestId} option=${normalizedOptionId ?? 'cancel'}`,
           )

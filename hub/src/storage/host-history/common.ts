@@ -275,6 +275,22 @@ export function classifyRawToolCall(
     return { title: short, kind: 'fetch', input: rawInput }
   }
 
+  if (lower === 'ask_question') {
+    return { title: 'Question', kind: 'other', input: rawInput }
+  }
+
+  if (lower === 'schedule') {
+    return { title: 'Schedule', kind: 'other', input: rawInput }
+  }
+
+  if (lower === 'send_message') {
+    return { title: 'Message', kind: 'other', input: rawInput }
+  }
+
+  if (lower === 'call_mcp_tool' || lower === 'read_resource' || lower === 'list_resources') {
+    return { title: 'MCP', kind: 'other', input: rawInput }
+  }
+
   if (lower === 'swarm') {
     return { title: 'Swarm', kind: 'other', input: rawInput }
   }
@@ -304,7 +320,7 @@ export function subagentActivity(signal: TailSignal, mtimeMs: number, tool?: str
   if (signal === 'cancelled') return { state: 'closed', statusText: '已取消' }
   if (signal === 'error') return { state: 'error', statusText: '执行出错' }
   if (signal === 'active' && Date.now() - mtimeMs < 90_000) return { state: 'running', statusText: tool ?? '思考中…' }
-  return { state: 'idle', statusText: '尚未确认结束' }
+  return { state: 'idle', statusText: '已暂停 · 待确认' }
 }
 
 export function sortAndCapSubagents(list: SubagentSummary[], limit = 12): SubagentSummary[] {
@@ -318,6 +334,11 @@ export function describeToolActivity(rawName: string, rawInput?: string): string
   const short = rawName.replace(/^default_api:/, '').trim()
   const lower = short.toLowerCase()
   if (lower === 'send_message') return '回报结果'
+  if (lower === 'ask_question') return '等待回答问题'
+  if (lower === 'schedule') return '设置定时任务'
+  if (lower === 'call_mcp_tool' || lower === 'read_resource' || lower === 'list_resources') {
+    return '调用扩展工具'
+  }
   if (
     lower === 'update_steps' ||
     lower === 'todowrite' ||

@@ -13,6 +13,7 @@ import { findExecutable, isExecutableFile, probeCommandVersion } from '../platfo
 import { mergeSessionEnv } from '../registry/provider-adapters.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
+import { discoverEngineSlashCommands, mergeSlashCommands, parseAcpAvailableCommands } from './slash-commands.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -424,6 +425,16 @@ class ClaudeAcpSession implements EngineSession {
 
   private handleSessionUpdate(update: Record<string, unknown>): void {
     const kind = String(update.sessionUpdate ?? update.type ?? '')
+
+    if (kind === 'available_commands_update') {
+      const live = parseAcpAvailableCommands(update.availableCommands, 'claude')
+      const merged = mergeSlashCommands(
+        live,
+        discoverEngineSlashCommands('claude', { cwd: this.cwd }),
+      )
+      this.init.onSlashCommandsChanged?.(merged)
+      return
+    }
 
     if (kind === 'agent_message_chunk' || kind === 'agent_message') {
       const text = extractTextContent(update)

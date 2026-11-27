@@ -202,7 +202,12 @@ interface HubTransport {
     ): StreamSubscribeResult
 
     suspend fun unsubscribeSession(sessionId: String)
-    suspend fun respondApproval(sessionId: String, requestId: String, optionId: String?)
+    suspend fun respondApproval(
+        sessionId: String,
+        requestId: String,
+        optionId: String?,
+        customInput: String? = null,
+    )
     suspend fun listCheckpoints(sessionId: String): List<CheckpointInfo>
     suspend fun createCheckpoint(sessionId: String, label: String? = null): CheckpointInfo
     suspend fun restoreCheckpoint(sessionId: String, checkpointId: String)
@@ -842,7 +847,12 @@ class HubRpcClient(
         )
     }
 
-    override suspend fun respondApproval(sessionId: String, requestId: String, optionId: String?) {
+    override suspend fun respondApproval(
+        sessionId: String,
+        requestId: String,
+        optionId: String?,
+        customInput: String?,
+    ) {
         call<OkResult>(
             "approval.respond",
             encodeParams(
@@ -850,6 +860,7 @@ class HubRpcClient(
                     sessionId = sessionId,
                     requestId = requestId,
                     optionId = optionId,
+                    customInput = customInput?.takeIf { it.isNotBlank() },
                 ),
             ),
         )

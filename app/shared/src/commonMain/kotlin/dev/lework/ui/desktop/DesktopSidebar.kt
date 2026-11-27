@@ -45,6 +45,7 @@ import dev.lework.store.ConnectionStatus
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
+import dev.lework.ui.ModalEscapeEffect
 import dev.lework.ui.RenameHostDialog
 import dev.lework.ui.SidebarAppUpdateBanner
 import dev.lework.ui.connectionChannelLabel
@@ -101,7 +102,7 @@ internal fun DesktopSidebar(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             LeworkTooltip(
-                label = "切换开发机连接",
+                label = "切换主机连接",
                 subtitle = "$hostName · $channelText",
             ) {
                 Row(
@@ -164,6 +165,7 @@ internal fun DesktopSidebar(
         }
 
         if (showHostSwitcher) {
+            ModalEscapeEffect(onDismiss = { showHostSwitcher = false })
             Spacer(Modifier.height(6.dp))
             Surface(
                 shape = RoundedCornerShape(10.dp),
@@ -268,7 +270,7 @@ internal fun DesktopSidebar(
                                 modifier = Modifier.size(14.5.dp),
                             )
                             Text(
-                                text = "连接其他开发机",
+                                text = "连接其他主机",
                                 fontSize = 12.sp,
                                 color = Everforest.BoldGold,
                             )

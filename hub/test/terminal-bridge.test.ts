@@ -622,4 +622,91 @@ describe('TerminalBridge TUI parsers & strict TTY isolation (M1 & M6)', () => {
       }
     }
   })
+
+  it('[T7.4] strictly isolates AGY terminals: never matches by cwd alone or multi-DB open fds', async () => {
+    const sentCommands: Array<{ bin: string; args: string[] }> = []
+    let lsofPayload = [
+      // PID 60683: lockless AGY process in `/tmp/shared-repo` holding 3 open conversation DBs
+      'p60683',
+      'fcwd',
+      'n/tmp/shared-repo',
+      'f20',
+      'n/Users/demo/.gemini/antigravity-cli/conversations/conv-a-111111.db',
+      'f21',
+      'n/Users/demo/.gemini/antigravity-cli/conversations/conv-b-222222.db',
+      'f22',
+      'n/Users/demo/.gemini/antigravity-cli/conversations/conv-c-333333.db',
+      // PID 60684: lockless AGY process in `/tmp/only-cwd-repo` with zero lock and zero open DBs
+      'p60684',
+      'fcwd',
+      'n/tmp/only-cwd-repo',
+      // PID 60685: lockless AGY process with a strictly single open DB (`conv-sole-444444`)
+      'p60685',
+      'fcwd',
+      'n/tmp/sole-db-repo',
+      'f23',
+      'n/Users/demo/.gemini/antigravity-cli/conversations/conv-sole-444444.db',
+    ].join('\n')
+
+    const bridge = new TerminalBridge({
+      tmuxBin: '/opt/homebrew/bin/tmux',
+      it2Bin: null,
+      lsofBin: '/usr/sbin/lsof',
+      tmuxSocketPaths: ['/private/tmp/tmux-501/default'],
+      isPidAlive: pid => pid === 60683 || pid === 60684 || pid === 60685,
+      runCommand: async (bin, args) => {
+        sentCommands.push({ bin, args })
+        if (bin.endsWith('tmux') && args.includes('list-panes')) {
+          return '%1|/dev/ttys002|0\n%2|/dev/ttys003|0\n%3|/dev/ttys004|0\n'
+        }
+        if (bin === 'ps' && args[0] === '-axo') {
+          return '60683 ttys002 agy\n60684 ttys003 agy\n60685 ttys004 agy\n'
+        }
+        if (bin === '/usr/sbin/lsof') {
+          return lsofPayload
+        }
+        if (bin.endsWith('tmux') && args.includes('capture-pane')) {
+          return '> \n  auto · Gemini · high\n'
+        }
+        return ''
+      },
+    })
+
+    // 1. Multi-DB process MUST NOT receive prompts for any of its open DBs or an unrelated conv in the same cwd
+    const multiDbHit = await bridge.sendPromptToSession(
+      { nativeId: 'conv-a-111111', engineId: 'agy', cwd: '/tmp/shared-repo' },
+      '不要串会话A',
+    )
+    expect(multiDbHit).toEqual({ delivered: false, reason: 'not_running' })
+
+    const sameCwdOther = await bridge.sendPromptToSession(
+      { nativeId: 'conv-unrelated-999999', engineId: 'agy', cwd: '/tmp/shared-repo' },
+      '不要串会话B',
+    )
+    expect(sameCwdOther).toEqual({ delivered: false, reason: 'not_running' })
+
+    // 2. Lockless process in `/tmp/only-cwd-repo` with no open DB MUST NOT match by cwd alone
+    const cwdOnlyHit = await bridge.sendPromptToSession(
+      { nativeId: 'conv-closed-888888', engineId: 'agy', cwd: '/tmp/only-cwd-repo' },
+      '不要按cwd串会话',
+    )
+    expect(cwdOnlyHit).toEqual({ delivered: false, reason: 'not_running' })
+    expect(sentCommands.some(c => c.args.includes('send-keys'))).toBe(false)
+
+    // 3. Strictly single-open-DB lockless process matches ONLY its sole open conversation
+    const soleOther = await bridge.sendPromptToSession(
+      { nativeId: 'conv-different-777777', engineId: 'agy', cwd: '/tmp/sole-db-repo' },
+      '不匹配其他会话',
+    )
+    expect(soleOther).toEqual({ delivered: false, reason: 'not_running' })
+
+    const soleExact = await bridge.sendPromptToSession(
+      { nativeId: 'conv-sole-444444', engineId: 'agy', cwd: '/tmp/sole-db-repo' },
+      '精确投递到唯一DB会话',
+    )
+    expect(soleExact).toEqual({ delivered: true })
+    const literalSend = sentCommands.find(c => c.bin.endsWith('tmux') && c.args.includes('-l'))
+    expect(literalSend?.args).toContain('%3')
+    expect(literalSend?.args.at(-1)).toBe('精确投递到唯一DB会话')
+  })
 })

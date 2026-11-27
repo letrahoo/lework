@@ -8,8 +8,13 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DoneAll
@@ -20,25 +25,35 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.lework.protocol.AgentEvent
+import dev.lework.protocol.InteractionKind
 import dev.lework.protocol.PermissionOption
 import dev.lework.protocol.PermissionOptionKind
 
@@ -50,6 +65,21 @@ private enum class ApprovalOptionTone {
     PRIMARY,
     SECONDARY,
     REJECT,
+}
+
+internal fun isQuestionInteraction(permission: AgentEvent.PermissionRequested): Boolean =
+    permission.interactionKind == InteractionKind.QUESTION ||
+        permission.requestId.startsWith("elicit_")
+
+internal fun localizeApprovalOptionName(rawName: String, kind: PermissionOptionKind): String {
+    val trimmed = rawName.trim()
+    return when (trimmed.lowercase()) {
+        "allow once", "allow" -> "仅本次允许"
+        "allow always", "always allow" -> "始终允许"
+        "reject once", "reject", "deny", "deny once" -> "拒绝"
+        "reject always", "always reject", "always deny" -> "始终拒绝"
+        else -> if (trimmed.isNotEmpty()) trimmed else approvalOptionBadgeText(kind)
+    }
 }
 
 internal fun shouldUseVerticalApprovalOptions(options: List<PermissionOption>): Boolean {
@@ -162,44 +192,58 @@ internal fun InlineApprovalBanner(
     errorText: String? = null,
     onRefresh: (() -> Unit)? = null,
     onDecision: (requestId: String, optionId: String?, sessionId: String) -> Unit,
+    onCustomAnswer: ((requestId: String, customInput: String, sessionId: String) -> Unit)? = null,
 ) {
+    val isQuestion = remember(permission.interactionKind, permission.requestId) {
+        isQuestionInteraction(permission)
+    }
+    val canCustomInput = permission.allowCustomInput == true && onCustomAnswer != null
+    var customAnswerField by remember(permission.requestId) { mutableStateOf(TextFieldValue("")) }
+
     val lines = remember(permission.title) { permission.title.lines().dropWhile { it.isBlank() } }
-    val headerTitle = lines.firstOrNull()?.trim() ?: "需要执行审批"
+    val headerTitle = lines.firstOrNull()?.trim() ?: if (isQuestion) "需要你的确认" else "需要执行审批"
     val formattedHeaderTitle = remember(headerTitle) { formatApprovalHeaderTitle(headerTitle) }
-    val cmdPreview = remember(lines) {
+    val detailPreview = remember(lines) {
         lines.drop(1)
             .dropWhile { it.isBlank() }
             .dropLastWhile { it.isBlank() }
             .joinToString("\n")
             .takeIf { it.isNotBlank() }
     }
-    val hasBodyContent = !cmdPreview.isNullOrBlank() || !errorText.isNullOrBlank() || permission.options.isNotEmpty()
-    val useVerticalOptions = remember(permission.options) {
-        shouldUseVerticalApprovalOptions(permission.options)
+    val hasBodyContent = !detailPreview.isNullOrBlank() ||
+        !errorText.isNullOrBlank() ||
+        permission.options.isNotEmpty() ||
+        canCustomInput
+    val useVerticalOptions = remember(permission.options, isQuestion) {
+        isQuestion || shouldUseVerticalApprovalOptions(permission.options)
     }
     val firstAllowOptionId = remember(permission.options) {
         permission.options.firstOrNull {
             it.kind == PermissionOptionKind.ALLOW_ONCE
         }?.id
     }
+    val accentColor = if (isQuestion) Everforest.Aqua else Everforest.BoldGold
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp)
-            .testTag("inline_approval_banner"),
+            .testTag(if (isQuestion) "inline_question_banner" else "inline_approval_banner"),
         shape = RoundedCornerShape(12.dp),
         color = Everforest.Bg1,
-        border = BorderStroke(1.dp, Everforest.BoldGold.copy(alpha = 0.36f)),
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.36f)),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             ApprovalBannerHeader(
                 formattedHeaderTitle = formattedHeaderTitle,
+                isQuestion = isQuestion,
+                accentColor = accentColor,
                 isSubmitting = isSubmitting,
-                showRefreshAction = onRefresh != null && permission.options.isEmpty(),
-                showEscCancelAction = permission.options.isNotEmpty() && permission.requestId.startsWith("tty_perm_"),
+                showRefreshAction = onRefresh != null && permission.options.isEmpty() && !canCustomInput,
+                showCancelAction = (permission.options.isNotEmpty() || canCustomInput) &&
+                    (isQuestion || permission.requestId.startsWith("tty_perm_")),
                 onRefresh = onRefresh,
-                onEscCancel = { onDecision(permission.requestId, null, permission.sessionId) },
+                onCancel = { onDecision(permission.requestId, null, permission.sessionId) },
             )
 
             if (hasBodyContent) {
@@ -210,10 +254,10 @@ internal fun InlineApprovalBanner(
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (!cmdPreview.isNullOrBlank()) {
+                    if (!detailPreview.isNullOrBlank()) {
                         ApprovalCommandPreview(
-                            cmdPreview = cmdPreview,
-                            isFallbackPlainText = permission.options.isEmpty(),
+                            cmdPreview = detailPreview,
+                            isFallbackPlainText = isQuestion || permission.options.isEmpty(),
                         )
                     }
 
@@ -229,16 +273,25 @@ internal fun InlineApprovalBanner(
                                     .testTag("inline_approval_vertical_options"),
                                 verticalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
-                                for (opt in permission.options) {
+                                permission.options.forEachIndexed { idx, opt ->
                                     val tone = resolveApprovalOptionTone(
                                         option = opt,
                                         isFirstAllowOption = opt.id == firstAllowOptionId,
                                     )
+                                    val displayOpt = if (isQuestion) {
+                                        opt
+                                    } else {
+                                        opt.copy(name = localizeApprovalOptionName(opt.name, opt.kind))
+                                    }
                                     ApprovalVerticalOptionRow(
-                                        option = opt,
+                                        option = displayOpt,
                                         tone = tone,
+                                        isQuestion = isQuestion,
+                                        questionIndex = idx + 1,
                                         enabled = !isSubmitting,
-                                        onClick = { onDecision(permission.requestId, opt.id, permission.sessionId) },
+                                        onClick = {
+                                            onDecision(permission.requestId, opt.id, permission.sessionId)
+                                        },
                                     )
                                 }
                             }
@@ -255,16 +308,125 @@ internal fun InlineApprovalBanner(
                                         option = opt,
                                         isFirstAllowOption = opt.id == firstAllowOptionId,
                                     )
+                                    val displayOpt = opt.copy(name = localizeApprovalOptionName(opt.name, opt.kind))
                                     ApprovalCompactOptionButton(
-                                        option = opt,
+                                        option = displayOpt,
                                         tone = tone,
                                         enabled = !isSubmitting,
-                                        onClick = { onDecision(permission.requestId, opt.id, permission.sessionId) },
+                                        onClick = {
+                                            onDecision(permission.requestId, opt.id, permission.sessionId)
+                                        },
                                     )
                                 }
                             }
                         }
                     }
+
+                    if (canCustomInput) {
+                        val customSubmit = requireNotNull(onCustomAnswer)
+                        QuestionCustomAnswerBar(
+                            value = customAnswerField,
+                            enabled = !isSubmitting,
+                            onValueChange = { customAnswerField = it },
+                            onSubmit = {
+                                val clean = customAnswerField.text.trim()
+                                if (clean.isNotEmpty()) {
+                                    customSubmit(permission.requestId, clean, permission.sessionId)
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuestionCustomAnswerBar(
+    value: TextFieldValue,
+    enabled: Boolean,
+    onValueChange: (TextFieldValue) -> Unit,
+    onSubmit: () -> Unit,
+) {
+    val canSubmit = enabled && value.text.isNotBlank()
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = Everforest.BgDim,
+        border = BorderStroke(1.dp, if (value.text.isNotBlank()) Everforest.Aqua.copy(alpha = 0.55f) else Everforest.Bg3),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                if (value.text.isEmpty()) {
+                    Text(
+                        text = "或输入自定义回答…",
+                        fontSize = 12.sp,
+                        color = Everforest.CommentGrey,
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    enabled = enabled,
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = Everforest.Fg,
+                        fontSize = 12.5.sp,
+                    ),
+                    cursorBrush = SolidColor(Everforest.Aqua),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { if (canSubmit) onSubmit() }),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onPreviewKeyEvent { ev ->
+                            if (ev.type == KeyEventType.KeyDown &&
+                                (ev.key == Key.Enter || ev.key == Key.NumPadEnter) &&
+                                value.composition == null &&
+                                !ev.isShiftPressed &&
+                                !ev.isAltPressed &&
+                                canSubmit
+                            ) {
+                                onSubmit()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        .testTag("approval_custom_input"),
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = if (canSubmit) Everforest.Aqua else Everforest.Bg2,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(enabled = canSubmit, onClick = onSubmit)
+                    .testTag("approval_custom_submit_btn"),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Send,
+                        contentDescription = "提交回答",
+                        tint = if (canSubmit) Everforest.BgDim else Everforest.Grey0,
+                        modifier = Modifier.size(12.dp),
+                    )
+                    Text(
+                        text = "提交",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (canSubmit) Everforest.BgDim else Everforest.Grey0,
+                    )
                 }
             }
         }
@@ -274,16 +436,18 @@ internal fun InlineApprovalBanner(
 @Composable
 private fun ApprovalBannerHeader(
     formattedHeaderTitle: AnnotatedString,
+    isQuestion: Boolean,
+    accentColor: Color,
     isSubmitting: Boolean,
     showRefreshAction: Boolean,
-    showEscCancelAction: Boolean,
+    showCancelAction: Boolean,
     onRefresh: (() -> Unit)?,
-    onEscCancel: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Everforest.BoldGold.copy(alpha = 0.06f))
+            .background(accentColor.copy(alpha = 0.06f))
             .padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -293,20 +457,20 @@ private fun ApprovalBannerHeader(
                 .padding(top = 1.dp)
                 .size(22.dp)
                 .clip(RoundedCornerShape(6.dp))
-                .background(Everforest.BoldGold.copy(alpha = 0.14f)),
+                .background(accentColor.copy(alpha = 0.14f)),
             contentAlignment = Alignment.Center,
         ) {
             if (isSubmitting) {
                 CircularProgressIndicator(
-                    color = Everforest.BoldGold,
+                    color = accentColor,
                     strokeWidth = 1.8.dp,
                     modifier = Modifier.size(12.dp),
                 )
             } else {
                 Icon(
-                    imageVector = Icons.Rounded.Shield,
+                    imageVector = if (isQuestion) Icons.AutoMirrored.Rounded.HelpOutline else Icons.Rounded.Shield,
                     contentDescription = null,
-                    tint = Everforest.BoldGold,
+                    tint = accentColor,
                     modifier = Modifier.size(13.dp),
                 )
             }
@@ -314,11 +478,11 @@ private fun ApprovalBannerHeader(
 
         if (isSubmitting) {
             Text(
-                text = "正在向主机终端发送确认…",
+                text = if (isQuestion) "正在提交回答…" else "正在提交确认…",
                 fontSize = 12.5.sp,
                 lineHeight = 18.sp,
                 fontWeight = FontWeight.Medium,
-                color = Everforest.BoldGold,
+                color = accentColor,
                 modifier = Modifier.weight(1f),
             )
         } else {
@@ -342,25 +506,29 @@ private fun ApprovalBannerHeader(
                     onClick = onRefresh,
                 )
             }
-            showEscCancelAction -> {
+            showCancelAction -> {
                 ApprovalHeaderGhostAction(
-                    label = "取消 (Esc)",
+                    label = if (isQuestion) "暂不回答" else "取消",
                     icon = null,
                     accentColor = Everforest.Grey2,
                     enabled = !isSubmitting,
-                    onClick = onEscCancel,
+                    onClick = onCancel,
                 )
             }
             else -> {
                 Surface(
                     shape = RoundedCornerShape(5.dp),
-                    color = Everforest.BoldGold.copy(alpha = 0.12f),
+                    color = accentColor.copy(alpha = 0.12f),
                 ) {
                     Text(
-                        text = if (isSubmitting) "处理中" else "待确认",
+                        text = when {
+                            isSubmitting -> "处理中"
+                            isQuestion -> "待回答"
+                            else -> "待确认"
+                        },
                         fontSize = 10.5.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Everforest.BoldGold,
+                        color = accentColor,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                     )
                 }
@@ -478,38 +646,50 @@ private fun ApprovalErrorNotice(errorText: String) {
 private fun ApprovalVerticalOptionRow(
     option: PermissionOption,
     tone: ApprovalOptionTone,
+    isQuestion: Boolean,
+    questionIndex: Int,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
     val hoverSource = remember { MutableInteractionSource() }
     val isHovered by hoverSource.collectIsHoveredAsState()
 
-    val containerColor = when (tone) {
-        ApprovalOptionTone.PRIMARY -> Everforest.CodeGreen.copy(alpha = if (isHovered) 0.21f else 0.13f)
-        ApprovalOptionTone.SECONDARY -> if (isHovered) Everforest.Bg2 else Everforest.Bg0.copy(alpha = 0.72f)
-        ApprovalOptionTone.REJECT -> Everforest.Red.copy(alpha = if (isHovered) 0.15f else 0.06f)
+    val containerColor = when {
+        isQuestion && tone == ApprovalOptionTone.PRIMARY ->
+            Everforest.Aqua.copy(alpha = if (isHovered) 0.20f else 0.12f)
+        isQuestion && tone == ApprovalOptionTone.SECONDARY ->
+            if (isHovered) Everforest.Bg2 else Everforest.Bg0.copy(alpha = 0.72f)
+        tone == ApprovalOptionTone.PRIMARY -> Everforest.CodeGreen.copy(alpha = if (isHovered) 0.21f else 0.13f)
+        tone == ApprovalOptionTone.SECONDARY -> if (isHovered) Everforest.Bg2 else Everforest.Bg0.copy(alpha = 0.72f)
+        else -> Everforest.Red.copy(alpha = if (isHovered) 0.15f else 0.06f)
     }
-    val borderColor = when (tone) {
-        ApprovalOptionTone.PRIMARY -> Everforest.CodeGreen.copy(alpha = if (isHovered) 0.72f else 0.45f)
-        ApprovalOptionTone.SECONDARY -> if (isHovered) Everforest.BoldGold.copy(alpha = 0.50f) else Everforest.Bg3
-        ApprovalOptionTone.REJECT -> Everforest.Red.copy(alpha = if (isHovered) 0.55f else 0.28f)
+    val borderColor = when {
+        isQuestion && tone == ApprovalOptionTone.PRIMARY ->
+            Everforest.Aqua.copy(alpha = if (isHovered) 0.72f else 0.45f)
+        isQuestion && tone == ApprovalOptionTone.SECONDARY ->
+            if (isHovered) Everforest.Aqua.copy(alpha = 0.45f) else Everforest.Bg3
+        tone == ApprovalOptionTone.PRIMARY -> Everforest.CodeGreen.copy(alpha = if (isHovered) 0.72f else 0.45f)
+        tone == ApprovalOptionTone.SECONDARY -> if (isHovered) Everforest.BoldGold.copy(alpha = 0.50f) else Everforest.Bg3
+        else -> Everforest.Red.copy(alpha = if (isHovered) 0.55f else 0.28f)
     }
-    val iconTint = when (tone) {
-        ApprovalOptionTone.PRIMARY -> Everforest.CodeGreen
-        ApprovalOptionTone.SECONDARY -> Everforest.BoldGold
-        ApprovalOptionTone.REJECT -> Everforest.SoftRed
+    val iconTint = when {
+        isQuestion && tone != ApprovalOptionTone.REJECT -> Everforest.Aqua
+        tone == ApprovalOptionTone.PRIMARY -> Everforest.CodeGreen
+        tone == ApprovalOptionTone.SECONDARY -> Everforest.BoldGold
+        else -> Everforest.SoftRed
     }
     val textColor = when (tone) {
         ApprovalOptionTone.PRIMARY -> Everforest.BoldFg
         ApprovalOptionTone.SECONDARY -> Everforest.Fg
         ApprovalOptionTone.REJECT -> Everforest.SoftRed
     }
-    val badgeBg = when (tone) {
-        ApprovalOptionTone.PRIMARY -> Everforest.CodeGreen.copy(alpha = 0.16f)
-        ApprovalOptionTone.SECONDARY -> Everforest.BoldGold.copy(alpha = 0.12f)
-        ApprovalOptionTone.REJECT -> Everforest.Red.copy(alpha = 0.12f)
+    val badgeBg = when {
+        isQuestion && tone != ApprovalOptionTone.REJECT -> Everforest.Aqua.copy(alpha = 0.14f)
+        tone == ApprovalOptionTone.PRIMARY -> Everforest.CodeGreen.copy(alpha = 0.16f)
+        tone == ApprovalOptionTone.SECONDARY -> Everforest.BoldGold.copy(alpha = 0.12f)
+        else -> Everforest.Red.copy(alpha = 0.12f)
     }
-    val formattedLabel = remember(option.name, tone) {
+    val formattedLabel = remember(option.name, tone, isQuestion) {
         formatApprovalOptionLabel(
             rawName = option.name,
             indexAccentColor = iconTint,
@@ -545,12 +725,22 @@ private fun ApprovalVerticalOptionRow(
                     .background(badgeBg),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    imageVector = approvalOptionIcon(tone),
-                    contentDescription = null,
-                    tint = iconTint,
-                    modifier = Modifier.size(12.dp),
-                )
+                if (isQuestion && tone != ApprovalOptionTone.REJECT) {
+                    Text(
+                        text = "$questionIndex",
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                        color = iconTint,
+                    )
+                } else {
+                    Icon(
+                        imageVector = approvalOptionIcon(tone),
+                        contentDescription = null,
+                        tint = iconTint,
+                        modifier = Modifier.size(12.dp),
+                    )
+                }
             }
 
             Text(
@@ -562,18 +752,20 @@ private fun ApprovalVerticalOptionRow(
                 modifier = Modifier.weight(1f),
             )
 
-            Surface(
-                shape = RoundedCornerShape(5.dp),
-                color = badgeBg,
-                modifier = Modifier.padding(top = 1.dp),
-            ) {
-                Text(
-                    text = approvalOptionBadgeText(option.kind),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = iconTint,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                )
+            if (!isQuestion) {
+                Surface(
+                    shape = RoundedCornerShape(5.dp),
+                    color = badgeBg,
+                    modifier = Modifier.padding(top = 1.dp),
+                ) {
+                    Text(
+                        text = approvalOptionBadgeText(option.kind),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = iconTint,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
             }
         }
     }

@@ -284,7 +284,7 @@ class SubagentInspectorTest {
             waitForIdle()
             onNodeWithTag("subagent_item_$subAId").assertIsDisplayed()
             onNodeWithTag("subagent_item_$subBId").assertDoesNotExist()
-            onNodeWithText("尚未确认结束").assertIsDisplayed()
+            onNodeWithText("已暂停 · 待确认").assertIsDisplayed()
             onNodeWithText("查看历史子任务（1）").performClick()
             onNodeWithTag("subagent_item_$subBId").assertIsDisplayed()
             onNodeWithText("查阅 ConsoleStore.kt", substring = true).assertIsDisplayed()

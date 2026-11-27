@@ -133,6 +133,12 @@ internal fun DesktopConsoleApp(
         }
     }
 
+    LaunchedEffect(state.activeSessionId) {
+        if (state.activeSessionId == null && activeInspectorTab == DesktopInspectorTab.ARTIFACTS) {
+            activeInspectorTab = null
+        }
+    }
+
     LaunchedEffect(state.unsentDraftToRestore) {
         val restore = state.unsentDraftToRestore
         if (!restore.isNullOrEmpty()) {
@@ -285,7 +291,7 @@ internal fun DesktopConsoleApp(
                         ev.key == Key.A && ev.isShiftPressed -> {
                             if (activeInspectorTab == DesktopInspectorTab.ARTIFACTS) {
                                 activeInspectorTab = null
-                            } else {
+                            } else if (state.activeSessionId != null) {
                                 store.refreshSessionArtifacts()
                                 activeInspectorTab = DesktopInspectorTab.ARTIFACTS
                             }
@@ -461,6 +467,44 @@ internal fun DesktopConsoleApp(
                                 CalmHomeEmptyState(
                                     state = state,
                                     onOpenRunningSession = store::selectSession,
+                                    onQuickPrompt = { starter ->
+                                        val localAct = parseLocalSlashAction(starter, state)
+                                        if (localAct != null) {
+                                            executeLocalSlashAction(
+                                                action = localAct,
+                                                state = state,
+                                                onNewSession = {
+                                                    store.startNewDraftSession()
+                                                    focusComposerNonce++
+                                                },
+                                                onOpenModelPicker = { showModelPicker = true },
+                                                onOpenDiff = {
+                                                    store.refreshDiffAndCheckpoints()
+                                                    activeInspectorTab = DesktopInspectorTab.DIFF
+                                                },
+                                                onOpenFiles = {
+                                                    store.browseDirectory()
+                                                    activeInspectorTab = DesktopInspectorTab.FILES
+                                                },
+                                                onOpenArtifacts = {
+                                                    store.refreshSessionArtifacts()
+                                                    activeInspectorTab = DesktopInspectorTab.ARTIFACTS
+                                                },
+                                                onOpenUsage = {
+                                                    store.refreshUsageDashboard()
+                                                    showUsageDialog = true
+                                                },
+                                                onOpenSearch = { q -> openGlobalSearchPalette(q.ifBlank { null }) },
+                                                onRenameSession = {},
+                                                onSelectMode = store::selectMode,
+                                                onSelectEffort = store::selectEffort,
+                                                onShowNotice = store::showPromptNotice,
+                                            )
+                                        } else {
+                                            store.updateSessionDraft(starter, updateMentions = false)
+                                            focusComposerNonce++
+                                        }
+                                    },
                                 )
                             } else if (
                                 state.activeSessionId != null &&
@@ -540,7 +584,7 @@ internal fun DesktopConsoleApp(
                                     sessionId = topActiveSess.id,
                                     ts = 0L,
                                     requestId = "fallback_waiting_${topActiveSess.id}",
-                                    title = "Agent 正在等待确认\n正在同步终端选项，若未显示操作按钮请点击右侧刷新或回电脑窗口确认。",
+                                    title = "正在等待你的确认\n正在同步操作选项，若未显示按钮请点击右侧刷新或回主机终端确认。",
                                     options = emptyList(),
                                 )
                             } else {
@@ -556,6 +600,9 @@ internal fun DesktopConsoleApp(
                                 },
                                 onDecision = { reqId, optId, sessId ->
                                     store.respondApproval(reqId, optId, sessId)
+                                },
+                                onCustomAnswer = { reqId, customInput, sessId ->
+                                    store.respondApproval(reqId, "__custom__", sessId, customInput)
                                 },
                             )
                         }
@@ -664,13 +711,57 @@ internal fun DesktopConsoleApp(
                             }
                         }
 
+                        val runDesktopLocalSlash: (LocalSlashAction) -> Unit = { localAct ->
+                            executeLocalSlashAction(
+                                action = localAct,
+                                state = state,
+                                onNewSession = {
+                                    store.startNewDraftSession()
+                                    focusComposerNonce++
+                                },
+                                onOpenModelPicker = { showModelPicker = true },
+                                onOpenDiff = {
+                                    store.refreshDiffAndCheckpoints()
+                                    activeInspectorTab = DesktopInspectorTab.DIFF
+                                },
+                                onOpenFiles = {
+                                    store.browseDirectory()
+                                    activeInspectorTab = DesktopInspectorTab.FILES
+                                },
+                                onOpenArtifacts = {
+                                    store.refreshSessionArtifacts()
+                                    activeInspectorTab = DesktopInspectorTab.ARTIFACTS
+                                },
+                                onOpenUsage = {
+                                    store.refreshUsageDashboard()
+                                    showUsageDialog = true
+                                },
+                                onOpenSearch = { q -> openGlobalSearchPalette(q.ifBlank { null }) },
+                                onRenameSession = { title ->
+                                    val sid = state.activeSessionId
+                                    if (sid != null) {
+                                        if (!title.isNullOrBlank()) {
+                                            store.renameSession(sid, title)
+                                            store.showPromptNotice("已将当前会话重命名为「$title」")
+                                        } else {
+                                            renamingSessionId = sid
+                                        }
+                                    }
+                                },
+                                onSelectMode = store::selectMode,
+                                onSelectEffort = store::selectEffort,
+                                onShowNotice = store::showPromptNotice,
+                            )
+                        }
+
+                        val currentDraftKey = state.activeDraftKey
                         DesktopComposer(
                             state = state,
-                            draftKey = state.activeDraftKey,
+                            draftKey = currentDraftKey,
                             composerFocusRequester = composerFocusRequester,
                             text = promptText,
                             onTextChange = { next ->
-                                store.updateSessionDraft(next)
+                                store.updateSessionDraft(next, expectedDraftKey = currentDraftKey)
                             },
                             onOpenWorkspaceDialog = { showWorkspaceDialog = true },
                             onOpenModelPicker = { showModelPicker = true },
@@ -681,7 +772,18 @@ internal fun DesktopConsoleApp(
                                 store.selectMode(next)
                             },
                             onSend = {
-                                store.sendPrompt(state.activeDraftText)
+                                val raw = state.activeDraftText
+                                val localAct = if (state.composerAttachedImages.isEmpty()) {
+                                    parseLocalSlashAction(raw, state)
+                                } else {
+                                    null
+                                }
+                                if (localAct != null) {
+                                    store.updateSessionDraft("", updateMentions = false)
+                                    runDesktopLocalSlash(localAct)
+                                } else {
+                                    store.sendPrompt(raw)
+                                }
                             },
                             onCancel = store::cancelActiveTurn,
                             onClearQueuedPrompts = store::clearQueuedPrompts,
@@ -694,6 +796,27 @@ internal fun DesktopConsoleApp(
                                 store.dismissMentionSuggestions()
                             },
                             onDismissMention = store::dismissMentionSuggestions,
+                            onSelectSlashCommand = { cmd ->
+                                val cur = state.activeDraftText
+                                val isTypingCommand = extractSlashCommandQuery(cur) != null
+                                if (cmd.executeImmediatelyOnSelect) {
+                                    val localAct = parseLocalSlashAction("/${cmd.name}", state)
+                                    if (localAct != null) {
+                                        if (isTypingCommand) {
+                                            store.updateSessionDraft("", updateMentions = false)
+                                        }
+                                        runDesktopLocalSlash(localAct)
+                                    }
+                                } else if (!cmd.isLocal || isTypingCommand || cur.isBlank()) {
+                                    val nextText = if (isTypingCommand || cur.isBlank()) {
+                                        "/${cmd.name} "
+                                    } else {
+                                        "/${cmd.name} ${cur.trimStart()}"
+                                    }
+                                    store.updateSessionDraft(nextText, updateMentions = false)
+                                    focusComposerNonce++
+                                }
+                            },
                         )
                     }
                 }
@@ -982,19 +1105,21 @@ private fun DesktopRightInspectorPane(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    LeworkIconActionButton(
-                        icon = Icons.Rounded.Description,
-                        tooltip = "会话产物",
-                        shortcut = "⇧⌘A",
-                        active = tab == DesktopInspectorTab.ARTIFACTS,
-                        activeTint = Everforest.BoldGold,
-                        showBadgeDot = state.activeSessionArtifacts.isNotEmpty(),
-                        badgeColor = Everforest.BoldGold,
-                        size = DesktopControlSize,
-                        iconSize = 16.dp,
-                        testTag = "inspector_tab_artifacts",
-                        onClick = { onSelectTab(DesktopInspectorTab.ARTIFACTS) },
-                    )
+                    if (state.activeSessionId != null) {
+                        LeworkIconActionButton(
+                            icon = Icons.Rounded.Description,
+                            tooltip = "会话产物",
+                            shortcut = "⇧⌘A",
+                            active = tab == DesktopInspectorTab.ARTIFACTS,
+                            activeTint = Everforest.BoldGold,
+                            showBadgeDot = state.activeSessionArtifacts.isNotEmpty(),
+                            badgeColor = Everforest.BoldGold,
+                            size = DesktopControlSize,
+                            iconSize = 16.dp,
+                            testTag = "inspector_tab_artifacts",
+                            onClick = { onSelectTab(DesktopInspectorTab.ARTIFACTS) },
+                        )
+                    }
                     LeworkIconActionButton(
                         icon = Icons.AutoMirrored.Rounded.CompareArrows,
                         tooltip = "代码变更与快照",
