@@ -12,26 +12,43 @@ APP_DIR="$REPO_ROOT/app"
 BUILT_APP="$APP_DIR/desktopApp/build/compose/binaries/main/app/Lework.app"
 TARGET_APP="/Applications/Lework.app"
 LAUNCH=1
+EXPLICIT_VERSION="${LEWORK_VERSION:-}"
 
-for arg in "$@"; do
-  case "$arg" in
-    --no-launch) LAUNCH=0 ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-launch) LAUNCH=0; shift ;;
+    --version)
+      EXPLICIT_VERSION="${2:-}"
+      shift 2
+      ;;
     -h|--help)
-      echo "Usage: $0 [--no-launch]"
+      echo "Usage: $0 [--no-launch] [--version X.Y.Z]"
       exit 0
       ;;
     *)
-      echo "Unknown option: $arg" >&2
+      echo "Unknown option: $1" >&2
       exit 1
       ;;
   esac
 done
 
+if [[ -z "$EXPLICIT_VERSION" ]]; then
+  LATEST_TAG="$(git -C "$REPO_ROOT" tag --merged HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$LATEST_TAG" ]]; then
+    EXPLICIT_VERSION="${LATEST_TAG#v}"
+  fi
+fi
+
 export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home}"
 export PATH="$JAVA_HOME/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
-echo "==> Building Lework macOS Desktop app (incremental)..."
-"$APP_DIR/gradlew" -p "$APP_DIR" :desktopApp:createDistributable
+GRADLE_VERSION_ARGS=()
+if [[ -n "$EXPLICIT_VERSION" ]]; then
+  GRADLE_VERSION_ARGS+=("-PleworkVersion=$EXPLICIT_VERSION")
+fi
+
+echo "==> Building Lework macOS Desktop app (incremental, version=${EXPLICIT_VERSION:-auto})..."
+"$APP_DIR/gradlew" -p "$APP_DIR" :desktopApp:createDistributable "${GRADLE_VERSION_ARGS[@]}"
 
 if [[ ! -d "$BUILT_APP" ]]; then
   echo "Error: Built app bundle not found at $BUILT_APP" >&2

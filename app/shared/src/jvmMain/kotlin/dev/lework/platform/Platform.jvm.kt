@@ -63,6 +63,18 @@ object JvmPlatformTestHooks {
     var onUninstallGlobalCli: (() -> Result<GlobalCliInstallStatus>)? = null
     val runtimeLogs = mutableListOf<String>()
     var fakeRuntimeLogPath: String? = null
+    var appVersionOverride: String? = null
+    var onFetchLatestRelease: (suspend (apiUrl: String, fallbackWebUrl: String) -> Result<GitHubReleaseFetchPayload>)? = null
+    var canInstallDesktopUpdate: Boolean = false
+    var onInstallDesktopUpdate: (
+        suspend (
+            downloadUrl: String,
+            expectedFileName: String,
+            expectedSha256: String?,
+            checksumsUrl: String?,
+            onProgress: (Float?, String) -> Unit,
+        ) -> Result<String>
+    )? = null
 
     fun recordRuntimeLog(line: String) {
         synchronized(runtimeLogs) {
@@ -135,6 +147,10 @@ object JvmPlatformTestHooks {
         onUninstallGlobalCli = null
         synchronized(runtimeLogs) { runtimeLogs.clear() }
         fakeRuntimeLogPath = null
+        appVersionOverride = null
+        onFetchLatestRelease = null
+        canInstallDesktopUpdate = false
+        onInstallDesktopUpdate = null
     }
 }
 
@@ -145,7 +161,9 @@ actual fun isDesktopPlatform(): Boolean =
     JvmDesktopRuntime.isEnabled || JvmPlatformTestHooks.simulateDesktopLayout
 
 actual fun appVersionLabel(): String {
-    if (!JvmDesktopRuntime.isEnabled) return "v0.5.0 (test)"
+    if (!JvmDesktopRuntime.isEnabled) {
+        return JvmPlatformTestHooks.appVersionOverride?.trim()?.takeIf { it.isNotEmpty() } ?: "v0.5.0 (test)"
+    }
     val ver = System.getProperty("lework.app.version")?.trim()?.takeIf { it.isNotEmpty() } ?: "0.7.0"
     return "Lework Desktop v$ver"
 }
@@ -501,3 +519,46 @@ actual fun logRuntimeEvent(tag: String, message: String) {
 
 actual fun runtimeLogFilePath(): String? =
     if (JvmDesktopRuntime.isEnabled) JvmDesktopRuntime.runtimeLogPath() else JvmPlatformTestHooks.fakeRuntimeLogPath
+
+actual suspend fun fetchLatestGitHubReleasePayload(
+    apiUrl: String,
+    fallbackWebUrl: String,
+): Result<GitHubReleaseFetchPayload> =
+    if (JvmDesktopRuntime.isEnabled) {
+        DesktopReleaseUpdater.fetchLatestReleasePayload(apiUrl, fallbackWebUrl)
+    } else {
+        JvmPlatformTestHooks.onFetchLatestRelease?.invoke(apiUrl, fallbackWebUrl)
+            ?: Result.failure(UnsupportedOperationException("Release check hook not configured in test mode"))
+    }
+
+actual fun canInstallDesktopDmgUpdate(): Boolean =
+    if (JvmDesktopRuntime.isEnabled) {
+        DesktopReleaseUpdater.canInstallMacDmg()
+    } else {
+        JvmPlatformTestHooks.canInstallDesktopUpdate
+    }
+
+actual suspend fun installDesktopDmgUpdate(
+    downloadUrl: String,
+    expectedFileName: String,
+    expectedSha256: String?,
+    checksumsUrl: String?,
+    onProgress: (fraction: Float?, statusText: String) -> Unit,
+): Result<String> =
+    if (JvmDesktopRuntime.isEnabled) {
+        DesktopReleaseUpdater.installMacDmgUpdate(
+            downloadUrl = downloadUrl,
+            expectedFileName = expectedFileName,
+            expectedSha256 = expectedSha256,
+            checksumsUrl = checksumsUrl,
+            onProgress = onProgress,
+        )
+    } else {
+        JvmPlatformTestHooks.onInstallDesktopUpdate?.invoke(
+            downloadUrl,
+            expectedFileName,
+            expectedSha256,
+            checksumsUrl,
+            onProgress,
+        ) ?: Result.failure(UnsupportedOperationException("Desktop updater hook not configured in test mode"))
+    }

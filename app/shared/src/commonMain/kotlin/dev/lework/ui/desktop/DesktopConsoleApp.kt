@@ -68,7 +68,7 @@ internal fun DesktopConsoleApp(
             showUsageDialog || showSettingsDialog ||
             state.inSessionFindOpen || state.inspectedSubagent != null ||
             state.activeFilePreview != null || state.pendingDeepLinkPairing != null ||
-            renamingSessionId != null
+            state.appUpdate.showUpdateDialog || renamingSessionId != null
 
     LaunchedEffect(
         state.hasEnteredWorkspace,
@@ -336,6 +336,8 @@ internal fun DesktopConsoleApp(
                             onTogglePinSession = store::togglePinSession,
                             onRequestRenameSession = { sess -> renamingSessionId = sess.id },
                             onToggleArchiveSession = store::archiveSession,
+                            onOpenAppUpdate = store::openAppUpdateDialog,
+                            onDismissAppUpdate = store::dismissAppUpdateReminder,
                         )
                     }
                     Box(
@@ -873,6 +875,11 @@ internal fun DesktopConsoleApp(
                 onUpsertProvider = store::upsertProvider,
                 onRemoveProvider = store::removeProvider,
                 onClearProviderFeedback = store::clearProviderFeedback,
+                onCheckForUpdates = { store.checkForAppUpdates(manual = true) },
+                onOpenAppUpdateDialog = {
+                    showSettingsDialog = false
+                    store.openAppUpdateDialog()
+                },
                 autoInstallGlobalCliNonce = autoInstallGlobalCliNonce,
                 onLogout = store::logout,
             )
@@ -904,6 +911,17 @@ internal fun DesktopConsoleApp(
                     )
                 },
                 onClose = store::closeFilePreview,
+            )
+        }
+
+        if (state.appUpdate.showUpdateDialog) {
+            AppUpdateDialog(
+                updateState = state.appUpdate,
+                onCheckAgain = { store.checkForAppUpdates(manual = true, openDialog = true) },
+                onStartUpdate = store::startAppUpdateAction,
+                onOpenReleasePage = store::openLatestReleasePage,
+                onDismissVersion = store::dismissAppUpdateReminder,
+                onClose = store::closeAppUpdateDialog,
             )
         }
     }

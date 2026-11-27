@@ -46,6 +46,7 @@ class ConsoleStore(
         internal const val FOREGROUND_RESUME_COOLDOWN_MS = 2_000L
         internal const val OAUTH_EXPIRED_RETRY_DELAY_MS = 1_500L
         internal const val MAX_CONSECUTIVE_OAUTH_EXPIRED_RESTARTS = 4
+        const val APP_UPDATE_CHECK_INTERVAL_MS = 2L * 60L * 60L * 1_000L
     }
 
     private val initialPrefs = loadSessionPrefs()
@@ -60,6 +61,10 @@ class ConsoleStore(
             pinnedSessionIds = initialPrefs.pinnedSessionIds,
             selectedWorkspacePath = initialPrefs.workspacePath,
             currentBrowsePath = initialPrefs.workspacePath,
+            appUpdate = AppUpdateState(
+                currentVersion = currentAppVersionString(),
+                dismissedTag = initialPrefs.dismissedUpdateTag,
+            ),
         ),
     )
     val state: StateFlow<ConsoleUiState> = _state.asStateFlow()
@@ -92,6 +97,8 @@ class ConsoleStore(
     private var mentionJob: Job? = null
     private var filePreviewJob: Job? = null
     private var filePreviewRequestToken: Long = 0L
+    private var appUpdateCheckJob: Job? = null
+    private var appUpdateInstallJob: Job? = null
     private val sessionNavHistory = mutableListOf<String>()
     private var sessionNavIndex: Int = -1
     private val lastSubmittedPromptBySession = mutableMapOf<String, String>()
@@ -273,6 +280,7 @@ class ConsoleStore(
                             "foreground=true -> verifyAndResumeForegroundSession bgMs=$bgMs status=${cur.connectionStatus}",
                         )
                         verifyAndResumeForegroundSession()
+                        checkForAppUpdates(manual = false)
                     } else if (cur.tsnetLoggingIn) {
                         logRuntimeEvent("LIFECYCLE", "foreground=true -> checkTsnetAfterForegroundReturn")
                         checkTsnetAfterForegroundReturn()
@@ -567,6 +575,7 @@ class ConsoleStore(
                 workspacePath = st.selectedWorkspacePath,
                 favoriteModelKeys = st.favoriteModelKeys,
                 pinnedSessionIds = st.pinnedSessionIds,
+                dismissedUpdateTag = st.appUpdate.dismissedTag,
             ),
         )
     }
@@ -2136,6 +2145,7 @@ class ConsoleStore(
             }
             persistCurrentPrefs()
             reconcileDesktopRunningWarmSubscriptions(sessions)
+            checkForAppUpdates(manual = false)
 
             if (resolvedActiveId != null) {
                 subscribedSessionId = resolvedActiveId
@@ -4033,6 +4043,211 @@ class ConsoleStore(
 
     fun closeOpenedFile() {
         _state.update { it.copy(openedFilePath = null, openedFileContent = null) }
+    }
+
+    // -------------------------------------------------------------------------
+    // GitHub Release Update Checker & Desktop One-Click DMG Updater
+    // -------------------------------------------------------------------------
+
+    fun checkForAppUpdates(
+        manual: Boolean = false,
+        openDialog: Boolean = false,
+    ) {
+        val snap = _state.value.appUpdate
+        val nowMs = epochMillis()
+        if (snap.checking) {
+            if (openDialog) {
+                _state.update { it.copy(appUpdate = it.appUpdate.copy(showUpdateDialog = true)) }
+            }
+            return
+        }
+        if (!manual && snap.lastCheckedAtMs > 0L && (nowMs - snap.lastCheckedAtMs) in 0L until APP_UPDATE_CHECK_INTERVAL_MS) {
+            return
+        }
+        appUpdateCheckJob?.cancel()
+        val curVerStr = currentAppVersionString()
+        val curSemVer = currentAppSemVer()
+        _state.update {
+            it.copy(
+                appUpdate = it.appUpdate.copy(
+                    currentVersion = curVerStr,
+                    checking = true,
+                    checkError = if (manual) null else it.appUpdate.checkError,
+                    showUpdateDialog = if (openDialog) true else it.appUpdate.showUpdateDialog,
+                ),
+            )
+        }
+        appUpdateCheckJob = scope.launch {
+            val result = fetchLatestGitHubReleasePayload(
+                apiUrl = LEWORK_RELEASES_API_URL,
+                fallbackWebUrl = LEWORK_RELEASES_LATEST_WEB_URL,
+            )
+            val checkedAt = epochMillis()
+            val release = result.getOrNull()?.let(::resolveGitHubReleasePayload)
+            if (release != null) {
+                val hasUpdate = curSemVer != null && release.version > curSemVer
+                logRuntimeEvent(
+                    "UPDATE",
+                    "checked manual=$manual current=$curVerStr latest=${release.tagName} hasUpdate=$hasUpdate",
+                )
+                _state.update { s ->
+                    val prev = s.appUpdate
+                    val nextDismissed = if (prev.dismissedTag == release.tagName) prev.dismissedTag else null
+                    s.copy(
+                        appUpdate = prev.copy(
+                            currentVersion = curVerStr,
+                            checking = false,
+                            latestRelease = release,
+                            hasUpdate = hasUpdate,
+                            dismissedTag = nextDismissed,
+                            lastCheckedAtMs = checkedAt,
+                            checkError = null,
+                            showUpdateDialog = if (openDialog) true else prev.showUpdateDialog,
+                        ),
+                    )
+                }
+            } else {
+                val rawErr = result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
+                if (manual) {
+                    logRuntimeEvent("UPDATE", "manual check failed err=${rawErr ?: "parse_empty"}")
+                }
+                _state.update { s ->
+                    val prev = s.appUpdate
+                    s.copy(
+                        appUpdate = prev.copy(
+                            currentVersion = curVerStr,
+                            checking = false,
+                            lastCheckedAtMs = if (manual) checkedAt else prev.lastCheckedAtMs,
+                            checkError = if (manual) {
+                                "检查更新失败：${rawErr ?: "无法解析 GitHub Release 信息，请检查网络连接"}"
+                            } else {
+                                prev.checkError
+                            },
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    fun openAppUpdateDialog() {
+        _state.update {
+            it.copy(
+                appUpdate = it.appUpdate.copy(
+                    currentVersion = currentAppVersionString(),
+                    showUpdateDialog = true,
+                    installError = null,
+                ),
+            )
+        }
+        if (_state.value.appUpdate.latestRelease == null) {
+            checkForAppUpdates(manual = true, openDialog = true)
+        }
+    }
+
+    fun closeAppUpdateDialog() {
+        _state.update {
+            it.copy(
+                appUpdate = it.appUpdate.copy(
+                    showUpdateDialog = false,
+                    installError = null,
+                ),
+            )
+        }
+    }
+
+    fun dismissAppUpdateReminder() {
+        val tag = _state.value.appUpdate.latestRelease?.tagName ?: return
+        _state.update {
+            it.copy(
+                appUpdate = it.appUpdate.copy(
+                    dismissedTag = tag,
+                    showUpdateDialog = false,
+                ),
+            )
+        }
+        persistCurrentPrefs()
+    }
+
+    fun openLatestReleasePage() {
+        val url = _state.value.appUpdate.latestRelease?.htmlUrl ?: LEWORK_RELEASES_LATEST_WEB_URL
+        if (isSafeExternalLink(url)) {
+            openExternalUrl(url)
+        }
+    }
+
+    fun startAppUpdateAction() {
+        val st = _state.value.appUpdate
+        val release = st.latestRelease ?: return
+        if (st.installing) return
+
+        val macDmg = release.macDmgAsset
+        if (isDesktopPlatform() && canInstallDesktopDmgUpdate() && macDmg != null) {
+            appUpdateInstallJob?.cancel()
+            _state.update {
+                it.copy(
+                    appUpdate = it.appUpdate.copy(
+                        installing = true,
+                        installProgressFraction = 0f,
+                        installStatusText = "正在准备下载 ${macDmg.name}…",
+                        installError = null,
+                    ),
+                )
+            }
+            appUpdateInstallJob = scope.launch {
+                val res = installDesktopDmgUpdate(
+                    downloadUrl = macDmg.downloadUrl,
+                    expectedFileName = macDmg.name,
+                    expectedSha256 = macDmg.sha256,
+                    checksumsUrl = release.checksumsUrl,
+                    onProgress = { fraction, statusText ->
+                        _state.update { cur ->
+                            cur.copy(
+                                appUpdate = cur.appUpdate.copy(
+                                    installProgressFraction = fraction,
+                                    installStatusText = statusText,
+                                ),
+                            )
+                        }
+                    },
+                )
+                res.onSuccess { doneMsg ->
+                    _state.update { cur ->
+                        cur.copy(
+                            appUpdate = cur.appUpdate.copy(
+                                installing = false,
+                                installProgressFraction = 1f,
+                                installStatusText = doneMsg,
+                                installError = null,
+                            ),
+                        )
+                    }
+                }.onFailure { err ->
+                    val errMsg = err.message?.takeIf { it.isNotBlank() } ?: "自动安装更新失败，可点击「GitHub 发布页」手动下载"
+                    logRuntimeEvent("UPDATE", "desktop install failed err=$errMsg")
+                    _state.update { cur ->
+                        cur.copy(
+                            appUpdate = cur.appUpdate.copy(
+                                installing = false,
+                                installProgressFraction = null,
+                                installStatusText = null,
+                                installError = errMsg,
+                            ),
+                        )
+                    }
+                }
+            }
+            return
+        }
+
+        val isAndroid = platformName().contains("android", ignoreCase = true)
+        val targetUrl = when {
+            isAndroid && release.androidApkAsset != null -> release.androidApkAsset.downloadUrl
+            else -> release.htmlUrl
+        }
+        if (isSafeExternalLink(targetUrl)) {
+            openExternalUrl(targetUrl)
+        }
     }
 
     fun openLinkedFilePreview(

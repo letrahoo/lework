@@ -36,6 +36,7 @@ import dev.lework.platform.runtimeLogFilePath
 import dev.lework.platform.uninstallGlobalCliCommand
 import dev.lework.protocol.ProviderConfigInput
 import dev.lework.store.ConsoleUiState
+import dev.lework.ui.DesktopAppUpdateSection
 import dev.lework.ui.EngineGlyphIcon
 import dev.lework.ui.Everforest
 import dev.lework.ui.ModalEscapeEffect
@@ -58,6 +59,8 @@ internal fun DesktopSettingsDialog(
     onUpsertProvider: (ProviderConfigInput, onSuccess: () -> Unit) -> Unit = { _, _ -> },
     onRemoveProvider: (providerId: String) -> Unit = {},
     onClearProviderFeedback: () -> Unit = {},
+    onCheckForUpdates: () -> Unit = {},
+    onOpenAppUpdateDialog: () -> Unit = {},
     autoInstallGlobalCliNonce: Int = 0,
     onLogout: () -> Unit,
 ) {
@@ -177,6 +180,14 @@ internal fun DesktopSettingsDialog(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    if (state.appUpdate.hasUpdate) {
+                        DesktopAppUpdateSection(
+                            updateState = state.appUpdate,
+                            onCheckForUpdates = onCheckForUpdates,
+                            onOpenUpdateDialog = onOpenAppUpdateDialog,
+                        )
+                    }
+
                     // Section 1: Current Host & TLS Encryption
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -517,6 +528,14 @@ internal fun DesktopSettingsDialog(
                                 copyTextToClipboard(exportLine)
                                 copiedPathExport = true
                             },
+                        )
+                    }
+
+                    if (!state.appUpdate.hasUpdate) {
+                        DesktopAppUpdateSection(
+                            updateState = state.appUpdate,
+                            onCheckForUpdates = onCheckForUpdates,
+                            onOpenUpdateDialog = onOpenAppUpdateDialog,
                         )
                     }
 

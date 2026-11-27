@@ -22,6 +22,8 @@ import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import dev.lework.protocol.ProtocolJson
+import dev.lework.store.isTrustedGitHubReleaseUrl
+import kotlinx.coroutines.CancellationException
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -721,6 +723,7 @@ actual fun loadSessionPrefs(): SavedSessionPrefs {
         workspacePath = p.getString("pref_workspace", null) ?: memPrefs.workspacePath,
         favoriteModelKeys = favs,
         pinnedSessionIds = pinned,
+        dismissedUpdateTag = p.getString("pref_dismissed_update_tag", null)?.ifBlank { null },
     )
 }
 
@@ -735,6 +738,7 @@ actual fun saveSessionPrefs(prefs: SavedSessionPrefs) {
         ?.putString("pref_workspace", prefs.workspacePath)
         ?.putString("pref_fav_models", prefs.favoriteModelKeys.joinToString("|"))
         ?.putString("pref_pinned_sessions", prefs.pinnedSessionIds.joinToString("|"))
+        ?.putString("pref_dismissed_update_tag", prefs.dismissedUpdateTag)
         ?.apply()
 }
 
@@ -1029,3 +1033,79 @@ actual fun logRuntimeEvent(tag: String, message: String) {
         }
     }
 }
+
+actual suspend fun fetchLatestGitHubReleasePayload(
+    apiUrl: String,
+    fallbackWebUrl: String,
+): Result<GitHubReleaseFetchPayload> = withContext(Dispatchers.IO) {
+    try {
+        if (!isTrustedGitHubReleaseUrl(apiUrl) || !isTrustedGitHubReleaseUrl(fallbackWebUrl)) {
+            return@withContext Result.failure(IllegalArgumentException("更新源地址不受信任"))
+        }
+        val apiTry = runCatching {
+            val conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = true
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 12_000
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("User-Agent", "Lework-Android/${appVersionLabel()}")
+            }
+            try {
+                val code = conn.responseCode
+                val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.bufferedReader(Charsets.UTF_8)
+                    ?.use { it.readText() }
+                    .orEmpty()
+                code to body
+            } finally {
+                conn.disconnect()
+            }
+        }
+        apiTry.getOrNull()?.let { (code, body) ->
+            if (code in 200..299 && body.isNotBlank()) {
+                return@withContext Result.success(GitHubReleaseFetchPayload(jsonBody = body))
+            }
+        }
+        var currentUrl = fallbackWebUrl
+        repeat(6) {
+            val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                requestMethod = "HEAD"
+                connectTimeout = 10_000
+                readTimeout = 12_000
+                setRequestProperty("User-Agent", "Lework-Android/${appVersionLabel()}")
+            }
+            val code = conn.responseCode
+            val loc = conn.getHeaderField("Location")?.trim().orEmpty()
+            conn.disconnect()
+            if (code in setOf(301, 302, 303, 307, 308) && loc.isNotEmpty()) {
+                val next = URL(URL(currentUrl), loc).toString()
+                if (!isTrustedGitHubReleaseUrl(next)) {
+                    return@withContext Result.failure(IllegalArgumentException("更新源重定向目标不受信任"))
+                }
+                currentUrl = next
+            } else {
+                if (code in 200..399 && isTrustedGitHubReleaseUrl(currentUrl)) {
+                    return@withContext Result.success(GitHubReleaseFetchPayload(resolvedWebUrl = currentUrl))
+                }
+                return@withContext Result.failure(IllegalStateException("无法获取最新版本（HTTP $code）"))
+            }
+        }
+        Result.failure(apiTry.exceptionOrNull() ?: IllegalStateException("无法获取最新 Release 信息"))
+    } catch (ce: CancellationException) {
+        throw ce
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+}
+
+actual fun canInstallDesktopDmgUpdate(): Boolean = false
+
+actual suspend fun installDesktopDmgUpdate(
+    downloadUrl: String,
+    expectedFileName: String,
+    expectedSha256: String?,
+    checksumsUrl: String?,
+    onProgress: (fraction: Float?, statusText: String) -> Unit,
+): Result<String> = Result.failure(UnsupportedOperationException("Android 请通过浏览器下载 APK 更新"))
