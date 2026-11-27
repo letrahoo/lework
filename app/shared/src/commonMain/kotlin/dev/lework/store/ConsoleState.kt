@@ -215,6 +215,8 @@ data class SessionTranscript(
     val pendingPermissions: List<AgentEvent.PermissionRequested> = emptyList(),
     val planEntries: List<PlanEntry> = emptyList(),
     val planUpdatedAt: Long = 0L,
+    val planTurnEnded: Boolean = false,
+    val planSeenPostUpdateUserTurn: Boolean = false,
     val inputTokens: Int = 0,
     val outputTokens: Int = 0,
 )
@@ -222,15 +224,53 @@ data class SessionTranscript(
 internal fun PlanEntry.isTerminalStatus(): Boolean =
     status == "completed" || status == "skipped" || status == "failed"
 
+internal fun SessionState.isInactiveTurnState(): Boolean =
+    this == SessionState.IDLE || this == SessionState.ERROR || this == SessionState.CLOSED
+
+internal fun SessionTranscript.syncPlanLifecycleWithSessionState(
+    sessionState: SessionState,
+): SessionTranscript {
+    if (!sessionState.isInactiveTurnState() || planEntries.isEmpty()) return this
+    if (planSeenPostUpdateUserTurn) {
+        return copy(
+            planEntries = emptyList(),
+            planUpdatedAt = 0L,
+            planTurnEnded = false,
+            planSeenPostUpdateUserTurn = false,
+        )
+    }
+    return if (planTurnEnded) this else copy(planTurnEnded = true)
+}
+
+internal fun SessionTranscript.clearStalePlanBeforeNewPrompt(): SessionTranscript {
+    if (planEntries.isEmpty()) return this
+    val shouldClear = planEntries.all { it.isTerminalStatus() } || planTurnEnded || planSeenPostUpdateUserTurn
+    if (!shouldClear) return this
+    return copy(
+        planEntries = emptyList(),
+        planUpdatedAt = 0L,
+        planTurnEnded = false,
+        planSeenPostUpdateUserTurn = false,
+    )
+}
+
 internal fun SessionTranscript.withFallbackLatestPlan(
     latestPlan: List<PlanEntry>?,
     fallbackTs: Long = 0L,
-): SessionTranscript =
-    if (planEntries.isEmpty() && !latestPlan.isNullOrEmpty()) {
-        copy(planEntries = latestPlan, planUpdatedAt = fallbackTs)
+    sessionState: SessionState? = null,
+): SessionTranscript {
+    val base = if (planEntries.isEmpty() && !latestPlan.isNullOrEmpty()) {
+        copy(
+            planEntries = latestPlan,
+            planUpdatedAt = fallbackTs,
+            planTurnEnded = sessionState?.isInactiveTurnState() == true,
+            planSeenPostUpdateUserTurn = false,
+        )
     } else {
         this
     }
+    return if (sessionState != null) base.syncPlanLifecycleWithSessionState(sessionState) else base
+}
 
 internal fun parseEffort(raw: String): ReasoningEffort = when (raw.lowercase()) {
     "low" -> ReasoningEffort.LOW
@@ -588,14 +628,23 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
     val perms = current.pendingPermissions.toMutableList()
     var plans = current.planEntries
     var planUpdatedAt = current.planUpdatedAt
+    var planTurnEnded = current.planTurnEnded
+    var planSeenPostUpdateUserTurn = current.planSeenPostUpdateUserTurn
     var inTok = current.inputTokens
     var outTok = current.outputTokens
 
     when (event) {
         is AgentEvent.UserMessage -> {
-            if (plans.isNotEmpty() && plans.all { it.isTerminalStatus() }) {
-                plans = emptyList()
-                planUpdatedAt = 0L
+            if (plans.isNotEmpty()) {
+                val shouldClear = plans.all { it.isTerminalStatus() } || planTurnEnded || planSeenPostUpdateUserTurn
+                if (shouldClear) {
+                    plans = emptyList()
+                    planUpdatedAt = 0L
+                    planTurnEnded = false
+                    planSeenPostUpdateUserTurn = false
+                } else {
+                    planSeenPostUpdateUserTurn = true
+                }
             }
             items.add(
                 ChatTimelineItem.User(
@@ -683,6 +732,8 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
         is AgentEvent.PlanUpdated -> {
             plans = event.entries
             planUpdatedAt = if (event.entries.isNotEmpty()) event.ts else 0L
+            planTurnEnded = false
+            planSeenPostUpdateUserTurn = false
         }
         is AgentEvent.Usage -> {
             inTok += event.inputTokens ?: 0
@@ -691,8 +742,38 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
         is AgentEvent.ErrorEvent -> {
             appendOrCollapseErrorNotice(items, event)
         }
-        is AgentEvent.SessionStateChanged,
-        is AgentEvent.TurnDone -> Unit
+        is AgentEvent.SessionStateChanged -> {
+            if (event.state.isInactiveTurnState()) {
+                if (plans.isNotEmpty()) {
+                    if (planSeenPostUpdateUserTurn) {
+                        plans = emptyList()
+                        planUpdatedAt = 0L
+                        planTurnEnded = false
+                        planSeenPostUpdateUserTurn = false
+                    } else {
+                        planTurnEnded = true
+                    }
+                } else {
+                    planTurnEnded = false
+                    planSeenPostUpdateUserTurn = false
+                }
+            }
+        }
+        is AgentEvent.TurnDone -> {
+            if (plans.isNotEmpty()) {
+                if (planSeenPostUpdateUserTurn) {
+                    plans = emptyList()
+                    planUpdatedAt = 0L
+                    planTurnEnded = false
+                    planSeenPostUpdateUserTurn = false
+                } else {
+                    planTurnEnded = true
+                }
+            } else {
+                planTurnEnded = false
+                planSeenPostUpdateUserTurn = false
+            }
+        }
     }
 
     return current.copy(
@@ -701,6 +782,8 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
         pendingPermissions = perms,
         planEntries = plans,
         planUpdatedAt = planUpdatedAt,
+        planTurnEnded = planTurnEnded,
+        planSeenPostUpdateUserTurn = planSeenPostUpdateUserTurn,
         inputTokens = inTok,
         outputTokens = outTok,
     )
@@ -732,6 +815,8 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
     var lastSeq = initial.lastSeq
     var plans = initial.planEntries
     var planUpdatedAt = initial.planUpdatedAt
+    var planTurnEnded = initial.planTurnEnded
+    var planSeenPostUpdateUserTurn = initial.planSeenPostUpdateUserTurn
     var inTok = initial.inputTokens
     var outTok = initial.outputTokens
 
@@ -761,9 +846,16 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
 
         when (event) {
             is AgentEvent.UserMessage -> {
-                if (plans.isNotEmpty() && plans.all { it.isTerminalStatus() }) {
-                    plans = emptyList()
-                    planUpdatedAt = 0L
+                if (plans.isNotEmpty()) {
+                    val shouldClear = plans.all { it.isTerminalStatus() } || planTurnEnded || planSeenPostUpdateUserTurn
+                    if (shouldClear) {
+                        plans = emptyList()
+                        planUpdatedAt = 0L
+                        planTurnEnded = false
+                        planSeenPostUpdateUserTurn = false
+                    } else {
+                        planSeenPostUpdateUserTurn = true
+                    }
                 }
                 items.add(
                     ChatTimelineItem.User(
@@ -850,6 +942,8 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
             is AgentEvent.PlanUpdated -> {
                 plans = event.entries
                 planUpdatedAt = if (event.entries.isNotEmpty()) event.ts else 0L
+                planTurnEnded = false
+                planSeenPostUpdateUserTurn = false
             }
             is AgentEvent.Usage -> {
                 inTok += event.inputTokens ?: 0
@@ -858,10 +952,40 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
             is AgentEvent.ErrorEvent -> {
                 appendOrCollapseErrorNotice(items, event)
             }
+            is AgentEvent.SessionStateChanged -> {
+                if (event.state.isInactiveTurnState()) {
+                    if (plans.isNotEmpty()) {
+                        if (planSeenPostUpdateUserTurn) {
+                            plans = emptyList()
+                            planUpdatedAt = 0L
+                            planTurnEnded = false
+                            planSeenPostUpdateUserTurn = false
+                        } else {
+                            planTurnEnded = true
+                        }
+                    } else {
+                        planTurnEnded = false
+                        planSeenPostUpdateUserTurn = false
+                    }
+                }
+            }
+            is AgentEvent.TurnDone -> {
+                if (plans.isNotEmpty()) {
+                    if (planSeenPostUpdateUserTurn) {
+                        plans = emptyList()
+                        planUpdatedAt = 0L
+                        planTurnEnded = false
+                        planSeenPostUpdateUserTurn = false
+                    } else {
+                        planTurnEnded = true
+                    }
+                } else {
+                    planTurnEnded = false
+                    planSeenPostUpdateUserTurn = false
+                }
+            }
             is AgentEvent.PermissionRequested,
-            is AgentEvent.PermissionResolved,
-            is AgentEvent.SessionStateChanged,
-            is AgentEvent.TurnDone -> Unit
+            is AgentEvent.PermissionResolved -> Unit
         }
     }
 
@@ -871,6 +995,8 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
         pendingPermissions = perms,
         planEntries = plans,
         planUpdatedAt = planUpdatedAt,
+        planTurnEnded = planTurnEnded,
+        planSeenPostUpdateUserTurn = planSeenPostUpdateUserTurn,
         inputTokens = inTok,
         outputTokens = outTok,
     )

@@ -21,6 +21,7 @@ import {
 import { readClaudeLocalSettings, resolveClaudeEffectiveModel } from './engine-settings.ts'
 import {
   ClaudeTaskStepTracker,
+  PlanTurnHygieneTracker,
   extractLatestClaudeStepProgress,
   isPlanStepToolName,
 } from './plan-steps.ts'
@@ -396,12 +397,22 @@ export function parseClaudeTranscript(
   const openTools = new Set<string>()
   const ignoredStepTools = new Set<string>()
   const stepTracker = new ClaudeTaskStepTracker()
+  const planHygiene = new PlanTurnHygieneTracker()
   const queued: string[] = []
   let isRunning = false
   let turnStartedAt: number | undefined
   let latestModel: string | undefined
   const lines = readFullSessionLines(filePath)
   let seq = 0
+  const emitPlanCleared = (ts: number) => {
+    events.push({
+      seq: seq++,
+      sessionId,
+      ts,
+      type: 'plan.updated',
+      entries: [],
+    })
+  }
   for (const line of lines) {
     try {
       const o = JSON.parse(line) as {
@@ -462,6 +473,7 @@ export function parseClaudeTranscript(
         if (qcPrompt && !qcPrompt.startsWith('<') && o.attachment.origin?.kind !== 'task-notification') {
           const qIdx = queued.indexOf(qcPrompt)
           if (qIdx >= 0) queued.splice(qIdx, 1)
+          if (planHygiene.onUserMessage()) emitPlanCleared(ts)
           isRunning = true
           events.push({
             seq: seq++,
@@ -482,6 +494,7 @@ export function parseClaudeTranscript(
       if (o.type === 'system' && o.subtype === 'turn_duration') {
         isRunning = false
         turnStartedAt = undefined
+        if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
         continue
       }
       if (o.type === 'user' && o.message?.role === 'user') {
@@ -526,6 +539,7 @@ export function parseClaudeTranscript(
             })
           }
           openTools.clear()
+          if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
           continue
         }
         isRunning = true
@@ -541,6 +555,7 @@ export function parseClaudeTranscript(
         ) {
           const qIdx = queued.indexOf(txt.trim())
           if (qIdx >= 0) queued.splice(qIdx, 1)
+          if (planHygiene.onUserMessage()) emitPlanCleared(ts)
           turnStartedAt = ts
           const stagedParsed = parseStagedImagePromptHeader(txt, true)
           const totalImgs = Math.max(inlineImages.count, stagedParsed.imageCount)
@@ -600,6 +615,7 @@ export function parseClaudeTranscript(
                   type: 'plan.updated',
                   entries,
                 })
+                planHygiene.onPlanUpdated(entries)
               }
               continue
             }
@@ -633,7 +649,10 @@ export function parseClaudeTranscript(
           })
         }
         isRunning = sawToolUse || o.message.stop_reason === 'tool_use'
-        if (!isRunning) turnStartedAt = undefined
+        if (!isRunning) {
+          turnStartedAt = undefined
+          if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
+        }
       }
     } catch {
       // ignore

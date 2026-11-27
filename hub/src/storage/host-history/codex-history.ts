@@ -15,7 +15,11 @@ import {
   type ParsedHostTranscript,
 } from './common.ts'
 import { readCodexLocalSettings } from './engine-settings.ts'
-import { isPlanStepToolName, parsePlanEntriesFromRaw } from './plan-steps.ts'
+import {
+  PlanTurnHygieneTracker,
+  isPlanStepToolName,
+  parsePlanEntriesFromRaw,
+} from './plan-steps.ts'
 
 export function scanCodexSessions(
   homeDir: string,
@@ -73,7 +77,7 @@ export function scanCodexSessions(
       let completedCount = 0
       for (const l of headAndTail.last) {
         if (l.includes('"task_started"')) startedCount++
-        if (l.includes('"task_complete"')) completedCount++
+        if (l.includes('"task_complete"') || l.includes('"turn_aborted"')) completedCount++
       }
       const recentlyModified = Date.now() - f.mtimeMs < 90_000
       const isRunning = recentlyModified && startedCount > completedCount
@@ -183,10 +187,20 @@ export function parseCodexTranscript(
   const workspaces: string[] = []
   const openTools = new Set<string>()
   const ignoredStepTools = new Set<string>()
+  const planHygiene = new PlanTurnHygieneTracker()
   let activeTurn = false
   let turnStartedAt: number | undefined
   const lines = readFullSessionLines(filePath)
   let seq = 0
+  const emitPlanCleared = (ts: number) => {
+    events.push({
+      seq: seq++,
+      sessionId,
+      ts,
+      type: 'plan.updated',
+      entries: [],
+    })
+  }
   for (const line of lines) {
     try {
       const o = JSON.parse(line) as {
@@ -216,8 +230,13 @@ export function parseCodexTranscript(
       if (o.type === 'event_msg' && o.payload?.type === 'task_started') {
         activeTurn = true
         turnStartedAt = ts
-      } else if (o.type === 'event_msg' && o.payload?.type === 'task_complete') {
+      } else if (
+        o.type === 'event_msg' &&
+        (o.payload?.type === 'task_complete' || o.payload?.type === 'turn_aborted')
+      ) {
         activeTurn = false
+        turnStartedAt = undefined
+        if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
       }
 
       if (o.type === 'response_item' && o.payload?.type === 'message') {
@@ -255,6 +274,7 @@ export function parseCodexTranscript(
           const finalText =
             stagedParsed.cleanText || (totalImgs > 0 ? `（已发送 ${totalImgs} 张图片）` : '')
           if (!finalText && totalImgs === 0) continue
+          if (planHygiene.onUserMessage()) emitPlanCleared(ts)
           activeTurn = true
           turnStartedAt = ts
           events.push({
@@ -295,6 +315,7 @@ export function parseCodexTranscript(
             type: 'plan.updated',
             entries,
           })
+          planHygiene.onPlanUpdated(entries)
           continue
         }
         const normalized = classifyRawToolCall(rawName, rawArgs)

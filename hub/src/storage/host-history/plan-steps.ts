@@ -112,20 +112,89 @@ export function summarizePlanProgress(
 }
 
 /**
+ * Symmetric execution-step turn hygiene tracker shared across Hub event extraction and
+ * host-history transcript parsers (mirrored in KMP `ConsoleState.kt`):
+ * - `plan.updated` installs the latest step list and resets turn-boundary flags.
+ * - Ending a turn (`turn.done`, inactive `session.state`, or host parser turn completion)
+ *   preserves the step list for that turn's summary card while marking `turnEnded = true`.
+ *   If a post-plan user turn already ran and finished without updating the plan, it clears.
+ * - A subsequent `message.user` clears any plan that is all-terminal, belonged to an already-ended
+ *   earlier turn, or already survived an earlier post-plan user turn without update. An immediate
+ *   mid-turn follow-up while the plan's turn is still running keeps the plan visible.
+ */
+export class PlanTurnHygieneTracker {
+  private entries: PlanEntry[] = []
+  private turnEnded = false
+  private seenPostUpdateUserTurn = false
+
+  get currentEntries(): PlanEntry[] {
+    return this.entries
+  }
+
+  onPlanUpdated(entries: PlanEntry[]): void {
+    this.entries = entries
+    this.turnEnded = false
+    this.seenPostUpdateUserTurn = false
+  }
+
+  /**
+   * Marks the current turn as ended. Returns `true` if a previously non-empty plan
+   * was cleared because a post-plan user turn completed without updating it.
+   */
+  onTurnEnded(): boolean {
+    if (this.entries.length === 0) {
+      this.turnEnded = false
+      this.seenPostUpdateUserTurn = false
+      return false
+    }
+    if (this.seenPostUpdateUserTurn) {
+      this.entries = []
+      this.turnEnded = false
+      this.seenPostUpdateUserTurn = false
+      return true
+    }
+    this.turnEnded = true
+    return false
+  }
+
+  /**
+   * Handles a new user message. Returns `true` if a previously non-empty plan was cleared.
+   */
+  onUserMessage(): boolean {
+    if (this.entries.length === 0) return false
+    const allTerminal = this.entries.every(e => isPlanEntryTerminal(e.status))
+    if (allTerminal || this.turnEnded || this.seenPostUpdateUserTurn) {
+      this.entries = []
+      this.turnEnded = false
+      this.seenPostUpdateUserTurn = false
+      return true
+    }
+    this.seenPostUpdateUserTurn = true
+    return false
+  }
+}
+
+/**
  * Computes the latest active plan snapshot for initial paged `stream.subscribe`,
- * matching client turn hygiene (clears a fully-finished plan once a new user turn begins).
+ * matching client turn hygiene (preserves an interrupted/completed plan for the latest turn
+ * and clears stale plans once superseded by a new user turn).
  */
 export function extractLatestPlanFromEvents(events: AgentEvent[]): PlanEntry[] | undefined {
-  let latest: PlanEntry[] = []
+  const tracker = new PlanTurnHygieneTracker()
   for (const ev of events) {
     if (ev.type === 'plan.updated') {
-      latest = ev.entries
+      tracker.onPlanUpdated(ev.entries)
     } else if (ev.type === 'message.user') {
-      if (latest.length > 0 && latest.every(e => isPlanEntryTerminal(e.status))) {
-        latest = []
-      }
+      tracker.onUserMessage()
+    } else if (
+      ev.type === 'turn.done' ||
+      (ev.type === 'session.state' &&
+        (ev.state === 'idle' || ev.state === 'error' || ev.state === 'closed'))
+    ) {
+      tracker.onTurnEnded()
     }
   }
+  const latest = tracker.currentEntries
   return latest.length > 0 ? latest : undefined
 }
 

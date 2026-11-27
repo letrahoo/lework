@@ -861,11 +861,7 @@ export class SessionManager {
             }
           })
         } else if (managed.meta.state === 'running' || managed.meta.state === 'waiting_permission') {
-          managed.meta.state = 'idle'
-          managed.meta.liveStatusText = undefined
-          managed.meta.turnStartedAt = undefined
-          managed.meta = this.decorateManagedMeta(managed)
-          this.callbacks.onSessionUpdated(managed.meta)
+          this.appendEvent(managed, { type: 'session.state', state: 'idle' })
         } else {
           managed.meta.turnStartedAt = undefined
           managed.meta = this.decorateManagedMeta(managed)
@@ -912,13 +908,18 @@ export class SessionManager {
     req.meta.liveStatusText = undefined
     req.meta.turnStartedAt = undefined
     await req.handle.cancel()
-    req.meta.state = 'idle'
-    req.meta.liveStatusText = undefined
-    req.meta.turnStartedAt = undefined
     req.meta.queuedPrompts = undefined
-    req.meta.updatedAt = Date.now()
-    req.meta = this.decorateManagedMeta(req)
-    this.callbacks.onSessionUpdated(req.meta)
+    const lastEv = req.events[req.events.length - 1]
+    if (!lastEv || lastEv.type !== 'session.state' || lastEv.state !== 'idle') {
+      this.appendEvent(req, { type: 'session.state', state: 'idle' })
+    } else {
+      req.meta.state = 'idle'
+      req.meta.liveStatusText = undefined
+      req.meta.turnStartedAt = undefined
+      req.meta.updatedAt = Date.now()
+      req.meta = this.decorateManagedMeta(req)
+      this.callbacks.onSessionUpdated(req.meta)
+    }
   }
 
   cancelQueuedPrompt(

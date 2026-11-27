@@ -821,7 +821,9 @@ class ConversationSelectionCopyTest {
             assertEquals("检查剪贴板写入失败回退", JvmPlatformTestHooks.clipboardText)
             onNodeWithText("已复制", useUnmergedTree = true).assertIsDisplayed()
 
-            // 3. PlanCard supports drag-selecting across multiple plan steps with newline separation
+            // 3. PlanCard auto-collapses when session is idle; unfolding supports drag-selecting across steps
+            onNodeWithTag("execution_steps_header", useUnmergedTree = true).assertIsDisplayed().performClick()
+            waitForIdle()
             val startBounds = onNodeWithText("PlanStepAlpha", useUnmergedTree = true)
                 .assertIsDisplayed()
                 .fetchSemanticsNode()

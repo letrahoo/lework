@@ -163,13 +163,14 @@ class ConsoleStore(
                     _state.update { s ->
                         val nextTranscript = if (isInitial) {
                             reduceTranscriptBatch(SessionTranscript(), snap.events)
-                                .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt)
+                                .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt, snap.session.state)
                                 .copy(
                                     earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
                                     hasMoreBefore = snap.hasMoreBefore == true,
                                 )
                         } else {
                             reduceTranscriptBatch(s.transcripts[sid] ?: SessionTranscript(), snap.events)
+                                .syncPlanLifecycleWithSessionState(snap.session.state)
                         }
                         s.copy(transcripts = s.transcripts + (sid to nextTranscript))
                     }
@@ -383,6 +384,13 @@ class ConsoleStore(
                     } else {
                         s.inspectedSubagent
                     }
+                    val prevTranscript = s.transcripts[mergedUpdated.id]
+                    val syncedTranscript = prevTranscript?.syncPlanLifecycleWithSessionState(mergedUpdated.state)
+                    val nextTranscripts = if (syncedTranscript != null && syncedTranscript !== prevTranscript) {
+                        s.transcripts + (mergedUpdated.id to syncedTranscript)
+                    } else {
+                        s.transcripts
+                    }
                     s.copy(
                         sessions = nextList,
                         selectedMode = syncMode,
@@ -391,6 +399,7 @@ class ConsoleStore(
                         selectedEffort = syncEffort,
                         turnRecoveryBanner = nextBanner,
                         inspectedSubagent = syncedSubagent,
+                        transcripts = nextTranscripts,
                     )
                 }
                 reconcileDesktopRunningWarmSubscriptions(_state.value.sessions)
@@ -3196,6 +3205,11 @@ class ConsoleStore(
                 if (trimmed.isNotEmpty()) {
                     lastSubmittedPromptBySession[sentSessionId] = trimmed
                 }
+                _state.update { st ->
+                    val prevTranscript = st.transcripts[sentSessionId] ?: return@update st
+                    val cleared = prevTranscript.clearStalePlanBeforeNewPrompt()
+                    if (cleared === prevTranscript) st else st.copy(transcripts = st.transcripts + (sentSessionId to cleared))
+                }
             } catch (ce: CancellationException) {
                 if (!isActive) throw ce
                 recordTurnError(
@@ -3300,6 +3314,13 @@ class ConsoleStore(
                     lastSubmittedPromptBySession[sentSessionId] = failedText
                 }
                 _state.update { st ->
+                    val prevTranscript = st.transcripts[sentSessionId]
+                    val cleared = prevTranscript?.clearStalePlanBeforeNewPrompt()
+                    val nextTranscripts = if (cleared != null && cleared !== prevTranscript) {
+                        st.transcripts + (sentSessionId to cleared)
+                    } else {
+                        st.transcripts
+                    }
                     st.copy(
                         turnRecoveryBanner = null,
                         promptErrorText = null,
@@ -3309,6 +3330,7 @@ class ConsoleStore(
                         } else {
                             st.composerAttachedImages
                         },
+                        transcripts = nextTranscripts,
                     )
                 }
             } catch (ce: CancellationException) {
@@ -3369,8 +3391,16 @@ class ConsoleStore(
                 rpc.cancelSession(activeId)
                 _state.update { s ->
                     val prevTranscript = s.transcripts[activeId]
-                    val updatedTranscripts = if (prevTranscript != null && prevTranscript.pendingPermissions.isNotEmpty()) {
-                        s.transcripts + (activeId to prevTranscript.copy(pendingPermissions = emptyList()))
+                    val nextTranscript = prevTranscript?.let { t ->
+                        val withoutPerms = if (t.pendingPermissions.isNotEmpty()) {
+                            t.copy(pendingPermissions = emptyList())
+                        } else {
+                            t
+                        }
+                        withoutPerms.syncPlanLifecycleWithSessionState(SessionState.IDLE)
+                    }
+                    val updatedTranscripts = if (nextTranscript != null && nextTranscript !== prevTranscript) {
+                        s.transcripts + (activeId to nextTranscript)
                     } else {
                         s.transcripts
                     }
@@ -3674,7 +3704,7 @@ class ConsoleStore(
             }
             val nextTranscript = if (isInitialLoad) {
                 val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
-                    .withFallbackLatestPlan(snap.latestPlan, effectiveSession.updatedAt)
+                    .withFallbackLatestPlan(snap.latestPlan, effectiveSession.updatedAt, effectiveSession.state)
                 val concurrentPerms = s.transcripts[sessionId]?.pendingPermissions.orEmpty()
                 val mergedPerms = if (built.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }) {
                     built.pendingPermissions
@@ -3692,6 +3722,7 @@ class ConsoleStore(
                 )
             } else {
                 var cur = reduceTranscriptBatch(s.transcripts[sessionId] ?: SessionTranscript(), snap.events)
+                    .syncPlanLifecycleWithSessionState(effectiveSession.state)
                 if (effectiveSession.state != SessionState.WAITING_PERMISSION &&
                     snap.events.none { it is AgentEvent.PermissionRequested }
                 ) {
@@ -4102,7 +4133,7 @@ class ConsoleStore(
                     return@launch
                 }
                 val reduced = reduceTranscriptBatch(SessionTranscript(), snap.events)
-                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt)
+                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt, snap.session.state)
                     .copy(
                         earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
                         hasMoreBefore = snap.hasMoreBefore == true,
@@ -4529,7 +4560,7 @@ class ConsoleStore(
                     return@launch
                 }
                 val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
-                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt)
+                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt, snap.session.state)
                     .copy(
                         earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
                         hasMoreBefore = snap.hasMoreBefore == true,
@@ -4581,7 +4612,7 @@ class ConsoleStore(
                     return@runCatching
                 }
                 val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
-                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt)
+                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt, snap.session.state)
                     .copy(
                         earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
                         hasMoreBefore = snap.hasMoreBefore == true,
