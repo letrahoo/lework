@@ -145,6 +145,7 @@ func newRealTsnetBackend(cfg Config) (*realTsnetBackend, error) {
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, err
 	}
+	_, _ = RestoreTailscaledStateIfNeeded(cfg.StateDir)
 	prepareSandboxEnv(cfg.StateDir)
 	logf := func(string, ...any) {}
 	if cfg.VerboseLog {
@@ -430,6 +431,10 @@ type Manager struct {
 
 	forwardMu  sync.Mutex
 	forwarders map[string]*localForwarder
+
+	backupMu       sync.Mutex
+	lastBackupHash [32]byte
+	loggedOut      bool
 }
 
 type localForwarder struct {
@@ -519,9 +524,17 @@ func (m *Manager) closeLocked() error {
 func (m *Manager) Reconfigure(controlURL, authKey string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	cleanCtrl := strings.TrimSpace(controlURL)
+	cleanKey := strings.TrimSpace(authKey)
+	if m.backend != nil && m.cfg.ControlURL == cleanCtrl && m.cfg.AuthKey == cleanKey {
+		return nil
+	}
 	_ = m.closeLocked()
-	m.cfg.ControlURL = strings.TrimSpace(controlURL)
-	m.cfg.AuthKey = strings.TrimSpace(authKey)
+	m.backupMu.Lock()
+	m.loggedOut = false
+	m.backupMu.Unlock()
+	m.cfg.ControlURL = cleanCtrl
+	m.cfg.AuthKey = cleanKey
 	settingsBytes, _ := json.Marshal(persistedSettings{ControlURL: m.cfg.ControlURL})
 	_ = os.WriteFile(filepath.Join(m.cfg.StateDir, "bridge-settings.json"), settingsBytes, 0o600)
 	return m.startLocked()
@@ -588,8 +601,19 @@ func (m *Manager) Status(ctx context.Context) StatusSnapshot {
 	if len(candidates) > 16 {
 		candidates = candidates[:16]
 	}
+	m.backupMu.Lock()
+	if raw.BackendState != "Running" {
+		m.loggedOut = false
+	} else if !m.loggedOut && raw.SelfUserID != 0 {
+		nextHash, _, _ := SnapshotTailscaledStateIfChanged(m.cfg.StateDir, m.lastBackupHash)
+		m.lastBackupHash = nextHash
+	}
+	m.backupMu.Unlock()
 	if isClientMode && raw.BackendState == "Running" {
 		for i := range candidates {
+			if isMobileClientPeer(candidates[i].HostName, candidates[i].OS) {
+				continue
+			}
 			if port, fErr := m.ensureForwarder(candidates[i].TailscaleIP); fErr == nil && port > 0 {
 				candidates[i].LocalProxyURL = fmt.Sprintf("https://127.0.0.1:%d", port)
 			}
@@ -621,6 +645,9 @@ func (m *Manager) Login(ctx context.Context) StatusSnapshot {
 	m.mu.Lock()
 	b := m.backend
 	m.mu.Unlock()
+	m.backupMu.Lock()
+	m.loggedOut = false
+	m.backupMu.Unlock()
 	if b == nil {
 		return StatusSnapshot{BackendState: "Stopped", TailscaleIPs: []string{}, Peers: []PeerCandidate{}}
 	}
@@ -638,11 +665,19 @@ func (m *Manager) Login(ctx context.Context) StatusSnapshot {
 func (m *Manager) Logout(ctx context.Context) StatusSnapshot {
 	m.mu.Lock()
 	b := m.backend
+	stateDir := m.cfg.StateDir
 	m.mu.Unlock()
+	m.backupMu.Lock()
+	m.loggedOut = true
+	m.lastBackupHash = [32]byte{}
+	PurgeTailscaledStateBackup(stateDir)
+	m.backupMu.Unlock()
 	if b != nil {
 		_ = b.Logout(ctx)
 	}
-	return m.Status(ctx)
+	snap := m.Status(ctx)
+	PurgeTailscaledStateBackup(stateDir)
+	return snap
 }
 
 func (m *Manager) NotifyNetworkChange(ctx context.Context, dns, interfaces string) StatusSnapshot {

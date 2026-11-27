@@ -135,17 +135,23 @@ func LeworkTsnetConfigure(controlURL *C.char, authKey *C.char) *C.char {
 func LeworkTsnetLogout() *C.char {
 	bridgeMu.Lock()
 	mgr := bridgeMgr
+	bridgeMgr = nil
 	bridgeMu.Unlock()
 	if mgr == nil {
 		return toCStringJson(mesh.StatusSnapshot{
-			BackendState: "Stopped",
+			BackendState: "NeedsLogin",
 			TailscaleIPs: []string{},
 			Peers:        []mesh.PeerCandidate{},
 		})
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return toCStringJson(mgr.Logout(ctx))
+	st := mgr.Logout(ctx)
+	cancel()
+	_ = mgr.Close()
+	if st.BackendState == "" || st.BackendState == "Running" {
+		st.BackendState = "NeedsLogin"
+	}
+	return toCStringJson(st)
 }
 
 //export LeworkTsnetNotifyLinkChange

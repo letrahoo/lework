@@ -78,6 +78,7 @@ import platform.Foundation.NSDate
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.dateWithTimeIntervalSince1970
 import platform.Foundation.NSFileManager
+import platform.Foundation.NSFilePosixPermissions
 import platform.Foundation.NSFileSize
 import platform.Foundation.NSHTTPURLResponse
 import platform.Foundation.NSMutableURLRequest
@@ -99,9 +100,12 @@ import platform.Foundation.NSUserDefaults
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.create
 import platform.Foundation.dataTaskWithRequest
+import platform.Foundation.dataUsingEncoding
+import platform.Foundation.numberWithInt
 import platform.Foundation.setHTTPMethod
 import platform.Foundation.setValue
 import platform.Foundation.timeIntervalSince1970
+import platform.Foundation.writeToFile
 import platform.UIKit.UIApplication
 import platform.UIKit.UIApplicationDidBecomeActiveNotification
 import platform.UIKit.UIApplicationDidEnterBackgroundNotification
@@ -136,6 +140,8 @@ private const val KEY_ACTIVE_HOST_ID = "lework.active.host.id"
 private const val KC_ACCOUNT_TOKEN = "hub.access-token"
 private const val KC_ACCOUNT_USER = "hub.user-name"
 private const val KC_ACCOUNT_PINS = "hub.pinned-fingerprints"
+private const val KC_ACCOUNT_TSNET_IDENTITY = "tsnet.identity-vault.v1"
+private const val POSIX_OWNER_READ_WRITE = 384 // 0600
 
 interface IosNativeDelegate {
     fun tsnetStart(stateDir: String, hostname: String, controlUrl: String, authKey: String, reqId: Long)
@@ -736,12 +742,91 @@ private fun parseMobileTsnetJson(rawJson: String): MobileTsnetStatus {
     return withAvail
 }
 
+private object IosTsnetIdentityStore {
+    @kotlin.concurrent.Volatile
+    private var lastSyncedEncoded: String? = null
+
+    private fun readUtf8File(path: String): String? {
+        val data = NSData.create(contentsOfFile = path) ?: return null
+        if (data.length.toInt() <= 0) return null
+        return NSString.create(data = data, encoding = NSUTF8StringEncoding)?.toString()
+    }
+
+    private fun writeUtf8FileAtomic(path: String, content: String): Boolean {
+        val nsStr = NSString.create(string = content)
+        val data = nsStr.dataUsingEncoding(NSUTF8StringEncoding) ?: return false
+        val ok = data.writeToFile(path, atomically = true)
+        if (ok) {
+            runCatching {
+                NSFileManager.defaultManager.setAttributes(
+                    attributes = mapOf(NSFilePosixPermissions to NSNumber.numberWithInt(POSIX_OWNER_READ_WRITE)),
+                    ofItemAtPath = path,
+                    error = null,
+                )
+            }
+        }
+        return ok
+    }
+
+    fun loadVault(): TsnetIdentityVaultSnapshot? =
+        decodeTsnetIdentityVault(IosKeychain.get(KC_ACCOUNT_TSNET_IDENTITY))
+
+    fun restoreToStateDirIfNeeded(stateDir: String) {
+        val statePath = "$stateDir/tailscaled.state"
+        val existing = readUtf8File(statePath)
+        val vault = loadVault()
+        if (!shouldRestoreTsnetState(existing, vault) || vault == null) return
+        if (!writeUtf8FileAtomic(statePath, vault.tailscaledStateJson)) return
+
+        encodeTsnetBridgeSettingsJson(vault.controlUrl)?.let { settingsJson ->
+            writeUtf8FileAtomic("$stateDir/bridge-settings.json", settingsJson)
+        }
+        val d = NSUserDefaults.standardUserDefaults
+        d.setBool(true, forKey = KEY_TSNET_ENABLED)
+        vault.controlUrl?.let { d.setObject(it, forKey = KEY_TSNET_CONTROL_URL) }
+        d.synchronize()
+        lastSyncedEncoded = encodeTsnetIdentityVault(
+            tailscaledStateJson = vault.tailscaledStateJson,
+            controlUrl = vault.controlUrl,
+            enabled = vault.enabled,
+        )
+        logRuntimeEvent("IOS_TSNET", "restored persisted device identity from Keychain vault")
+    }
+
+    fun backupFromStateDirIfAuthenticated(stateDir: String, controlUrl: String?) {
+        val raw = readUtf8File("$stateDir/tailscaled.state") ?: return
+        val encoded = encodeTsnetIdentityVault(
+            tailscaledStateJson = raw,
+            controlUrl = controlUrl,
+            enabled = true,
+        ) ?: return
+        if (encoded == lastSyncedEncoded) return
+        IosKeychain.set(KC_ACCOUNT_TSNET_IDENTITY, encoded)
+        lastSyncedEncoded = encoded
+        logRuntimeEvent("IOS_TSNET", "synced authenticated device identity to Keychain vault")
+    }
+
+    fun clearVault() {
+        lastSyncedEncoded = null
+        IosKeychain.set(KC_ACCOUNT_TSNET_IDENTITY, null)
+    }
+
+    fun clearVaultAndLocalFiles(stateDir: String) {
+        clearVault()
+        val fm = NSFileManager.defaultManager
+        for (name in listOf("tailscaled.state", "tailscaled.state.lkg", "bridge-settings.json")) {
+            runCatching { fm.removeItemAtPath("$stateDir/$name", error = null) }
+        }
+    }
+}
+
 actual fun isMobileTsnetAvailable(): Boolean = IosNativeBridge.delegate != null
 
 actual suspend fun startMobileTsnet(controlUrl: String?): MobileTsnetStatus {
     val d = IosNativeBridge.delegate
         ?: return MobileTsnetStatus(available = false, backendState = "Unavailable")
     val stateDir = iosTsnetStateDir()
+    IosTsnetIdentityStore.restoreToStateDirIfNeeded(stateDir)
     val host = iosTsnetHostname()
     val ctrl = (controlUrl ?: loadSavedTsnetControlUrl()).orEmpty()
     val raw = suspendCancellableCoroutine<String> { cont ->
@@ -760,7 +845,11 @@ actual suspend fun startMobileTsnet(controlUrl: String?): MobileTsnetStatus {
             d.tsnetStart(stateDir, host, ctrl, "", id)
         }
     }
-    return parseMobileTsnetJson(raw)
+    return parseMobileTsnetJson(raw).also { parsed ->
+        if (parsed.backendState == "Running") {
+            IosTsnetIdentityStore.backupFromStateDirIfAuthenticated(stateDir, ctrl.ifBlank { null })
+        }
+    }
 }
 
 actual suspend fun queryMobileTsnetStatus(): MobileTsnetStatus {
@@ -782,13 +871,21 @@ actual suspend fun queryMobileTsnetStatus(): MobileTsnetStatus {
             d.tsnetStatus(id)
         }
     }
-    return parseMobileTsnetJson(raw)
+    return parseMobileTsnetJson(raw).also { parsed ->
+        if (parsed.backendState == "Running") {
+            IosTsnetIdentityStore.backupFromStateDirIfAuthenticated(
+                iosTsnetStateDir(),
+                loadSavedTsnetControlUrl(),
+            )
+        }
+    }
 }
 
 actual suspend fun loginMobileTsnet(controlUrl: String?, authKey: String?): MobileTsnetStatus {
     val d = IosNativeBridge.delegate
         ?: return MobileTsnetStatus(available = false, backendState = "Unavailable")
     val stateDir = iosTsnetStateDir()
+    IosTsnetIdentityStore.restoreToStateDirIfNeeded(stateDir)
     val host = iosTsnetHostname()
     val ctrl = (controlUrl ?: loadSavedTsnetControlUrl()).orEmpty()
     val key = authKey.orEmpty()
@@ -815,7 +912,11 @@ actual suspend fun loginMobileTsnet(controlUrl: String?, authKey: String?): Mobi
             d.tsnetStart(stateDir, host, ctrl, key, startId)
         }
     }
-    return parseMobileTsnetJson(raw)
+    return parseMobileTsnetJson(raw).also { parsed ->
+        if (parsed.backendState == "Running") {
+            IosTsnetIdentityStore.backupFromStateDirIfAuthenticated(stateDir, ctrl.ifBlank { null })
+        }
+    }
 }
 
 actual suspend fun logoutMobileTsnet(): MobileTsnetStatus {
@@ -837,14 +938,20 @@ actual suspend fun logoutMobileTsnet(): MobileTsnetStatus {
             d.tsnetLogout(id)
         }
     }
+    IosTsnetIdentityStore.clearVaultAndLocalFiles(iosTsnetStateDir())
     IosDiscoveryBus.updateTsnetProxies(emptyList())
     return parseMobileTsnetJson(raw)
 }
 
-actual fun loadSavedTsnetEnabled(): Boolean =
-    NSUserDefaults.standardUserDefaults.boolForKey(KEY_TSNET_ENABLED)
+actual fun loadSavedTsnetEnabled(): Boolean {
+    if (NSUserDefaults.standardUserDefaults.boolForKey(KEY_TSNET_ENABLED)) return true
+    return IosTsnetIdentityStore.loadVault()?.enabled == true
+}
 
 actual fun saveTsnetEnabled(enabled: Boolean, controlUrl: String?) {
+    if (!enabled) {
+        IosTsnetIdentityStore.clearVault()
+    }
     val d = NSUserDefaults.standardUserDefaults
     d.setBool(enabled, forKey = KEY_TSNET_ENABLED)
     if (controlUrl != null) {
@@ -857,6 +964,7 @@ actual fun saveTsnetEnabled(enabled: Boolean, controlUrl: String?) {
 
 actual fun loadSavedTsnetControlUrl(): String? =
     NSUserDefaults.standardUserDefaults.stringForKey(KEY_TSNET_CONTROL_URL)?.takeIf { it.isNotBlank() }
+        ?: IosTsnetIdentityStore.loadVault()?.controlUrl
 
 actual fun canScanQrCode(): Boolean = IosNativeBridge.delegate != null
 
