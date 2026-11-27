@@ -2342,6 +2342,19 @@ class ConsoleStore(
         _state.update { it.copy(drawerSearchQuery = query) }
     }
 
+    fun setDrawerOnlyRunning(onlyRunning: Boolean) {
+        if (_state.value.drawerOnlyRunning == onlyRunning) return
+        _state.update { it.copy(drawerOnlyRunning = onlyRunning) }
+    }
+
+    fun toggleDrawerOnlyRunning() {
+        _state.update { it.copy(drawerOnlyRunning = !it.drawerOnlyRunning) }
+    }
+
+    fun togglePinnedSectionCollapsed() {
+        _state.update { it.copy(pinnedSectionCollapsed = !it.pinnedSectionCollapsed) }
+    }
+
     fun setSidebarGroupingMode(mode: SidebarGroupingMode) {
         if (_state.value.sidebarGroupingMode == mode) return
         _state.update { it.copy(sidebarGroupingMode = mode) }
@@ -2379,7 +2392,10 @@ class ConsoleStore(
                 val activeGroups = if (s.drawerShowArchived) {
                     s.archivedProjectGroups
                 } else {
-                    s.historyProjectGroups(excludePinned = isDesktopPlatform())
+                    s.sidebarProjectGroups(
+                        excludePinned = isDesktopPlatform(),
+                        excludeFloatingWaiting = true,
+                    )
                 }
                 activeGroups.map { it.key }.toSet()
             }
@@ -3105,9 +3121,26 @@ class ConsoleStore(
             } else {
                 s.collapsedProjectGroupKeys
             }
+            val nextPinnedCollapsed = if (s.pinnedSectionCollapsed && sessionId in s.pinnedSessionIds) {
+                false
+            } else {
+                s.pinnedSectionCollapsed
+            }
+            val nextOnlyRunning = if (
+                s.drawerOnlyRunning &&
+                meta != null &&
+                meta.state != SessionState.RUNNING &&
+                meta.state != SessionState.WAITING_PERMISSION
+            ) {
+                false
+            } else {
+                s.drawerOnlyRunning
+            }
             s.copy(
                 activeSessionId = sessionId,
                 collapsedProjectGroupKeys = nextCollapsed,
+                pinnedSectionCollapsed = nextPinnedCollapsed,
+                drawerOnlyRunning = nextOnlyRunning,
                 loadingSessionId = if (alreadyCached) null else sessionId,
                 checkpoints = emptyList(),
                 activeSessionUsage = null,

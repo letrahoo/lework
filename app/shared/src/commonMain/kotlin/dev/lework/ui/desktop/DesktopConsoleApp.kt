@@ -343,6 +343,8 @@ internal fun DesktopConsoleApp(
                             onSearchQueryChange = store::setDrawerSearchQuery,
                             onOpenGlobalSearch = { query -> openGlobalSearchPalette(query) },
                             onToggleArchivedView = store::setDrawerShowArchived,
+                            onToggleOnlyRunning = store::toggleDrawerOnlyRunning,
+                            onTogglePinnedCollapsed = store::togglePinnedSectionCollapsed,
                             onToggleGroupingMode = store::toggleSidebarGroupingMode,
                             onToggleProjectGroupCollapsed = store::toggleProjectGroupCollapsed,
                             onSetAllProjectGroupsCollapsed = store::setAllProjectGroupsCollapsed,

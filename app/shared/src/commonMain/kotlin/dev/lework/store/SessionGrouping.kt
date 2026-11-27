@@ -131,6 +131,7 @@ internal fun buildSessionProjectGroups(
     sessions: List<SessionMeta>,
     workspaces: List<Workspace> = emptyList(),
     hasDraftForSession: (String) -> Boolean = { false },
+    prioritizeActiveProjects: Boolean = true,
 ): List<SessionProjectGroup> {
     if (sessions.isEmpty()) return emptyList()
     val knownRoots = collectKnownProjectRoots(sessions, workspaces)
@@ -150,7 +151,11 @@ internal fun buildSessionProjectGroups(
 
     return buckets.entries.map { (key, list) ->
         val isFallback = key == FALLBACK_PROJECT_GROUP_KEY
-        val sortedSessions = list.sortedByDescending { it.updatedAt }
+        val sortedSessions = list.sortedWith(
+            compareBy<SessionMeta> { sidebarSessionStatePriority(it.state) }
+                .thenBy { if (hasDraftForSession(it.id)) 0 else 1 }
+                .thenByDescending { it.updatedAt },
+        )
         val displayName = if (isFallback) {
             FALLBACK_PROJECT_GROUP_NAME
         } else {
@@ -180,9 +185,26 @@ internal fun buildSessionProjectGroups(
         )
     }.sortedWith(
         compareBy<SessionProjectGroup> { if (it.isFallback) 1 else 0 }
+            .thenBy { group ->
+                if (!prioritizeActiveProjects) {
+                    0
+                } else {
+                    when {
+                        group.waitingPermissionCount > 0 -> 0
+                        group.runningCount > 0 -> 1
+                        else -> 2
+                    }
+                }
+            }
             .thenByDescending { it.latestUpdatedAt }
             .thenBy { it.displayName.lowercase() },
     )
+}
+
+internal fun sidebarSessionStatePriority(state: SessionState): Int = when (state) {
+    SessionState.WAITING_PERMISSION -> 0
+    SessionState.RUNNING -> 1
+    else -> 2
 }
 
 /**

@@ -240,6 +240,7 @@ private fun MobileConsoleApp(
                             onDismissSigningReminder = store::dismissSigningExpiryReminder,
                             onSearchQueryChange = store::setDrawerSearchQuery,
                             onToggleArchivedView = store::setDrawerShowArchived,
+                            onToggleOnlyRunning = store::toggleDrawerOnlyRunning,
                             onToggleGroupingMode = store::toggleSidebarGroupingMode,
                             onToggleProjectGroupCollapsed = store::toggleProjectGroupCollapsed,
                             onRequestRenameSession = { sess -> renamingSessionId = sess.id },

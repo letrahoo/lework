@@ -7368,6 +7368,41 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 9007199254740991
+                },
+                "slashCommands": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
+                      },
+                      "description": {
+                        "type": "string",
+                        "maxLength": 400
+                      },
+                      "inputHint": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "builtin",
+                          "skill",
+                          "workflow",
+                          "local"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "description"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
