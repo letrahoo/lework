@@ -67,7 +67,7 @@ import org.jetbrains.skia.Rect
 import org.jetbrains.skia.Surface as SkiaSurface
 
 @Serializable
-private data class PersistedDesktopState(
+internal data class PersistedDesktopState(
     val lastGoodUrl: String? = null,
     val savedRelayUrls: List<String> = emptyList(),
     val savedToken: String? = null,
@@ -79,6 +79,16 @@ private data class PersistedDesktopState(
     val pairedHosts: List<PairedHost> = emptyList(),
     val activeHostId: String? = null,
     val hostTokens: Map<String, String> = emptyMap(),
+)
+
+internal data class LocalMacHubSeed(
+    val hubId: String,
+    val name: String,
+    val port: Int,
+    val token: String,
+    val fingerprint: String,
+    val loopbackUrl: String,
+    val certFileName: String,
 )
 
 /**
@@ -289,9 +299,77 @@ object JvmDesktopRuntime {
         }
     }
 
+    internal fun resolveLocalHubCertFile(leworkHome: File): File? =
+        listOf(
+            File(leworkHome, "tls/hub-cert.pem"),
+            File(leworkHome, "tls/cert.pem"),
+        ).firstOrNull { it.isFile }
+
+    internal fun readLocalMacHubSeed(leworkHome: File): LocalMacHubSeed? {
+        val cfgFile = File(leworkHome, "config.json")
+        val certFile = resolveLocalHubCertFile(leworkHome) ?: return null
+        if (!cfgFile.isFile) return null
+
+        val cfgObj = ProtocolJson.parseToJsonElement(cfgFile.readText()).jsonObject
+        val hubId = cfgObj["hubId"]?.jsonPrimitive?.content?.trim().orEmpty()
+        val name = cfgObj["name"]?.jsonPrimitive?.content?.trim().orEmpty().ifBlank { "本机 Mac" }
+        val port = cfgObj["port"]?.jsonPrimitive?.intOrNull ?: 64450
+        val token = cfgObj["token"]?.jsonPrimitive?.content?.trim().orEmpty()
+        if (hubId.isEmpty() || token.isEmpty()) return null
+
+        val cf = CertificateFactory.getInstance("X.509")
+        val x509 = ByteArrayInputStream(certFile.readBytes()).use { cf.generateCertificate(it) as X509Certificate }
+        val fp = MessageDigest.getInstance("SHA-256").digest(x509.encoded).toHex().lowercase()
+        return LocalMacHubSeed(
+            hubId = hubId,
+            name = name,
+            port = port,
+            token = token,
+            fingerprint = fp,
+            loopbackUrl = "https://127.0.0.1:$port",
+            certFileName = certFile.name,
+        )
+    }
+
+    internal fun applyLocalMacHubSeed(
+        current: PersistedDesktopState,
+        seed: LocalMacHubSeed,
+        nowMs: Long = System.currentTimeMillis(),
+    ): PersistedDesktopState {
+        val nextPins = current.pinnedFingerprints + seed.fingerprint
+        val nextHostTokens = current.hostTokens + (seed.hubId to seed.token)
+        val existing = current.pairedHosts.firstOrNull { it.hubId == seed.hubId }
+        val mergedEndpoints = (listOf(seed.loopbackUrl) + existing?.endpoints.orEmpty()).distinct().take(8)
+        val seededHost = PairedHost(
+            hubId = seed.hubId,
+            name = seed.name,
+            fingerprint = seed.fingerprint,
+            endpoints = mergedEndpoints,
+            userName = existing?.userName ?: "Owner",
+            lastConnectedAt = existing?.lastConnectedAt ?: nowMs,
+            customName = existing?.customName,
+        )
+        val nextHosts = prioritizeLocalHostEndpoints(
+            hosts = listOf(seededHost) + current.pairedHosts.filterNot { it.hubId == seed.hubId },
+            localHubId = seed.hubId,
+            localLoopbackUrl = seed.loopbackUrl,
+        )
+        val nextActiveId = current.activeHostId ?: seed.hubId
+        val nextSavedToken = if (nextActiveId == seed.hubId) seed.token else (current.savedToken ?: seed.token)
+        return current.copy(
+            pinnedFingerprints = nextPins,
+            hostTokens = nextHostTokens,
+            pairedHosts = nextHosts,
+            activeHostId = nextActiveId,
+            savedToken = nextSavedToken,
+            savedUserName = current.savedUserName ?: "Owner",
+        )
+    }
+
     /**
-     * Automatically imports the local Mac's `~/.lework/config.json` & `~/.lework/tls/cert.pem`
-     * when running under the same macOS user account so first launch connects to localhost with zero setup.
+     * Automatically imports the local Mac's `~/.lework/config.json` & `~/.lework/tls/hub-cert.pem`
+     * (with legacy `tls/cert.pem` fallback) when running under the same macOS user account so first
+     * launch connects to localhost with zero setup.
      */
     private fun seedLocalMacHubIfAvailable() {
         runCatching {
@@ -299,53 +377,30 @@ object JvmDesktopRuntime {
                 System.getenv("LEWORK_HOME")?.takeIf { it.isNotBlank() }
                     ?: File(System.getProperty("user.home"), ".lework").absolutePath,
             )
-            val cfgFile = File(leworkHome, "config.json")
-            val certFile = File(leworkHome, "tls/cert.pem")
-            if (!cfgFile.isFile || !certFile.isFile) return@runCatching
-
-            val cfgObj = ProtocolJson.parseToJsonElement(cfgFile.readText()).jsonObject
-            val hubId = cfgObj["hubId"]?.jsonPrimitive?.content?.trim().orEmpty()
-            val name = cfgObj["name"]?.jsonPrimitive?.content?.trim().orEmpty().ifBlank { "本机 Mac" }
-            val port = cfgObj["port"]?.jsonPrimitive?.intOrNull ?: 64450
-            val token = cfgObj["token"]?.jsonPrimitive?.content?.trim().orEmpty()
-            if (hubId.isEmpty() || token.isEmpty()) return@runCatching
-
-            val cf = CertificateFactory.getInstance("X.509")
-            val x509 = ByteArrayInputStream(certFile.readBytes()).use { cf.generateCertificate(it) as X509Certificate }
-            val fp = MessageDigest.getInstance("SHA-256").digest(x509.encoded).toHex().lowercase()
-            val loopback = "https://127.0.0.1:$port"
-            localMacHubId = hubId
-            localMacLoopbackUrl = loopback
-
-            val nextPins = persisted.pinnedFingerprints + fp
-            val nextHostTokens = persisted.hostTokens + (hubId to token)
-            val existing = persisted.pairedHosts.firstOrNull { it.hubId == hubId }
-            val mergedEndpoints = (listOf(loopback) + existing?.endpoints.orEmpty()).distinct().take(8)
-            val seededHost = PairedHost(
-                hubId = hubId,
-                name = name,
-                fingerprint = fp,
-                endpoints = mergedEndpoints,
-                userName = existing?.userName ?: "Owner",
-                lastConnectedAt = existing?.lastConnectedAt ?: System.currentTimeMillis(),
-                customName = existing?.customName,
-            )
-            val nextHosts = prioritizeLocalHostEndpoints(
-                hosts = listOf(seededHost) + persisted.pairedHosts.filterNot { it.hubId == hubId },
-                localHubId = hubId,
-                localLoopbackUrl = loopback,
-            )
-            val nextActiveId = persisted.activeHostId ?: hubId
-            val nextSavedToken = if (nextActiveId == hubId) token else (persisted.savedToken ?: token)
-            persisted = persisted.copy(
-                pinnedFingerprints = nextPins,
-                hostTokens = nextHostTokens,
-                pairedHosts = nextHosts,
-                activeHostId = nextActiveId,
-                savedToken = nextSavedToken,
-                savedUserName = persisted.savedUserName ?: "Owner",
-            )
+            val seed = readLocalMacHubSeed(leworkHome) ?: run {
+                val cfgExists = File(leworkHome, "config.json").isFile
+                val certExists = resolveLocalHubCertFile(leworkHome) != null
+                if (cfgExists || certExists) {
+                    logRuntimeEvent(
+                        "DESKTOP",
+                        "local hub auto-seed skipped cfgExists=$cfgExists certExists=$certExists",
+                    )
+                }
+                return@runCatching
+            }
+            localMacHubId = seed.hubId
+            localMacLoopbackUrl = seed.loopbackUrl
+            persisted = applyLocalMacHubSeed(persisted, seed)
             persistLocked()
+            logRuntimeEvent(
+                "DESKTOP",
+                "seeded local hub hubId=${seed.hubId} endpoint=${seed.loopbackUrl} cert=${seed.certFileName}",
+            )
+        }.onFailure { err ->
+            logRuntimeEvent(
+                "DESKTOP",
+                "local hub auto-seed failed err=${err::class.simpleName}:${err.message.orEmpty()}",
+            )
         }
     }
 
