@@ -106,6 +106,16 @@ internal fun DesktopSidebar(
     val searchFocused by searchInteraction.collectIsFocusedAsState()
     val searchHovered by searchInteraction.collectIsHoveredAsState()
 
+    ModalEscapeEffect(
+        enabled = showHostSwitcher,
+        onDismiss = { showHostSwitcher = false },
+    )
+    LaunchedEffect(searchFocused) {
+        if (searchFocused && showHostSwitcher) {
+            showHostSwitcher = false
+        }
+    }
+
     val hasRunning = state.runningSessions.any { it.state == SessionState.RUNNING }
     val hasWaiting = state.runningSessions.any { it.state == SessionState.WAITING_PERMISSION }
 
@@ -127,8 +137,9 @@ internal fun DesktopSidebar(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             LeworkTooltip(
-                label = "切换主机连接",
+                label = "切换 Lework Hub 主机",
                 subtitle = "$hostName · $channelText",
+                enabled = !showHostSwitcher,
             ) {
                 Row(
                     modifier = Modifier
@@ -171,7 +182,7 @@ internal fun DesktopSidebar(
                     )
                     Icon(
                         imageVector = if (showHostSwitcher) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                        contentDescription = "切换主机",
+                        contentDescription = "切换 Lework Hub 主机",
                         tint = Everforest.Grey1,
                         modifier = Modifier.size(15.dp),
                     )
@@ -185,23 +196,76 @@ internal fun DesktopSidebar(
                 size = DesktopControlSize,
                 iconSize = 16.dp,
                 testTag = "drawer_btn_collapse_sidebar",
-                onClick = onCollapseSidebar,
+                onClick = {
+                    showHostSwitcher = false
+                    onCollapseSidebar()
+                },
             )
         }
 
         if (showHostSwitcher) {
-            ModalEscapeEffect(onDismiss = { showHostSwitcher = false })
             Spacer(Modifier.height(6.dp))
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = Everforest.Bg1,
                 border = BorderStroke(1.dp, Everforest.Bg3),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("desktop_host_switcher_panel"),
             ) {
                 Column(
                     modifier = Modifier.padding(7.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                    val pairHover = remember { MutableInteractionSource() }
+                    val pairHovered by pairHover.collectIsHoveredAsState()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 5.dp, end = 2.dp, top = 2.dp, bottom = 3.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Lework Hub 主机",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.CommentGrey,
+                            maxLines = 1,
+                        )
+                        LeworkTooltip(
+                            label = "连接其他 Lework Hub 主机",
+                            shortcut = "⇧⌘P",
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (pairHovered) Everforest.BgYellow else Everforest.Bg2.copy(alpha = 0.65f),
+                                border = BorderStroke(
+                                    0.8.dp,
+                                    if (pairHovered) Everforest.BoldGold.copy(alpha = 0.55f) else Everforest.Bg3,
+                                ),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .hoverable(pairHover)
+                                    .clickable(interactionSource = pairHover, indication = null) {
+                                        showHostSwitcher = false
+                                        onPairAnotherHost()
+                                    }
+                                    .testTag("host_switcher_btn_connect_other"),
+                            ) {
+                                Text(
+                                    text = "＋ 连接其他",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Everforest.BoldGold,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = Everforest.Bg2)
+
                     val hostList = if (state.hub != null && state.pairedHosts.none { it.hubId == state.hub.id }) {
                         listOf(PairedHost(hubId = state.hub.id, name = state.hub.name)) + state.pairedHosts
                     } else {
@@ -267,38 +331,6 @@ internal fun DesktopSidebar(
                                     },
                                 )
                             }
-                        }
-                    }
-                    val pairHover = remember { MutableInteractionSource() }
-                    val pairHovered by pairHover.collectIsHoveredAsState()
-                    Surface(
-                        shape = RoundedCornerShape(7.dp),
-                        color = if (pairHovered) Everforest.Bg2.copy(alpha = 0.7f) else Color.Transparent,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(7.dp))
-                            .hoverable(pairHover)
-                            .clickable(interactionSource = pairHover, indication = null) {
-                                showHostSwitcher = false
-                                onPairAnotherHost()
-                            },
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.AddLink,
-                                contentDescription = null,
-                                tint = Everforest.BoldGold,
-                                modifier = Modifier.size(14.5.dp),
-                            )
-                            Text(
-                                text = "连接其他主机",
-                                fontSize = 12.sp,
-                                color = Everforest.BoldGold,
-                            )
                         }
                     }
                 }
@@ -400,66 +432,39 @@ internal fun DesktopSidebar(
                 }
             }
 
-            Box {
-                val activeFilterLabel = state.drawerEngineFilter?.let { shortEngineLabel(it) }
-                LeworkIconActionButton(
-                    icon = LeworkFilterSlidersIcon,
-                    tooltip = if (activeFilterLabel != null) "按引擎筛选：$activeFilterLabel" else "按编码引擎筛选",
-                    active = activeFilterLabel != null,
-                    activeTint = Everforest.CodeGreen,
-                    showBadgeDot = activeFilterLabel != null,
-                    badgeColor = Everforest.CodeGreen,
-                    size = DesktopControlSize,
-                    iconSize = 15.5.dp,
-                    testTag = "drawer_btn_filter",
-                    onClick = { showFilterMenu = true },
-                )
-                DropdownMenu(
-                    expanded = showFilterMenu,
-                    onDismissRequest = { showFilterMenu = false },
-                    containerColor = Everforest.Bg1,
-                ) {
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                text = "全部引擎",
-                                fontSize = 12.5.sp,
-                                color = if (state.drawerEngineFilter == null) Everforest.CodeGreen else Everforest.Fg,
-                                fontWeight = if (state.drawerEngineFilter == null) FontWeight.SemiBold else FontWeight.Normal,
-                            )
-                        },
-                        trailingIcon = if (state.drawerEngineFilter == null) {
-                            {
-                                Icon(
-                                    imageVector = Icons.Rounded.Check,
-                                    contentDescription = null,
-                                    tint = Everforest.CodeGreen,
-                                    modifier = Modifier.size(14.dp),
-                                )
-                            }
-                        } else {
-                            null
-                        },
+            if (state.engines.size > 1 || state.drawerEngineFilter != null) {
+                Box {
+                    val activeFilterLabel = state.drawerEngineFilter?.let { shortEngineLabel(it) }
+                    LeworkIconActionButton(
+                        icon = LeworkFilterSlidersIcon,
+                        tooltip = if (activeFilterLabel != null) "按引擎筛选：$activeFilterLabel" else "按编码引擎筛选",
+                        active = activeFilterLabel != null,
+                        activeTint = Everforest.CodeGreen,
+                        showBadgeDot = activeFilterLabel != null,
+                        badgeColor = Everforest.CodeGreen,
+                        size = DesktopControlSize,
+                        iconSize = 15.5.dp,
+                        testTag = "drawer_btn_filter",
                         onClick = {
-                            showFilterMenu = false
-                            onSelectFilter(null)
+                            showHostSwitcher = false
+                            showFilterMenu = true
                         },
                     )
-                    for (eng in state.engines) {
-                        val selected = state.drawerEngineFilter == eng.id
+                    DropdownMenu(
+                        expanded = showFilterMenu,
+                        onDismissRequest = { showFilterMenu = false },
+                        containerColor = Everforest.Bg1,
+                    ) {
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    text = shortEngineLabel(eng.id),
+                                    text = "全部引擎",
                                     fontSize = 12.5.sp,
-                                    color = if (selected) Everforest.CodeGreen else Everforest.Fg,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (state.drawerEngineFilter == null) Everforest.CodeGreen else Everforest.Fg,
+                                    fontWeight = if (state.drawerEngineFilter == null) FontWeight.SemiBold else FontWeight.Normal,
                                 )
                             },
-                            leadingIcon = {
-                                EngineGlyphIcon(engineId = eng.id, size = 15.dp)
-                            },
-                            trailingIcon = if (selected) {
+                            trailingIcon = if (state.drawerEngineFilter == null) {
                                 {
                                     Icon(
                                         imageVector = Icons.Rounded.Check,
@@ -473,9 +478,41 @@ internal fun DesktopSidebar(
                             },
                             onClick = {
                                 showFilterMenu = false
-                                onSelectFilter(eng.id)
+                                onSelectFilter(null)
                             },
                         )
+                        for (eng in state.engines) {
+                            val selected = state.drawerEngineFilter == eng.id
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = shortEngineLabel(eng.id),
+                                        fontSize = 12.5.sp,
+                                        color = if (selected) Everforest.CodeGreen else Everforest.Fg,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    )
+                                },
+                                leadingIcon = {
+                                    EngineGlyphIcon(engineId = eng.id, size = 15.dp)
+                                },
+                                trailingIcon = if (selected) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = null,
+                                            tint = Everforest.CodeGreen,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                                onClick = {
+                                    showFilterMenu = false
+                                    onSelectFilter(eng.id)
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -497,7 +534,10 @@ internal fun DesktopSidebar(
                 size = DesktopControlSize,
                 iconSize = 15.5.dp,
                 testTag = "drawer_tab_archived",
-                onClick = { onToggleArchivedView(!state.drawerShowArchived) },
+                onClick = {
+                    showHostSwitcher = false
+                    onToggleArchivedView(!state.drawerShowArchived)
+                },
             )
 
             val newSessionDraftPreview = state.draftPreviewFor(null)
@@ -519,7 +559,10 @@ internal fun DesktopSidebar(
                 size = DesktopControlSize,
                 iconSize = 16.dp,
                 testTag = "drawer_btn_new_session",
-                onClick = onNewSession,
+                onClick = {
+                    showHostSwitcher = false
+                    onNewSession()
+                },
             )
         }
 
@@ -869,12 +912,14 @@ internal fun DesktopSidebar(
                 }
                 if (noMainItems && pinnedList.isEmpty() && waitingList.isEmpty()) {
                     item(key = "empty_history") {
+                        val emptyHistoryText = when {
+                            state.drawerOnlyRunning -> "当前没有进行中或待审批的会话"
+                            state.drawerSearchQuery.isNotBlank() -> "未找到匹配的会话记录"
+                            state.drawerEngineFilter != null -> "暂无 ${shortEngineLabel(state.drawerEngineFilter)} 的历史会话"
+                            else -> "还没有历史会话，发一条消息即可开始"
+                        }
                         Text(
-                            text = when {
-                                state.drawerOnlyRunning -> "当前没有进行中或待审批的会话"
-                                state.drawerSearchQuery.isNotBlank() -> "未找到匹配的会话记录"
-                                else -> "暂无该引擎的历史记录"
-                            },
+                            text = emptyHistoryText,
                             fontSize = 12.sp,
                             color = Everforest.Grey0,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp),
@@ -917,7 +962,10 @@ internal fun DesktopSidebar(
                             isPinned = false,
                             allowPin = true,
                             draftPreview = state.draftPreviewFor(sess.id),
-                            onClick = { onSelectSession(sess.id) },
+                            onClick = {
+                                showHostSwitcher = false
+                                onSelectSession(sess.id)
+                            },
                             onTogglePin = { onTogglePinSession(sess.id) },
                             onRename = { onRequestRenameSession(sess) },
                             onToggleArchive = { onToggleArchiveSession(sess.id, !sess.archived) },
@@ -936,7 +984,10 @@ internal fun DesktopSidebar(
                             .fillMaxWidth()
                             .padding(top = 6.dp, bottom = 4.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable { onOpenGlobalSearch(sidebarQuery) }
+                            .clickable {
+                                showHostSwitcher = false
+                                onOpenGlobalSearch(sidebarQuery)
+                            }
                             .testTag("sidebar_btn_fulltext_search"),
                     ) {
                         Row(
@@ -1009,7 +1060,10 @@ internal fun DesktopSidebar(
                     size = DesktopControlSize,
                     iconSize = 17.dp,
                     testTag = "drawer_btn_settings",
-                    onClick = onOpenSettings,
+                    onClick = {
+                        showHostSwitcher = false
+                        onOpenSettings()
+                    },
                 )
                 LeworkIconActionButton(
                     icon = LeworkChartColumnsIcon,
@@ -1018,19 +1072,39 @@ internal fun DesktopSidebar(
                     size = DesktopControlSize,
                     iconSize = 16.5.dp,
                     testTag = "drawer_btn_usage",
-                    onClick = onOpenUsage,
+                    onClick = {
+                        showHostSwitcher = false
+                        onOpenUsage()
+                    },
                 )
             }
 
-            LeworkIconActionButton(
-                icon = Icons.Rounded.Refresh,
-                tooltip = "刷新会话列表",
-                shortcut = "⌘R",
-                size = DesktopControlSize,
-                iconSize = 17.dp,
-                testTag = "drawer_btn_refresh",
-                onClick = onRefresh,
-            )
+            if (state.sessionsRefreshing) {
+                LeworkTooltip(label = "正在刷新会话列表…") {
+                    Box(
+                        modifier = Modifier
+                            .size(DesktopControlSize)
+                            .testTag("drawer_btn_refresh"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(
+                            color = Everforest.Green,
+                            strokeWidth = 1.8.dp,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                }
+            } else {
+                LeworkIconActionButton(
+                    icon = Icons.Rounded.Refresh,
+                    tooltip = "刷新会话列表",
+                    shortcut = "⌘R",
+                    size = DesktopControlSize,
+                    iconSize = 17.dp,
+                    testTag = "drawer_btn_refresh",
+                    onClick = onRefresh,
+                )
+            }
         }
         }
     }

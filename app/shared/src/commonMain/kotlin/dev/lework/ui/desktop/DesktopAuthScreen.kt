@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -26,7 +28,9 @@ import dev.lework.platform.loadSavedTsnetControlUrl
 import dev.lework.store.ConnectionStatus
 import dev.lework.store.ConsoleUiState
 import dev.lework.ui.Everforest
+import dev.lework.ui.ModalEscapeEffect
 import dev.lework.ui.TsnetDiscoveredHubList
+import dev.lework.ui.dialogEscapeDismiss
 
 @Composable
 internal fun DesktopAuthScreen(
@@ -37,12 +41,15 @@ internal fun DesktopAuthScreen(
     onRetry: () -> Unit,
     onResetCredentials: () -> Unit,
     onPasteClipboardPairing: () -> Unit,
+    onConfirmClipboardPairing: () -> Unit = onPasteClipboardPairing,
+    onDismissClipboardPairing: () -> Unit = {},
     onPairViaSsh: (String) -> Unit,
     onStartTsnetLogin: (String?) -> Unit,
     onSearchTsnetPeers: () -> Unit,
     onSelectTsnetHub: (String) -> Unit = {},
     onLogoutTsnet: () -> Unit,
     onSelectPairedHost: (String) -> Unit,
+    onCancelPairAnotherHost: () -> Unit = {},
 ) {
     var showManualForm by remember(state.oauthEnabled, state.connectionStatus) { mutableStateOf(false) }
     var showCustomControlUrl by remember { mutableStateOf(!loadSavedTsnetControlUrl().isNullOrBlank()) }
@@ -50,12 +57,30 @@ internal fun DesktopAuthScreen(
     var manualHost by remember(state.discoveredBaseUrl) { mutableStateOf(state.discoveredBaseUrl) }
     var manualToken by remember { mutableStateOf("") }
     var sshTargetInput by remember { mutableStateOf(state.sshConfigHosts.firstOrNull().orEmpty()) }
+    var confirmResetCredentials by remember { mutableStateOf(false) }
+    var confirmLogoutTsnet by remember { mutableStateOf(false) }
     val sshSupported = remember { canConnectViaSsh() }
+    val isPairingLinkInput = remember(manualHost) {
+        val trimmed = manualHost.trim()
+        trimmed.startsWith("lework://", ignoreCase = true) || trimmed.startsWith("{")
+    }
+
+    ModalEscapeEffect(
+        enabled = state.canReturnToWorkspace && !confirmResetCredentials && !confirmLogoutTsnet,
+        onDismiss = onCancelPairAnotherHost,
+    )
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Everforest.Bg0)
+            .let { mod ->
+                if (state.canReturnToWorkspace && !confirmResetCredentials && !confirmLogoutTsnet) {
+                    mod.dialogEscapeDismiss(onDismiss = onCancelPairAnotherHost)
+                } else {
+                    mod
+                }
+            }
             .padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -74,17 +99,63 @@ internal fun DesktopAuthScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                if (state.canReturnToWorkspace) {
+                    val returnHost = state.returnWorkspaceHostName?.takeIf { it.isNotBlank() } ?: "当前主机"
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Everforest.Bg0,
+                            border = BorderStroke(1.dp, Everforest.Bg3),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(onClick = onCancelPairAnotherHost)
+                                .testTag("auth_btn_return_workspace"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "返回工作台",
+                                    tint = Everforest.Green,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Text(
+                                    text = "返回「$returnHost」",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Everforest.Fg,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Esc 返回",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = Everforest.Grey0,
+                        )
+                    }
+                }
+
                 dev.lework.ui.LeworkBrandMark(size = 54.dp)
 
                 Text(
-                    text = "Lework Desktop",
+                    text = if (state.canReturnToWorkspace) "连接其他 Lework Hub 主机" else "Lework Desktop",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Everforest.Fg,
                 )
 
                 Text(
-                    text = "本机自动直连 · SSH 一键连远程主机 · Tailscale 跨网组网",
+                    text = "连接本机或远程 Lework Hub 主机 · SSH · Tailscale",
                     fontSize = 12.5.sp,
                     color = Everforest.Grey2,
                     textAlign = TextAlign.Center,
@@ -176,6 +247,83 @@ internal fun DesktopAuthScreen(
                     state.connectionStatus == ConnectionStatus.ERROR ||
                     (state.connectionStatus == ConnectionStatus.CONNECTING && state.discoveredTsnetHubs.isNotEmpty())
                 if (showAuthOptions) {
+                    val clipPreview = state.clipboardPairingPreview
+                    if (clipPreview != null) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = Everforest.BgGreen,
+                            border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.55f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("auth_clipboard_quick_pair_card"),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+                                verticalArrangement = Arrangement.spacedBy(7.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.weight(1f),
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.ContentPaste,
+                                            contentDescription = null,
+                                            tint = Everforest.Green,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                        Text(
+                                            text = "检测到剪贴板中的配对链接",
+                                            fontSize = 12.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Everforest.Green,
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "忽略剪贴板配对链接",
+                                        tint = Everforest.Grey1,
+                                        modifier = Modifier
+                                            .size(15.dp)
+                                            .clickable(onClick = onDismissClipboardPairing)
+                                            .testTag("auth_clipboard_dismiss_btn"),
+                                    )
+                                }
+                                Text(
+                                    text = buildString {
+                                        append(clipPreview.hostName)
+                                        append(" · ")
+                                        append(clipPreview.primaryUrl)
+                                        clipPreview.shortFingerprint?.let { append(" · 指纹 $it") }
+                                    },
+                                    fontSize = 11.5.sp,
+                                    color = Everforest.Fg,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Button(
+                                    onClick = onConfirmClipboardPairing,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Everforest.Green,
+                                        contentColor = Everforest.BgDim,
+                                    ),
+                                    shape = RoundedCornerShape(9.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(38.dp)
+                                        .testTag("auth_clipboard_quick_pair_btn"),
+                                ) {
+                                    Text("一键配对连接「${clipPreview.hostName}」", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+
                     if (sshSupported) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
@@ -205,7 +353,7 @@ internal fun DesktopAuthScreen(
                                     )
                                 }
                                 Text(
-                                    text = "自动调用本机 SSH 获取一次性配对凭证并校验主机指纹（若端口受限将自动建立本地加密转发）",
+                                    text = "自动调用本机 SSH 获取一次性配对凭证并校验主机指纹（端口受限时自动建立本地加密转发）",
                                     fontSize = 11.sp,
                                     lineHeight = 15.5.sp,
                                     color = Everforest.Grey1,
@@ -271,23 +419,25 @@ internal fun DesktopAuthScreen(
                         }
                     }
 
-                    OutlinedButton(
-                        onClick = onPasteClipboardPairing,
-                        border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.55f)),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Everforest.Fg),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(40.dp),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ContentPaste,
-                            contentDescription = null,
-                            tint = Everforest.Green,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(7.dp))
-                        Text("粘贴剪贴板配对链接连接 (lework pair)", fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+                    if (clipPreview == null) {
+                        OutlinedButton(
+                            onClick = onPasteClipboardPairing,
+                            border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.55f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Everforest.Fg),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.ContentPaste,
+                                contentDescription = null,
+                                tint = Everforest.Green,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Text("粘贴剪贴板配对链接连接 (lework pair)", fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+                        }
                     }
 
                     if (state.tsnetStatus.available) {
@@ -359,7 +509,10 @@ internal fun DesktopAuthScreen(
                                                 fontSize = 12.5.sp,
                                             )
                                         }
-                                        TextButton(onClick = onLogoutTsnet) {
+                                        TextButton(
+                                            onClick = { confirmLogoutTsnet = true },
+                                            modifier = Modifier.testTag("auth_btn_logout_tsnet"),
+                                        ) {
                                             Text("退出账号", fontSize = 12.sp, color = Everforest.Grey1)
                                         }
                                     }
@@ -368,7 +521,7 @@ internal fun DesktopAuthScreen(
                                         OutlinedTextField(
                                             value = customControlUrl,
                                             onValueChange = { customControlUrl = it },
-                                            label = { Text("Headscale 控制面地址 (可选)", fontSize = 11.sp) },
+                                            label = { Text("自建服务器地址（如 Headscale，可选）", fontSize = 11.sp) },
                                             singleLine = true,
                                             modifier = Modifier.fillMaxWidth(),
                                         )
@@ -391,7 +544,7 @@ internal fun DesktopAuthScreen(
                                         }
                                         TextButton(onClick = { showCustomControlUrl = !showCustomControlUrl }) {
                                             Text(
-                                                text = if (showCustomControlUrl) "默认官方" else "自建控制面",
+                                                text = if (showCustomControlUrl) "使用官方服务" else "使用自建服务器",
                                                 fontSize = 11.sp,
                                                 color = Everforest.CommentGrey,
                                             )
@@ -407,7 +560,7 @@ internal fun DesktopAuthScreen(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            Text("已配对主机", fontSize = 11.5.sp, color = Everforest.Grey1)
+                            Text("已配对的 Lework Hub 主机", fontSize = 11.5.sp, color = Everforest.Grey1)
                             for (host in state.pairedHosts.take(4)) {
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
@@ -459,15 +612,21 @@ internal fun DesktopAuthScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    TextButton(onClick = { showManualForm = !showManualForm }) {
+                    TextButton(
+                        onClick = { showManualForm = !showManualForm },
+                        modifier = Modifier.testTag("auth_btn_toggle_manual"),
+                    ) {
                         Text(
-                            text = if (showManualForm) "收起手动连接配置" else "手动填写地址 / 粘贴配对链接",
+                            text = if (showManualForm) "收起手动连接" else "手动填写主机地址",
                             fontSize = 12.sp,
                             color = Everforest.CommentGrey,
                         )
                     }
                     if (state.connectionStatus == ConnectionStatus.ERROR) {
-                        TextButton(onClick = onResetCredentials) {
+                        TextButton(
+                            onClick = { confirmResetCredentials = true },
+                            modifier = Modifier.testTag("auth_btn_reset_credentials"),
+                        ) {
                             Text("清除旧凭证", fontSize = 12.sp, color = Everforest.Grey1)
                         }
                     }
@@ -483,25 +642,36 @@ internal fun DesktopAuthScreen(
                             onValueChange = { manualHost = it },
                             label = { Text("主机地址或 lework://pair 配对链接", fontSize = 11.5.sp) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("auth_manual_host_input"),
                         )
-                        OutlinedTextField(
-                            value = manualToken,
-                            onValueChange = { manualToken = it },
-                            label = { Text("访问令牌 (使用配对链接时可留空)", fontSize = 11.5.sp) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
+                        if (!isPairingLinkInput) {
+                            OutlinedTextField(
+                                value = manualToken,
+                                onValueChange = { manualToken = it },
+                                label = { Text("访问令牌", fontSize = 11.5.sp) },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("auth_manual_token_input"),
+                            )
+                        }
                         Button(
-                            onClick = { onManualConnect(manualHost, manualToken) },
+                            onClick = { onManualConnect(manualHost, if (isPairingLinkInput) "" else manualToken) },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = Everforest.Bg3,
                                 contentColor = Everforest.Fg,
                             ),
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("auth_manual_submit_btn"),
                         ) {
-                            Text("保存并连接", fontWeight = FontWeight.Medium)
+                            Text(
+                                text = if (isPairingLinkInput) "验证并配对" else "保存并连接",
+                                fontWeight = FontWeight.Medium,
+                            )
                         }
                     }
                 }
@@ -513,5 +683,81 @@ internal fun DesktopAuthScreen(
                 )
             }
         }
+    }
+
+    if (confirmResetCredentials) {
+        ModalEscapeEffect(onDismiss = { confirmResetCredentials = false })
+        AlertDialog(
+            onDismissRequest = { confirmResetCredentials = false },
+            containerColor = Everforest.Bg1,
+            titleContentColor = Everforest.Fg,
+            textContentColor = Everforest.Grey2,
+            title = { Text("清除所有已保存的主机凭证？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    text = "将删除全部已配对的 Lework Hub 主机记录、访问令牌和证书指纹，之后连接任意主机都需要重新配对。",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmResetCredentials = false
+                        onResetCredentials()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Everforest.Red,
+                        contentColor = Everforest.BgDim,
+                    ),
+                    modifier = Modifier.testTag("confirm_reset_credentials_btn"),
+                ) {
+                    Text("确认清除", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmResetCredentials = false }) {
+                    Text("取消", color = Everforest.Grey1)
+                }
+            },
+        )
+    }
+
+    if (confirmLogoutTsnet) {
+        ModalEscapeEffect(onDismiss = { confirmLogoutTsnet = false })
+        AlertDialog(
+            onDismissRequest = { confirmLogoutTsnet = false },
+            containerColor = Everforest.Bg1,
+            titleContentColor = Everforest.Fg,
+            textContentColor = Everforest.Grey2,
+            title = { Text("退出 Tailscale 账号？", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    text = "退出后将停止当前客户端内置的 Tailscale 组网，可随时重新登录恢复。",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmLogoutTsnet = false
+                        onLogoutTsnet()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Everforest.Red,
+                        contentColor = Everforest.BgDim,
+                    ),
+                    modifier = Modifier.testTag("confirm_logout_tsnet_btn"),
+                ) {
+                    Text("确认退出", fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmLogoutTsnet = false }) {
+                    Text("取消", color = Everforest.Grey1)
+                }
+            },
+        )
     }
 }

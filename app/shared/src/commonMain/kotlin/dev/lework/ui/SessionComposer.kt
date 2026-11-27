@@ -526,6 +526,7 @@ internal fun ClaudeStyleComposer(
                                 label = effortDisplayLabel(state.selectedEffort),
                                 tint = Everforest.CommentGrey,
                                 labelColor = Everforest.Grey2,
+                                testTag = "composer_effort_chip",
                                 onClick = onCycleEffort,
                             )
                         }
@@ -536,6 +537,8 @@ internal fun ClaudeStyleComposer(
                     val hasDraft = text.isNotBlank() || state.composerAttachedImages.isNotEmpty()
                     val canQueueWhileRunning =
                         isSessionRunning && hasDraft && activeSess?.state == SessionState.RUNNING
+                    val isCancelling =
+                        state.cancellingSessionId != null && state.cancellingSessionId == state.activeSessionId
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -544,20 +547,28 @@ internal fun ClaudeStyleComposer(
                         if (isSessionRunning) {
                             Surface(
                                 shape = CircleShape,
-                                color = Everforest.Red,
+                                color = if (isCancelling) Everforest.Red.copy(alpha = 0.65f) else Everforest.Red,
                                 modifier = Modifier
                                     .size(34.dp)
                                     .clip(CircleShape)
-                                    .clickable { onCancel() }
+                                    .clickable(enabled = !isCancelling) { onCancel() }
                                     .testTag("composer_stop_btn"),
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Stop,
-                                        contentDescription = "停止",
-                                        tint = Everforest.BgDim,
-                                        modifier = Modifier.size(18.dp),
-                                    )
+                                    if (isCancelling) {
+                                        CircularProgressIndicator(
+                                            color = Everforest.BgDim,
+                                            strokeWidth = 2.dp,
+                                            modifier = Modifier.size(15.dp),
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Stop,
+                                            contentDescription = "停止",
+                                            tint = Everforest.BgDim,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
                                 }
                             }
                         }

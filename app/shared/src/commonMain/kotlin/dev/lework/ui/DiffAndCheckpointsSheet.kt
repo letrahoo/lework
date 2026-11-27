@@ -30,7 +30,6 @@ import dev.lework.platform.epochMillis
 import dev.lework.protocol.*
 import dev.lework.store.ConsoleUiState
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 @Composable
 internal fun DiffAndCheckpointsSheet(
@@ -41,20 +40,30 @@ internal fun DiffAndCheckpointsSheet(
     onCloseDiff: () -> Unit,
     onCreateCheckpoint: (String?) -> Unit,
     onRestoreCheckpoint: (CheckpointInfo) -> Unit,
+    showHeaderTitle: Boolean = true,
 ) {
     var activeTab by remember { mutableStateOf(0) } // 0 = 变更对比, 1 = 快照回退
     var confirmingRestoreId by remember { mutableStateOf<String?>(null) }
+    var diffCopyCount by remember { mutableIntStateOf(0) }
     var copiedDiff by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
 
     val gitStatus = state.gitStatus
+    val isNonGitRepo = gitStatus != null && !gitStatus.isGitRepo
     val activeWsList = state.activeWorkspaces
     val currentDiffPath = state.currentDiffWorkspacePath.ifBlank { activeWsList.firstOrNull().orEmpty() }
     val openedDiff = state.openedDiffContent
 
+    LaunchedEffect(diffCopyCount) {
+        if (diffCopyCount > 0) {
+            copiedDiff = true
+            delay(1_500L)
+            copiedDiff = false
+        }
+    }
+
     // Automatically switch to diff tab when user clicks "对比差异" from a checkpoint row
-    LaunchedEffect(openedDiff) {
-        if (openedDiff != null) {
+    LaunchedEffect(openedDiff, isNonGitRepo) {
+        if (openedDiff != null || isNonGitRepo) {
             activeTab = 0
         }
     }
@@ -74,12 +83,14 @@ internal fun DiffAndCheckpointsSheet(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "变更与快照",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Everforest.Fg,
-                )
+                if (showHeaderTitle) {
+                    Text(
+                        text = "变更与快照",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Everforest.Fg,
+                    )
+                }
                 val subText = buildString {
                     val shortWs = currentDiffPath.trimEnd('/').substringAfterLast('/').ifBlank { "当前工作区" }
                     append(shortWs)
@@ -134,25 +145,29 @@ internal fun DiffAndCheckpointsSheet(
             }
         }
 
-        // Top Segmented Tabs
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            val fileCount = gitStatus?.files?.size ?: 0
-            SidebarFilterPill(
-                label = if (fileCount > 0) "未提交改动 ($fileCount)" else "未提交改动",
-                selected = activeTab == 0,
-                onClick = { activeTab = 0 },
-            )
-            SidebarFilterPill(
-                label = if (state.checkpoints.isNotEmpty()) "版本快照 (${state.checkpoints.size})" else "版本快照",
-                selected = activeTab == 1,
-                onClick = {
-                    onCloseDiff()
-                    activeTab = 1
-                },
-            )
+        // Top Segmented Tabs (hide when directory is not a Git repository)
+        if (!isNonGitRepo) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("diff_segmented_tabs"),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val fileCount = gitStatus?.files?.size ?: 0
+                SidebarFilterPill(
+                    label = if (fileCount > 0) "未提交改动 ($fileCount)" else "未提交改动",
+                    selected = activeTab == 0,
+                    onClick = { activeTab = 0 },
+                )
+                SidebarFilterPill(
+                    label = if (state.checkpoints.isNotEmpty()) "版本快照 (${state.checkpoints.size})" else "版本快照",
+                    selected = activeTab == 1,
+                    onClick = {
+                        onCloseDiff()
+                        activeTab = 1
+                    },
+                )
+            }
         }
 
         state.checkpointNotice?.let { notice ->
@@ -205,11 +220,8 @@ internal fun DiffAndCheckpointsSheet(
                     }
                     TextButton(
                         onClick = {
-                            copyTextToClipboard(openedDiff)
-                            copiedDiff = true
-                            scope.launch {
-                                delay(1_500L)
-                                copiedDiff = false
+                            if (copyTextToClipboard(openedDiff)) {
+                                diffCopyCount++
                             }
                         },
                     ) {
@@ -265,14 +277,18 @@ internal fun DiffAndCheckpointsSheet(
                 }
             } else {
                 // Changed Files List
-                if (gitStatus != null && !gitStatus.isGitRepo) {
+                if (isNonGitRepo) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth(),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("当前目录不是 Git 仓库，暂不支持变更对比", fontSize = 12.5.sp, color = Everforest.CommentGrey)
+                        Text(
+                            text = "当前目录不是 Git 仓库，无法查看代码变更或版本快照",
+                            fontSize = 12.5.sp,
+                            color = Everforest.CommentGrey,
+                        )
                     }
                 } else if (gitStatus == null || gitStatus.files.isEmpty()) {
                     Box(
@@ -365,31 +381,33 @@ internal fun DiffAndCheckpointsSheet(
                     text = if (canOperateSession) {
                         "每次发消息前会自动保存快照，回退前也会自动备份"
                     } else {
-                        "请先进入或选择一个会话后再保存/回退快照"
+                        "发起或选择一个会话后，即可保存与回退版本快照"
                     },
                     fontSize = 11.sp,
                     color = Everforest.CommentGrey,
                     modifier = Modifier.weight(1f),
                 )
-                Spacer(Modifier.width(8.dp))
-                Button(
-                    onClick = { onCreateCheckpoint(null) },
-                    enabled = canOperateSession && !state.gitLoading,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Everforest.Green,
-                        contentColor = Everforest.BgDim,
-                    ),
-                    shape = RoundedCornerShape(10.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier.testTag("btn_create_checkpoint"),
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text("保存快照", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                if (canOperateSession) {
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { onCreateCheckpoint(null) },
+                        enabled = !state.gitLoading,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Everforest.Green,
+                            contentColor = Everforest.BgDim,
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("btn_create_checkpoint"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("保存快照", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
 
@@ -401,7 +419,11 @@ internal fun DiffAndCheckpointsSheet(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = "暂无快照，点击上方「保存快照」即可记录当前版本",
+                        text = if (canOperateSession) {
+                            "暂无快照，点击上方「保存快照」即可记录当前版本"
+                        } else {
+                            "当前为新会话草稿，发送第一条消息后将自动记录快照"
+                        },
                         fontSize = 12.sp,
                         color = Everforest.CommentGrey,
                     )

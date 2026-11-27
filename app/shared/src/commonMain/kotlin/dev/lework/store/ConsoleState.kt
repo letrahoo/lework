@@ -68,11 +68,11 @@ internal val EngineInfo.canStartTask: Boolean
 
 internal val EngineInfo.readinessLabel: String
     get() = when {
-        status.authStatus == "required" && status.ready -> "外部模型服务可用 · 主机 CLI 需授权"
-        status.authStatus == "unknown" && status.ready -> "外部模型服务可用 · CLI 登录状态未知"
+        status.authStatus == "required" && status.ready -> "可用（外部模型服务）"
+        status.authStatus == "unknown" && status.ready -> "可用（外部模型服务）"
         status.ready -> "可用"
-        status.authStatus == "unknown" -> "登录状态未知"
-        status.authStatus == "required" -> "需在主机上授权"
+        status.authStatus == "unknown" -> "未确认登录"
+        status.authStatus == "required" -> "需在主机登录"
         else -> "当前不可用"
     }
 
@@ -358,6 +358,9 @@ data class LinkedFilePreviewEntry(
 
 data class ConsoleUiState(
     val hasEnteredWorkspace: Boolean = false,
+    val canReturnToWorkspace: Boolean = false,
+    val returnWorkspaceHostName: String? = null,
+    val clipboardPairingPreview: PendingDeepLinkPairing? = null,
     val discoveredBaseUrl: String = "",
     val discoveredWsUrl: String = "",
     val oauthEnabled: Boolean = false,
@@ -365,9 +368,9 @@ data class ConsoleUiState(
     val oauthDisplayName: String? = null,
     val authUserName: String? = loadSavedAuthUserName(),
     val oauthChallenge: OAuthStartResult? = null,
-    val authStatusText: String = "正在发现可用主机节点…",
+    val authStatusText: String = "正在发现可用的 Lework Hub 主机…",
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCOVERING,
-    /** Short SHA-256 of the pinned Hub certificate, for out-of-band comparison with `hub pair`. */
+    /** Short SHA-256 of the pinned Hub certificate, for out-of-band comparison with `lework pair`. */
     val hubFingerprint: String? = null,
     val connectionError: String? = null,
     val hub: HubInfo? = null,
@@ -400,12 +403,16 @@ data class ConsoleUiState(
     val drawerShowArchived: Boolean = false,
     val drawerSearchQuery: String = "",
     val sessions: List<SessionMeta> = emptyList(),
+    val sessionsRefreshing: Boolean = false,
     val activeSessionId: String? = null,
     val loadingSessionId: String? = null,
+    val cancellingSessionId: String? = null,
     val transcripts: Map<String, SessionTranscript> = emptyMap(),
     val checkpoints: List<CheckpointInfo> = emptyList(),
     val currentBrowsePath: String = "",
     val dirEntries: List<FsEntry> = emptyList(),
+    val fsLoading: Boolean = false,
+    val fsError: String? = null,
     val openedFilePath: String? = null,
     val openedFileContent: String? = null,
     // Usage & Subscription Quota Telemetry
@@ -427,6 +434,10 @@ data class ConsoleUiState(
     val approvalErrorText: String? = null,
     val promptErrorText: String? = null,
     val promptNoticeText: String? = null,
+    val promptNoticeActionLabel: String? = null,
+    val promptNoticeUndoArchiveSessionId: String? = null,
+    val promptNoticeRestoreDraftText: String? = null,
+    val promptNoticeRestoreDraftSessionId: String? = null,
     val turnRecoveryBanner: TurnRecoveryBannerState? = null,
     val retryingTurn: Boolean = false,
     val unsentDraftToRestore: String? = null,

@@ -159,7 +159,7 @@ async function main(): Promise<void> {
     console.log(`Lework hubd (${cfg.role}) listening on https://${host}:${port}`)
     console.log(`  Hub ID      : ${cfg.hubId} (${cfg.name})`)
     console.log(`  Fingerprint : ${shortFingerprint(server.tlsFingerprint)} (sha256 ${server.tlsFingerprint})`)
-    console.log('  Token       : (hidden — run `hub pair` to display)')
+    console.log('  Token       : (hidden — run `lework pair` to display)')
     for (const ip of lanIps) {
       console.log(`  LAN URL     : https://${ip}:${port}`)
     }
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
     console.log(`  Version  : ${status.hub.version}`)
     console.log(`  Listen   : ${cfg.host}:${cfg.port}`)
     console.log(`  LAN IPs  : ${lanIps.join(', ') || 'none'}`)
-    console.log(`  Token    : ${cfg.token.slice(0, 4)}…  (run \`hub pair\` to display)`)
+    console.log(`  Token    : ${cfg.token.slice(0, 4)}…  (run \`lework pair\` to display)`)
     console.log(`  TLS FP   : ${shortFingerprint(loadOrCreateHubTls({ commonName: `lework-${cfg.hubId}` }).fingerprint)}`)
     console.log('\nProviders:')
     for (const p of status.providers) {

@@ -331,7 +331,7 @@ fun main(args: Array<String>) {
                     )
                     Separator()
                     Item(
-                        text = "连接其他开发机…",
+                        text = "连接其他 Lework Hub 主机…",
                         shortcut = KeyShortcut(Key.P, meta = true, shift = true),
                         onClick = store::preparePairAnotherHost,
                     )
@@ -342,7 +342,7 @@ fun main(args: Array<String>) {
                     )
                     if (uiState.pairedHosts.size > 1) {
                         Separator()
-                        Menu("切换已连接主机") {
+                        Menu("切换 Lework Hub 主机") {
                             for (host in uiState.pairedHosts) {
                                 val label = if (host.hubId == uiState.hub?.id) "✓ ${host.displayName}" else host.displayName
                                 Item(

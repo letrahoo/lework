@@ -273,8 +273,10 @@ class FakeHubTransport : HubTransport {
         return WorkspaceFilesResult(path = path, files = matched.take(limit))
     }
 
+    var listDirectoryHandler: ((String) -> FsListResult)? = null
+
     override suspend fun listDirectory(path: String): FsListResult =
-        FsListResult(path = path, entries = emptyList())
+        listDirectoryHandler?.invoke(path) ?: FsListResult(path = path, entries = emptyList())
 
     var readFileHandler: ((String) -> FsReadResult)? = null
 

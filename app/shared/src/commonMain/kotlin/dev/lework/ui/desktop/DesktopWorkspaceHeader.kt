@@ -96,7 +96,7 @@ internal fun DesktopWorkspaceHeader(
                 }
 
                 LeworkTooltip(
-                    label = "切换工作区目录",
+                    label = if (activeSession != null) "查看当前会话目录" else "切换工作区目录",
                     subtitle = primaryPath.ifBlank { "默认工作区" },
                 ) {
                     Row(

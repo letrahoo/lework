@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -656,9 +657,10 @@ internal fun DesktopComposer(
                             ?.let { if (it.length > 22) it.take(21) + "…" else it }
                             ?: shortEngineLabel(state.selectedEngineId)
                         val externalSourceLabel = activeModelSpec?.externalProviderLabel(state.providers)
+                        val hasMultipleEfforts = state.availableEfforts.size > 1
 
                         LeworkTooltip(
-                            label = "切换引擎、模型与推理等级",
+                            label = if (hasMultipleEfforts) "切换引擎、模型与推理等级" else "切换引擎与模型",
                             shortcut = "⌘K",
                             subtitle = buildString {
                                 append(shortEngineLabel(state.selectedEngineId))
@@ -667,8 +669,10 @@ internal fun DesktopComposer(
                                 if (!externalSourceLabel.isNullOrBlank()) {
                                     append(" [$externalSourceLabel]")
                                 }
-                                append(" · ")
-                                append(effortDisplayLabel(state.selectedEffort))
+                                if (hasMultipleEfforts) {
+                                    append(" · ")
+                                    append(effortDisplayLabel(state.selectedEffort))
+                                }
                             },
                         ) {
                             Surface(
@@ -711,7 +715,7 @@ internal fun DesktopComposer(
                                             )
                                         }
                                     }
-                                    if (state.availableEfforts.size > 1) {
+                                    if (hasMultipleEfforts) {
                                         Text(
                                             text = "· ${effortDisplayLabel(state.selectedEffort)}",
                                             fontSize = 11.sp,
@@ -752,29 +756,39 @@ internal fun DesktopComposer(
 
                     val canQueueWhileRunning =
                         isSessionRunning && hasDraft && activeSess?.state == SessionState.RUNNING
+                    val isCancelling =
+                        state.cancellingSessionId != null && state.cancellingSessionId == state.activeSessionId
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         if (isSessionRunning) {
-                            LeworkTooltip(label = "停止当前生成") {
+                            LeworkTooltip(label = if (isCancelling) "正在停止当前生成…" else "停止当前生成") {
                                 Surface(
                                     shape = CircleShape,
-                                    color = Everforest.Red,
+                                    color = if (isCancelling) Everforest.Red.copy(alpha = 0.65f) else Everforest.Red,
                                     modifier = Modifier
                                         .size(32.dp)
                                         .clip(CircleShape)
-                                        .clickable { onCancel() }
+                                        .clickable(enabled = !isCancelling) { onCancel() }
                                         .testTag("composer_stop_btn"),
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Rounded.Stop,
-                                            contentDescription = "停止",
-                                            tint = Everforest.BgDim,
-                                            modifier = Modifier.size(17.dp),
-                                        )
+                                        if (isCancelling) {
+                                            CircularProgressIndicator(
+                                                color = Everforest.BgDim,
+                                                strokeWidth = 2.dp,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Stop,
+                                                contentDescription = "停止",
+                                                tint = Everforest.BgDim,
+                                                modifier = Modifier.size(17.dp),
+                                            )
+                                        }
                                     }
                                 }
                             }

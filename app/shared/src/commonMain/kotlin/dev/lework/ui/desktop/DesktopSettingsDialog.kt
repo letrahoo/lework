@@ -66,8 +66,11 @@ internal fun DesktopSettingsDialog(
     onLogout: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    var fingerprintCopyCount by remember { mutableIntStateOf(0) }
     var copiedFingerprint by remember { mutableStateOf(false) }
+    var logPathCopyCount by remember { mutableIntStateOf(0) }
     var copiedLogPath by remember { mutableStateOf(false) }
+    var pathExportCopyCount by remember { mutableIntStateOf(0) }
     var copiedPathExport by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
     var confirmingRemoveHost by remember { mutableStateOf<PairedHost?>(null) }
@@ -79,21 +82,24 @@ internal fun DesktopSettingsDialog(
     val onlineCount = state.engines.count { it.status.ready }
     val logPath = remember { runtimeLogFilePath() }
 
-    LaunchedEffect(copiedFingerprint) {
-        if (copiedFingerprint) {
-            delay(1_600L)
+    LaunchedEffect(fingerprintCopyCount) {
+        if (fingerprintCopyCount > 0) {
+            copiedFingerprint = true
+            delay(1_800L)
             copiedFingerprint = false
         }
     }
-    LaunchedEffect(copiedLogPath) {
-        if (copiedLogPath) {
-            delay(1_600L)
+    LaunchedEffect(logPathCopyCount) {
+        if (logPathCopyCount > 0) {
+            copiedLogPath = true
+            delay(1_800L)
             copiedLogPath = false
         }
     }
-    LaunchedEffect(copiedPathExport) {
-        if (copiedPathExport) {
-            delay(1_600L)
+    LaunchedEffect(pathExportCopyCount) {
+        if (pathExportCopyCount > 0) {
+            copiedPathExport = true
+            delay(1_800L)
             copiedPathExport = false
         }
     }
@@ -180,7 +186,7 @@ internal fun DesktopSettingsDialog(
                             color = Everforest.Fg,
                         )
                         Text(
-                            text = "管理当前主机连接、安全凭证与桌面端快捷键",
+                            text = "管理当前 Lework Hub 主机连接、安全凭证与桌面端快捷键",
                             fontSize = 12.sp,
                             color = Everforest.CommentGrey,
                         )
@@ -305,8 +311,9 @@ internal fun DesktopSettingsDialog(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(6.dp))
                                             .clickable {
-                                                copyTextToClipboard(fp)
-                                                copiedFingerprint = true
+                                                if (copyTextToClipboard(fp)) {
+                                                    fingerprintCopyCount++
+                                                }
                                             }
                                             .padding(horizontal = 6.dp, vertical = 2.dp),
                                     )
@@ -365,7 +372,7 @@ internal fun DesktopSettingsDialog(
                         onClearFeedback = onClearProviderFeedback,
                     )
 
-                    // Section 3: Paired Hosts (Mac + Remote Devbox)
+                    // Section 3: Paired Lework Hub Hosts
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = Everforest.Bg0,
@@ -382,30 +389,35 @@ internal fun DesktopSettingsDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = "已配对主机",
+                                    text = "Lework Hub 主机",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = Everforest.Fg,
                                 )
-                                Text(
-                                    text = "＋ 连接其他主机",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Everforest.BoldGold,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable {
-                                            onDismiss()
-                                            onPairAnotherHost()
-                                        }
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                        .testTag("settings_btn_pair_another"),
-                                )
+                                LeworkTooltip(
+                                    label = "连接其他 Lework Hub 主机",
+                                    shortcut = "⇧⌘P",
+                                ) {
+                                    Text(
+                                        text = "＋ 连接其他",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = Everforest.BoldGold,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable {
+                                                onDismiss()
+                                                onPairAnotherHost()
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            .testTag("settings_btn_pair_another"),
+                                    )
+                                }
                             }
 
                             if (state.pairedHosts.isEmpty()) {
                                 Text(
-                                    text = "当前使用本机直连，可通过右上按钮一键 SSH 连接远程 Linux 主机。",
+                                    text = "当前尚未记录其他主机，点击右上「＋ 连接其他」即可通过 SSH、Tailscale 或配对链接接入。",
                                     fontSize = 11.5.sp,
                                     color = Everforest.Grey1,
                                 )
@@ -512,7 +524,7 @@ internal fun DesktopSettingsDialog(
                         }
                     }
 
-                    // Section 3: Keyboard Shortcuts
+                    // Section 4: Keyboard Shortcuts
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = Everforest.Bg0,
@@ -549,8 +561,9 @@ internal fun DesktopSettingsDialog(
                             onInstall = ::triggerGlobalCliInstall,
                             onUninstall = ::triggerGlobalCliUninstall,
                             onCopyPathExport = { exportLine ->
-                                copyTextToClipboard(exportLine)
-                                copiedPathExport = true
+                                if (copyTextToClipboard(exportLine)) {
+                                    pathExportCopyCount++
+                                }
                             },
                         )
                     }
@@ -604,8 +617,9 @@ internal fun DesktopSettingsDialog(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(6.dp))
                                         .clickable {
-                                            copyTextToClipboard(logPath)
-                                            copiedLogPath = true
+                                            if (copyTextToClipboard(logPath)) {
+                                                logPathCopyCount++
+                                            }
                                         }
                                         .padding(horizontal = 8.dp, vertical = 4.dp)
                                         .testTag("settings_btn_copy_runtime_log_path"),
@@ -856,7 +870,7 @@ private fun DesktopGlobalCliSection(
             }
 
             Text(
-                text = "注册后可在任意终端直接执行 lework tsnet status、lework pair、lework serve 等命令，无需手动启动后台服务。",
+                text = "注册后可在任意终端直接执行 lework pair、lework tsnet status、lework serve 等命令，无需手动启动后台服务。",
                 fontSize = 11.5.sp,
                 lineHeight = 16.sp,
                 color = Everforest.Grey1,

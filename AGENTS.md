@@ -58,8 +58,18 @@ Lework 经常由多个 AI 会话或 git worktree 并行迭代。**开工前**与
 
 ## 3. 跨平台与 UI 工程约束
 
+- **用户体验至高无上（主原则）**：**「复杂应该留给系统，不要留给用户，用户体验至高无上。」**
+  - 所有交互方案、界面文案与功能设计必须遵循 [docs/UX_PRINCIPLES.md](docs/UX_PRINCIPLES.md) 定义的 **8 条铁律**：
+    1. **系统能判断的，不留给用户**（按平台裁剪能力与提示，自动识别剪贴板链接/格式/上下文）
+    2. **此刻没用的，就不出现**（非 Git 仓库隐藏快照、空白会话隐藏无内容入口、单一选项隐藏冗余开关）
+    3. **能替人做的，就直接做**（弹窗自动聚焦与键盘直达、已登录网络自动发现、取消排队保留草稿）
+    4. **同一件事，处处一样**（统一术语如 **Lework Hub 主机**、**断开连接**、**Token**、**子任务**，跨端同义同形）
+    5. **按下去有回应，再按能收回**（所有异步操作有状态反馈、可逆操作可撤销、切出面板可无损返回）
+    6. **不打断人手上的事**（连接新主机不中断当前连接与草稿、非阻塞通知、严禁移动端自动读剪贴板）
+    7. **常用的好做，会丢东西的难误碰**（高频操作支持快捷键直达；清凭证/断连/移除主机/移除服务等高危动作必须二次确认）
+    8. **界面自己说明自己**（空态区分具体原因，用人话替代底层术语与个人硬编码示例）
 - **KMP `commonMain` 纯净性**：`app/shared/src/commonMain/` 中严禁使用 JVM 专属 API（如 `java.*`、`String.format`、`System.currentTimeMillis`），平台能力必须通过 `dev.lework.platform` 的 `expect`/`actual` 封装，避免破坏 Android / iOS CI。
-- **语义化中文 UI 文案**：面向用户的按钮、标签和提示使用直观业务词汇（如“会话产物”、“确认并开始执行”、“取消排队”），避免暴露底层实现黑话；视觉风格保持 **Everforest Dark** 一致。
+- **语义化中文 UI 文案**：面向用户的按钮、标签和提示使用直观业务词汇（如“Lework Hub 主机”、“会话产物”、“确认并开始执行”、“取消排队”），避免暴露底层实现黑话；视觉风格保持 **Everforest Dark** 一致。
 - **测试隔离**：涉及宿主目录或元数据持久化的 Hub 测试，必须通过临时目录隔离 `LEWORK_HOME` / `HOME`，禁止读写开发者真实 `~/.lework/` 数据。
 
 ---
@@ -87,5 +97,6 @@ Lework 经常由多个 AI 会话或 git worktree 并行迭代。**开工前**与
    ./app/gradlew -p ./app :shared:jvmTest :desktopApp:compileKotlinJvm
    ```
    若修改了 `commonMain` UI/平台桥接或 Gradle 配置，建议同步验证 `:androidApp:assembleDebug`（及 macOS 上的 `:shared:compileKotlinIosSimulatorArm64`）。
-5. **分支纪律**：严禁直接推送 `main` 或覆盖他人分支；rebase 更新己方分支时使用 `git push --force-with-lease`。
-6. **双语 Changelog 同步**：常规功能/修复 PR **不要**各自去改 `CHANGELOG.md` / `CHANGELOG.zh-CN.md`（避免并行 PR 争抢 `Unreleased` 同一行且合入前无法预知最终 tag）。每次 `Release Android & Desktop` 发版后，`.github/workflows/changelog-sync.yml` 会自动运行 `node scripts/update-changelog.mjs --write` 并在独立的滚动分支 `docs/changelog-sync` 同步双语条目（带 `[skip release]`，不触发空发版）；本地亦可随时执行 `pnpm changelog:sync` / `pnpm changelog:check`。
+5. **用户体验自查**：凡涉及 UI、交互流程、提示文案或 CLI 输出的改动，提 PR 前须按 [docs/UX_PRINCIPLES.md](docs/UX_PRINCIPLES.md) 第 4 节逐条完成 8 项 UX 自查。
+6. **分支纪律**：严禁直接推送 `main` 或覆盖他人分支；rebase 更新己方分支时使用 `git push --force-with-lease`。
+7. **双语 Changelog 同步**：常规功能/修复 PR **不要**各自去改 `CHANGELOG.md` / `CHANGELOG.zh-CN.md`（避免并行 PR 争抢 `Unreleased` 同一行且合入前无法预知最终 tag）。每次 `Release Android & Desktop` 发版后，`.github/workflows/changelog-sync.yml` 会自动运行 `node scripts/update-changelog.mjs --write` 并在独立的滚动分支 `docs/changelog-sync` 同步双语条目（带 `[skip release]`，不触发空发版）；本地亦可随时执行 `pnpm changelog:sync` / `pnpm changelog:check`。

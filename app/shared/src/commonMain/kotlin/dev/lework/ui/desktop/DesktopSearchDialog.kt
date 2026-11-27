@@ -478,7 +478,7 @@ internal fun DesktopSearchDialog(
                                 )
                                 Spacer(Modifier.height(4.dp))
                                 Text(
-                                    text = "支持中文子串与空格多词组合（如：harmony 预审批），命中后点击直接定位到原消息",
+                                    text = "支持任意关键词或空格分隔多词，命中后点击直接定位到原消息",
                                     fontSize = 12.sp,
                                     color = Everforest.Grey0,
                                 )

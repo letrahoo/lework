@@ -27,14 +27,27 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isAltPressed
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -77,13 +90,8 @@ internal fun TasksSidebarContent(
     var showHostSwitcher by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
     var confirmingLogout by remember { mutableStateOf(false) }
-    var copiedResignCmd by remember { mutableStateOf(false) }
-    LaunchedEffect(copiedResignCmd) {
-        if (copiedResignCmd) {
-            delay(1_600L)
-            copiedResignCmd = false
-        }
-    }
+    var copiedResignCount by remember { mutableIntStateOf(0) }
+    var copiedResign by remember { mutableStateOf(false) }
     val remainingSignHours = remember { signingExpiryRemainingHours() }
     val dismissKeyboard = rememberKeyboardDismisser()
     val drawerListState = rememberLazyListState()
@@ -93,6 +101,17 @@ internal fun TasksSidebarContent(
             dismissKeyboard()
         }
     }
+    LaunchedEffect(copiedResignCount) {
+        if (copiedResignCount > 0) {
+            copiedResign = true
+            delay(1_800L)
+            copiedResign = false
+        }
+    }
+    ModalEscapeEffect(
+        enabled = showHostSwitcher,
+        onDismiss = { showHostSwitcher = false },
+    )
 
     val hasRunning = state.runningSessions.any { it.state == SessionState.RUNNING }
     val hasWaiting = state.runningSessions.any { it.state == SessionState.WAITING_PERMISSION }
@@ -152,13 +171,14 @@ internal fun TasksSidebarContent(
                         color = Everforest.Grey2,
                     )
                     Text(
-                        text = if (copiedResignCmd) "已复制续签命令" else "复制续签命令",
+                        text = if (copiedResign) "已复制续签命令" else "复制续签命令",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                         color = Everforest.Green,
                         modifier = Modifier.clickable {
-                            copyTextToClipboard("./scripts/ios-install.sh --install")
-                            copiedResignCmd = true
+                            if (copyTextToClipboard("./scripts/ios-install.sh --install")) {
+                                copiedResignCount++
+                            }
                         },
                     )
                 }
@@ -175,7 +195,8 @@ internal fun TasksSidebarContent(
                     .weight(1f)
                     .clip(RoundedCornerShape(8.dp))
                     .clickable { showHostSwitcher = !showHostSwitcher }
-                    .padding(vertical = 2.dp),
+                    .padding(vertical = 2.dp)
+                    .testTag("drawer_host_switcher_btn"),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -191,7 +212,7 @@ internal fun TasksSidebarContent(
                     )
                     Icon(
                         imageVector = if (showHostSwitcher) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                        contentDescription = "切换主机",
+                        contentDescription = "切换 Lework Hub 主机",
                         tint = Everforest.Grey1,
                         modifier = Modifier.size(16.dp),
                     )
@@ -202,13 +223,26 @@ internal fun TasksSidebarContent(
                     color = Everforest.Grey1,
                 )
             }
-            IconButton(onClick = onRefresh) {
-                Icon(
-                    imageVector = Icons.Rounded.Refresh,
-                    contentDescription = "刷新会话",
-                    tint = Everforest.Grey2,
-                    modifier = Modifier.size(19.dp),
-                )
+            if (state.sessionsRefreshing) {
+                Box(
+                    modifier = Modifier.size(40.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        color = Everforest.Green,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            } else {
+                IconButton(onClick = onRefresh) {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = "刷新会话",
+                        tint = Everforest.Grey2,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
             }
         }
 
@@ -218,12 +252,52 @@ internal fun TasksSidebarContent(
                 shape = RoundedCornerShape(10.dp),
                 color = Everforest.Bg1,
                 border = BorderStroke(1.dp, Everforest.Bg3),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("mobile_host_switcher_panel"),
             ) {
                 Column(
                     modifier = Modifier.padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 4.dp, end = 2.dp, top = 1.dp, bottom = 3.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Lework Hub 主机",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Everforest.CommentGrey,
+                            maxLines = 1,
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Everforest.Bg2.copy(alpha = 0.7f),
+                            border = BorderStroke(0.8.dp, Everforest.Bg3),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable {
+                                    showHostSwitcher = false
+                                    onPairAnotherHost()
+                                }
+                                .testTag("host_switcher_btn_connect_other"),
+                        ) {
+                            Text(
+                                text = "＋ 连接其他",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.BoldGold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.5.dp),
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = Everforest.Bg2)
+
                     val hostList = if (state.hub != null && state.pairedHosts.none { it.hubId == state.hub.id }) {
                         listOf(PairedHost(hubId = state.hub.id, name = state.hub.name)) + state.pairedHosts
                     } else {
@@ -287,35 +361,6 @@ internal fun TasksSidebarContent(
                                     )
                                 }
                             }
-                        }
-                    }
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color.Transparent,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable {
-                                showHostSwitcher = false
-                                onPairAnotherHost()
-                            },
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.AddLink,
-                                contentDescription = null,
-                                tint = Everforest.BoldGold,
-                                modifier = Modifier.size(15.dp),
-                            )
-                            Text(
-                                text = "配对或连接其他主机",
-                                fontSize = 12.sp,
-                                color = Everforest.BoldGold,
-                            )
                         }
                     }
                 }
@@ -456,29 +501,31 @@ internal fun TasksSidebarContent(
 
         Spacer(Modifier.height(8.dp))
 
-        // Filter by Engine
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            SidebarFilterPill(
-                label = "全部",
-                selected = state.drawerEngineFilter == null,
-                onClick = { onSelectFilter(null) },
-            )
-            for (eng in state.engines) {
+        // Filter by Engine (hide when only 1 engine is available and no filter is active)
+        if (state.engines.size > 1 || state.drawerEngineFilter != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 SidebarFilterPill(
-                    label = shortEngineLabel(eng.id),
-                    selected = state.drawerEngineFilter == eng.id,
-                    engineId = eng.id,
-                    onClick = { onSelectFilter(eng.id) },
+                    label = "全部",
+                    selected = state.drawerEngineFilter == null,
+                    onClick = { onSelectFilter(null) },
                 )
+                for (eng in state.engines) {
+                    SidebarFilterPill(
+                        label = shortEngineLabel(eng.id),
+                        selected = state.drawerEngineFilter == eng.id,
+                        engineId = eng.id,
+                        onClick = { onSelectFilter(eng.id) },
+                    )
+                }
             }
-        }
 
-        Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(8.dp))
+        }
 
         // Active List vs Archived List Switcher
         val archivedCount = state.archivedSessionsCount
@@ -769,12 +816,14 @@ internal fun TasksSidebarContent(
                 val noMainItems = if (isGroupedByProject) projectGroups.isEmpty() else flatTimeList.isEmpty()
                 if (noMainItems && waitingList.isEmpty()) {
                     item(key = "empty_history") {
+                        val emptyHistoryText = when {
+                            state.drawerOnlyRunning -> "当前没有进行中或待审批的会话"
+                            state.drawerSearchQuery.isNotBlank() -> "未找到匹配的会话记录"
+                            state.drawerEngineFilter != null -> "暂无 ${shortEngineLabel(state.drawerEngineFilter)} 的历史会话"
+                            else -> "还没有历史会话，发一条消息即可开始"
+                        }
                         Text(
-                            text = when {
-                                state.drawerOnlyRunning -> "当前没有进行中或待审批的会话"
-                                state.drawerSearchQuery.isNotBlank() -> "未找到匹配的会话记录"
-                                else -> "暂无该引擎的历史记录"
-                            },
+                            text = emptyHistoryText,
                             fontSize = 12.sp,
                             color = Everforest.Grey0,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp),
@@ -829,6 +878,7 @@ internal fun TasksSidebarContent(
                             selected = sess.id == state.activeSessionId,
                             draftPreview = state.draftPreviewFor(sess.id),
                             onClick = {
+                                showHostSwitcher = false
                                 dismissKeyboard()
                                 onSelectSession(sess.id)
                             },
@@ -916,7 +966,7 @@ internal fun TasksSidebarContent(
                         }
                     }
                     state.hubFingerprint?.let { fp ->
-                        // Same short code as `hub pair` prints on the computer — compare to rule out impostors
+                        // Same short code as `lework pair` prints on the host — compare to rule out impostors
                         Text(
                             text = "已加密 · 主机指纹 $fp",
                             fontSize = 10.sp,
@@ -929,7 +979,7 @@ internal fun TasksSidebarContent(
                 onClick = { confirmingLogout = true },
                 modifier = Modifier.testTag("drawer_btn_logout"),
             ) {
-                Text("断开连接", fontSize = 12.sp, color = Everforest.Grey1)
+                Text("断开连接", fontSize = 12.sp, color = Everforest.Red)
             }
         }
         }
@@ -1487,8 +1537,16 @@ internal fun RenameSessionDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
 ) {
-    var draft by remember(session.id, session.title) { mutableStateOf(session.title) }
+    var draft by remember(session.id, session.title) {
+        mutableStateOf(TextFieldValue(text = session.title, selection = TextRange(0, session.title.length)))
+    }
+    val focusRequester = remember { FocusRequester() }
     val dismissKeyboard = rememberKeyboardDismisser()
+
+    LaunchedEffect(session.id) {
+        withFrameNanos {}
+        runCatching { focusRequester.requestFocus() }
+    }
 
     ModalEscapeEffect(
         onDismiss = {
@@ -1531,7 +1589,7 @@ internal fun RenameSessionDialog(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(modifier = Modifier.weight(1f)) {
-                            if (draft.isEmpty()) {
+                            if (draft.text.isEmpty()) {
                                 Text(
                                     text = "输入自定义会话名称…",
                                     fontSize = 14.sp,
@@ -1540,14 +1598,14 @@ internal fun RenameSessionDialog(
                             }
                             BasicTextField(
                                 value = draft,
-                                onValueChange = { if (it.length <= 120) draft = it },
+                                onValueChange = { if (it.text.length <= 120) draft = it },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                 keyboardActions = KeyboardActions(
                                     onDone = {
-                                        if (draft.trim().isNotEmpty()) {
+                                        if (draft.text.trim().isNotEmpty()) {
                                             dismissKeyboard()
-                                            onConfirm(draft.trim())
+                                            onConfirm(draft.text.trim())
                                         }
                                     },
                                 ),
@@ -1558,17 +1616,30 @@ internal fun RenameSessionDialog(
                                 cursorBrush = SolidColor(Everforest.Green),
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .focusRequester(focusRequester)
+                                    .onPreviewKeyEvent { ev ->
+                                        if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                        val isEnter = ev.key == Key.Enter || ev.key == Key.NumPadEnter
+                                        if (isEnter && draft.composition == null && !ev.isShiftPressed && !ev.isAltPressed && !ev.isMetaPressed && !ev.isCtrlPressed) {
+                                            if (draft.text.trim().isNotEmpty()) {
+                                                dismissKeyboard()
+                                                onConfirm(draft.text.trim())
+                                            }
+                                            return@onPreviewKeyEvent true
+                                        }
+                                        false
+                                    }
                                     .testTag("rename_session_input"),
                             )
                         }
-                        if (draft.isNotEmpty()) {
+                        if (draft.text.isNotEmpty()) {
                             Icon(
                                 imageVector = Icons.Rounded.Close,
                                 contentDescription = "清空",
                                 tint = Everforest.CommentGrey,
                                 modifier = Modifier
                                     .size(16.dp)
-                                    .clickable { draft = "" },
+                                    .clickable { draft = TextFieldValue("") },
                             )
                         }
                     }
@@ -1624,10 +1695,10 @@ internal fun RenameSessionDialog(
         },
         confirmButton = {
             Button(
-                enabled = draft.trim().isNotEmpty(),
+                enabled = draft.text.trim().isNotEmpty(),
                 onClick = {
                     dismissKeyboard()
-                    onConfirm(draft.trim())
+                    onConfirm(draft.text.trim())
                 },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Everforest.Green,
@@ -1657,8 +1728,16 @@ internal fun RenameHostDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
 ) {
-    var draft by remember(host.hubId, host.displayName) { mutableStateOf(host.displayName) }
+    var draft by remember(host.hubId, host.displayName) {
+        mutableStateOf(TextFieldValue(text = host.displayName, selection = TextRange(0, host.displayName.length)))
+    }
+    val focusRequester = remember { FocusRequester() }
     val dismissKeyboard = rememberKeyboardDismisser()
+
+    LaunchedEffect(host.hubId) {
+        withFrameNanos {}
+        runCatching { focusRequester.requestFocus() }
+    }
 
     ModalEscapeEffect(
         onDismiss = {
@@ -1701,7 +1780,7 @@ internal fun RenameHostDialog(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(modifier = Modifier.weight(1f)) {
-                            if (draft.isEmpty()) {
+                            if (draft.text.isEmpty()) {
                                 Text(
                                     text = "输入主机名称…",
                                     fontSize = 14.sp,
@@ -1710,14 +1789,14 @@ internal fun RenameHostDialog(
                             }
                             BasicTextField(
                                 value = draft,
-                                onValueChange = { if (it.length <= 64) draft = it },
+                                onValueChange = { if (it.text.length <= 64) draft = it },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                 keyboardActions = KeyboardActions(
                                     onDone = {
-                                        if (draft.trim().isNotEmpty()) {
+                                        if (draft.text.trim().isNotEmpty()) {
                                             dismissKeyboard()
-                                            onConfirm(draft.trim())
+                                            onConfirm(draft.text.trim())
                                         }
                                     },
                                 ),
@@ -1728,17 +1807,30 @@ internal fun RenameHostDialog(
                                 cursorBrush = SolidColor(Everforest.Green),
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .focusRequester(focusRequester)
+                                    .onPreviewKeyEvent { ev ->
+                                        if (ev.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                        val isEnter = ev.key == Key.Enter || ev.key == Key.NumPadEnter
+                                        if (isEnter && draft.composition == null && !ev.isShiftPressed && !ev.isAltPressed && !ev.isMetaPressed && !ev.isCtrlPressed) {
+                                            if (draft.text.trim().isNotEmpty()) {
+                                                dismissKeyboard()
+                                                onConfirm(draft.text.trim())
+                                            }
+                                            return@onPreviewKeyEvent true
+                                        }
+                                        false
+                                    }
                                     .testTag("rename_host_input"),
                             )
                         }
-                        if (draft.isNotEmpty()) {
+                        if (draft.text.isNotEmpty()) {
                             Icon(
                                 imageVector = Icons.Rounded.Close,
                                 contentDescription = "清空",
                                 tint = Everforest.CommentGrey,
                                 modifier = Modifier
                                     .size(16.dp)
-                                    .clickable { draft = "" },
+                                    .clickable { draft = TextFieldValue("") },
                             )
                         }
                     }
@@ -1762,10 +1854,10 @@ internal fun RenameHostDialog(
         },
         confirmButton = {
             Button(
-                enabled = draft.trim().isNotEmpty(),
+                enabled = draft.text.trim().isNotEmpty(),
                 onClick = {
                     dismissKeyboard()
-                    onConfirm(draft.trim())
+                    onConfirm(draft.text.trim())
                 },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Everforest.Green,
