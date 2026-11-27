@@ -116,7 +116,10 @@ data class DiscoveredTsnetHub(
     val oauthDisplayName: String? = null,
     val alreadyPaired: Boolean = false,
     val isCurrentActive: Boolean = false,
-)
+) {
+    val selectionKey: String
+        get() = hub.id.ifBlank { baseUrl }
+}
 
 sealed interface ChatTimelineItem {
     val id: String

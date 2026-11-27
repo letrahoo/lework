@@ -489,7 +489,6 @@ internal fun TsnetDiscoveredHubList(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .semantics(mergeDescendants = true) {}
             .testTag("tsnet_discovered_hub_list"),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -501,7 +500,8 @@ internal fun TsnetDiscoveredHubList(
         )
         val isBusy = connectingHubId != null
         for (item in hubs) {
-            val isConnectingThis = connectingHubId == item.hub.id
+            val key = item.selectionKey
+            val isConnectingThis = connectingHubId == key
             val shape = RoundedCornerShape(10.dp)
             val platformLabel = tsnetPlatformLabel(item.hub.platform, item.os)
             val subtitle = listOf(item.hostName.trim(), item.tailscaleIp.trim())
@@ -517,8 +517,8 @@ internal fun TsnetDiscoveredHubList(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(shape)
-                    .testTag("tsnet_discovered_hub_${item.hub.id}")
-                    .clickable(enabled = !isBusy) { onSelectHub(item.hub.id) },
+                    .testTag("tsnet_discovered_hub_$key")
+                    .clickable(enabled = !isBusy) { onSelectHub(key) },
             ) {
                 Row(
                     modifier = Modifier
@@ -601,7 +601,7 @@ internal fun TsnetDiscoveredHubList(
                             modifier = Modifier
                                 .size(16.dp)
                                 .semantics(mergeDescendants = true) {}
-                                .testTag("tsnet_discovered_hub_loading_${item.hub.id}"),
+                                .testTag("tsnet_discovered_hub_loading_$key"),
                         )
                     } else {
                         Icon(

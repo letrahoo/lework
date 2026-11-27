@@ -773,6 +773,8 @@ class ConsoleStore(
                 connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.NEEDS_AUTH,
                 connectionError = null,
+                oauthEnabled = false,
+                oauthChallenge = null,
                 authStatusText = "正在启动内置 Tailscale 组网节点…",
             )
         }
@@ -853,6 +855,7 @@ class ConsoleStore(
                     connectingTsnetHubId = null,
                     connectionStatus = ConnectionStatus.CONNECTING,
                     connectionError = null,
+                    oauthEnabled = false,
                     oauthChallenge = null,
                     authStatusText = "正在同步 Tailscale 同账号节点列表…",
                 )
@@ -998,7 +1001,7 @@ class ConsoleStore(
 
             logRuntimeEvent(
                 "TSNET",
-                "discovered multiple hubs count=${uniqueHubs.size} ids=${uniqueHubs.joinToString(",") { it.hub.id }}",
+                "discovered multiple hubs count=${uniqueHubs.size} keys=${uniqueHubs.joinToString(",") { it.selectionKey }}",
             )
             _state.update {
                 it.copy(
@@ -1017,14 +1020,15 @@ class ConsoleStore(
     fun selectDiscoveredTsnetHub(hubId: String) {
         val current = _state.value
         if (current.connectingTsnetHubId != null) return
-        val target = current.discoveredTsnetHubs.firstOrNull { it.hub.id == hubId } ?: return
-        logRuntimeEvent("TSNET", "selectDiscoveredTsnetHub hubId=${target.hub.id} host=${target.hostName}")
+        val target = current.discoveredTsnetHubs.firstOrNull { it.selectionKey == hubId } ?: return
+        val key = target.selectionKey
+        logRuntimeEvent("TSNET", "selectDiscoveredTsnetHub key=$key host=${target.hostName}")
         discoverJob?.cancel()
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
         _state.update {
             it.copy(
-                connectingTsnetHubId = target.hub.id,
+                connectingTsnetHubId = key,
                 connectionStatus = ConnectionStatus.CONNECTING,
                 connectionError = null,
                 oauthChallenge = null,
@@ -1036,7 +1040,7 @@ class ConsoleStore(
                 connectToDiscoveredTsnetHub(target, _state.value.tsnetStatus.displayName)
             } finally {
                 _state.update { s ->
-                    if (s.connectingTsnetHubId == target.hub.id) s.copy(connectingTsnetHubId = null) else s
+                    if (s.connectingTsnetHubId == key) s.copy(connectingTsnetHubId = null) else s
                 }
             }
         }
@@ -1092,19 +1096,19 @@ class ConsoleStore(
                     return
                 }
                 lastErr = _state.value.connectionError
+                    ?: "已通过同账号校验，但连接主机 ${target.hub.name} 鉴权未通过，请重试或选择其他主机"
             }.onFailure { err ->
                 lastErr = err.message ?: "Tailscale 同账号握手失败"
             }
         }
 
         if (!handshakeConnectAttempted) {
-            val existingToken = if (target.tailscaleSameUser) {
-                // Only fall back to a token specifically issued for this exact Hub when same-user handshake fails;
-                // never leak another host's global access token to an unrelated Hub.
-                loadHostAccessToken(target.hub.id)
-            } else {
-                loadHostAccessToken(target.hub.id) ?: loadSavedAccessToken()
+            val activeHostId = loadActiveHostId()
+            val legacyGlobalToken = loadSavedAccessToken().takeIf {
+                !target.tailscaleSameUser &&
+                    (activeHostId == target.hub.id || (activeHostId == null && loadPairedHosts().isEmpty()))
             }
+            val existingToken = loadHostAccessToken(target.hub.id) ?: legacyGlobalToken
             if (!existingToken.isNullOrBlank()) {
                 if (connectWithToken(target.wsUrl, existingToken, expectedHubId = target.hub.id)) {
                     return
@@ -1124,36 +1128,59 @@ class ConsoleStore(
             return
         }
 
+        val fallbackErr = if (target.tailscaleSameUser) {
+            "连接同账号主机 ${target.hub.name} 失败，请重试或选择其他主机"
+        } else {
+            "已连通主机 ${target.hub.name}，但主机端未开启同账号校验，请在电脑执行：lework tsnet login"
+        }
         _state.update {
             it.copy(
                 connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.ERROR,
-                connectionError = lastErr
-                    ?: "已连通主机 ${target.hub.name}，但主机端未开启同账号校验，请在电脑执行：lework tsnet login",
+                connectionError = lastErr ?: fallbackErr,
             )
         }
     }
 
     fun logoutMobileTsnetAccount() {
         val current = _state.value
+        val normalizedCurrentBase = normalizeHubBaseUrl(current.discoveredBaseUrl)
+        val discoveredPointsToTsnet = normalizedCurrentBase.isNotEmpty() && (
+            current.discoveredTsnetHubs.any { normalizeHubBaseUrl(it.baseUrl) == normalizedCurrentBase } ||
+                current.tsnetStatus.peers.any { peer ->
+                    val proxy = peer.localProxyUrl?.let { normalizeHubBaseUrl(it) }.orEmpty()
+                    proxy.isNotEmpty() && proxy == normalizedCurrentBase
+                }
+            )
         val activeTsnetWork =
             current.discoveredTsnetHubs.isNotEmpty() ||
                 current.connectingTsnetHubId != null ||
+                discoveredPointsToTsnet ||
                 (discoverJob?.isActive == true && current.authStatusText.contains("Tailscale"))
         if (activeTsnetWork) {
             discoverJob?.cancel()
         }
+        if (activeTsnetWork || !current.hasEnteredWorkspace) {
+            oauthPollJob?.cancel()
+        }
         tsnetPollJob?.cancel()
         saveTsnetEnabled(false)
         _state.update { s ->
+            val resetAuthUi = !s.hasEnteredWorkspace
             s.copy(
                 tsnetLoggingIn = false,
                 discoveredTsnetHubs = emptyList(),
                 connectingTsnetHubId = null,
-                connectionStatus = if (!s.hasEnteredWorkspace && (s.connectingTsnetHubId != null || activeTsnetWork)) {
-                    ConnectionStatus.NEEDS_AUTH
+                oauthEnabled = if (resetAuthUi) false else s.oauthEnabled,
+                oauthChallenge = if (resetAuthUi) null else s.oauthChallenge,
+                connectionError = if (resetAuthUi) null else s.connectionError,
+                discoveredBaseUrl = if (resetAuthUi && discoveredPointsToTsnet) "" else s.discoveredBaseUrl,
+                discoveredWsUrl = if (resetAuthUi && discoveredPointsToTsnet) "" else s.discoveredWsUrl,
+                connectionStatus = if (resetAuthUi) ConnectionStatus.NEEDS_AUTH else s.connectionStatus,
+                authStatusText = if (resetAuthUi) {
+                    "已退出 Tailscale 账号，请重新登录或选择其他方式连接"
                 } else {
-                    s.connectionStatus
+                    s.authStatusText
                 },
             )
         }

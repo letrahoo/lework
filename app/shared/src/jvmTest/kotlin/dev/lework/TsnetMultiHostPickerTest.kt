@@ -21,11 +21,13 @@ import dev.lework.platform.MobileTsnetPeer
 import dev.lework.platform.MobileTsnetStatus
 import dev.lework.platform.PairedHost
 import dev.lework.protocol.DirectTokenAuthResult
+import dev.lework.protocol.ErrorCode
 import dev.lework.protocol.HubDiscoverResult
 import dev.lework.protocol.HubHelloResult
 import dev.lework.protocol.HubInfo
 import dev.lework.protocol.HubRole
 import dev.lework.protocol.HubStatusResult
+import dev.lework.protocol.OAuthPollResponse
 import dev.lework.protocol.OAuthUser
 import dev.lework.protocol.PROTOCOL_VERSION
 import dev.lework.protocol.PlatformType
@@ -37,6 +39,7 @@ import dev.lework.store.ConsoleUiState
 import dev.lework.store.DiscoveredTsnetHub
 import dev.lework.transport.DiscoveredEndpoint
 import dev.lework.transport.HubTransport
+import dev.lework.transport.RpcCallException
 import dev.lework.ui.AuthEntryView
 import dev.lework.ui.desktop.DesktopAuthScreen
 import kotlinx.coroutines.CompletableDeferred
@@ -45,6 +48,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
@@ -105,12 +109,15 @@ class TsnetMultiHostPickerTest {
         val tailscaleEndpoint: String = "https://100.88.1.2:64450",
         val handshakeError: Throwable? = null,
         val handshakeGate: CompletableDeferred<Unit>? = null,
+        val connectError: Throwable? = null,
     )
 
     private fun buildMultiHostTransport(
         fake: FakeHubTransport,
         endpoints: Map<String, EndpointConfig>,
         handshakeUrls: MutableList<String> = mutableListOf(),
+        connectCalls: MutableList<Pair<String, String>> = mutableListOf(),
+        oauthPollCalls: MutableList<String> = mutableListOf(),
     ): HubTransport {
         var connectedHub: HubInfo = fake.hubInfo
         return object : HubTransport by fake {
@@ -143,7 +150,7 @@ class TsnetMultiHostPickerTest {
                 fake.tailscaleHandshakeCount++
                 return DirectTokenAuthResult(
                     ok = true,
-                    accessToken = "lework_dt.${cfg.hub.id}_token",
+                    accessToken = "lework_dt.${cfg.hub.id.ifBlank { "blank" }}_token",
                     user = OAuthUser(
                         subject = "tailscale:owner@example.com",
                         name = cfg.tailscaleUser ?: "Owner",
@@ -156,12 +163,19 @@ class TsnetMultiHostPickerTest {
                 )
             }
 
+            override suspend fun pollOAuthDeviceFlow(baseUrl: String, sid: String): OAuthPollResponse {
+                oauthPollCalls += baseUrl
+                return fake.pollOAuthDeviceFlow(baseUrl, sid)
+            }
+
             override suspend fun connectAndHello(
                 wsUrl: String,
                 token: String,
                 platformName: String,
             ): HubHelloResult {
+                connectCalls += wsUrl to token
                 val baseUrl = hubBaseUrlOfWs(wsUrl)
+                endpoints[baseUrl]?.connectError?.let { throw it }
                 connectedHub = endpoints[baseUrl]?.hub ?: fake.hubInfo
                 fake.connectAndHello(wsUrl, token, platformName)
                 return HubHelloResult(
@@ -592,6 +606,334 @@ class TsnetMultiHostPickerTest {
         }
     }
 
+    @Test
+    fun `unpaired non-same-user hub does not leak paired active hub global savedToken`() = runTest {
+        JvmPlatformTestHooks.tsnetAvailable = true
+        JvmPlatformTestHooks.tsnetEnabled = true
+        JvmPlatformTestHooks.activeHostId = "hub_mac"
+        JvmPlatformTestHooks.pairedHosts = listOf(
+            PairedHost(
+                hubId = "hub_mac",
+                name = "Studio Mac mini",
+                endpoints = listOf("https://100.88.1.11:64450"),
+            ),
+        )
+        JvmPlatformTestHooks.savedToken = "lework_dt.hub_mac_secret_global"
+        JvmPlatformTestHooks.hostTokens["hub_mac"] = "lework_dt.hub_mac_secret_host"
+        JvmPlatformTestHooks.tsnetStatus = MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            loginName = "owner@example.com",
+            peers = listOf(
+                MobileTsnetPeer(
+                    hostName = "studio-mac-main",
+                    tailscaleIp = "100.88.1.11",
+                    os = "macOS",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = macMainUrl,
+                ),
+                MobileTsnetPeer(
+                    hostName = "team-gpu-01",
+                    tailscaleIp = "100.88.9.9",
+                    os = "linux",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = ssoUrl,
+                ),
+            ),
+        )
+
+        val fake = FakeHubTransport()
+        val connectCalls = mutableListOf<Pair<String, String>>()
+        val transport = buildMultiHostTransport(
+            fake = fake,
+            endpoints = mapOf(
+                macMainUrl to EndpointConfig(hub = macHub, tailscaleSameUser = true),
+                ssoUrl to EndpointConfig(
+                    hub = ssoHub,
+                    tailscaleSameUser = false,
+                    oauthEnabled = true,
+                    oauthProvider = "feishu",
+                    oauthDisplayName = "飞书",
+                ),
+            ),
+            connectCalls = connectCalls,
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+            assertEquals(2, store.state.value.discoveredTsnetHubs.size)
+
+            // Selecting unpaired non-same-user hub must NOT attempt connectWithToken with hub_mac's savedToken
+            store.selectDiscoveredTsnetHub("hub_team_sso")
+            runCurrent()
+
+            assertTrue(connectCalls.isEmpty(), "Should not leak hub_mac's global token to hub_team_sso")
+            assertFalse(store.state.value.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.NEEDS_AUTH, store.state.value.connectionStatus)
+            assertTrue(store.state.value.oauthEnabled)
+            assertNotNull(store.state.value.oauthChallenge)
+            assertEquals(ssoUrl, store.state.value.discoveredBaseUrl)
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `logoutMobileTsnetAccount cleans up error state, stops oauth polling, and resets stale tsnet oauth state`() = runTest {
+        JvmPlatformTestHooks.tsnetAvailable = true
+        JvmPlatformTestHooks.tsnetEnabled = true
+        JvmPlatformTestHooks.savedToken = null
+        val runningStatus = MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            loginName = "owner@example.com",
+            peers = listOf(
+                MobileTsnetPeer(
+                    hostName = "studio-mac-main",
+                    tailscaleIp = "100.88.1.11",
+                    os = "macOS",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = macMainUrl,
+                ),
+                MobileTsnetPeer(
+                    hostName = "team-gpu-01",
+                    tailscaleIp = "100.88.9.9",
+                    os = "linux",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = ssoUrl,
+                ),
+            ),
+        )
+        JvmPlatformTestHooks.tsnetStatus = runningStatus
+
+        val fake = FakeHubTransport()
+        val oauthPollCalls = mutableListOf<String>()
+        val transport = buildMultiHostTransport(
+            fake = fake,
+            endpoints = mapOf(
+                macMainUrl to EndpointConfig(
+                    hub = macHub,
+                    tailscaleSameUser = true,
+                    handshakeError = RuntimeException("handshake denied"),
+                ),
+                ssoUrl to EndpointConfig(
+                    hub = ssoHub,
+                    tailscaleSameUser = false,
+                    oauthEnabled = true,
+                    oauthProvider = "feishu",
+                    oauthDisplayName = "飞书",
+                ),
+            ),
+            oauthPollCalls = oauthPollCalls,
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+
+            // 1) Logout after handshake error clears connectionError, discoveredBaseUrl/WsUrl, and picker state
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+            store.selectDiscoveredTsnetHub("hub_mac")
+            runCurrent()
+            assertEquals(ConnectionStatus.ERROR, store.state.value.connectionStatus)
+            assertNotNull(store.state.value.connectionError)
+
+            store.logoutMobileTsnetAccount()
+            runCurrent()
+            val afterErrorLogout = store.state.value
+            assertEquals(ConnectionStatus.NEEDS_AUTH, afterErrorLogout.connectionStatus)
+            assertNull(afterErrorLogout.connectionError)
+            assertFalse(afterErrorLogout.oauthEnabled)
+            assertNull(afterErrorLogout.oauthChallenge)
+            assertEquals("", afterErrorLogout.discoveredBaseUrl)
+            assertEquals("", afterErrorLogout.discoveredWsUrl)
+            assertTrue(afterErrorLogout.discoveredTsnetHubs.isEmpty())
+            assertEquals("已退出 Tailscale 账号，请重新登录或选择其他方式连接", afterErrorLogout.authStatusText)
+
+            // 2) Logout after non-same-user OAuth selection cancels oauthPollJob and resets OAuth UI
+            JvmPlatformTestHooks.tsnetStatus = runningStatus
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+            store.selectDiscoveredTsnetHub("hub_team_sso")
+            runCurrent()
+            assertTrue(store.state.value.oauthEnabled)
+            assertNotNull(store.state.value.oauthChallenge)
+
+            advanceTimeBy(2_500L)
+            runCurrent()
+            val pollsBeforeLogout = oauthPollCalls.size
+            assertTrue(pollsBeforeLogout >= 1, "Expected OAuth polling to be active before logout")
+
+            store.logoutMobileTsnetAccount()
+            runCurrent()
+            advanceTimeBy(6_000L)
+            runCurrent()
+
+            val afterOAuthLogout = store.state.value
+            assertEquals(pollsBeforeLogout, oauthPollCalls.size, "OAuth poll loop must stop after tsnet logout")
+            assertEquals(ConnectionStatus.NEEDS_AUTH, afterOAuthLogout.connectionStatus)
+            assertFalse(afterOAuthLogout.oauthEnabled)
+            assertNull(afterOAuthLogout.oauthChallenge)
+            assertNull(afterOAuthLogout.connectionError)
+            assertEquals("", afterOAuthLogout.discoveredBaseUrl)
+            assertEquals("", afterOAuthLogout.discoveredWsUrl)
+            assertTrue(afterOAuthLogout.discoveredTsnetHubs.isEmpty())
+            assertEquals("已退出 Tailscale 账号，请重新登录或选择其他方式连接", afterOAuthLogout.authStatusText)
+
+            // 3) Starting a new tsnet scan when tsnet is NeedsLogin clears stale oauthEnabled (no infinite spinner)
+            JvmPlatformTestHooks.tsnetStatus = runningStatus
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+            store.selectDiscoveredTsnetHub("hub_team_sso")
+            runCurrent()
+            assertTrue(store.state.value.oauthEnabled)
+
+            JvmPlatformTestHooks.tsnetStatus = MobileTsnetStatus(available = true, backendState = "NeedsLogin")
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+            assertEquals(ConnectionStatus.NEEDS_AUTH, store.state.value.connectionStatus)
+            assertFalse(store.state.value.oauthEnabled)
+            assertNull(store.state.value.oauthChallenge)
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `same-user handshake followed by UNAUTHORIZED ws connect shows accurate auth error without blaming tsnet config`() = runTest {
+        JvmPlatformTestHooks.tsnetAvailable = true
+        JvmPlatformTestHooks.tsnetEnabled = true
+        JvmPlatformTestHooks.savedToken = null
+        JvmPlatformTestHooks.tsnetStatus = MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            loginName = "owner@example.com",
+            peers = listOf(
+                MobileTsnetPeer(
+                    hostName = "studio-mac-main",
+                    tailscaleIp = "100.88.1.11",
+                    os = "macOS",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = macMainUrl,
+                ),
+                MobileTsnetPeer(
+                    hostName = "devbox-01",
+                    tailscaleIp = "100.88.2.20",
+                    os = "linux",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = devboxUrl,
+                ),
+            ),
+        )
+
+        val fake = FakeHubTransport()
+        val transport = buildMultiHostTransport(
+            fake = fake,
+            endpoints = mapOf(
+                macMainUrl to EndpointConfig(
+                    hub = macHub,
+                    tailscaleSameUser = true,
+                    connectError = RpcCallException(ErrorCode.UNAUTHORIZED, "token rejected"),
+                ),
+                devboxUrl to EndpointConfig(hub = devboxHub, tailscaleSameUser = true),
+            ),
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+            assertEquals(2, store.state.value.discoveredTsnetHubs.size)
+
+            store.selectDiscoveredTsnetHub("hub_mac")
+            runCurrent()
+
+            val st = store.state.value
+            assertFalse(st.hasEnteredWorkspace)
+            assertEquals(ConnectionStatus.ERROR, st.connectionStatus)
+            assertNull(st.connectingTsnetHubId)
+            assertEquals(2, st.discoveredTsnetHubs.size)
+            val err = assertNotNull(st.connectionError)
+            assertTrue(err.contains("已通过同账号校验"), "Expected accurate post-handshake auth failure message, got: $err")
+            assertFalse(err.contains("未开启同账号校验"), "Must not mislead user about tsnet login config, got: $err")
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
+    @Test
+    fun `selectionKey allows selecting a discovered hub even when hub id is blank`() = runTest {
+        JvmPlatformTestHooks.tsnetAvailable = true
+        JvmPlatformTestHooks.tsnetEnabled = true
+        JvmPlatformTestHooks.savedToken = null
+        val blankIdHub = macHub.copy(id = "", name = "Legacy Hub")
+        JvmPlatformTestHooks.tsnetStatus = MobileTsnetStatus(
+            available = true,
+            backendState = "Running",
+            loginName = "owner@example.com",
+            peers = listOf(
+                MobileTsnetPeer(
+                    hostName = "legacy-mac",
+                    tailscaleIp = "100.88.1.11",
+                    os = "macOS",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = macMainUrl,
+                ),
+                MobileTsnetPeer(
+                    hostName = "devbox-01",
+                    tailscaleIp = "100.88.2.20",
+                    os = "linux",
+                    online = true,
+                    isLeworkNode = true,
+                    localProxyUrl = devboxUrl,
+                ),
+            ),
+        )
+
+        val fake = FakeHubTransport()
+        val handshakeUrls = mutableListOf<String>()
+        val transport = buildMultiHostTransport(
+            fake = fake,
+            endpoints = mapOf(
+                macMainUrl to EndpointConfig(hub = blankIdHub, tailscaleSameUser = true),
+                devboxUrl to EndpointConfig(hub = devboxHub, tailscaleSameUser = true),
+            ),
+            handshakeUrls = handshakeUrls,
+        )
+
+        val storeScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler))
+        try {
+            val store = ConsoleStore(storeScope, transport)
+            store.searchAndConnectViaTsnet()
+            runCurrent()
+            val discovered = store.state.value.discoveredTsnetHubs
+            assertEquals(2, discovered.size)
+            assertEquals(macMainUrl, discovered[0].selectionKey)
+
+            store.selectDiscoveredTsnetHub(discovered[0].selectionKey)
+            runCurrent()
+
+            assertEquals(listOf(macMainUrl), handshakeUrls)
+            assertTrue(store.state.value.hasEnteredWorkspace)
+            assertTrue(store.state.value.discoveredTsnetHubs.isEmpty())
+            assertNull(store.state.value.connectingTsnetHubId)
+        } finally {
+            storeScope.cancel()
+        }
+    }
+
     private fun sampleDiscoveredHubs(): List<DiscoveredTsnetHub> = listOf(
         DiscoveredTsnetHub(
             hub = macHub,
@@ -668,8 +1010,8 @@ class TsnetMultiHostPickerTest {
         }
 
         waitForIdle()
-        onNodeWithTag("tsnet_discovered_hub_list").performScrollTo().assertIsDisplayed()
-        onNodeWithText("发现 3 台可用主机 · 点击选择连接").assertIsDisplayed()
+        onNodeWithTag("tsnet_discovered_hub_list", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        onNodeWithText("发现 3 台可用主机 · 点击选择连接", useUnmergedTree = true).assertIsDisplayed()
         onNodeWithTag("tsnet_search_button").performScrollTo().assertTextContains("重新搜索节点")
 
         onNodeWithTag("tsnet_discovered_hub_hub_mac").performScrollTo().assertIsDisplayed()
@@ -727,7 +1069,7 @@ class TsnetMultiHostPickerTest {
         }
 
         waitForIdle()
-        onNodeWithTag("tsnet_discovered_hub_list").performScrollTo().assertIsDisplayed()
+        onNodeWithTag("tsnet_discovered_hub_list", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
         onNodeWithTag("tsnet_discovered_hub_loading_hub_mac").performScrollTo().assertIsDisplayed()
         onNodeWithTag("tsnet_discovered_hub_hub_devbox").assertIsNotEnabled()
         onNodeWithTag("tsnet_search_button").assertIsNotEnabled()
@@ -741,7 +1083,7 @@ class TsnetMultiHostPickerTest {
         )
         waitForIdle()
 
-        onNodeWithText("握手失败：请改选其他主机").assertIsDisplayed()
+        onNodeWithText("握手失败：请改选其他主机", useUnmergedTree = true).assertIsDisplayed()
         onNodeWithTag("tsnet_discovered_hub_hub_devbox").performScrollTo().performClick()
         waitForIdle()
         assertEquals(listOf("hub_devbox"), selectedIds)
