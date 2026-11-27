@@ -176,10 +176,17 @@ internal fun ConversationStreamView(
         transcript.items.lastOrNull { it is ChatTimelineItem.Notice && it.isError }?.id
     }
     val nowMs = remember(sessionKey, transcript.lastSeq) { epochMillis() }
-    val showLiveSpinner = activeSession != null &&
-        activeSession.id == sessionKey &&
+    val activeMatchesSession = activeSession != null && activeSession.id == sessionKey
+    val hasPendingPermission = transcript.pendingPermissions.any {
+        it.sessionId == sessionKey || it.sessionId.isBlank()
+    }
+    val isWaitingPermission = activeMatchesSession && (
+        activeSession.state == SessionState.WAITING_PERMISSION ||
+            (activeSession.state == SessionState.RUNNING && hasPendingPermission)
+    )
+    val showLiveSpinner = activeMatchesSession &&
         activeSession.state == SessionState.RUNNING &&
-        transcript.pendingPermissions.isEmpty()
+        !hasPendingPermission
     val hasPlanSteps = transcript.planEntries.isNotEmpty()
     val showBottomExecutionWidget = hasPlanSteps || showLiveSpinner
     val queuedPrompts = if (
@@ -397,6 +404,7 @@ internal fun ConversationStreamView(
                         activeSession = activeSession,
                         entries = transcript.planEntries,
                         isSessionRunning = showLiveSpinner,
+                        isWaitingPermission = isWaitingPermission,
                         outputTokens = transcript.outputTokens,
                         onOpenPlanArtifact = onOpenPlanArtifact,
                         onApprovePlan = onApprovePlan,

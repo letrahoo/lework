@@ -27,6 +27,7 @@ import {
 import { countQuickAgyArtifacts } from '../artifacts.ts'
 import { parseAgyModelString, readAgyLocalSettings } from './engine-settings.ts'
 import {
+  PlanTurnHygieneTracker,
   extractLatestAgyStepProgress,
   isPlanStepToolName,
   parsePlanEntriesFromRaw,
@@ -672,6 +673,16 @@ export function parseAgyTranscript(
     return next
   }
   let seq = 0
+  const planHygiene = new PlanTurnHygieneTracker()
+  const emitPlanCleared = (ts: number) => {
+    events.push({
+      seq: seq++,
+      sessionId,
+      ts,
+      type: 'plan.updated',
+      entries: [],
+    })
+  }
   const failOpenTools = (ts: number, output = '已停止') => {
     for (const callId of pendingToolIds) {
       if (!callId) continue
@@ -707,6 +718,7 @@ export function parseAgyTranscript(
           turnStartedAt = ts
           lastUserInputTs = ts
           reqs.forEach((txt, idx) => {
+            if (planHygiene.onUserMessage()) emitPlanCleared(ts)
             recentUserTexts.push(txt)
             if (recentUserTexts.length > 16) recentUserTexts.shift()
             const imgInfo = parseStagedImagePromptHeader(txt, true)
@@ -741,6 +753,7 @@ export function parseAgyTranscript(
             })
           })
         } else if (nativeMedia.count > 0) {
+          if (planHygiene.onUserMessage()) emitPlanCleared(ts)
           isRunning = true
           turnStartedAt = ts
           lastUserInputTs = ts
@@ -757,6 +770,7 @@ export function parseAgyTranscript(
         } else if (events.length === 0) {
           const brief = extractAgySubagentBrief(rawContent)
           if (brief) {
+            if (planHygiene.onUserMessage()) emitPlanCleared(ts)
             isRunning = true
             turnStartedAt = ts
             events.push({
@@ -779,6 +793,7 @@ export function parseAgyTranscript(
           failOpenTools(ts)
           isRunning = false
           turnStartedAt = undefined
+          if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
         }
       } else if (o.type === 'PLANNER_RESPONSE') {
         const plannerAborted = stepCancelled || upperStatus === 'ERROR' || upperStatus === 'FAILED'
@@ -812,6 +827,7 @@ export function parseAgyTranscript(
                   type: 'plan.updated',
                   entries,
                 })
+                planHygiene.onPlanUpdated(entries)
                 // Preserve positional alignment in `pendingToolIds` so `update_steps`'s `"OK"` tool
                 // response never shifts off a parallel `run_command` / `read_file` call ID!
                 if (!plannerAborted) {
@@ -861,7 +877,10 @@ export function parseAgyTranscript(
           })
         }
         isRunning = plannerAborted ? false : hasTools
-        if (!isRunning) turnStartedAt = undefined
+        if (!isRunning) {
+          turnStartedAt = undefined
+          if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
+        }
       } else if (
         (o.type === 'GENERIC' || o.type === 'TOOL_RESPONSE') &&
         typeof o.content === 'string'
@@ -883,6 +902,7 @@ export function parseAgyTranscript(
           failOpenTools(ts)
           isRunning = false
           turnStartedAt = undefined
+          if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
         } else {
           isRunning = true
         }
@@ -890,6 +910,7 @@ export function parseAgyTranscript(
         failOpenTools(ts)
         isRunning = false
         turnStartedAt = undefined
+        if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
       }
     } catch {
       // ignore

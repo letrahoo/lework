@@ -352,6 +352,13 @@ private fun MobileConsoleApp(
                         val planArtifact = state.activeSessionArtifacts.firstOrNull {
                             it.actionable || it.kind == ArtifactKind.PLAN
                         }
+                        val awaitingPlanApproval = !sessRunning && (
+                            state.selectedMode == SessionMode.PLAN ||
+                                (planArtifact != null &&
+                                    activeSess?.state == SessionState.IDLE &&
+                                    transcript.planEntries.isNotEmpty() &&
+                                    transcript.planEntries.all { it.status == "pending" })
+                        )
                         key(activeKey) {
                             ConversationStreamView(
                                 sessionKey = activeKey,
@@ -374,7 +381,7 @@ private fun MobileConsoleApp(
                                         showArtifactsSheet = true
                                     }
                                 },
-                                onApprovePlan = if (!sessRunning && (planArtifact != null || state.selectedMode == SessionMode.PLAN)) {
+                                onApprovePlan = if (awaitingPlanApproval) {
                                     { store.approveAndExecutePlan(planArtifact?.title) }
                                 } else {
                                     null

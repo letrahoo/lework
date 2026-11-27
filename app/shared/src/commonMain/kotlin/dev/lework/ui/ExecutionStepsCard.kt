@@ -17,6 +17,10 @@ import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PauseCircleOutline
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -38,12 +42,78 @@ import androidx.compose.ui.unit.sp
 import dev.lework.platform.epochMillis
 import dev.lework.protocol.PlanEntry
 import dev.lework.protocol.SessionMeta
+import dev.lework.protocol.SessionState
 import kotlinx.coroutines.delay
 
 private val AGY_BRAILLE_SPINNER_FRAMES = listOf("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 private val LEADING_SPINNER_RE = Regex("^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣷⣯⣟⡿⢿⣻⣽⣾·✻✽✢✳✶]\\s*")
 private val STEP_COUNTER_PREFIX_RE = Regex("^\\d+/\\d+\\s*(?:steps?|步)\\s*[·•-]?\\s*", RegexOption.IGNORE_CASE)
 private val TRAILING_ELAPSED_RE = Regex("\\s+(?:\\d+m\\s+)?\\d+(?:\\.\\d+)?s$")
+
+internal enum class ExecutionStepsLifecycle {
+    /** Session is actively executing right now (live braille spinner, gold pulse, elapsed timer). */
+    RUNNING,
+
+    /** Session turn is paused awaiting user permission approval (active, NOT stopped/failed). */
+    WAITING_PERMISSION,
+
+    /** Inactive session with an actionable plan waiting for user review/approval. */
+    PLAN_APPROVAL_PENDING,
+
+    /** All steps finished cleanly (`completed` / `skipped`) and session is no longer active. */
+    COMPLETED,
+
+    /** One or more steps explicitly failed, or session ended in `ERROR` before completing all steps. */
+    FAILED,
+
+    /** Inactive (`IDLE` / `CLOSED`) session whose `in_progress` step was cut off mid-flight. */
+    STOPPED,
+
+    /** Inactive (`IDLE` / `CLOSED`) session with remaining `pending` steps and no active/failed rows. */
+    INCOMPLETE,
+}
+
+internal fun resolveExecutionStepsLifecycle(
+    entries: List<PlanEntry>,
+    sessionState: SessionState?,
+    isSessionRunning: Boolean,
+    isWaitingPermission: Boolean,
+    hasApprovePlanAction: Boolean,
+): ExecutionStepsLifecycle {
+    val effectiveWaitingPermission = isWaitingPermission || sessionState == SessionState.WAITING_PERMISSION
+    if (effectiveWaitingPermission) return ExecutionStepsLifecycle.WAITING_PERMISSION
+    if (isSessionRunning) return ExecutionStepsLifecycle.RUNNING
+
+    val failedCount = entries.count { it.status == "failed" }
+    val allFinished = entries.isNotEmpty() && entries.all { it.status == "completed" || it.status == "skipped" }
+    val hasInProgress = entries.any { it.status == "in_progress" }
+
+    return when {
+        failedCount > 0 || (sessionState == SessionState.ERROR && !allFinished) ->
+            ExecutionStepsLifecycle.FAILED
+        hasInProgress ->
+            ExecutionStepsLifecycle.STOPPED
+        allFinished ->
+            ExecutionStepsLifecycle.COMPLETED
+        hasApprovePlanAction ->
+            ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING
+        else ->
+            ExecutionStepsLifecycle.INCOMPLETE
+    }
+}
+
+internal fun defaultExpandedForLifecycle(
+    lifecycle: ExecutionStepsLifecycle,
+    hasApprovePlanAction: Boolean,
+): Boolean = when (lifecycle) {
+    ExecutionStepsLifecycle.RUNNING,
+    ExecutionStepsLifecycle.WAITING_PERMISSION,
+    ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING -> true
+    ExecutionStepsLifecycle.COMPLETED -> hasApprovePlanAction
+    ExecutionStepsLifecycle.FAILED,
+    ExecutionStepsLifecycle.STOPPED,
+    ExecutionStepsLifecycle.INCOMPLETE -> false
+}
 
 internal fun cleanLiveStatusForSteps(rawLive: String?): String {
     val normalized = rawLive?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
@@ -72,10 +142,13 @@ private fun formatStepTokens(tokens: Int): String {
 
 /**
  * AGY-terminal-inspired live Execution Steps tree anchored at the bottom of the conversation stream.
- * - While running: displays animated braille spinner + `done/total 步 · activity · elapsed`, followed
- *   by tree-indented step rows (`└ ● active / ✓ done / ○ pending / ⊘ skipped / ✕ failed`).
- * - Once all steps finish cleanly: auto-collapses to a quiet 1-line summary pill unless plan approval
- *   actions are visible or the user toggles expansion.
+ * - While running (`RUNNING`): displays animated braille spinner + `done/total 步 · activity · elapsed`,
+ *   expanded by default with pulsing gold active dot.
+ * - While awaiting permission (`WAITING_PERMISSION`): displays calm orange pause cue (`等待权限确认`),
+ *   expanded by default so the user sees which step triggered the approval banner.
+ * - While awaiting plan approval (`PLAN_APPROVAL_PENDING`): expanded by default alongside action buttons.
+ * - Once inactive (`COMPLETED` / `FAILED` / `STOPPED` / `INCOMPLETE`): auto-collapses to a quiet 1-line
+ *   semantic summary pill with non-active styling for unfinished rows, expandable on tap.
  */
 @Composable
 internal fun ExecutionStepsCard(
@@ -83,6 +156,7 @@ internal fun ExecutionStepsCard(
     activeSession: SessionMeta?,
     entries: List<PlanEntry>,
     isSessionRunning: Boolean,
+    isWaitingPermission: Boolean = false,
     outputTokens: Int = 0,
     onOpenPlanArtifact: (() -> Unit)? = null,
     onApprovePlan: (() -> Unit)? = null,
@@ -90,24 +164,39 @@ internal fun ExecutionStepsCard(
 ) {
     if (entries.isEmpty()) return
 
+    val matchingSession = activeSession?.takeIf { it.id == sessionKey }
     val total = entries.size
     val doneCount = entries.count { it.status == "completed" || it.status == "skipped" }
     val failedCount = entries.count { it.status == "failed" }
     val inProgressEntry = entries.firstOrNull { it.status == "in_progress" }
     val allFinished = entries.all { it.status == "completed" || it.status == "skipped" }
-    val hasActionButtons = onOpenPlanArtifact != null || onApprovePlan != null
-    val defaultExpanded = isSessionRunning || !allFinished || hasActionButtons
+    val hasApprovePlanAction = onApprovePlan != null
 
-    var userExpandedOverride by remember(sessionKey) { mutableStateOf<Boolean?>(null) }
-    LaunchedEffect(sessionKey, isSessionRunning, allFinished) {
-        userExpandedOverride = null
+    val lifecycle = resolveExecutionStepsLifecycle(
+        entries = entries,
+        sessionState = matchingSession?.state,
+        isSessionRunning = isSessionRunning,
+        isWaitingPermission = isWaitingPermission,
+        hasApprovePlanAction = hasApprovePlanAction,
+    )
+    val isLiveRunning = lifecycle == ExecutionStepsLifecycle.RUNNING
+    val defaultExpanded = defaultExpandedForLifecycle(
+        lifecycle = lifecycle,
+        hasApprovePlanAction = hasApprovePlanAction,
+    )
+
+    // Keyed directly on (sessionKey, lifecycle, defaultExpanded) so user manual toggles survive
+    // live ticks/progress updates while genuine lifecycle transitions reset immediately with zero flicker.
+    var userExpandedOverride by remember(sessionKey, lifecycle, defaultExpanded) {
+        mutableStateOf<Boolean?>(null)
     }
     val expanded = userExpandedOverride ?: defaultExpanded
 
     var tick by remember(sessionKey) { mutableIntStateOf(0) }
     var nowMs by remember(sessionKey) { mutableLongStateOf(epochMillis()) }
-    LaunchedEffect(sessionKey, isSessionRunning) {
-        if (!isSessionRunning) return@LaunchedEffect
+    LaunchedEffect(sessionKey, isLiveRunning) {
+        if (!isLiveRunning) return@LaunchedEffect
+        nowMs = epochMillis()
         while (true) {
             delay(180L)
             tick++
@@ -115,25 +204,30 @@ internal fun ExecutionStepsCard(
         }
     }
 
-    val pulseBright = (tick / 3) % 2 == 0
-    val borderColor = when {
-        isSessionRunning -> Everforest.BoldGold.copy(alpha = 0.42f)
-        failedCount > 0 -> Everforest.Red.copy(alpha = 0.42f)
-        allFinished -> Everforest.Bg3
-        else -> Everforest.Aqua.copy(alpha = 0.36f)
+    val pulseBright = isLiveRunning && (tick / 3) % 2 == 0
+    val borderColor = when (lifecycle) {
+        ExecutionStepsLifecycle.RUNNING -> Everforest.BoldGold.copy(alpha = 0.42f)
+        ExecutionStepsLifecycle.WAITING_PERMISSION -> Everforest.Orange.copy(alpha = 0.42f)
+        ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING -> Everforest.Aqua.copy(alpha = 0.36f)
+        ExecutionStepsLifecycle.FAILED -> Everforest.Red.copy(alpha = 0.42f)
+        ExecutionStepsLifecycle.COMPLETED,
+        ExecutionStepsLifecycle.STOPPED,
+        ExecutionStepsLifecycle.INCOMPLETE -> Everforest.Bg3
     }
 
-    val activityLabel = remember(activeSession?.liveStatusText, inProgressEntry?.content) {
-        val cleanedLive = cleanLiveStatusForSteps(activeSession?.liveStatusText)
+    val activityLabel = remember(matchingSession?.liveStatusText, inProgressEntry?.content) {
+        val cleanedLive = cleanLiveStatusForSteps(matchingSession?.liveStatusText)
         when {
             cleanedLive.isNotEmpty() -> cleanedLive
             !inProgressEntry?.content.isNullOrBlank() -> inProgressEntry?.content.orEmpty()
             else -> "执行中…"
         }
     }
-    val startMs = activeSession?.turnStartedAt ?: activeSession?.updatedAt ?: nowMs
+    val startMs = matchingSession?.turnStartedAt ?: matchingSession?.updatedAt ?: nowMs
     val elapsedSec = ((nowMs - startMs) / 1000L).coerceAtLeast(0L)
     val progressFraction = (doneCount.toFloat() / total.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+    val isActiveTurn = lifecycle == ExecutionStepsLifecycle.RUNNING ||
+        lifecycle == ExecutionStepsLifecycle.WAITING_PERMISSION
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -149,7 +243,7 @@ internal fun ExecutionStepsCard(
                 .padding(horizontal = 11.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            // Header row: Spinner/Icon + progress counter + live activity + elapsed + actions + toggle
+            // Header row: Spinner/Icon + progress counter + semantic lifecycle label + actions + toggle
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -160,7 +254,7 @@ internal fun ExecutionStepsCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (isSessionRunning) {
+                if (isLiveRunning) {
                     val glyph = AGY_BRAILLE_SPINNER_FRAMES[tick % AGY_BRAILLE_SPINNER_FRAMES.size]
                     Text(
                         text = glyph,
@@ -170,10 +264,21 @@ internal fun ExecutionStepsCard(
                         color = Everforest.BoldGold,
                     )
                 } else {
-                    val (headerIcon, headerTint) = when {
-                        failedCount > 0 -> Icons.Rounded.ErrorOutline to Everforest.SoftRed
-                        allFinished -> Icons.Rounded.CheckCircle to Everforest.Green
-                        else -> Icons.Rounded.Checklist to Everforest.Aqua
+                    val (headerIcon, headerTint) = when (lifecycle) {
+                        ExecutionStepsLifecycle.WAITING_PERMISSION ->
+                            Icons.Rounded.PauseCircleOutline to Everforest.Orange
+                        ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING ->
+                            Icons.Rounded.Checklist to Everforest.Aqua
+                        ExecutionStepsLifecycle.COMPLETED ->
+                            Icons.Rounded.CheckCircle to Everforest.Green
+                        ExecutionStepsLifecycle.FAILED ->
+                            Icons.Rounded.ErrorOutline to Everforest.SoftRed
+                        ExecutionStepsLifecycle.STOPPED ->
+                            Icons.Rounded.StopCircle to Everforest.CommentGrey
+                        ExecutionStepsLifecycle.INCOMPLETE ->
+                            Icons.Rounded.Checklist to Everforest.CommentGrey
+                        ExecutionStepsLifecycle.RUNNING ->
+                            Icons.Rounded.Checklist to Everforest.BoldGold
                     }
                     Icon(
                         imageVector = headerIcon,
@@ -185,11 +290,14 @@ internal fun ExecutionStepsCard(
 
                 Text(
                     text = buildAnnotatedString {
-                        val countColor = when {
-                            isSessionRunning -> Everforest.BoldGold
-                            failedCount > 0 -> Everforest.SoftRed
-                            allFinished -> Everforest.Green
-                            else -> Everforest.Aqua
+                        val countColor = when (lifecycle) {
+                            ExecutionStepsLifecycle.RUNNING -> Everforest.BoldGold
+                            ExecutionStepsLifecycle.WAITING_PERMISSION -> Everforest.Orange
+                            ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING -> Everforest.Aqua
+                            ExecutionStepsLifecycle.COMPLETED -> Everforest.Green
+                            ExecutionStepsLifecycle.FAILED -> Everforest.SoftRed
+                            ExecutionStepsLifecycle.STOPPED,
+                            ExecutionStepsLifecycle.INCOMPLETE -> Everforest.Grey2
                         }
                         withStyle(
                             SpanStyle(
@@ -200,28 +308,52 @@ internal fun ExecutionStepsCard(
                         ) {
                             append("$doneCount/$total 步")
                         }
-                        if (isSessionRunning) {
-                            withStyle(SpanStyle(color = Everforest.Bg4)) { append(" · ") }
-                            withStyle(SpanStyle(color = Everforest.SoftSand, fontWeight = FontWeight.Medium)) {
-                                append(activityLabel)
-                            }
-                            withStyle(SpanStyle(color = Everforest.CommentGrey, fontFamily = FontFamily.Monospace)) {
-                                append(" ${formatStepElapsedSeconds(elapsedSec)}")
-                                if (outputTokens > 0) {
-                                    append(" · ↓ ${formatStepTokens(outputTokens)}")
+                        when (lifecycle) {
+                            ExecutionStepsLifecycle.RUNNING -> {
+                                withStyle(SpanStyle(color = Everforest.Bg4)) { append(" · ") }
+                                withStyle(SpanStyle(color = Everforest.SoftSand, fontWeight = FontWeight.Medium)) {
+                                    append(activityLabel)
+                                }
+                                withStyle(SpanStyle(color = Everforest.CommentGrey, fontFamily = FontFamily.Monospace)) {
+                                    append(" ${formatStepElapsedSeconds(elapsedSec)}")
+                                    if (outputTokens > 0) {
+                                        append(" · ↓ ${formatStepTokens(outputTokens)}")
+                                    }
                                 }
                             }
-                        } else if (failedCount > 0) {
-                            withStyle(SpanStyle(color = Everforest.SoftRed)) {
-                                append(" · 含 $failedCount 项失败")
+                            ExecutionStepsLifecycle.WAITING_PERMISSION -> {
+                                withStyle(SpanStyle(color = Everforest.Orange, fontWeight = FontWeight.Medium)) {
+                                    append(" · 等待权限确认")
+                                }
                             }
-                        } else if (allFinished) {
-                            withStyle(SpanStyle(color = Everforest.CommentGrey)) {
-                                append(" · 执行步骤已完成")
+                            ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING -> {
+                                withStyle(SpanStyle(color = Everforest.CommentGrey)) {
+                                    append(" · 待确认方案")
+                                }
                             }
-                        } else {
-                            withStyle(SpanStyle(color = Everforest.CommentGrey)) {
-                                append(" · 执行步骤")
+                            ExecutionStepsLifecycle.COMPLETED -> {
+                                withStyle(SpanStyle(color = Everforest.CommentGrey)) {
+                                    append(" · 执行步骤已完成")
+                                }
+                            }
+                            ExecutionStepsLifecycle.FAILED -> {
+                                withStyle(SpanStyle(color = Everforest.SoftRed)) {
+                                    if (failedCount > 0) {
+                                        append(" · 含 $failedCount 项失败")
+                                    } else {
+                                        append(" · 执行异常中断")
+                                    }
+                                }
+                            }
+                            ExecutionStepsLifecycle.STOPPED -> {
+                                withStyle(SpanStyle(color = Everforest.CommentGrey)) {
+                                    append(" · 已中断")
+                                }
+                            }
+                            ExecutionStepsLifecycle.INCOMPLETE -> {
+                                withStyle(SpanStyle(color = Everforest.CommentGrey)) {
+                                    append(" · 未完成")
+                                }
                             }
                         }
                     },
@@ -287,7 +419,7 @@ internal fun ExecutionStepsCard(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
-                    // Subtle Everforest progress hairline
+                    // Subtle Everforest progress hairline (only fakes minimum bar while actively running/waiting)
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -295,24 +427,31 @@ internal fun ExecutionStepsCard(
                             .clip(RoundedCornerShape(999.dp))
                             .background(Everforest.Bg2),
                     ) {
-                        if (progressFraction > 0f || isSessionRunning) {
+                        if (progressFraction > 0f || isActiveTurn) {
                             val visualFraction = if (progressFraction > 0f) {
                                 progressFraction
                             } else {
                                 (1f / (total * 2f)).coerceIn(0.08f, 0.25f)
+                            }
+                            val progressColor = when (lifecycle) {
+                                ExecutionStepsLifecycle.RUNNING -> when {
+                                    failedCount > 0 -> Everforest.SoftRed
+                                    allFinished -> Everforest.Green
+                                    else -> Everforest.BoldGold
+                                }
+                                ExecutionStepsLifecycle.WAITING_PERMISSION -> Everforest.Orange
+                                ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING -> Everforest.Aqua
+                                ExecutionStepsLifecycle.COMPLETED -> Everforest.Green
+                                ExecutionStepsLifecycle.FAILED -> Everforest.SoftRed
+                                ExecutionStepsLifecycle.STOPPED,
+                                ExecutionStepsLifecycle.INCOMPLETE -> Everforest.Grey0
                             }
                             Box(
                                 modifier = Modifier
                                     .fillMaxHeight()
                                     .fillMaxWidth(visualFraction)
                                     .clip(RoundedCornerShape(999.dp))
-                                    .background(
-                                        when {
-                                            failedCount > 0 -> Everforest.SoftRed
-                                            allFinished -> Everforest.Green
-                                            else -> Everforest.BoldGold
-                                        },
-                                    ),
+                                    .background(progressColor),
                             )
                         }
                     }
@@ -330,7 +469,7 @@ internal fun ExecutionStepsCard(
                                 ExecutionStepRow(
                                     index = index,
                                     entry = entry,
-                                    isSessionRunning = isSessionRunning,
+                                    lifecycle = lifecycle,
                                     pulseBright = pulseBright,
                                 )
                             }
@@ -346,13 +485,20 @@ internal fun ExecutionStepsCard(
 private fun ExecutionStepRow(
     index: Int,
     entry: PlanEntry,
-    isSessionRunning: Boolean,
+    lifecycle: ExecutionStepsLifecycle,
     pulseBright: Boolean,
 ) {
     val isInProgress = entry.status == "in_progress"
     val isCompleted = entry.status == "completed"
     val isSkipped = entry.status == "skipped"
     val isFailed = entry.status == "failed"
+
+    val isLiveRunningStep = isInProgress && lifecycle == ExecutionStepsLifecycle.RUNNING
+    val isWaitingPermissionStep = isInProgress && lifecycle == ExecutionStepsLifecycle.WAITING_PERMISSION
+    val isStoppedInProgressStep = isInProgress && !isLiveRunningStep && !isWaitingPermissionStep
+    val isInactiveLifecycle = lifecycle == ExecutionStepsLifecycle.STOPPED ||
+        lifecycle == ExecutionStepsLifecycle.FAILED ||
+        lifecycle == ExecutionStepsLifecycle.INCOMPLETE
 
     Row(
         modifier = Modifier
@@ -387,17 +533,40 @@ private fun ExecutionStepRow(
                         imageVector = Icons.Rounded.Check,
                         contentDescription = "已完成",
                         tint = Everforest.Green,
-                        modifier = Modifier.size(13.dp),
+                        modifier = Modifier
+                            .size(13.dp)
+                            .testTag("execution_step_status_completed_$index"),
                     )
                 }
-                isInProgress -> {
-                    val dotAlpha = if (isSessionRunning && !pulseBright) 0.45f else 1f
+                isLiveRunningStep -> {
+                    val dotAlpha = if (!pulseBright) 0.45f else 1f
                     Box(
                         modifier = Modifier
                             .size(7.5.dp)
                             .alpha(dotAlpha)
                             .clip(CircleShape)
-                            .background(Everforest.BoldGold),
+                            .background(Everforest.BoldGold)
+                            .testTag("execution_step_status_running_$index"),
+                    )
+                }
+                isWaitingPermissionStep -> {
+                    Icon(
+                        imageVector = Icons.Rounded.Pause,
+                        contentDescription = "等待权限确认",
+                        tint = Everforest.Orange,
+                        modifier = Modifier
+                            .size(13.dp)
+                            .testTag("execution_step_status_waiting_$index"),
+                    )
+                }
+                isStoppedInProgressStep -> {
+                    Icon(
+                        imageVector = Icons.Rounded.Stop,
+                        contentDescription = "已中断",
+                        tint = Everforest.CommentGrey,
+                        modifier = Modifier
+                            .size(12.dp)
+                            .testTag("execution_step_status_stopped_$index"),
                     )
                 }
                 isFailed -> {
@@ -405,7 +574,9 @@ private fun ExecutionStepRow(
                         imageVector = Icons.Rounded.Close,
                         contentDescription = "失败",
                         tint = Everforest.SoftRed,
-                        modifier = Modifier.size(13.dp),
+                        modifier = Modifier
+                            .size(13.dp)
+                            .testTag("execution_step_status_failed_$index"),
                     )
                 }
                 isSkipped -> {
@@ -414,13 +585,15 @@ private fun ExecutionStepRow(
                         fontSize = 12.sp,
                         fontFamily = FontFamily.Monospace,
                         color = Everforest.CommentGrey,
+                        modifier = Modifier.testTag("execution_step_status_skipped_$index"),
                     )
                 }
                 else -> {
                     Box(
                         modifier = Modifier
                             .size(7.dp)
-                            .border(1.2.dp, Everforest.Grey0, CircleShape),
+                            .border(1.2.dp, Everforest.Grey0, CircleShape)
+                            .testTag("execution_step_status_pending_$index"),
                     )
                 }
             }
@@ -430,13 +603,15 @@ private fun ExecutionStepRow(
             text = entry.content,
             fontSize = 12.5.sp,
             lineHeight = 18.sp,
-            fontWeight = if (isInProgress) FontWeight.Medium else FontWeight.Normal,
+            fontWeight = if (isLiveRunningStep || isWaitingPermissionStep) FontWeight.Medium else FontWeight.Normal,
             textDecoration = if (isSkipped) TextDecoration.LineThrough else TextDecoration.None,
             color = when {
-                isInProgress -> Everforest.Fg
+                isLiveRunningStep || isWaitingPermissionStep -> Everforest.Fg
+                isStoppedInProgressStep -> Everforest.CommentGrey
                 isFailed -> Everforest.SoftRed
                 isSkipped -> Everforest.CommentGrey
                 isCompleted -> Everforest.Grey2
+                isInactiveLifecycle -> Everforest.CommentGrey
                 else -> Everforest.Grey2
             },
             modifier = Modifier.weight(1f),
