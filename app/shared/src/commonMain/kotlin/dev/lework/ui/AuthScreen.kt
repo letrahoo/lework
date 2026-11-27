@@ -9,12 +9,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -23,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import dev.lework.platform.appVersionLabel
 import dev.lework.platform.canScanQrCode
 import dev.lework.platform.loadSavedTsnetControlUrl
+import dev.lework.protocol.PlatformType
 import dev.lework.store.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -37,6 +43,7 @@ internal fun AuthEntryView(
     onScanQr: () -> Unit = {},
     onStartTsnetLogin: (String?) -> Unit = {},
     onSearchTsnetPeers: () -> Unit = {},
+    onSelectTsnetHub: (String) -> Unit = {},
     onLogoutTsnet: () -> Unit = {},
     onSelectPairedHost: (String) -> Unit = {},
 ) {
@@ -143,6 +150,14 @@ internal fun AuthEntryView(
                                 )
                             }
                         }
+                        if (!state.connectionError.isNullOrBlank()) {
+                            Text(
+                                text = state.connectionError,
+                                fontSize = 12.5.sp,
+                                color = Everforest.Red,
+                                textAlign = TextAlign.Center,
+                            )
+                        }
                         Text(
                             text = state.authStatusText,
                             fontSize = 12.sp,
@@ -173,7 +188,10 @@ internal fun AuthEntryView(
                 }
 
                 // Quick Pairing & Same-Account Tailscale Mesh Actions
-                if (state.connectionStatus == ConnectionStatus.NEEDS_AUTH || state.connectionStatus == ConnectionStatus.ERROR) {
+                val showAuthOptions = state.connectionStatus == ConnectionStatus.NEEDS_AUTH ||
+                    state.connectionStatus == ConnectionStatus.ERROR ||
+                    (state.connectionStatus == ConnectionStatus.CONNECTING && state.discoveredTsnetHubs.isNotEmpty())
+                if (showAuthOptions) {
                     if (qrSupported) {
                         OutlinedButton(
                             onClick = onScanQr,
@@ -237,7 +255,13 @@ internal fun AuthEntryView(
                                         fontSize = 11.5.sp,
                                         color = Everforest.Green,
                                     )
-                                    if (state.tsnetStatus.peers.isNotEmpty()) {
+                                    if (state.discoveredTsnetHubs.isNotEmpty()) {
+                                        TsnetDiscoveredHubList(
+                                            hubs = state.discoveredTsnetHubs,
+                                            connectingHubId = state.connectingTsnetHubId,
+                                            onSelectHub = onSelectTsnetHub,
+                                        )
+                                    } else if (state.tsnetStatus.peers.isNotEmpty()) {
                                         Text(
                                             text = "节点：${state.tsnetStatus.peers.take(3).joinToString(", ") { it.hostName }}",
                                             fontSize = 11.sp,
@@ -252,14 +276,20 @@ internal fun AuthEntryView(
                                     ) {
                                         Button(
                                             onClick = onSearchTsnetPeers,
+                                            enabled = state.connectingTsnetHubId == null,
                                             colors = ButtonDefaults.buttonColors(
                                                 containerColor = Everforest.Bg3,
                                                 contentColor = Everforest.Fg,
                                             ),
                                             shape = RoundedCornerShape(10.dp),
-                                            modifier = Modifier.weight(1f),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("tsnet_search_button"),
                                         ) {
-                                            Text("搜索并握手", fontSize = 12.5.sp)
+                                            Text(
+                                                text = if (state.discoveredTsnetHubs.isNotEmpty()) "重新搜索节点" else "搜索并握手",
+                                                fontSize = 12.5.sp,
+                                            )
                                         }
                                         TextButton(onClick = onLogoutTsnet) {
                                             Text("退出账号", fontSize = 12.sp, color = Everforest.Grey1)
@@ -439,5 +469,173 @@ internal fun AuthEntryView(
                 )
             }
         }
+    }
+}
+
+internal fun tsnetPlatformLabel(platform: PlatformType, fallbackOs: String? = null): String? = when (platform) {
+    PlatformType.DARWIN -> "macOS"
+    PlatformType.LINUX -> "Linux"
+    PlatformType.WIN32 -> "Windows"
+    PlatformType.OTHER -> fallbackOs?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+@Composable
+internal fun TsnetDiscoveredHubList(
+    hubs: List<DiscoveredTsnetHub>,
+    connectingHubId: String?,
+    onSelectHub: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {}
+            .testTag("tsnet_discovered_hub_list"),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "发现 ${hubs.size} 台可用主机 · 点击选择连接",
+            fontSize = 11.5.sp,
+            fontWeight = FontWeight.Medium,
+            color = Everforest.BoldGold,
+        )
+        val isBusy = connectingHubId != null
+        for (item in hubs) {
+            val isConnectingThis = connectingHubId == item.hub.id
+            val shape = RoundedCornerShape(10.dp)
+            val platformLabel = tsnetPlatformLabel(item.hub.platform, item.os)
+            val subtitle = listOf(item.hostName.trim(), item.tailscaleIp.trim())
+                .filter { it.isNotEmpty() }
+                .joinToString(" · ")
+            Surface(
+                shape = shape,
+                color = if (isConnectingThis) Everforest.Bg2 else Everforest.Bg1,
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (isConnectingThis) Everforest.Green else Everforest.Bg3,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(shape)
+                    .testTag("tsnet_discovered_hub_${item.hub.id}")
+                    .clickable(enabled = !isBusy) { onSelectHub(item.hub.id) },
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = item.hub.name,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.BoldFg,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            if (platformLabel != null) {
+                                TsnetHostPill(
+                                    label = platformLabel,
+                                    containerColor = Everforest.Bg2,
+                                    borderColor = Everforest.Bg3,
+                                    textColor = Everforest.Grey2,
+                                )
+                            }
+                        }
+                        if (item.tailscaleSameUser || item.isCurrentActive || item.alreadyPaired) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                if (item.tailscaleSameUser) {
+                                    TsnetHostPill(
+                                        label = "同账号免密",
+                                        containerColor = Everforest.BgGreen,
+                                        borderColor = Everforest.Green.copy(alpha = 0.45f),
+                                        textColor = Everforest.Green,
+                                    )
+                                }
+                                if (item.isCurrentActive) {
+                                    TsnetHostPill(
+                                        label = "当前主机",
+                                        containerColor = Everforest.BgYellow,
+                                        borderColor = Everforest.BoldGold.copy(alpha = 0.45f),
+                                        textColor = Everforest.BoldGold,
+                                    )
+                                } else if (item.alreadyPaired) {
+                                    TsnetHostPill(
+                                        label = "已配对",
+                                        containerColor = Everforest.BgBlue,
+                                        borderColor = Everforest.Blue.copy(alpha = 0.45f),
+                                        textColor = Everforest.Blue,
+                                    )
+                                }
+                            }
+                        }
+                        if (subtitle.isNotEmpty()) {
+                            Text(
+                                text = subtitle,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Everforest.Grey1,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    if (isConnectingThis) {
+                        CircularProgressIndicator(
+                            color = Everforest.Green,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier
+                                .size(16.dp)
+                                .semantics(mergeDescendants = true) {}
+                                .testTag("tsnet_discovered_hub_loading_${item.hub.id}"),
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = if (isBusy) Everforest.Grey0 else Everforest.Grey1,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TsnetHostPill(
+    label: String,
+    containerColor: Color,
+    borderColor: Color,
+    textColor: Color,
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = containerColor,
+        border = BorderStroke(0.5.dp, borderColor),
+    ) {
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            color = textColor,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp),
+        )
     }
 }

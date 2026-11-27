@@ -102,6 +102,22 @@ data class PendingDeepLinkPairing(
     val shortFingerprint: String?,
 )
 
+data class DiscoveredTsnetHub(
+    val hub: HubInfo,
+    val baseUrl: String,
+    val wsUrl: String,
+    val hostName: String,
+    val tailscaleIp: String,
+    val os: String? = null,
+    val tailscaleSameUser: Boolean,
+    val tailscaleUser: String? = null,
+    val oauthEnabled: Boolean = false,
+    val oauthProvider: String? = null,
+    val oauthDisplayName: String? = null,
+    val alreadyPaired: Boolean = false,
+    val isCurrentActive: Boolean = false,
+)
+
 sealed interface ChatTimelineItem {
     val id: String
     val ts: Long
@@ -389,6 +405,8 @@ data class ConsoleUiState(
     // Embedded Tailscale `tsnet` mesh & multi-host asset book
     val tsnetStatus: MobileTsnetStatus = MobileTsnetStatus(available = isMobileTsnetAvailable()),
     val tsnetLoggingIn: Boolean = false,
+    val discoveredTsnetHubs: List<DiscoveredTsnetHub> = emptyList(),
+    val connectingTsnetHubId: String? = null,
     val pairedHosts: List<PairedHost> = loadPairedHosts(),
     val activeHostId: String? = loadActiveHostId(),
     // Composer `@file` autocomplete, image attachments & signing expiry reminder

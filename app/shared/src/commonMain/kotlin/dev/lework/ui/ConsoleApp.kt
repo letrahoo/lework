@@ -168,6 +168,7 @@ private fun MobileConsoleApp(
             onScanQr = store::scanQrAndPair,
             onStartTsnetLogin = store::startMobileTsnetLogin,
             onSearchTsnetPeers = store::searchAndConnectViaTsnet,
+            onSelectTsnetHub = store::selectDiscoveredTsnetHub,
             onLogoutTsnet = store::logoutMobileTsnetAccount,
             onSelectPairedHost = store::switchPairedHost,
         )

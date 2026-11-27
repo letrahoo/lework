@@ -198,7 +198,9 @@ class ConsoleStore(
         }
         scope.launch {
             observeBonjourHubUrls().collect { urls ->
-                if (!manualPairingMode && urls.isNotEmpty() && !_state.value.hasEnteredWorkspace && _state.value.connectionStatus == ConnectionStatus.ERROR) {
+                if (!manualPairingMode && urls.isNotEmpty() && !_state.value.hasEnteredWorkspace &&
+                    _state.value.discoveredTsnetHubs.isEmpty() && _state.value.connectionStatus == ConnectionStatus.ERROR
+                ) {
                     val nowMs = epochMillis()
                     if (consecutiveBonjourAutoRetries >= MAX_CONSECUTIVE_BONJOUR_AUTO_RETRIES) {
                         logRuntimeEvent(
@@ -299,7 +301,7 @@ class ConsoleStore(
                         logRuntimeEvent("NET", "handoff -> verifyAndResumeForegroundSession(fromNetworkHandoff=true)")
                         resumeJob?.cancel()
                         verifyAndResumeForegroundSession(fromNetworkHandoff = true)
-                    } else if (!cur.hasEnteredWorkspace && cur.connectionStatus == ConnectionStatus.ERROR) {
+                    } else if (!cur.hasEnteredWorkspace && cur.discoveredTsnetHubs.isEmpty() && cur.connectionStatus == ConnectionStatus.ERROR) {
                         logRuntimeEvent("NET", "handoff -> bootstrapOrConnect (recovering from ERROR)")
                         bootstrapOrConnectInternal(loadActiveHostId(), trigger = "network_handoff")
                     }
@@ -652,6 +654,8 @@ class ConsoleStore(
             it.copy(
                 connectionStatus = ConnectionStatus.DISCOVERING,
                 connectionError = null,
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
                 pairedHosts = loadPairedHosts(),
                 activeHostId = preferredHubId,
                 tsnetStatus = it.tsnetStatus.copy(available = isMobileTsnetAvailable()),
@@ -765,6 +769,8 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 tsnetLoggingIn = true,
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.NEEDS_AUTH,
                 connectionError = null,
                 authStatusText = "正在启动内置 Tailscale 组网节点…",
@@ -825,11 +831,14 @@ class ConsoleStore(
     /**
      * Exclusively searches untagged Tailscale peers under the exact same account via `tsnet`,
      * probes their `:64450` Hub endpoints directly (never hijacked by LAN / OAuth / old relays),
-     * and performs zero-touch same-account handshake.
+     * auto-connects when a single unique Hub responds, or presents an explicit picker when multiple Hubs exist.
      */
     fun searchAndConnectViaTsnet() {
         if (!isMobileTsnetAvailable()) return
-        if (discoverJob?.isActive == true && _state.value.authStatusText.contains("Tailscale")) {
+        if (discoverJob?.isActive == true &&
+            _state.value.connectingTsnetHubId == null &&
+            _state.value.authStatusText.contains("Tailscale")
+        ) {
             return
         }
         discoverJob?.cancel()
@@ -840,6 +849,8 @@ class ConsoleStore(
             _state.update {
                 it.copy(
                     tsnetLoggingIn = false,
+                    discoveredTsnetHubs = emptyList(),
+                    connectingTsnetHubId = null,
                     connectionStatus = ConnectionStatus.CONNECTING,
                     connectionError = null,
                     oauthChallenge = null,
@@ -883,7 +894,7 @@ class ConsoleStore(
             }
 
             var currentCandidates = candidates
-            var probed = emptyList<Pair<dev.lework.platform.MobileTsnetPeer, dev.lework.transport.DiscoveredEndpoint>>()
+            var probed = emptyList<Pair<MobileTsnetPeer, dev.lework.transport.DiscoveredEndpoint>>()
             // Newly authorized or freshly woken tsnet nodes can flip to "Running" 1–3s before
             // remote peers receive the new WireGuard public key via Tailscale NetMap or DERP warms up.
             // Probe non-mobile desktop/server hosts first with a 12s window so cold 5G DERP handshakes
@@ -950,70 +961,212 @@ class ConsoleStore(
                 return@launch
             }
 
-            val (_, chosen) = probed.firstOrNull { it.second.discover.tailscaleSameUser } ?: probed.first()
-            _state.update {
-                it.copy(
-                    discoveredBaseUrl = chosen.baseUrl,
-                    discoveredWsUrl = chosen.wsUrl,
-                    oauthEnabled = chosen.discover.oauthEnabled,
-                    oauthProvider = chosen.discover.oauthProvider,
-                    oauthDisplayName = chosen.discover.oauthDisplayName,
-                    hub = chosen.discover.hub,
+            val pairedHostIds = loadPairedHosts().map { it.hubId }.toSet()
+            val activeHostId = loadActiveHostId()
+            val dedupedByHubId = linkedMapOf<String, Pair<MobileTsnetPeer, dev.lework.transport.DiscoveredEndpoint>>()
+            for (entry in probed) {
+                val key = entry.second.discover.hub.id.ifBlank { entry.second.baseUrl }
+                val existing = dedupedByHubId[key]
+                if (existing == null || (!existing.second.discover.tailscaleSameUser && entry.second.discover.tailscaleSameUser)) {
+                    dedupedByHubId[key] = entry
+                }
+            }
+
+            val uniqueHubs = dedupedByHubId.values.map { (peer, ep) ->
+                val hub = ep.discover.hub
+                DiscoveredTsnetHub(
+                    hub = hub,
+                    baseUrl = ep.baseUrl,
+                    wsUrl = ep.wsUrl,
+                    hostName = peer.hostName.ifBlank { hub.name },
+                    tailscaleIp = peer.tailscaleIp,
+                    os = peer.os.takeIf { it.isNotBlank() },
+                    tailscaleSameUser = ep.discover.tailscaleSameUser,
+                    tailscaleUser = ep.discover.tailscaleUser,
+                    oauthEnabled = ep.discover.oauthEnabled,
+                    oauthProvider = ep.discover.oauthProvider,
+                    oauthDisplayName = ep.discover.oauthDisplayName,
+                    alreadyPaired = hub.id in pairedHostIds,
+                    isCurrentActive = activeHostId != null && hub.id == activeHostId,
                 )
             }
 
-            var lastErr: String? = null
-            if (chosen.discover.tailscaleSameUser) {
-                _state.update {
-                    it.copy(
-                        authStatusText = "已验证同账号主机 ${chosen.discover.hub.name}，正在签发设备凭证…",
-                    )
-                }
-                runCatching {
-                    rpc.authenticateViaTailscale(chosen.baseUrl, platformName())
-                }.onSuccess { hs ->
-                    val userName = hs.user?.name ?: chosen.discover.tailscaleUser ?: status.displayName ?: "Owner"
-                    saveAuthSession(hs.accessToken, userName)
-                    saveHostAccessToken(hs.hub.id, hs.accessToken)
-                    upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
-                    _state.update { it.copy(authUserName = userName) }
-                    if (connectWithToken(
-                            chosen.wsUrl,
-                            hs.accessToken,
-                            expectedHubId = hs.hub.id,
-                            expectedFingerprint = hs.fingerprint,
-                        )
-                    ) {
-                        return@launch
-                    }
-                }.onFailure { err ->
-                    lastErr = err.message
-                }
-            }
-
-            val existingToken = loadHostAccessToken(chosen.discover.hub.id) ?: loadSavedAccessToken()
-            if (!existingToken.isNullOrBlank() &&
-                connectWithToken(chosen.wsUrl, existingToken, expectedHubId = chosen.discover.hub.id)
-            ) {
+            if (uniqueHubs.size == 1) {
+                connectToDiscoveredTsnetHub(uniqueHubs.single(), status.displayName)
                 return@launch
             }
 
+            logRuntimeEvent(
+                "TSNET",
+                "discovered multiple hubs count=${uniqueHubs.size} ids=${uniqueHubs.joinToString(",") { it.hub.id }}",
+            )
             _state.update {
                 it.copy(
-                    connectionStatus = ConnectionStatus.ERROR,
-                    connectionError = lastErr
-                        ?: "已连通主机 ${chosen.discover.hub.name}，但主机端未开启同账号校验，请在电脑执行：lework tsnet login",
+                    connectionStatus = ConnectionStatus.NEEDS_AUTH,
+                    discoveredTsnetHubs = uniqueHubs,
+                    connectingTsnetHubId = null,
+                    connectionError = null,
+                    oauthEnabled = false,
+                    oauthChallenge = null,
+                    authStatusText = "发现 ${uniqueHubs.size} 台可用主机，请选择要连接的设备",
                 )
             }
         }
     }
 
+    fun selectDiscoveredTsnetHub(hubId: String) {
+        val current = _state.value
+        if (current.connectingTsnetHubId != null) return
+        val target = current.discoveredTsnetHubs.firstOrNull { it.hub.id == hubId } ?: return
+        logRuntimeEvent("TSNET", "selectDiscoveredTsnetHub hubId=${target.hub.id} host=${target.hostName}")
+        discoverJob?.cancel()
+        oauthPollJob?.cancel()
+        tsnetPollJob?.cancel()
+        _state.update {
+            it.copy(
+                connectingTsnetHubId = target.hub.id,
+                connectionStatus = ConnectionStatus.CONNECTING,
+                connectionError = null,
+                oauthChallenge = null,
+                authStatusText = "正在通过 Tailscale 连接主机 ${target.hub.name}…",
+            )
+        }
+        discoverJob = scope.launch {
+            try {
+                connectToDiscoveredTsnetHub(target, _state.value.tsnetStatus.displayName)
+            } finally {
+                _state.update { s ->
+                    if (s.connectingTsnetHubId == target.hub.id) s.copy(connectingTsnetHubId = null) else s
+                }
+            }
+        }
+    }
+
+    private suspend fun connectToDiscoveredTsnetHub(
+        target: DiscoveredTsnetHub,
+        statusDisplayName: String?,
+    ) {
+        _state.update {
+            it.copy(
+                discoveredBaseUrl = target.baseUrl,
+                discoveredWsUrl = target.wsUrl,
+                oauthEnabled = target.oauthEnabled,
+                oauthProvider = target.oauthProvider,
+                oauthDisplayName = target.oauthDisplayName,
+                hub = target.hub,
+                connectionStatus = ConnectionStatus.CONNECTING,
+                connectionError = null,
+                oauthChallenge = null,
+            )
+        }
+
+        var lastErr: String? = null
+        var handshakeConnectAttempted = false
+        if (target.tailscaleSameUser) {
+            _state.update {
+                it.copy(
+                    authStatusText = "已验证同账号主机 ${target.hub.name}，正在签发设备凭证…",
+                )
+            }
+            val hsResult = try {
+                Result.success(rpc.authenticateViaTailscale(target.baseUrl, platformName()))
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                Result.failure(t)
+            }
+            hsResult.onSuccess { hs ->
+                val userName = hs.user?.name ?: target.tailscaleUser ?: statusDisplayName ?: "Owner"
+                saveAuthSession(hs.accessToken, userName)
+                saveHostAccessToken(hs.hub.id, hs.accessToken)
+                upsertPairedHost(hs.hub, hs.fingerprint, hs.endpoints, userName)
+                _state.update { it.copy(authUserName = userName) }
+                handshakeConnectAttempted = true
+                if (connectWithToken(
+                        target.wsUrl,
+                        hs.accessToken,
+                        expectedHubId = hs.hub.id,
+                        expectedFingerprint = hs.fingerprint,
+                    )
+                ) {
+                    return
+                }
+                lastErr = _state.value.connectionError
+            }.onFailure { err ->
+                lastErr = err.message ?: "Tailscale 同账号握手失败"
+            }
+        }
+
+        if (!handshakeConnectAttempted) {
+            val existingToken = if (target.tailscaleSameUser) {
+                // Only fall back to a token specifically issued for this exact Hub when same-user handshake fails;
+                // never leak another host's global access token to an unrelated Hub.
+                loadHostAccessToken(target.hub.id)
+            } else {
+                loadHostAccessToken(target.hub.id) ?: loadSavedAccessToken()
+            }
+            if (!existingToken.isNullOrBlank()) {
+                if (connectWithToken(target.wsUrl, existingToken, expectedHubId = target.hub.id)) {
+                    return
+                }
+                lastErr = lastErr ?: _state.value.connectionError
+            }
+        }
+
+        if (!target.tailscaleSameUser && target.oauthEnabled) {
+            _state.update {
+                it.copy(
+                    connectingTsnetHubId = null,
+                    connectionError = null,
+                )
+            }
+            startOAuthLoginFlow(target.baseUrl, target.wsUrl)
+            return
+        }
+
+        _state.update {
+            it.copy(
+                connectingTsnetHubId = null,
+                connectionStatus = ConnectionStatus.ERROR,
+                connectionError = lastErr
+                    ?: "已连通主机 ${target.hub.name}，但主机端未开启同账号校验，请在电脑执行：lework tsnet login",
+            )
+        }
+    }
+
     fun logoutMobileTsnetAccount() {
+        val current = _state.value
+        val activeTsnetWork =
+            current.discoveredTsnetHubs.isNotEmpty() ||
+                current.connectingTsnetHubId != null ||
+                (discoverJob?.isActive == true && current.authStatusText.contains("Tailscale"))
+        if (activeTsnetWork) {
+            discoverJob?.cancel()
+        }
         tsnetPollJob?.cancel()
         saveTsnetEnabled(false)
+        _state.update { s ->
+            s.copy(
+                tsnetLoggingIn = false,
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
+                connectionStatus = if (!s.hasEnteredWorkspace && (s.connectingTsnetHubId != null || activeTsnetWork)) {
+                    ConnectionStatus.NEEDS_AUTH
+                } else {
+                    s.connectionStatus
+                },
+            )
+        }
         scope.launch {
             val st = logoutMobileTsnet()
-            _state.update { it.copy(tsnetStatus = st, tsnetLoggingIn = false) }
+            _state.update {
+                it.copy(
+                    tsnetStatus = st,
+                    tsnetLoggingIn = false,
+                    discoveredTsnetHubs = emptyList(),
+                    connectingTsnetHubId = null,
+                )
+            }
         }
     }
 
@@ -1049,6 +1202,8 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 sshPairingInProgress = true,
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.CONNECTING,
                 connectionError = null,
                 authStatusText = "正在通过 SSH 连接 $clean 自动获取一次性配对凭证…",
@@ -1161,6 +1316,8 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 hasEnteredWorkspace = false,
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.CONNECTING,
                 connectionError = null,
                 authStatusText = "正在与主机 ${payload.name.ifBlank { "Lework Hub" }} 验证指纹并建立安全连接…",
@@ -1244,6 +1401,8 @@ class ConsoleStore(
         _state.update {
             it.copy(
                 hasEnteredWorkspace = false,
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.DISCOVERING,
                 connectionError = null,
                 turnRecoveryBanner = null,
@@ -1279,6 +1438,8 @@ class ConsoleStore(
                 retryingTurn = false,
                 discoveredBaseUrl = "",
                 discoveredWsUrl = "",
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
                 pairedHosts = loadPairedHosts(),
                 sshConfigHosts = listSshConfigHosts(),
                 tsnetLoggingIn = false,
@@ -1378,7 +1539,14 @@ class ConsoleStore(
             saveAuthSession(token, "Owner")
             if (baseUrl.isNotBlank()) {
                 val wsUrl = hubWsUrlOf(baseUrl)
-                _state.update { it.copy(discoveredBaseUrl = baseUrl, discoveredWsUrl = wsUrl) }
+                _state.update {
+                    it.copy(
+                        discoveredBaseUrl = baseUrl,
+                        discoveredWsUrl = wsUrl,
+                        discoveredTsnetHubs = emptyList(),
+                        connectingTsnetHubId = null,
+                    )
+                }
                 discoverJob?.cancel()
                 oauthPollJob?.cancel()
                 discoverJob = scope.launch {
@@ -1388,7 +1556,14 @@ class ConsoleStore(
             }
         } else if (baseUrl.isNotBlank()) {
             val wsUrl = hubWsUrlOf(baseUrl)
-            _state.update { it.copy(discoveredBaseUrl = baseUrl, discoveredWsUrl = wsUrl) }
+            _state.update {
+                it.copy(
+                    discoveredBaseUrl = baseUrl,
+                    discoveredWsUrl = wsUrl,
+                    discoveredTsnetHubs = emptyList(),
+                    connectingTsnetHubId = null,
+                )
+            }
         }
         bootstrapOrConnect()
     }
@@ -1726,6 +1901,8 @@ class ConsoleStore(
             it.copy(
                 hasEnteredWorkspace = false,
                 authUserName = null,
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
                 connectionStatus = ConnectionStatus.NEEDS_AUTH,
                 connectionError = null,
                 turnRecoveryBanner = null,
@@ -1753,6 +1930,8 @@ class ConsoleStore(
         HubTrust.clearPins()
         _state.update {
             it.copy(
+                discoveredTsnetHubs = emptyList(),
+                connectingTsnetHubId = null,
                 pairedHosts = emptyList(),
                 activeHostId = null,
             )
@@ -1886,6 +2065,8 @@ class ConsoleStore(
                     hasEnteredWorkspace = true,
                     connectionStatus = ConnectionStatus.CONNECTED,
                     connectionError = null,
+                    discoveredTsnetHubs = emptyList(),
+                    connectingTsnetHubId = null,
                     hubFingerprint = HubTrust.observedFor(baseUrl)?.let { HubAttestation.shortFingerprint(it) },
                     hub = status.hub,
                     slaves = status.slaves,

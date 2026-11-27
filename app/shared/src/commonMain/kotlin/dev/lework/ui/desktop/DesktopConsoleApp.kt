@@ -138,6 +138,7 @@ internal fun DesktopConsoleApp(
             onPairViaSsh = store::pairViaSshHost,
             onStartTsnetLogin = store::startMobileTsnetLogin,
             onSearchTsnetPeers = store::searchAndConnectViaTsnet,
+            onSelectTsnetHub = store::selectDiscoveredTsnetHub,
             onLogoutTsnet = store::logoutMobileTsnetAccount,
             onSelectPairedHost = store::switchPairedHost,
         )
