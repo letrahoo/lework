@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lework Architecture Diagram</title>
+<style>
+  :root {
+    --bg-0: #151b1f;
+    --bg-1: #1c2429;
+    --bg-2: #232d33;
+    --bg-3: #2a363d;
+    --border: rgba(211, 198, 170, 0.14);
+    --border-strong: rgba(211, 198, 170, 0.25);
+    --text-main: #e6dec8;
+    --text-sub: #aeb8ad;
+    --text-muted: #84928a;
+    --gold: #e6c384;
+    --gold-bd: rgba(230, 195, 132, 0.38);
+    --green: #83c995;
+    --green-bd: rgba(131, 201, 149, 0.35);
+    --teal: #7fbbb3;
+    --teal-bd: rgba(127, 187, 179, 0.35);
+    --orange: #e69875;
+    --orange-bd: rgba(230, 152, 117, 0.35);
+    --plum: #d699b6;
+    --plum-bd: rgba(214, 153, 182, 0.35);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 1920px;
+    min-height: 100%;
+    background-color: var(--bg-0);
+  }
+
+  body {
+    width: 1920px;
+    background-color: var(--bg-0);
+    background-image:
+      radial-gradient(ellipse 920px 440px at 20% 0%, rgba(131, 201, 149, 0.095), transparent 70%),
+      radial-gradient(ellipse 780px 380px at 84% 5%, rgba(230, 195, 132, 0.095), transparent 70%),
+      radial-gradient(circle, rgba(211, 198, 170, 0.055) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 24px 24px;
+    color: var(--text-main);
+    font-family: "PingFang SC", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 26px 34px 24px;
+    position: relative;
+  }
+
+  .mono {
+    font-family: "JetBrainsMono Nerd Font", "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 16px;
+    margin-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .brand-logo {
+    width: 54px;
+    height: 54px;
+    border-radius: 13px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.48);
+    flex-shrink: 0;
+  }
+
+  .brand-title {
+    font-size: 25px;
+    font-weight: 700;
+    letter-spacing: 0.25px;
+    color: var(--text-main);
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+
+  .brand-title .accent {
+    font-size: 14.5px;
+    font-weight: 500;
+    color: var(--gold);
+    letter-spacing: 0.35px;
+  }
+
+  .brand-sub {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--text-sub);
+  }
+
+  .metrics {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .metric-pill {
+    background: var(--bg-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 7px 13px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 112px;
+  }
+
+  .metric-pill .val {
+    font-size: 15.5px;
+    font-weight: 700;
+    color: var(--gold);
+    line-height: 1.15;
+  }
+
+  .metric-pill .lbl {
+    font-size: 11px;
+    color: var(--text-sub);
+    margin-top: 2px;
+    white-space: nowrap;
+  }
+
+  /* Main layout */
+  .canvas {
+    display: grid;
+    grid-template-columns: 1336px 464px;
+    gap: 52px;
+    position: relative;
+    z-index: 2;
+  }
+
+  .left-stack {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+
+  .right-stack {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  /* Layer container */
+  .layer {
+    border-radius: 14px;
+    padding: 13px 15px 14px;
+    position: relative;
+    background: linear-gradient(180deg, rgba(35, 45, 51, 0.93), rgba(26, 34, 39, 0.96));
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+  }
+
+  .layer.green { border: 1px solid var(--green-bd); }
+  .layer.teal { border: 1px solid var(--teal-bd); }
+  .layer.orange { border: 1px solid var(--orange-bd); }
+  .layer.plum { border: 1px solid var(--plum-bd); }
+  .layer.gold { border: 1px solid var(--gold-bd); }
+
+  .layer-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .layer-title {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 14.5px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+  }
+
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .layer.green .dot { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  .layer.teal .dot { background: var(--teal); box-shadow: 0 0 10px var(--teal); }
+  .layer.orange .dot { background: var(--orange); box-shadow: 0 0 10px var(--orange); }
+  .layer.plum .dot { background: var(--plum); box-shadow: 0 0 10px var(--plum); }
+  .layer.gold .dot { background: var(--gold); box-shadow: 0 0 10px var(--gold); }
+
+  .layer.green .layer-title { color: var(--green); }
+  .layer.teal .layer-title { color: var(--teal); }
+  .layer.orange .layer-title { color: var(--orange); }
+  .layer.plum .layer-title { color: var(--plum); }
+  .layer.gold .layer-title { color: var(--gold); }
+
+  .layer-badge {
+    font-size: 10.5px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    color: var(--text-sub);
+    background: rgba(21, 27, 31, 0.78);
+    white-space: nowrap;
+  }
+
+  /* Grids & Cards */
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+
+  .card {
+    background: rgba(22, 29, 33, 0.88);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 9px 11px;
+  }
+
+  .card.highlight-green { border-color: rgba(131, 201, 149, 0.28); background: rgba(131, 201, 149, 0.05); }
+  .card.highlight-teal { border-color: rgba(127, 187, 179, 0.28); background: rgba(127, 187, 179, 0.05); }
+  .card.highlight-orange { border-color: rgba(230, 152, 117, 0.28); background: rgba(230, 152, 117, 0.05); }
+  .card.highlight-plum { border-color: rgba(214, 153, 182, 0.30); background: rgba(214, 153, 182, 0.055); }
+  .card.muted { border-style: dashed; border-color: rgba(211, 198, 170, 0.20); background: rgba(22, 29, 33, 0.58); }
+
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 5px;
+  }
+
+  .card-title {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--text-main);
+  }
+
+  .card-path {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .card-body {
+    font-size: 11.2px;
+    line-height: 1.48;
+    color: var(--text-sub);
+  }
+
+  .engine-tag {
+    font-size: 9.5px;
+    padding: 1.5px 6px;
+    border-radius: 5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .engine-tag.prod {
+    color: var(--plum);
+    background: rgba(214, 153, 182, 0.14);
+    border: 1px solid rgba(214, 153, 182, 0.35);
+  }
+
+  .engine-tag.dev {
+    color: var(--text-muted);
+    background: rgba(132, 146, 138, 0.12);
+    border: 1px solid rgba(132, 146, 138, 0.28);
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .chip {
+    font-size: 10.2px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: rgba(42, 54, 61, 0.85);
+    border: 1px solid rgba(211, 198, 170, 0.14);
+    color: var(--text-main);
+    white-space: nowrap;
+  }
+
+  .chip.gold { color: var(--gold); border-color: rgba(230, 195, 132, 0.32); background: rgba(230, 195, 132, 0.08); }
+  .chip.orange { color: var(--orange); border-color: rgba(230, 152, 117, 0.32); background: rgba(230, 152, 117, 0.08); }
+
+  /* Shared KMP box */
+  .shared-box {
+    margin-top: 9px;
+    border: 1px dashed rgba(131, 201, 149, 0.44);
+    border-radius: 11px;
+    padding: 9px 11px;
+    background: rgba(19, 26, 29, 0.74);
+  }
+
+  .shared-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 7px;
+  }
+
+  .shared-label {
+    font-size: 11.8px;
+    font-weight: 700;
+    color: var(--green);
+  }
+
+  /* Hub gateway strip */
+  .gateway-strip {
+    background: rgba(230, 152, 117, 0.075);
+    border: 1px solid rgba(230, 152, 117, 0.34);
+    border-radius: 10px;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 9px;
+  }
+
+  .gateway-left {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 12.2px;
+    font-weight: 700;
+    color: var(--text-main);
+    white-space: nowrap;
+  }
+
+  .gateway-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    justify-content: flex-end;
+  }
+
+  /* Connectors between tiers */
+  .tier-connector {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .conn-pill {
+    background: var(--bg-1);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 3.5px 14px;
+    font-size: 10.8px;
+    color: var(--text-sub);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    position: relative;
+    z-index: 3;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.32);
+  }
+
+  .conn-pill strong {
+    color: var(--gold);
+    font-weight: 600;
+  }
+
+  .flow-dir {
+    position: absolute;
+    font-size: 10px;
+    color: var(--text-muted);
+    background: var(--bg-0);
+    padding: 1px 6px;
+    border-radius: 4px;
+    z-index: 3;
+    white-space: nowrap;
+  }
+
+  .flow-dir.left { left: 26px; }
+  .flow-dir.right { right: 26px; }
+
+  /* Host env strip */
+  .host-strip {
+    margin-top: 9px;
+    background: rgba(20, 26, 30, 0.88);
+    border: 1px solid rgba(214, 153, 182, 0.28);
+    border-radius: 10px;
+    padding: 7.5px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .host-strip-title {
+    font-size: 11.8px;
+    font-weight: 700;
+    color: var(--plum);
+    white-space: nowrap;
+  }
+
+  .host-strip-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    font-size: 11px;
+  }
+
+  .host-strip-items span {
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: rgba(42, 54, 61, 0.68);
+    border: 1px solid var(--border);
+    color: var(--text-main);
+  }
+
+  /* Right sidebar */
+  .codegen-flow {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .codegen-box {
+    background: rgba(21, 27, 31, 0.84);
+    border: 1px solid rgba(230, 195, 132, 0.28);
+    border-radius: 9px;
+    padding: 8px 10px;
+  }
+
+  .codegen-outputs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7px;
+    margin-top: 6px;
+  }
+
+  .codegen-out {
+    background: rgba(42, 54, 61, 0.72);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 5.5px 8px;
+  }
+
+  .codegen-out .t { color: var(--gold); font-weight: 600; font-size: 10.8px; }
+  .codegen-out .s { color: var(--text-sub); font-size: 10.2px; margin-top: 1px; }
+
+  .rpc-summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 7px;
+  }
+
+  .rpc-stat {
+    background: rgba(230, 195, 132, 0.065);
+    border: 1px solid rgba(230, 195, 132, 0.25);
+    border-radius: 8px;
+    padding: 6px 8px;
+    text-align: center;
+  }
+
+  .rpc-stat .n { font-size: 16.5px; font-weight: 700; color: var(--gold); line-height: 1.1; }
+  .rpc-stat .d { font-size: 10.2px; color: var(--text-sub); margin-top: 2px; }
+
+  .scenario-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7.5px;
+  }
+
+  .scenario-item {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    background: rgba(21, 27, 31, 0.8);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 7.5px 10px;
+  }
+
+  .sc-num {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: rgba(131, 201, 149, 0.14);
+    border: 1px solid rgba(131, 201, 149, 0.36);
+    color: var(--green);
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .sc-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-main);
+    line-height: 1.25;
+  }
+
+  .sc-desc {
+    font-size: 10.8px;
+    color: var(--text-sub);
+    margin-top: 2px;
+    line-height: 1.38;
+  }
+
+  .security-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7.5px;
+  }
+
+  .sec-item {
+    background: rgba(21, 27, 31, 0.82);
+    border: 1px solid rgba(127, 187, 179, 0.25);
+    border-radius: 8px;
+    padding: 7.5px 9.5px;
+  }
+
+  .sec-item .st {
+    font-size: 11.2px;
+    font-weight: 700;
+    color: var(--teal);
+    margin-bottom: 2px;
+  }
+
+  .sec-item .sd {
+    font-size: 10.3px;
+    color: var(--text-sub);
+    line-height: 1.38;
+  }
+
+  /* Overlay SVG for pixel-accurate arrows & gutter pills */
+  #arrow-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 4;
+  }
+
+  .footer {
+    margin-top: 14px;
+    padding-top: 9px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+</style>
+</head>
+<body>
+<svg id="arrow-overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+<div id="root"></div>
+
+<script>
+const LOGO_SVG = `
+<svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="0" x2="920" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#252E34"/><stop offset="52%" stop-color="#1C2327"/><stop offset="100%" stop-color="#13191C"/>
+    </linearGradient>
+    <linearGradient id="goldV" x1="210" y1="205" x2="380" y2="815" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F8E3B5"/><stop offset="52%" stop-color="#E8C688"/><stop offset="100%" stop-color="#CFA45D"/>
+    </linearGradient>
+    <linearGradient id="goldH" x1="210" y1="650" x2="820" y2="815" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F6DFB0"/><stop offset="55%" stop-color="#E4BE7C"/><stop offset="100%" stop-color="#C69850"/>
+    </linearGradient>
+    <linearGradient id="greenTop" x1="490" y1="265" x2="755" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#B9F0C6"/><stop offset="55%" stop-color="#8BD29D"/><stop offset="100%" stop-color="#6EB883"/>
+    </linearGradient>
+    <linearGradient id="greenBot" x1="755" y1="420" x2="490" y2="575" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#74BD88"/><stop offset="55%" stop-color="#5CA472"/><stop offset="100%" stop-color="#47895C"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <rect x="6" y="6" width="1012" height="1012" rx="224" stroke="#E8DFCC" stroke-opacity="0.18" stroke-width="12"/>
+  <path d="M210 342 L358 202 L358 648 L210 790 Z" fill="url(#goldV)"/>
+  <path d="M372 662 L818 662 L680 810 L224 810 Z" fill="url(#goldH)"/>
+  <path d="M492 264 L596 264 L754 420 L650 420 Z" fill="url(#greenTop)"/>
+  <path d="M650 420 L754 420 L596 576 L492 576 Z" fill="url(#greenBot)"/>
+</svg>`;
+
+const CONTENT = {
+  zh: {
+    title: 'Lework 系统代码架构与能力全景图',
+    accent: 'Cross-Platform Coding Agent Console',
+    subtitle: '单仓四模块架构（<span class="mono">app/</span> · <span class="mono">tsnet-bridge/</span> · <span class="mono">protocol-schema/</span> · <span class="mono">hub/</span>）— 统一本地工作站与远端 Devbox 的多引擎 Agent 控制台',
+    metrics: [
+      { val: '3 端', lbl: 'macOS · iOS · Android' },
+      { val: '4+2 引擎', lbl: '4 生产 + DSH/Mock' },
+      { val: '34 RPC', lbl: 'JSON-RPC 2.0 契约' },
+      { val: 'E2E TLS', lbl: 'SHA-256 指纹钉扎' },
+    ],
+    t1Title: '1. 客户端层 · <span class="mono">app/</span>',
+    t1Badge: 'KMP + Compose Multiplatform · 7 条自定义 Detekt 静态门禁',
+    clients: [
+      { title: 'macOS Desktop', path: 'desktopApp + jvmMain', body: '原生 ObjC 全局热键唤起 · 本机 Hub 自动引导 · 读取 <span class="mono">~/.ssh/config</span> 一键配对远端 Devbox · 一键注册全局 <span class="mono">lework</span> CLI · 剪贴板贴图' },
+      { title: 'iOS Client', path: 'iosApp + iosMain', body: 'SwiftUI 托管 Compose · Keychain 硬件存储（不同步 iCloud）· Bonjour 发现 · <span class="mono">NWPathMonitor</span> 切网重连 · 扫码与签名到期倒计时' },
+      { title: 'Android Client', path: 'androidApp + androidMain', body: 'Keystore AES-256-GCM 加密 · NSD 局域网发现 · 内嵌 <span class="mono">libtsnetbridge.so</span>（含转发诊断）· 原生扫码 & 多图拍照上传' },
+    ],
+    sharedLabel: '共享核心层 · <span class="mono">app/shared/src/commonMain</span>（零 JVM 依赖，三端 100% 复用）',
+    sharedRight: 'expect / actual 平台抽象',
+    sharedCards: [
+      { title: 'Compose UI 工作台', path: 'Everforest Dark', body: 'Markdown / LaTeX / Mermaid 渲染 · 执行步骤卡 · 内联审批条 · 产物 & 子代理检查器 · Diff/检查点与用量仪表盘 · <span class="mono">Cmd+K / Cmd+F</span>' },
+      { title: 'ConsoleStore 状态机', path: 'store/', body: '多主机资产簿与切换 · 双向历史分页 · 断网/异常一键恢复横幅 · Prompt 排队与取消 · 模型收藏与同名服务商徽章消歧' },
+      { title: 'HubRpcClient & HubTrust', path: 'transport/ + security/', body: 'Ktor HTTP/WS 客户端 · 多路径并发探测漫游 · 证书 SHA-256 指纹钉扎 · HMAC 令牌绑定证明（验身后才发送凭据）' },
+    ],
+    flowDown: '控制 / 请求 ↓',
+    flowUp: '实时事件流 ↑',
+    c12: '<strong>HTTPS / WSS</strong> · 端到端 TLS 1.2+ 密文 · 多路径并发探测与无感切网漫游',
+    t2Title: '2. 零配置网络与安全传输层 · <span class="mono">tsnet-bridge/</span> + TLS/WSS',
+    t2Badge: 'Go tailscale.com/tsnet v1.104.7 · 免系统 VPN / 免 Root / 免装自定义 CA',
+    transports: [
+      { title: '局域网自动发现', path: 'LAN', body: 'Bonjour / mDNS / Android NSD 广播 <span class="mono">_lework._tcp.local</span>，同 Wi-Fi 秒级直连免填 IP' },
+      { title: '内嵌 Tailscale Mesh', path: 'tsnet-bridge', body: '用户态内嵌 <span class="mono">tsnet</span>（Host 子进程 / iOS 静态库 / Android <span class="mono">.so</span>），同账号 <span class="mono">WhoIs</span> 免密握手，兼容 Headscale' },
+      { title: '跨网段密文穿透', path: 'SSH / Relay', body: '桌面端 SSH 隧道与无状态 TCP Relay 仅转发密文，中继节点无法解密业务与凭据，支持 Master-Slave 汇聚' },
+      { title: '配对与多元鉴权', path: 'Auth', body: '5min 一次性 QR / <span class="mono">lework://pair</span> 深链 · 可吊销设备 Token (<span class="mono">lework_dt.*</span>) · RFC 8628 / 飞书 OAuth' },
+    ],
+    c23: '<strong>/v1/ws</strong> (客户端 JSON-RPC) · <strong>/v1/auth/*</strong> (配对 / 证明 / OAuth) · <strong>/v1/slave-ws</strong> (Master-Slave 注册)',
+    t3Title: '3. Host Hub 宿主机守护进程 · <span class="mono">hub/</span>',
+    t3Badge: 'TypeScript · Node.js 22+ · hubd (:64450) & lework CLI · LaunchAgent / systemd',
+    gwTitle: 'HubServer 网关与安全守卫',
+    gwChips: ['自签 TLS + 心跳保活', '拒收浏览器 Origin (防 CSWSH)', 'PathGuard 锁定 workspaceRoots', '拦截 .ssh / .env / 私钥', 'Standalone / Master / Slave'],
+    hubRow1: [
+      { title: 'SessionManager 统一事件总线', path: 'session-manager.ts', body: '融合 Hub 自建与 Host 接管会话 · 20k 事件环形缓冲 & <span class="mono">seq</span> 续传/分页 · Prompt 排队与串行防竞态取消 · 防休眠 · 图片暂存' },
+      { title: 'ModelRegistry 模型与服务商', path: 'registry/', body: '统一治理官方订阅、本机 CPA (<span class="mono">:8317</span>) 与自定义多协议端点（OpenAI / Anthropic / Gemini）· 健康探测 · 环境变量隔离 · Profile' },
+      { title: 'Usage & 离线推送', path: 'usage/ + notifications/', body: '多引擎 Token/费用/缓存/上下文占比统计 · 5h/7d 配额燃尽预测 · CPA 流量监控 · Bark / 飞书 / Telegram / Webhook 离线深链推送' },
+    ],
+    hubRow2: [
+      { title: 'HostHistory 宿主机同步', path: 'storage/host-history/', body: '扫描并实时 Watch 宿主机原生会话（Claude / Codex / AGY / DSH）· 投影 Subagent 活动树与 Plan 步骤 · 重命名与归档' },
+      { title: 'TerminalBridge 终端接管', path: 'storage/terminal-bridge.ts', body: '采集 <span class="mono">tmux</span> / <span class="mono">iTerm2 (it2)</span> TTY 拓扑 · 屏幕哈希校验 + 数字选项白名单远程审批 · 投递后续 Prompt 与中断' },
+      { title: 'WorkspaceFS · Artifacts · Search', path: 'storage/', body: '只读文件 & <span class="mono">@file</span> · Git Diff / 隔离 Worktree / <span class="mono">git stash create</span> 无损检查点 · 多引擎产物检查 · <span class="mono">node:sqlite</span> 全文索引' },
+    ],
+    c34: '<strong>EngineAdapter 统一插件接口</strong> · ACP stdio JSON-RPC · stream-json · 进程内工具执行 · TTY / 文件系统桥接',
+    t4Title: '4. 多引擎适配与宿主机执行层 · <span class="mono">hub/src/engines/</span> + Host OS',
+    t4Badge: '引擎是一等公民 · 能力声明驱动 UI · 凭证始终留在宿主机',
+    engines: [
+      { title: 'Claude Code', tag: '生产', prod: true, body: '<span class="mono">claude-agent-acp</span><br/>stdio ACP · 审批/图片/切模型/模式' },
+      { title: 'OpenAI Codex', tag: '生产', prod: true, body: '<span class="mono">codex app-server</span><br/>JSON-RPC · 5 档沙箱 · 支持外接代理' },
+      { title: 'Google AGY', tag: '生产', prod: true, body: '<span class="mono">agy stream-json</span><br/>合规护栏：仅官方订阅，严禁反代' },
+      { title: 'Pi Engine', tag: '内嵌', prod: true, body: 'Hub 进程内自研 Agent<br/>直连 CPA/端点 · 内置工具与分级审批' },
+      { title: 'DSH / Mock', tag: '预留/诊断', prod: false, body: 'DeepSeek Harness 预留框架<br/>& 联调诊断回声引擎' },
+    ],
+    hostTitle: '宿主机运行时与周边资源',
+    hostItems: ['tmux / iTerm2 运行中终端', 'Git 仓库 & 隔离 Worktree', '~/.claude · ~/.codex · ~/.gemini 历史与产物', '本机 CLIProxyAPI (:8317) / 云端 API', '远端 Slave Hub 节点'],
+    protoTitle: '单一协议真相源 · <span class="mono">protocol-schema/</span>',
+    protoHead: 'Zod 单一定义 → 全端代码生成',
+    protoOut1: 'Kotlin <span class="mono">@Serializable</span>',
+    protoOut2: 'JSON Schema + Fixtures',
+    protoStats: [{ n: '34', d: 'RPC 方法' }, { n: '12', d: '归一化事件' }, { n: '2', d: '实时推送通道' }],
+    gutterTop: 'Kotlin 生成',
+    gutterBot: 'Zod 校验',
+    scTitle: '6 大核心支持场景',
+    scBadge: 'Scenarios',
+    scenarios: [
+      { t: '离座移动操控 & 终端无缝接管', d: '手机实时接管电脑 <span class="mono">tmux / iTerm2</span> 中的 Agent，远程审批权限、取消或排队追加指令' },
+      { t: '跨端统一多引擎工作台', d: 'macOS / iOS / Android 统一调度 Claude、Codex、AGY、Pi，自由切模型、思考强度与模式' },
+      { t: '本机 Mac + 远端 Linux Devbox 协同', d: '多主机资产簿切换、桌面端 SSH 一键配对远端开发机、Master/Slave 组网与常驻服务' },
+      { t: '零配置内网直连 + 无 VPN 漫游', d: 'Wi-Fi 走 Bonjour 直连，外网走内嵌 <span class="mono">tsnet</span> 或 Relay 密文穿透，断网按 <span class="mono">seq</span> 续传' },
+      { t: '长任务后台巡航 & 离线强触达', d: '防休眠守护执行，锁屏断连遇审批或任务完成时经 Bark / 飞书 / Telegram 深链直达' },
+      { t: '隔离 Worktree 开发 & 安全回滚', d: '独立 Git Worktree 并行编码、随时审阅 Diff 与产物，无损检查点一键撤销 Agent 误改' },
+    ],
+    secTitle: '安全与工程架构红线',
+    secBadge: 'Guardrails',
+    guardrails: [
+      { t: '凭证不出宿主机', d: '上游订阅态与 API Key 仅留存 Host，客户端与中继零接触' },
+      { t: '零信任双向验身', d: 'TLS 指纹钉扎 + HMAC 证明，防中间人窃取设备令牌' },
+      { t: '引擎合规 & 边界防护', d: 'AGY 严禁反代，锁定工作区根目录，终端审批校验屏幕哈希' },
+      { t: 'KMP 跨平台纯净门禁', d: '7 条 Detekt 规则 + 三平台 CI 守护 commonMain 零 JVM 依赖' },
+    ],
+    footerLeft: 'Lework Architecture · Generated from repository source (<span class="mono">docs/architecture/diagram.html</span>)',
+    footerRight: 'Everforest Dark · KMP + Node 22 + Go tsnet + Zod',
+  },
+  en: {
+    title: 'Lework System Architecture & Capabilities',
+    accent: 'Cross-Platform Coding Agent Console',
+    subtitle: '4-Module Monorepo (<span class="mono">app/</span> · <span class="mono">tsnet-bridge/</span> · <span class="mono">protocol-schema/</span> · <span class="mono">hub/</span>) — Unified Console for Local Workstations &amp; Remote Devboxes',
+    metrics: [
+      { val: '3 Clients', lbl: 'macOS · iOS · Android' },
+      { val: '4+2 Engines', lbl: '4 Prod + DSH/Mock' },
+      { val: '34 RPCs', lbl: 'JSON-RPC 2.0 Contract' },
+      { val: 'E2E TLS', lbl: 'SHA-256 Cert Pinning' },
+    ],
+    t1Title: '1. Native Clients · <span class="mono">app/</span>',
+    t1Badge: 'KMP + Compose Multiplatform · 7 Custom Detekt Lint Rules',
+    clients: [
+      { title: 'macOS Desktop', path: 'desktopApp + jvmMain', body: 'ObjC global hotkey · Local Hub auto-seeding · One-click <span class="mono">~/.ssh/config</span> Devbox pairing · Global <span class="mono">lework</span> CLI · Clipboard images' },
+      { title: 'iOS Client', path: 'iosApp + iosMain', body: 'SwiftUI-hosted Compose · Device-only Keychain (non-iCloud) · Bonjour · <span class="mono">NWPathMonitor</span> roaming · QR scan &amp; signing expiry alert' },
+      { title: 'Android Client', path: 'androidApp + androidMain', body: 'Keystore AES-256-GCM · Android NSD discovery · Embedded <span class="mono">libtsnetbridge.so</span> (with forwarder diag) · Native QR &amp; camera pick' },
+    ],
+    sharedLabel: 'Shared Core · <span class="mono">app/shared/src/commonMain</span> (Zero JVM Dependencies, 100% Shared Across Platforms)',
+    sharedRight: 'expect / actual Platform Bridges',
+    sharedCards: [
+      { title: 'Compose UI Workbench', path: 'Everforest Dark', body: 'Markdown / LaTeX / Mermaid · Steps card · Inline approvals · Artifacts &amp; subagent inspector · Diff/usage sheets · <span class="mono">Cmd+K / F</span>' },
+      { title: 'ConsoleStore State Machine', path: 'store/', body: 'Multi-host address book · Bidirectional history paging · Network/error recovery banner · Queued prompts &amp; cancel · Model favorites' },
+      { title: 'HubRpcClient & HubTrust', path: 'transport/ + security/', body: 'Ktor HTTP/WS client · Multi-path endpoint racing &amp; roaming · Cert SHA-256 pinning · Token-bound HMAC attestation before auth' },
+    ],
+    flowDown: 'Control / RPC ↓',
+    flowUp: 'Live Events ↑',
+    c12: '<strong>HTTPS / WSS</strong> · End-to-End TLS 1.2+ Ciphertext · Multi-Path Discovery &amp; Seamless Roaming',
+    t2Title: '2. Zero-Config Networking & Secure Transport · <span class="mono">tsnet-bridge/</span> + TLS/WSS',
+    t2Badge: 'Go tailscale.com/tsnet v1.104.7 · No System VPN / No Root / No Custom CA',
+    transports: [
+      { title: 'LAN Auto-Discovery', path: 'LAN', body: 'Bonjour / mDNS / Android NSD advertises <span class="mono">_lework._tcp.local</span> for instant local Wi-Fi connection' },
+      { title: 'Embedded Tailscale Mesh', path: 'tsnet-bridge', body: 'User-space <span class="mono">tsnet</span> (Host binary / iOS lib / Android <span class="mono">.so</span>) · Same-account <span class="mono">WhoIs</span> auto-handshake · Headscale ready' },
+      { title: 'Cross-Network Tunnels', path: 'SSH / Relay', body: 'Desktop SSH tunnels &amp; stateless TCP relays forward ciphertext end-to-end with zero visibility; Master-Slave ready' },
+      { title: 'Pairing & Pluggable Auth', path: 'Auth', body: '5-min single-use QR / <span class="mono">lework://pair</span> deep links · Revocable device tokens (<span class="mono">lework_dt.*</span>) · RFC 8628 / Feishu OAuth' },
+    ],
+    c23: '<strong>/v1/ws</strong> (Client JSON-RPC) · <strong>/v1/auth/*</strong> (Pair / Attest / OAuth) · <strong>/v1/slave-ws</strong> (Master-Slave Mesh)',
+    t3Title: '3. Host Hub Daemon · <span class="mono">hub/</span>',
+    t3Badge: 'TypeScript · Node.js 22+ · hubd (:64450) & lework CLI · LaunchAgent / systemd',
+    gwTitle: 'HubServer Gateway & Guardrails',
+    gwChips: ['Self-Signed TLS + Heartbeat', 'Rejects Browser Origin', 'PathGuard Workspace Sandbox', 'Blocks .ssh / .env / Keys', 'Standalone / Master / Slave'],
+    hubRow1: [
+      { title: 'SessionManager Event Bus', path: 'session-manager.ts', body: 'Unifies Hub-managed &amp; host-taken sessions · 20k event ring buffer with <span class="mono">seq</span> resume/paging · Queued turns &amp; serialized cancel · Sleep inhibitor' },
+      { title: 'ModelRegistry & Providers', path: 'registry/', body: 'Manages native logins, local CPA (<span class="mono">:8317</span>) &amp; custom OpenAI / Anthropic / Gemini endpoints · Health probes · Per-session env isolation · Profiles' },
+      { title: 'Usage & Offline Notifier', path: 'usage/ + notifications/', body: 'Multi-engine token/cost/cache/context telemetry · 5h/7d burn-rate quotas · CPA proxy stats · Bark / Feishu / Telegram / Webhook deep-link alerts' },
+    ],
+    hubRow2: [
+      { title: 'HostHistory Live Sync', path: 'storage/host-history/', body: 'Discovers &amp; watches native host transcripts (Claude / Codex / AGY / DSH) · Projects subagent trees &amp; plan steps · Rename &amp; archive' },
+      { title: 'TerminalBridge Takeover', path: 'storage/terminal-bridge.ts', body: 'Maps live <span class="mono">tmux</span> / <span class="mono">iTerm2 (it2)</span> TTY topologies · Remote permission approvals with screen-hash &amp; allowlist checks · Follow-up injection' },
+      { title: 'WorkspaceFS · Artifacts · Search', path: 'storage/', body: 'Read-only FS &amp; <span class="mono">@file</span> · Git Diff / isolated Worktrees / lossless <span class="mono">git stash create</span> checkpoints · Artifact inspector · <span class="mono">node:sqlite</span> FTS' },
+    ],
+    c34: '<strong>EngineAdapter Interface</strong> · ACP stdio JSON-RPC · stream-json · In-Process Tools · TTY / FS Bridge',
+    t4Title: '4. Engine Adapters & Host Execution Layer · <span class="mono">hub/src/engines/</span> + Host OS',
+    t4Badge: 'Engines as First-Class Citizens · Capability-Driven UI · Credentials Stay on Host',
+    engines: [
+      { title: 'Claude Code', tag: 'Prod', prod: true, body: '<span class="mono">claude-agent-acp</span><br/>stdio ACP · approvals / images / modes' },
+      { title: 'OpenAI Codex', tag: 'Prod', prod: true, body: '<span class="mono">codex app-server</span><br/>JSON-RPC · 5 sandbox modes · proxy env' },
+      { title: 'Google AGY', tag: 'Prod', prod: true, body: '<span class="mono">agy stream-json</span><br/>Compliance guard: official login only' },
+      { title: 'Pi Engine', tag: 'Built-in', prod: true, body: 'In-process Hub agent<br/>Direct CPA/endpoint · tools &amp; approvals' },
+      { title: 'DSH / Mock', tag: 'Stub / Diag', prod: false, body: 'DeepSeek Harness stub<br/>&amp; diagnostic echo engine' },
+    ],
+    hostTitle: 'Host OS Runtime & Local Assets',
+    hostItems: ['Live tmux / iTerm2 Shells', 'Git Repos & Isolated Worktrees', '~/.claude · ~/.codex · ~/.gemini History & Artifacts', 'Local CLIProxyAPI (:8317) / Cloud APIs', 'Remote Slave Hub Nodes'],
+    protoTitle: 'Protocol Truth · <span class="mono">protocol-schema/</span>',
+    protoHead: 'Zod Schema → Cross-Stack Codegen',
+    protoOut1: 'Kotlin <span class="mono">@Serializable</span>',
+    protoOut2: 'JSON Schema + Fixtures',
+    protoStats: [{ n: '34', d: 'RPC Methods' }, { n: '12', d: 'Agent Events' }, { n: '2', d: 'Push Streams' }],
+    gutterTop: 'Kotlin Gen',
+    gutterBot: 'Zod Guard',
+    scTitle: '6 Core Usage Scenarios',
+    scBadge: 'Scenarios',
+    scenarios: [
+      { t: 'Mobile Control & Terminal Takeover', d: 'Inspect live <span class="mono">tmux / iTerm2</span> agent runs from phone, approve prompts remotely, cancel or queue follow-ups' },
+      { t: 'Unified Multi-Engine Workbench', d: 'Drive Claude, Codex, AGY &amp; Pi from one macOS / iOS / Android UI with live model, effort &amp; mode switches' },
+      { t: 'Mac + Remote Linux Devbox Fleet', d: 'Multi-host address book, one-click SSH pairing on Desktop, Master/Slave clustering &amp; background services' },
+      { t: 'Zero-Config LAN & VPN-Free Roaming', d: 'Auto-connect via Bonjour on Wi-Fi, roam over embedded <span class="mono">tsnet</span> or Relay off-site with lossless <span class="mono">seq</span> resume' },
+      { t: 'Long-Running Agents & Offline Alerts', d: 'Sleep-inhibited background execution with smart Bark / Feishu / Telegram deep-link alerts when phone sleeps' },
+      { t: 'Isolated Worktrees & Safe Rollback', d: 'Spin up isolated Git worktrees per task, review inline diffs &amp; artifacts, and restore lossless checkpoints' },
+    ],
+    secTitle: 'Security & Engineering Invariants',
+    secBadge: 'Guardrails',
+    guardrails: [
+      { t: 'Credentials Never Leave Host', d: 'Subscriptions &amp; API keys stay on Host; clients &amp; relays hold zero secrets' },
+      { t: 'Zero-Trust Mutual Verification', d: 'Cert SHA-256 pinning + HMAC attestation prevent MITM token theft' },
+      { t: 'Compliance & FS Boundaries', d: 'AGY proxy-injection blocked; FS locked to workspaceRoots; screen-hash checked' },
+      { t: 'KMP Purity & CI Gatekeeping', d: '7 custom Detekt rules + 3-OS CI enforce zero JVM leakage in commonMain' },
+    ],
+    footerLeft: 'Lework Architecture · Generated from repository source (<span class="mono">docs/architecture/diagram.html</span>)',
+    footerRight: 'Everforest Dark · KMP + Node 22 + Go tsnet + Zod',
+  },
+};
+
+const params = new URLSearchParams(window.location.search);
+const lang = params.get('lang') === 'en' ? 'en' : 'zh';
+const c = CONTENT[lang];
+document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+
+document.getElementById('root').innerHTML = `
+  <div class="header">
+    <div class="brand">
+      ${LOGO_SVG}
+      <div>
+        <div class="brand-title">${c.title}<span class="accent mono">${c.accent}</span></div>
+        <div class="brand-sub">${c.subtitle}</div>
+      </div>
+    </div>
+    <div class="metrics">
+      ${c.metrics.map(m => `<div class="metric-pill"><div class="val mono">${m.val}</div><div class="lbl">${m.lbl}</div></div>`).join('')}
+    </div>
+  </div>
+
+  <div class="canvas">
+    <div class="left-stack">
+      <section class="layer green" id="tier-clients">
+        <div class="layer-head">
+          <div class="layer-title"><span class="dot"></span>${c.t1Title}</div>
+          <div class="layer-badge mono">${c.t1Badge}</div>
+        </div>
+        <div class="grid-3">
+          ${c.clients.map(cl => `
+            <div class="card">
+              <div class="card-head"><span class="card-title">${cl.title}</span><span class="card-path mono">${cl.path}</span></div>
+              <div class="card-body">${cl.body}</div>
+            </div>`).join('')}
+        </div>
+        <div class="shared-box" id="box-shared-kmp">
+          <div class="shared-head">
+            <span class="shared-label">${c.sharedLabel}</span>
+            <span class="card-path mono">${c.sharedRight}</span>
+          </div>
+          <div class="grid-3">
+            ${c.sharedCards.map(sc => `
+              <div class="card highlight-green">
+                <div class="card-head"><span class="card-title">${sc.title}</span><span class="card-path mono">${sc.path}</span></div>
+                <div class="card-body">${sc.body}</div>
+              </div>`).join('')}
+          </div>
+        </div>
+      </section>
+
+      <div class="tier-connector">
+        <span class="flow-dir left mono">${c.flowDown}</span>
+        <div class="conn-pill mono">${c.c12}</div>
+        <span class="flow-dir right mono">${c.flowUp}</span>
+      </div>
+
+      <section class="layer teal" id="tier-transport">
+        <div class="layer-head">
+          <div class="layer-title"><span class="dot"></span>${c.t2Title}</div>
+          <div class="layer-badge mono">${c.t2Badge}</div>
+        </div>
+        <div class="grid-4">
+          ${c.transports.map(tr => `
+            <div class="card highlight-teal">
+              <div class="card-head"><span class="card-title">${tr.title}</span><span class="card-path mono">${tr.path}</span></div>
+              <div class="card-body">${tr.body}</div>
+            </div>`).join('')}
+        </div>
+      </section>
+
+      <div class="tier-connector">
+        <span class="flow-dir left mono">${c.flowDown}</span>
+        <div class="conn-pill mono">${c.c23}</div>
+        <span class="flow-dir right mono">${c.flowUp}</span>
+      </div>
+
+      <section class="layer orange" id="tier-hub">
+        <div class="layer-head">
+          <div class="layer-title"><span class="dot"></span>${c.t3Title}</div>
+          <div class="layer-badge mono">${c.t3Badge}</div>
+        </div>
+        <div class="gateway-strip" id="box-hub-server">
+          <div class="gateway-left"><span>${c.gwTitle}</span><span class="card-path mono">server.ts · tls.ts · path-guard.ts</span></div>
+          <div class="gateway-tags">${c.gwChips.map(ch => `<span class="chip orange">${ch}</span>`).join('')}</div>
+        </div>
+        <div class="grid-3" style="margin-bottom: 9px;">
+          ${c.hubRow1.map(h => `
+            <div class="card highlight-orange">
+              <div class="card-head"><span class="card-title">${h.title}</span><span class="card-path mono">${h.path}</span></div>
+              <div class="card-body">${h.body}</div>
+            </div>`).join('')}
+        </div>
+        <div class="grid-3">
+          ${c.hubRow2.map(h => `
+            <div class="card">
+              <div class="card-head"><span class="card-title">${h.title}</span><span class="card-path mono">${h.path}</span></div>
+              <div class="card-body">${h.body}</div>
+            </div>`).join('')}
+        </div>
+      </section>
+
+      <div class="tier-connector">
+        <span class="flow-dir left mono">${c.flowDown}</span>
+        <div class="conn-pill mono">${c.c34}</div>
+        <span class="flow-dir right mono">${c.flowUp}</span>
+      </div>
+
+      <section class="layer plum" id="tier-engines">
+        <div class="layer-head">
+          <div class="layer-title"><span class="dot"></span>${c.t4Title}</div>
+          <div class="layer-badge mono">${c.t4Badge}</div>
+        </div>
+        <div class="grid-5">
+          ${c.engines.map(e => `
+            <div class="card ${e.prod ? 'highlight-plum' : 'muted'}">
+              <div class="card-head">
+                <span class="card-title">${e.title}</span>
+                <span class="engine-tag ${e.prod ? 'prod' : 'dev'}">${e.tag}</span>
+              </div>
+              <div class="card-body">${e.body}</div>
+            </div>`).join('')}
+        </div>
+        <div class="host-strip">
+          <div class="host-strip-title">${c.hostTitle}</div>
+          <div class="host-strip-items">${c.hostItems.map(i => `<span>${i}</span>`).join('')}</div>
+        </div>
+      </section>
+    </div>
+
+    <div class="right-stack">
+      <section class="layer gold" id="card-protocol">
+        <div class="layer-head">
+          <div class="layer-title"><span class="dot"></span>${c.protoTitle}</div>
+          <div class="layer-badge mono">v1 · 0 Drift</div>
+        </div>
+        <div class="codegen-flow">
+          <div class="codegen-box">
+            <div class="card-head" style="margin-bottom:2px;">
+              <span class="card-title">${c.protoHead}</span>
+              <span class="card-path mono">src/index.ts</span>
+            </div>
+            <div class="codegen-outputs">
+              <div class="codegen-out"><div class="t mono">ProtocolModels.kt</div><div class="s">${c.protoOut1}</div></div>
+              <div class="codegen-out"><div class="t mono">protocol.schema.json</div><div class="s">${c.protoOut2}</div></div>
+            </div>
+          </div>
+          <div class="rpc-summary">
+            ${c.protoStats.map(s => `<div class="rpc-stat"><div class="n mono">${s.n}</div><div class="d">${s.d}</div></div>`).join('')}
+          </div>
+          <div class="chips">
+            <span class="chip gold mono">hub.* / slave.*</span>
+            <span class="chip gold mono">engine / provider / profile</span>
+            <span class="chip gold mono">session.* / stream.*</span>
+            <span class="chip gold mono">approval.respond</span>
+            <span class="chip gold mono">artifact.* / search</span>
+            <span class="chip gold mono">workspace / fs / git</span>
+            <span class="chip gold mono">checkpoint.*</span>
+            <span class="chip gold mono">usage.*</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="layer green" id="card-scenarios">
+        <div class="layer-head">
+          <div class="layer-title"><span class="dot"></span>${c.scTitle}</div>
+          <div class="layer-badge">${c.scBadge}</div>
+        </div>
+        <div class="scenario-list">
+          ${c.scenarios.map((s, idx) => `
+            <div class="scenario-item">
+              <div class="sc-num mono">${idx + 1}</div>
+              <div><div class="sc-title">${s.t}</div><div class="sc-desc">${s.d}</div></div>
+            </div>`).join('')}
+        </div>
+      </section>
+
+      <section class="layer teal" id="card-guardrails">
+        <div class="layer-head">
+          <div class="layer-title"><span class="dot"></span>${c.secTitle}</div>
+          <div class="layer-badge">${c.secBadge}</div>
+        </div>
+        <div class="security-grid">
+          ${c.guardrails.map(g => `<div class="sec-item"><div class="st">${g.t}</div><div class="sd">${g.d}</div></div>`).join('')}
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>${c.footerLeft}</span>
+    <span class="mono">${c.footerRight}</span>
+  </div>
+`;
+
+function drawArrows() {
+  const svg = document.getElementById('arrow-overlay');
+  const bodyRect = document.body.getBoundingClientRect();
+  svg.setAttribute('viewBox', `0 0 ${bodyRect.width} ${bodyRect.height}`);
+  svg.setAttribute('width', bodyRect.width);
+  svg.setAttribute('height', bodyRect.height);
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const defs = document.createElementNS(NS, 'defs');
+
+  function addMarker(id, color) {
+    const m = document.createElementNS(NS, 'marker');
+    m.setAttribute('id', id);
+    m.setAttribute('viewBox', '0 0 10 10');
+    m.setAttribute('refX', '7.5');
+    m.setAttribute('refY', '5');
+    m.setAttribute('markerWidth', '7');
+    m.setAttribute('markerHeight', '7');
+    m.setAttribute('orient', 'auto-start-reverse');
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', 'M 1 1.5 L 8.5 5 L 1 8.5 z');
+    p.setAttribute('fill', color);
+    m.appendChild(p);
+    defs.appendChild(m);
+  }
+
+  addMarker('arrow-teal', '#7fbbb3');
+  addMarker('arrow-orange', '#e69875');
+  addMarker('arrow-plum', '#d699b6');
+  addMarker('arrow-gold', '#e6c384');
+  svg.appendChild(defs);
+
+  function rectOf(id) {
+    const r = document.getElementById(id).getBoundingClientRect();
+    return {
+      left: r.left - bodyRect.left,
+      right: r.right - bodyRect.left,
+      top: r.top - bodyRect.top,
+      bottom: r.bottom - bodyRect.top,
+      cx: (r.left + r.right) / 2 - bodyRect.left,
+      cy: (r.top + r.bottom) / 2 - bodyRect.top,
+      w: r.width,
+      h: r.height,
+    };
+  }
+
+  function addPath(d, color, width, dash, markerStart, markerEnd) {
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', d);
+    p.setAttribute('fill', 'none');
+    p.setAttribute('stroke', color);
+    p.setAttribute('stroke-width', width);
+    p.setAttribute('stroke-linecap', 'round');
+    p.setAttribute('stroke-linejoin', 'round');
+    if (dash) p.setAttribute('stroke-dasharray', dash);
+    if (markerStart) p.setAttribute('marker-start', `url(#${markerStart})`);
+    if (markerEnd) p.setAttribute('marker-end', `url(#${markerEnd})`);
+    svg.appendChild(p);
+  }
+
+  function addVerticalPill(cx, cy, text) {
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('transform', `translate(${cx}, ${cy}) rotate(-90)`);
+    const w = Math.max(66, text.length * 9 + 16);
+    const h = 18;
+    const rect = document.createElementNS(NS, 'rect');
+    rect.setAttribute('x', -w / 2);
+    rect.setAttribute('y', -h / 2);
+    rect.setAttribute('width', w);
+    rect.setAttribute('height', h);
+    rect.setAttribute('rx', 9);
+    rect.setAttribute('fill', '#1c2429');
+    rect.setAttribute('stroke', 'rgba(230, 195, 132, 0.5)');
+    rect.setAttribute('stroke-width', '1');
+    const txt = document.createElementNS(NS, 'text');
+    txt.setAttribute('x', 0);
+    txt.setAttribute('y', 3.5);
+    txt.setAttribute('text-anchor', 'middle');
+    txt.setAttribute('fill', '#e6c384');
+    txt.setAttribute('font-size', '10');
+    txt.setAttribute('font-family', '"PingFang SC", "SF Mono", monospace');
+    txt.textContent = text;
+    g.appendChild(rect);
+    g.appendChild(txt);
+    svg.appendChild(g);
+  }
+
+  const t1 = rectOf('tier-clients');
+  const t2 = rectOf('tier-transport');
+  const t3 = rectOf('tier-hub');
+  const t4 = rectOf('tier-engines');
+
+  // Downward request/control flow on left, upward event stream on right
+  const leftX = t1.left + 132;
+  const rightX = t1.right - 132;
+
+  addPath(`M ${leftX} ${t1.bottom + 2} L ${leftX} ${t2.top - 5}`, '#7fbbb3', 2, null, null, 'arrow-teal');
+  addPath(`M ${rightX} ${t2.top - 2} L ${rightX} ${t1.bottom + 5}`, '#7fbbb3', 2, null, null, 'arrow-teal');
+
+  addPath(`M ${leftX} ${t2.bottom + 2} L ${leftX} ${t3.top - 5}`, '#e69875', 2, null, null, 'arrow-orange');
+  addPath(`M ${rightX} ${t3.top - 2} L ${rightX} ${t2.bottom + 5}`, '#e69875', 2, null, null, 'arrow-orange');
+
+  addPath(`M ${leftX} ${t3.bottom + 2} L ${leftX} ${t4.top - 5}`, '#d699b6', 2, null, null, 'arrow-plum');
+  addPath(`M ${rightX} ${t4.top - 2} L ${rightX} ${t3.bottom + 5}`, '#d699b6', 2, null, null, 'arrow-plum');
+
+  // Dashed gold protocol contract lanes in the 52px gutter
+  const proto = rectOf('card-protocol');
+  const shared = rectOf('box-shared-kmp');
+  const hubSrv = rectOf('box-hub-server');
+
+  const lane1X = t1.right + 16;
+  const lane2X = proto.left - 16;
+
+  // Lane 1: protocol-schema -> app/shared (Kotlin Models)
+  const pStart1Y = proto.top + proto.h * 0.28;
+  const cEnd1Y = shared.cy;
+  addPath(
+    `M ${proto.left - 2} ${pStart1Y} L ${lane1X} ${pStart1Y} L ${lane1X} ${cEnd1Y} L ${t1.right + 5} ${cEnd1Y}`,
+    '#e6c384', 1.8, '5 4', null, 'arrow-gold'
+  );
+  addVerticalPill(lane1X, (pStart1Y + cEnd1Y) / 2, c.gutterTop);
+
+  // Lane 2: protocol-schema -> hub/ (Zod Runtime Guard)
+  const pStart2Y = proto.top + proto.h * 0.78;
+  const hEnd2Y = hubSrv.cy;
+  addPath(
+    `M ${proto.left - 2} ${pStart2Y} L ${lane2X} ${pStart2Y} L ${lane2X} ${hEnd2Y} L ${t3.right + 5} ${hEnd2Y}`,
+    '#e6c384', 1.8, '5 4', null, 'arrow-gold'
+  );
+  addVerticalPill(lane2X, (t2.top + t2.bottom) / 2, c.gutterBot);
+}
+
+window.addEventListener('load', drawArrows);
+</script>
+</body>
+</html>

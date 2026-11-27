@@ -23,6 +23,14 @@ Lework 由运行在工作站或远端 Linux 开发机上的 **Host Hub** 守护�
 - **工作区能力**：独立 Git Worktree 会话隔离、行级与工作区 Diff、基于 `git stash create` 的无损快照与回退、`@文件` 引用及图片多模态输入。
 - **用量与通知**：上下文窗口占用条、多引擎增量用量与额度看板、锁屏离线推送（Bark / Telegram / 飞书机器人 / Webhook）。
 
+## 架构全景
+
+<p align="center">
+  <img src="./assets/architecture/lework-architecture.zh-CN.png" alt="Lework 系统代码架构与能力全景图" width="100%" />
+</p>
+
+完整模块划分、支持场景、能力矩阵与安全红线详见 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)。
+
 ## 目录结构
 
 ```text
@@ -31,9 +39,9 @@ lework/
 ├─ app/               # KMP + Compose Multiplatform 客户端（shared / desktopApp / iosApp / androidApp）
 ├─ protocol-schema/   # 双端协议单一来源（Zod -> JSON Schema + Kotlin @Serializable 代码生成）
 ├─ tsnet-bridge/      # 内嵌 Go Tailscale tsnet 桥接（主机侧二进制 + iOS/Android 静态/动态库）
-├─ assets/brand/      # 品牌 SVG 与图标资源
+├─ assets/            # 品牌图标与系统架构图（assets/brand/、assets/architecture/）
 ├─ scripts/           # 初始化、tsnet 构建、iOS/Desktop 安装与发版脚本
-└─ docs/              # 架构设计文档（docs/PLAN.md）
+└─ docs/              # 架构文档与设计记录（docs/ARCHITECTURE.md、docs/PLAN.md）
 ```
 
 ## 快速开始
