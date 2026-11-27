@@ -144,7 +144,7 @@ class TsnetMultiHostPickerTest {
             ): DirectTokenAuthResult {
                 handshakeUrls += baseUrl
                 val cfg = endpoints[baseUrl]
-                    ?: throw IllegalStateException("Unexpected handshake URL: $baseUrl")
+                    ?: error("Unexpected handshake URL: $baseUrl")
                 cfg.handshakeGate?.await()
                 cfg.handshakeError?.let { throw it }
                 fake.tailscaleHandshakeCount++
