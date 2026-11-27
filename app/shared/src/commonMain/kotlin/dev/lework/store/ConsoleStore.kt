@@ -117,6 +117,9 @@ class ConsoleStore(
     private fun switchSubscriptionTo(nextSessionId: String?) {
         val prev = subscribedSessionId
         subscribedSessionId = nextSessionId
+        if (nextSessionId != null) {
+            warmSubscribedSessionIds.remove(nextSessionId)
+        }
         subscribeSeqToken++
         if (prev != nextSessionId) {
             clearInspectedSubagent(updateState = true)
@@ -171,17 +174,47 @@ class ConsoleStore(
                         afterSeq = if (isInitial) -1 else existingLastSeq,
                         limit = if (isInitial) 120 else null,
                     )
+                    if (snap.session.id != sid) return@runCatching
+                    val scopedEvents = snap.events.filter { it.sessionId == sid }
                     _state.update { s ->
+                        if (sid !in warmSubscribedSessionIds && s.activeSessionId != sid) {
+                            return@update s
+                        }
+                        val existingLatest = s.transcripts[sid]
+                        val snapMaxSeq = scopedEvents.maxOfOrNull { it.seq } ?: snap.session.lastSeq
                         val nextTranscript = if (isInitial) {
-                            reduceTranscriptBatch(SessionTranscript(), snap.events)
-                                .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt, snap.session.state)
-                                .copy(
-                                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                            if (existingLatest != null && existingLatest.lastSeq >= snapMaxSeq && existingLatest.items.isNotEmpty()) {
+                                existingLatest.syncPlanLifecycleWithSessionState(snap.session.state)
+                            } else {
+                                val built = reduceTranscriptBatch(SessionTranscript(), scopedEvents)
+                                    .withFallbackLatestPlan(snap.latestPlan, snap.session.updatedAt, snap.session.state)
+                                val concurrentPerms = existingLatest?.pendingPermissions
+                                    .orEmpty()
+                                    .filter { it.sessionId == sid }
+                                val mergedPerms = if (built.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }) {
+                                    built.pendingPermissions
+                                } else if (snap.session.state == SessionState.WAITING_PERMISSION) {
+                                    (built.pendingPermissions + concurrentPerms).distinctBy { it.requestId }
+                                } else {
+                                    built.pendingPermissions
+                                }
+                                built.copy(
+                                    earliestSeq = snap.earliestSeq ?: scopedEvents.firstOrNull()?.seq,
                                     hasMoreBefore = snap.hasMoreBefore == true,
+                                    pendingPermissions = mergedPerms,
                                 )
+                            }
                         } else {
-                            reduceTranscriptBatch(s.transcripts[sid] ?: SessionTranscript(), snap.events)
+                            var cur = reduceTranscriptBatch(existingLatest ?: SessionTranscript(), scopedEvents)
                                 .syncPlanLifecycleWithSessionState(snap.session.state)
+                            if (snap.session.state != SessionState.WAITING_PERMISSION &&
+                                scopedEvents.none { it is AgentEvent.PermissionRequested }
+                            ) {
+                                cur = cur.copy(
+                                    pendingPermissions = cur.pendingPermissions.filterNot { it.requestId.startsWith("tty_perm_") },
+                                )
+                            }
+                            cur
                         }
                         s.copy(transcripts = s.transcripts + (sid to nextTranscript))
                     }
@@ -399,7 +432,20 @@ class ConsoleStore(
                         s.inspectedSubagent
                     }
                     val prevTranscript = s.transcripts[mergedUpdated.id]
-                    val syncedTranscript = prevTranscript?.syncPlanLifecycleWithSessionState(mergedUpdated.state)
+                    val syncedTranscript = prevTranscript?.let { t ->
+                        val withLifecycle = t.syncPlanLifecycleWithSessionState(mergedUpdated.state)
+                        if (mergedUpdated.state.isInactiveTurnState() &&
+                            withLifecycle.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }
+                        ) {
+                            withLifecycle.copy(
+                                pendingPermissions = withLifecycle.pendingPermissions.filterNot {
+                                    it.requestId.startsWith("tty_perm_")
+                                },
+                            )
+                        } else {
+                            withLifecycle
+                        }
+                    }
                     val nextTranscripts = if (syncedTranscript != null && syncedTranscript !== prevTranscript) {
                         s.transcripts + (mergedUpdated.id to syncedTranscript)
                     } else {
@@ -1430,6 +1476,7 @@ class ConsoleStore(
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
         resumeJob?.cancel()
+        warmSubscribedSessionIds.clear()
         switchSubscriptionTo(null)
         sessionNavHistory.clear()
         sessionNavIndex = -1
@@ -1472,6 +1519,7 @@ class ConsoleStore(
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
         resumeJob?.cancel()
+        warmSubscribedSessionIds.clear()
         switchSubscriptionTo(null)
         consecutiveReconnectFailures = 0
         _state.update {
@@ -1941,6 +1989,7 @@ class ConsoleStore(
         oauthPollJob?.cancel()
         tsnetPollJob?.cancel()
         resumeJob?.cancel()
+        warmSubscribedSessionIds.clear()
         switchSubscriptionTo(null)
         sessionNavHistory.clear()
         sessionNavIndex = -1
@@ -2059,11 +2108,13 @@ class ConsoleStore(
                 prevActiveId == null -> null
                 sessions.any { it.id == prevActiveId } -> prevActiveId
                 prevActiveId.startsWith("sess_") && prevActiveMeta != null -> {
-                    // Hub restarted: in-memory `sess_*` is now discovered on disk as `host:<engine>:<nativeId>`
-                    sessions.firstOrNull {
-                        it.engineId == prevActiveMeta.engineId &&
-                            (it.title == prevActiveMeta.title || it.cwd == prevActiveMeta.cwd)
-                    }?.id
+                    // Hub restarted: remap `sess_*` strictly to its persisted `host:*` counterpart
+                    // without ever hijacking an unrelated active session in the same repo cwd.
+                    findRemappedHostSession(
+                        prevMeta = prevActiveMeta,
+                        fallbackEngineId = prevActiveMeta.engineId,
+                        candidates = sessions,
+                    )?.id
                 }
                 else -> prevActiveId
             }
@@ -2144,11 +2195,12 @@ class ConsoleStore(
                 )
             }
             persistCurrentPrefs()
+            warmSubscribedSessionIds.clear()
+            subscribedSessionId = resolvedActiveId
             reconcileDesktopRunningWarmSubscriptions(sessions)
             checkForAppUpdates(manual = false)
 
             if (resolvedActiveId != null) {
-                subscribedSessionId = resolvedActiveId
                 runCatching { subscribeAndCatchUp(resolvedActiveId) }
             }
             val deepLinkSid = pendingDeepLinkSessionId
@@ -2993,14 +3045,14 @@ class ConsoleStore(
             }
             runCatching {
                 val ckpts = rpc.listCheckpoints(sessionId)
-                if (_state.value.activeSessionId == sessionId) {
-                    _state.update { it.copy(checkpoints = ckpts) }
+                _state.update { s ->
+                    if (s.activeSessionId == sessionId) s.copy(checkpoints = ckpts) else s
                 }
             }
             runCatching {
                 val usage = rpc.fetchSessionUsage(sessionId)
-                if (_state.value.activeSessionId == sessionId) {
-                    _state.update { it.copy(activeSessionUsage = usage) }
+                _state.update { s ->
+                    if (s.activeSessionId == sessionId) s.copy(activeSessionUsage = usage) else s
                 }
             }
             refreshSessionArtifacts(sessionId)
@@ -3446,38 +3498,76 @@ class ConsoleStore(
         }
     }
 
+    private data class PromptDispatchSnapshot(
+        val targetSessionId: String?,
+        val engineId: String,
+        val workspacePath: String,
+        val extraWorkspaces: List<String>,
+        val useWorktree: Boolean,
+        val worktreeBranch: String,
+        val providerId: String?,
+        val modelId: String?,
+        val effort: ReasoningEffort,
+        val mode: SessionMode,
+        val targetSessionMeta: SessionMeta?,
+    )
+
+    private fun capturePromptDispatchSnapshot(
+        state: ConsoleUiState,
+        targetSessionId: String?,
+    ): PromptDispatchSnapshot = PromptDispatchSnapshot(
+        targetSessionId = targetSessionId,
+        engineId = state.selectedEngineId,
+        workspacePath = state.selectedWorkspacePath,
+        extraWorkspaces = state.selectedExtraWorkspaces,
+        useWorktree = state.draftUseWorktree,
+        worktreeBranch = state.draftWorktreeBranch,
+        providerId = state.selectedProviderId,
+        modelId = state.selectedModelId,
+        effort = state.selectedEffort,
+        mode = state.selectedMode,
+        targetSessionMeta = targetSessionId?.let { sid -> state.sessions.firstOrNull { it.id == sid } },
+    )
+
     private suspend fun dispatchPromptRpc(
         trimmed: String,
         attached: List<PromptImageAttachment>,
+        snapshot: PromptDispatchSnapshot,
     ): String {
         val cur = _state.value
-        val sessionId = cur.activeSessionId ?: run {
-            check(cur.taskEngines.any { it.id == cur.selectedEngineId && it.canStartTask }) {
+        val sessionId = snapshot.targetSessionId ?: run {
+            check(cur.taskEngines.any { it.id == snapshot.engineId && it.canStartTask }) {
                 "当前主机没有可用于此任务的引擎，请检查安装和授权后重新连接。"
             }
-            val cwd = cur.selectedWorkspacePath.ifEmpty {
+            val cwd = snapshot.workspacePath.ifEmpty {
                 cur.workspaces.firstOrNull()?.path ?: error("未找到可用工作区目录")
             }
-            val allWs = (listOf(cwd) + cur.selectedExtraWorkspaces).filter { it.isNotBlank() }.distinct()
+            val allWs = (listOf(cwd) + snapshot.extraWorkspaces).filter { it.isNotBlank() }.distinct()
             val created = rpc.createSession(
-                engineId = cur.selectedEngineId,
+                engineId = snapshot.engineId,
                 cwd = cwd,
                 workspaces = allWs,
-                useWorktree = cur.draftUseWorktree.takeIf { it },
-                worktreeBranch = cur.draftWorktreeBranch.trim().takeIf { cur.draftUseWorktree && it.isNotEmpty() },
-                providerId = cur.selectedProviderId,
-                modelId = cur.selectedModelId,
-                reasoningEffort = cur.selectedEffort,
-                mode = cur.selectedMode,
+                useWorktree = snapshot.useWorktree.takeIf { it },
+                worktreeBranch = snapshot.worktreeBranch.trim().takeIf { snapshot.useWorktree && it.isNotEmpty() },
+                providerId = snapshot.providerId,
+                modelId = snapshot.modelId,
+                reasoningEffort = snapshot.effort,
+                mode = snapshot.mode,
             )
-            switchSubscriptionTo(created.id)
+            val stillOnDraft = _state.value.activeSessionId == null
+            if (stillOnDraft) {
+                switchSubscriptionTo(created.id)
+            } else if (isDesktopPlatform()) {
+                warmSubscribedSessionIds.add(created.id)
+            }
             _state.update { st ->
+                val stayOnCreated = st.activeSessionId == null
                 st.copy(
                     sessions = listOf(created) + st.sessions.filterNot { item -> item.id == created.id },
-                    activeSessionId = created.id,
-                    selectedWorkspacePath = created.cwd,
-                    currentBrowsePath = created.cwd,
-                    currentDiffWorkspacePath = created.cwd,
+                    activeSessionId = if (stayOnCreated) created.id else st.activeSessionId,
+                    selectedWorkspacePath = if (stayOnCreated) created.cwd else st.selectedWorkspacePath,
+                    currentBrowsePath = if (stayOnCreated) created.cwd else st.currentBrowsePath,
+                    currentDiffWorkspacePath = if (stayOnCreated) created.cwd else st.currentDiffWorkspacePath,
                     draftWorktreeBranch = "",
                 )
             }
@@ -3489,35 +3579,44 @@ class ConsoleStore(
                 sessionId = sessionId,
                 text = trimmed,
                 images = attached.takeIf { it.isNotEmpty() },
-                providerId = cur.selectedProviderId,
-                modelId = cur.selectedModelId,
-                reasoningEffort = cur.selectedEffort,
-                mode = cur.selectedMode,
+                providerId = snapshot.providerId,
+                modelId = snapshot.modelId,
+                reasoningEffort = snapshot.effort,
+                mode = snapshot.mode,
             )
             return sessionId
         } catch (e: RpcCallException) {
             // If `sessionId` was a pre-restart `sess_*` ID that is now persisted on disk as `host:*`,
-            // automatically remap to the matching `host:*` session and send seamlessly!
+            // remap strictly to its matching `host:*` counterpart (never hijacking another same-cwd session).
             if (e.code == ErrorCode.NOT_FOUND && sessionId.startsWith("sess_")) {
-                val prevMeta = cur.sessions.firstOrNull { it.id == sessionId }
+                val prevMeta = snapshot.targetSessionMeta ?: cur.sessions.firstOrNull { it.id == sessionId }
                 val freshList = rpc.listSessions()
-                val remapped = freshList.firstOrNull {
-                    it.engineId == (prevMeta?.engineId ?: cur.selectedEngineId) &&
-                        (it.title == prevMeta?.title || it.cwd == (prevMeta?.cwd ?: cur.selectedWorkspacePath))
-                } ?: throw e
-                switchSubscriptionTo(remapped.id)
-                _state.update { st ->
-                    st.copy(sessions = freshList, activeSessionId = remapped.id)
+                val remapped = findRemappedHostSession(
+                    prevMeta = prevMeta,
+                    fallbackEngineId = snapshot.engineId,
+                    candidates = freshList,
+                ) ?: throw e
+                val stillViewingOld = _state.value.activeSessionId == sessionId
+                if (stillViewingOld) {
+                    switchSubscriptionTo(remapped.id)
                 }
-                runCatching { subscribeAndCatchUp(remapped.id) }
+                _state.update { st ->
+                    st.copy(
+                        sessions = freshList,
+                        activeSessionId = if (st.activeSessionId == sessionId) remapped.id else st.activeSessionId,
+                    )
+                }
+                if (stillViewingOld) {
+                    runCatching { subscribeAndCatchUp(remapped.id) }
+                }
                 rpc.sendPrompt(
                     sessionId = remapped.id,
                     text = trimmed,
                     images = attached.takeIf { it.isNotEmpty() },
-                    providerId = cur.selectedProviderId,
-                    modelId = cur.selectedModelId,
-                    reasoningEffort = cur.selectedEffort,
-                    mode = cur.selectedMode,
+                    providerId = snapshot.providerId,
+                    modelId = snapshot.modelId,
+                    reasoningEffort = snapshot.effort,
+                    mode = snapshot.mode,
                 )
                 return remapped.id
             } else {
@@ -3532,6 +3631,7 @@ class ConsoleStore(
         val originatingSessionId = s.activeSessionId
         val originatingDraftKey = sessionDraftKey(originatingSessionId)
         val attached = s.attachedImagesFor(originatingSessionId)
+        val dispatchSnapshot = capturePromptDispatchSnapshot(s, originatingSessionId)
         if (trimmed.isEmpty() && attached.isEmpty()) return
         mentionJob?.cancel()
         _state.update {
@@ -3559,11 +3659,11 @@ class ConsoleStore(
                 val preSendPlanUpdatedAt = preSendTranscript?.planUpdatedAt ?: 0L
                 val preSendPlanEntries = preSendTranscript?.planEntries.orEmpty()
                 val sentSessionId = try {
-                    dispatchPromptRpc(trimmed, attached)
+                    dispatchPromptRpc(trimmed, attached, dispatchSnapshot)
                 } catch (ce: CancellationException) {
                     if (!isActive) throw ce
                     if (ensureConnectedForSend(forceReconnect = true)) {
-                        dispatchPromptRpc(trimmed, attached)
+                        dispatchPromptRpc(trimmed, attached, dispatchSnapshot)
                     } else {
                         throw ce
                     }
@@ -3572,7 +3672,7 @@ class ConsoleStore(
                 } catch (firstErr: Throwable) {
                     // Socket dropped right as the user tapped Send: reconnect once and retry transparently!
                     if (ensureConnectedForSend(forceReconnect = true)) {
-                        dispatchPromptRpc(trimmed, attached)
+                        dispatchPromptRpc(trimmed, attached, dispatchSnapshot)
                     } else {
                         throw firstErr
                     }
@@ -3661,7 +3761,7 @@ class ConsoleStore(
                     }
                 }
 
-                val targetSid = _state.value.activeSessionId ?: activeSid
+                val targetSid = activeSid ?: _state.value.activeSessionId
                 if (!hasUnsentPrompt && targetSid == null) {
                     consecutiveReconnectFailures = 0
                     _state.update { it.copy(turnRecoveryBanner = null, promptErrorText = null) }
@@ -3670,17 +3770,18 @@ class ConsoleStore(
 
                 val promptToSend = if (hasUnsentPrompt) failedText else SEAMLESS_CONTINUE_PROMPT
                 val imagesToSend = if (hasUnsentPrompt) failedImages else emptyList()
+                val dispatchSnapshot = capturePromptDispatchSnapshot(_state.value, targetSid)
 
                 val preSendSessionId = targetSid
                 val preSendTranscript = preSendSessionId?.let { _state.value.transcripts[it] }
                 val preSendPlanUpdatedAt = preSendTranscript?.planUpdatedAt ?: 0L
                 val preSendPlanEntries = preSendTranscript?.planEntries.orEmpty()
                 val sentSessionId = try {
-                    dispatchPromptRpc(promptToSend, imagesToSend)
+                    dispatchPromptRpc(promptToSend, imagesToSend, dispatchSnapshot)
                 } catch (ce: CancellationException) {
                     if (!isActive) throw ce
                     if (ensureConnectedForSend(forceReconnect = true)) {
-                        dispatchPromptRpc(promptToSend, imagesToSend)
+                        dispatchPromptRpc(promptToSend, imagesToSend, dispatchSnapshot)
                     } else {
                         throw ce
                     }
@@ -3688,7 +3789,7 @@ class ConsoleStore(
                     throw e
                 } catch (firstErr: Throwable) {
                     if (ensureConnectedForSend(forceReconnect = true)) {
-                        dispatchPromptRpc(promptToSend, imagesToSend)
+                        dispatchPromptRpc(promptToSend, imagesToSend, dispatchSnapshot)
                     } else {
                         throw firstErr
                     }
@@ -3975,25 +4076,29 @@ class ConsoleStore(
                         }
                     }
                     s.copy(
-                        submittingApprovalRequestId = null,
-                        approvalErrorText = null,
+                        submittingApprovalRequestId = if (s.submittingApprovalRequestId == requestId) null else s.submittingApprovalRequestId,
+                        approvalErrorText = if (s.activeSessionId == targetSessionId) null else s.approvalErrorText,
                         sessions = updatedSessions,
                         transcripts = updatedTranscripts,
                     )
                 }
             } catch (ce: CancellationException) {
-                _state.update { it.copy(submittingApprovalRequestId = null) }
+                _state.update { s ->
+                    if (s.submittingApprovalRequestId == requestId) s.copy(submittingApprovalRequestId = null) else s
+                }
                 throw ce
             } catch (t: Throwable) {
                 val msg = t.message?.takeIf { it.isNotBlank() } ?: "审批提交未成功，正在同步最新终端状态…"
-                _state.update {
-                    it.copy(
-                        submittingApprovalRequestId = null,
-                        approvalErrorText = msg,
+                _state.update { s ->
+                    s.copy(
+                        submittingApprovalRequestId = if (s.submittingApprovalRequestId == requestId) null else s.submittingApprovalRequestId,
+                        approvalErrorText = if (s.activeSessionId == targetSessionId) msg else s.approvalErrorText,
                     )
                 }
-                // Immediately re-sync terminal & session events so stale/changed prompts update automatically
-                runCatching { subscribeAndCatchUp(targetSessionId) }
+                // Immediately re-sync terminal & session events if user is still viewing this session
+                if (_state.value.activeSessionId == targetSessionId) {
+                    runCatching { subscribeAndCatchUp(targetSessionId) }
+                }
             }
         }
     }
@@ -4393,11 +4498,20 @@ class ConsoleStore(
         }
 
         // Strict session check: if the user already switched away while `subscribeSession` was in flight,
-        // unsubscribe immediately and do NOT contaminate the newly selected conversation.
+        // unsubscribe ONLY if not retained as a Desktop warm background subscription or inspected subagent.
         if (_state.value.activeSessionId != sessionId || reqToken != subscribeSeqToken) {
-            runCatching { rpc.unsubscribeSession(sessionId) }
+            if (sessionId != subscribedSessionId &&
+                sessionId !in warmSubscribedSessionIds &&
+                sessionId != subscribedSubagentId
+            ) {
+                runCatching { rpc.unsubscribeSession(sessionId) }
+            }
             return
         }
+        if (snap.session.id != sessionId) {
+            return
+        }
+        val scopedEvents = snap.events.filter { it.sessionId == sessionId }
 
         _state.update { s ->
             if (s.activeSessionId != sessionId) return@update s
@@ -4420,9 +4534,11 @@ class ConsoleStore(
                 listOf(effectiveSession) + s.sessions
             }
             val nextTranscript = if (isInitialLoad) {
-                val built = reduceTranscriptBatch(SessionTranscript(), snap.events)
+                val built = reduceTranscriptBatch(SessionTranscript(), scopedEvents)
                     .withFallbackLatestPlan(snap.latestPlan, effectiveSession.updatedAt, effectiveSession.state)
-                val concurrentPerms = s.transcripts[sessionId]?.pendingPermissions.orEmpty()
+                val concurrentPerms = s.transcripts[sessionId]?.pendingPermissions
+                    .orEmpty()
+                    .filter { it.sessionId == sessionId }
                 val mergedPerms = if (built.pendingPermissions.any { it.requestId.startsWith("tty_perm_") }) {
                     built.pendingPermissions
                 } else if (effectiveSession.state == SessionState.WAITING_PERMISSION) {
@@ -4431,17 +4547,17 @@ class ConsoleStore(
                     built.pendingPermissions
                 }
                 built.copy(
-                    earliestSeq = snap.earliestSeq ?: snap.events.firstOrNull()?.seq,
+                    earliestSeq = snap.earliestSeq ?: scopedEvents.firstOrNull()?.seq,
                     hasMoreBefore = snap.hasMoreBefore == true,
                     hasMoreAfter = snap.hasMoreAfter == true,
                     loadingOlder = false,
                     pendingPermissions = mergedPerms,
                 )
             } else {
-                var cur = reduceTranscriptBatch(s.transcripts[sessionId] ?: SessionTranscript(), snap.events)
+                var cur = reduceTranscriptBatch(s.transcripts[sessionId] ?: SessionTranscript(), scopedEvents)
                     .syncPlanLifecycleWithSessionState(effectiveSession.state)
                 if (effectiveSession.state != SessionState.WAITING_PERMISSION &&
-                    snap.events.none { it is AgentEvent.PermissionRequested }
+                    scopedEvents.none { it is AgentEvent.PermissionRequested }
                 ) {
                     cur = cur.copy(
                         pendingPermissions = cur.pendingPermissions.filterNot { it.requestId.startsWith("tty_perm_") },
@@ -4451,9 +4567,9 @@ class ConsoleStore(
             }
             val eng = s.engines.firstOrNull { it.id == effectiveSession.engineId }
             var nextBanner = s.turnRecoveryBanner
-            if (!isInitialLoad && snap.events.isNotEmpty()) {
+            if (!isInitialLoad && scopedEvents.isNotEmpty()) {
                 val nowMs = epochMillis()
-                for (ev in snap.events) {
+                for (ev in scopedEvents) {
                     when (ev) {
                         is AgentEvent.UserMessage -> {
                             if (ev.text.isNotBlank()) lastSubmittedPromptBySession[sessionId] = ev.text
@@ -4533,6 +4649,7 @@ class ConsoleStore(
     }
 
     private fun applyIncomingEvent(event: AgentEvent) {
+        if (event.sessionId.isBlank()) return
         val inspectedSub = _state.value.inspectedSubagent
         if (inspectedSub != null && event.sessionId == inspectedSub.id) {
             _state.update { s ->
@@ -4652,34 +4769,32 @@ class ConsoleStore(
 
     fun refreshSessionArtifacts(sessionId: String = _state.value.activeSessionId.orEmpty()) {
         if (sessionId.isBlank()) return
-        if (_state.value.activeSessionId == sessionId) {
-            _state.update { it.copy(artifactsLoading = true, artifactError = null) }
+        _state.update { s ->
+            if (s.activeSessionId == sessionId) s.copy(artifactsLoading = true, artifactError = null) else s
         }
         scope.launch {
             runCatching {
                 rpc.listArtifacts(sessionId)
             }.onSuccess { list ->
-                if (_state.value.activeSessionId == sessionId) {
-                    _state.update { s ->
-                        val nextOpened = s.openedArtifact?.takeIf { opened ->
-                            list.any { it.id == opened.artifact.id }
-                        }
-                        s.copy(
-                            artifactsLoading = false,
-                            activeSessionArtifacts = list,
-                            openedArtifact = nextOpened,
-                            artifactError = null,
-                        )
+                _state.update { s ->
+                    if (s.activeSessionId != sessionId) return@update s
+                    val nextOpened = s.openedArtifact?.takeIf { opened ->
+                        list.any { it.id == opened.artifact.id }
                     }
+                    s.copy(
+                        artifactsLoading = false,
+                        activeSessionArtifacts = list,
+                        openedArtifact = nextOpened,
+                        artifactError = null,
+                    )
                 }
             }.onFailure { err ->
-                if (_state.value.activeSessionId == sessionId) {
-                    _state.update {
-                        it.copy(
-                            artifactsLoading = false,
-                            artifactError = err.message ?: "无法获取会话产物",
-                        )
-                    }
+                _state.update { s ->
+                    if (s.activeSessionId != sessionId) return@update s
+                    s.copy(
+                        artifactsLoading = false,
+                        artifactError = err.message ?: "无法获取会话产物",
+                    )
                 }
             }
         }
@@ -4693,23 +4808,21 @@ class ConsoleStore(
             runCatching {
                 rpc.readArtifact(sid, artifactId)
             }.onSuccess { content ->
-                if (_state.value.activeSessionId == sid) {
-                    _state.update {
-                        it.copy(
-                            artifactsLoading = false,
-                            openedArtifact = content,
-                            artifactError = null,
-                        )
-                    }
+                _state.update { s ->
+                    if (s.activeSessionId != sid) return@update s
+                    s.copy(
+                        artifactsLoading = false,
+                        openedArtifact = content,
+                        artifactError = null,
+                    )
                 }
             }.onFailure { err ->
-                if (_state.value.activeSessionId == sid) {
-                    _state.update {
-                        it.copy(
-                            artifactsLoading = false,
-                            artifactError = "无法读取产物内容：${err.message ?: "请稍后重试"}",
-                        )
-                    }
+                _state.update { s ->
+                    if (s.activeSessionId != sid) return@update s
+                    s.copy(
+                        artifactsLoading = false,
+                        artifactError = "无法读取产物内容：${err.message ?: "请稍后重试"}",
+                    )
                 }
             }
         }
@@ -4909,8 +5022,8 @@ class ConsoleStore(
         scope.launch {
             runCatching {
                 val usage = rpc.fetchSessionUsage(sessionId)
-                if (_state.value.activeSessionId == sessionId) {
-                    _state.update { it.copy(activeSessionUsage = usage) }
+                _state.update { s ->
+                    if (s.activeSessionId == sessionId) s.copy(activeSessionUsage = usage) else s
                 }
             }
         }
@@ -5664,4 +5777,47 @@ internal fun parseSessionDeepLink(raw: String): Pair<String?, String?>? {
         ?: pathPart.takeIf { it.isNotEmpty() }?.let { decodeUrlComponent(it) }
     val hubId = params["hubId"]?.takeIf { it.isNotEmpty() }
     return sessionId to hubId
+}
+
+/**
+ * Strictly remaps a pre-restart Hub-managed `sess_*` session to its persisted `host:*` counterpart
+ * without ever hijacking an unrelated active session sharing the same repository `cwd`.
+ */
+internal fun findRemappedHostSession(
+    prevMeta: SessionMeta?,
+    fallbackEngineId: String,
+    candidates: List<SessionMeta>,
+): SessionMeta? {
+    val targetEngineId = prevMeta?.engineId ?: fallbackEngineId
+    val hostCandidates = candidates.filter {
+        it.id.startsWith("host:") && it.engineId == targetEngineId
+    }
+    if (hostCandidates.isEmpty()) return null
+
+    val prevTitle = prevMeta?.title?.trim().orEmpty()
+    val prevCwd = prevMeta?.cwd?.trim().orEmpty()
+    val hasSpecificTitle = prevTitle.isNotEmpty() && !prevTitle.contains(" · ")
+
+    if (hasSpecificTitle) {
+        if (prevCwd.isNotEmpty()) {
+            val byTitleAndCwd = hostCandidates.filter {
+                it.title.trim() == prevTitle && it.cwd.trim() == prevCwd
+            }
+            if (byTitleAndCwd.size == 1) return byTitleAndCwd.first()
+        }
+        val byTitle = hostCandidates.filter { it.title.trim() == prevTitle }
+        if (byTitle.size == 1) return byTitle.first()
+    }
+
+    if (prevCwd.isNotEmpty() && prevMeta != null) {
+        val byCwd = hostCandidates.filter { it.cwd.trim() == prevCwd }
+        if (byCwd.size == 1) {
+            val sole = byCwd.first()
+            if (prevMeta.createdAt <= 0L || sole.createdAt >= prevMeta.createdAt - 10_000L) {
+                return sole
+            }
+        }
+    }
+
+    return null
 }

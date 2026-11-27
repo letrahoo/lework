@@ -178,7 +178,7 @@ internal fun ConversationStreamView(
     val nowMs = remember(sessionKey, transcript.lastSeq) { epochMillis() }
     val activeMatchesSession = activeSession != null && activeSession.id == sessionKey
     val hasPendingPermission = transcript.pendingPermissions.any {
-        it.sessionId == sessionKey || it.sessionId.isBlank()
+        it.sessionId == sessionKey
     }
     val isWaitingPermission = activeMatchesSession && (
         activeSession.state == SessionState.WAITING_PERMISSION ||
