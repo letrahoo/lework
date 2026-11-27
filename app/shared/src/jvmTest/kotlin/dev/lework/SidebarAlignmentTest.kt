@@ -4,11 +4,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performMouseInput
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.unit.Dp
@@ -32,6 +39,7 @@ import dev.lework.ui.TasksSidebarContent
 import dev.lework.ui.desktop.DesktopSidebar
 import kotlin.math.abs
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalTestApi::class)
@@ -83,12 +91,14 @@ class SidebarAlignmentTest {
         cwd: String,
         updatedAt: Long,
         state: SessionState = SessionState.IDLE,
+        archived: Boolean = false,
     ): SessionMeta = SessionMeta(
         id = id,
         engineId = "claude",
         cwd = cwd,
         title = "Session $id",
         state = state,
+        archived = archived,
         createdAt = updatedAt - 100L,
         updatedAt = updatedAt,
         lastSeq = 1,
@@ -106,6 +116,9 @@ class SidebarAlignmentTest {
             add(session("sub_1", "/workspace/sub-cost-view", 7_000L))
             repeat(27) { idx ->
                 add(session("home_$idx", "/Users/letra", 6_000L - idx))
+            }
+            repeat(4) { idx ->
+                add(session("arch_$idx", "/workspace/lework", 5_000L - idx, archived = true))
             }
         }
         return ConsoleUiState(
@@ -134,10 +147,11 @@ class SidebarAlignmentTest {
     }
 
     @Test
-    fun mobileDrawerAlignsProjectButtonsCountsSectionPillsAndSingleLineLogout() = runComposeUiTest {
-        val state = sampleGroupedState()
+    fun mobileDrawerAlignsCompactChromeProjectRowsAndFooterActions() = runComposeUiTest {
+        val initial = sampleGroupedState()
 
         setContent {
+            var uiState by remember { mutableStateOf(initial) }
             MaterialTheme {
                 Box(
                     modifier = Modifier
@@ -145,13 +159,14 @@ class SidebarAlignmentTest {
                         .background(Everforest.BgDim),
                 ) {
                     TasksSidebarContent(
-                        state = state,
+                        state = uiState,
                         onNewSession = {},
                         onOpenUsage = {},
-                        onSelectFilter = {},
+                        onSelectFilter = { eng -> uiState = uiState.copy(drawerEngineFilter = eng) },
                         onSelectSession = {},
                         onRefresh = {},
                         onLogout = {},
+                        onToggleArchivedView = { arch -> uiState = uiState.copy(drawerShowArchived = arch) },
                     )
                 }
             }
@@ -187,6 +202,28 @@ class SidebarAlignmentTest {
         val referenceAdd = addBounds.getValue("/workspace/lework")
         val referenceCount = countBounds.getValue("/workspace/lework")
 
+        // Compact mobile chrome leaves generous vertical space for projects & sessions
+        assertTrue(
+            referenceHeader.top <= 165.dp,
+            "Expected first project header to start near top (<= 165.dp), got ${referenceHeader.top}",
+        )
+
+        // Row 2 toolbar (Search + Filter + Archive) shares uniform 36.dp height and vertical alignment
+        val searchBox = onNodeWithTag("drawer_search_box", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val filterBtn = onNodeWithTag("drawer_btn_filter", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val archiveBtn = onNodeWithTag("drawer_tab_archived", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        assertDpClose(searchBox.height, filterBtn.height, label = "search vs filter height")
+        assertDpClose(searchBox.height, archiveBtn.height, label = "search vs archive height")
+        assertDpClose(searchBox.top, filterBtn.top, label = "search vs filter top")
+        assertDpClose(searchBox.top, archiveBtn.top, label = "search vs archive top")
+        assertDpClose(referenceHeader.right, archiveBtn.right, label = "archive button right edge")
+
         // Every project "+" button aligns vertically on the exact same right-pinned column
         for (key in projectKeys) {
             val header = headerBounds.getValue(key)
@@ -214,15 +251,40 @@ class SidebarAlignmentTest {
         assertDpClose(runningPill.height, groupingPill.height, label = "section pills height")
         assertDpClose(referenceHeader.right, groupingPill.right, label = "grouping pill right edge")
 
-        // Footer "断开连接" stays single-line (no 2-line wrap) even when host fingerprint is visible
+        // Footer actions (Usage, Refresh, single-line Logout) align on one row
+        val usageBtn = onNodeWithTag("drawer_btn_usage", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+        val refreshBtn = onNodeWithTag("drawer_btn_refresh", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
         val logoutBounds = onNodeWithTag("drawer_btn_logout", useUnmergedTree = true)
             .assertIsDisplayed()
             .getUnclippedBoundsInRoot()
+        assertDpClose(usageBtn.height, refreshBtn.height, label = "usage vs refresh height")
+        assertDpClose(usageBtn.top, refreshBtn.top, label = "usage vs refresh top")
+        assertDpClose(usageBtn.top, logoutBounds.top, label = "usage vs logout top")
         assertTrue(
             logoutBounds.height <= 30.dp,
             "Expected single-line logout button height <= 30.dp, got ${logoutBounds.height}",
         )
         assertDpClose(referenceHeader.right, logoutBounds.right, tolerance = 2.dp, label = "logout right edge")
+
+        // Filter & archive status chips stay hidden when idle and appear on demand
+        assertEquals(0, onAllNodesWithTag("drawer_active_engine_filter_chip").fetchSemanticsNodes().size)
+        onNodeWithTag("drawer_btn_filter").performClick()
+        waitForIdle()
+        onNodeWithText("Claude").performClick()
+        waitForIdle()
+        onNodeWithTag("drawer_active_engine_filter_chip").assertIsDisplayed().performClick()
+        waitForIdle()
+        assertEquals(0, onAllNodesWithTag("drawer_active_engine_filter_chip").fetchSemanticsNodes().size)
+
+        onNodeWithTag("drawer_tab_archived").performClick()
+        waitForIdle()
+        onNodeWithTag("drawer_tab_active").assertIsDisplayed().performClick()
+        waitForIdle()
+        assertEquals(0, onAllNodesWithTag("drawer_tab_active").fetchSemanticsNodes().size)
     }
 
     @Test

@@ -6,14 +6,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -90,6 +88,7 @@ internal fun TasksSidebarContent(
     onCheckAppUpdate: () -> Unit = {},
 ) {
     var showHostSwitcher by remember { mutableStateOf(false) }
+    var showFilterMenu by remember { mutableStateOf(false) }
     var renamingHost by remember { mutableStateOf<PairedHost?>(null) }
     var confirmingLogout by remember { mutableStateOf(false) }
     var copiedResignCount by remember { mutableIntStateOf(0) }
@@ -190,7 +189,7 @@ internal fun TasksSidebarContent(
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Column(
                 modifier = Modifier
@@ -202,15 +201,29 @@ internal fun TasksSidebarContent(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (state.connectionStatus == ConnectionStatus.RECONNECTING) {
+                                    Everforest.BoldGold
+                                } else {
+                                    Everforest.Green
+                                },
+                            ),
+                    )
                     Text(
                         text = state.activeHostDisplayName,
                         fontSize = 15.sp,
+                        lineHeight = 19.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Everforest.Fg,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                     Icon(
                         imageVector = if (showHostSwitcher) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
@@ -222,31 +235,56 @@ internal fun TasksSidebarContent(
                 Text(
                     text = "${connectionChannelLabel(state.discoveredBaseUrl, state.tsnetStatus)} · ${state.authUserName ?: "本人"}",
                     fontSize = 11.sp,
+                    lineHeight = 15.sp,
                     color = Everforest.Grey1,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (state.sessionsRefreshing) {
-                Box(
-                    modifier = Modifier.size(40.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(
-                        color = Everforest.Green,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
-            } else {
-                IconButton(
-                    onClick = onRefresh,
-                    modifier = Modifier.size(40.dp),
+
+            val hasNewSessionDraft = state.draftPreviewFor(null) != null && state.activeSessionId != null
+            Surface(
+                shape = RoundedCornerShape(9.dp),
+                color = Everforest.BgGreen,
+                border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.35f)),
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .clickable {
+                        showHostSwitcher = false
+                        dismissKeyboard()
+                        onNewSession()
+                    }
+                    .testTag("drawer_btn_new_session"),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Refresh,
-                        contentDescription = "刷新会话",
-                        tint = Everforest.Grey2,
-                        modifier = Modifier.size(19.dp),
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = null,
+                        tint = Everforest.Green,
+                        modifier = Modifier.size(16.dp),
                     )
+                    Text(
+                        text = "新建",
+                        fontSize = 12.5.sp,
+                        lineHeight = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Everforest.Fg,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                    if (hasNewSessionDraft) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.5.dp)
+                                .clip(CircleShape)
+                                .background(Everforest.SoftRed),
+                        )
+                    }
                 }
             }
         }
@@ -372,107 +410,32 @@ internal fun TasksSidebarContent(
             }
         }
 
-        Spacer(Modifier.height(10.dp))
-
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = Everforest.BgGreen,
-            border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.3f)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .clickable { onNewSession() },
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(9.dp),
-            ) {
-                Box(
-                    modifier = Modifier.size(18.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Add,
-                        contentDescription = null,
-                        tint = Everforest.Green,
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-                Text(
-                    text = "新建会话",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Everforest.Fg,
-                )
-            }
-        }
-
         Spacer(Modifier.height(8.dp))
 
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = Everforest.Bg1,
-            border = BorderStroke(1.dp, Everforest.Bg3),
+        // Unified compact toolbar (aligned with DesktopSidebar): Search + Engine Filter + Archived Toggle
+        val archivedCount = state.archivedSessionsCount
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .clickable { onOpenUsage() }
-                .testTag("drawer_btn_usage"),
+                .height(36.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+            Surface(
+                shape = RoundedCornerShape(9.dp),
+                color = Everforest.Bg1,
+                border = BorderStroke(1.dp, Everforest.Bg3),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(36.dp)
+                    .testTag("drawer_search_box"),
             ) {
                 Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(9.dp),
-                ) {
-                    Box(
-                        modifier = Modifier.size(18.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.QueryStats,
-                            contentDescription = null,
-                            tint = Everforest.Green,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                    Text(
-                        text = "用量与额度",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = Everforest.Fg,
-                    )
-                }
-                Icon(
-                    imageVector = Icons.Rounded.ChevronRight,
-                    contentDescription = null,
-                    tint = Everforest.Grey0,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        // Quick Search Input (Title / Custom Name / Workspace)
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = Everforest.Bg1,
-            border = BorderStroke(1.dp, Everforest.Bg3),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(9.dp),
-            ) {
-                Box(
-                    modifier = Modifier.size(18.dp),
-                    contentAlignment = Alignment.Center,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Search,
@@ -480,143 +443,286 @@ internal fun TasksSidebarContent(
                         tint = Everforest.CommentGrey,
                         modifier = Modifier.size(15.dp),
                     )
-                }
-                Box(modifier = Modifier.weight(1f)) {
-                    if (state.drawerSearchQuery.isEmpty()) {
-                        Text(
-                            text = "搜索会话名称或工作区…",
-                            fontSize = 12.sp,
-                            color = Everforest.Grey0,
-                            maxLines = 1,
-                        )
-                    }
-                    BasicTextField(
-                        value = state.drawerSearchQuery,
-                        onValueChange = onSearchQueryChange,
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { dismissKeyboard() }),
-                        textStyle = TextStyle(
-                            fontSize = 12.5.sp,
-                            color = Everforest.Fg,
-                        ),
-                        cursorBrush = SolidColor(Everforest.Green),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("drawer_search_input"),
-                    )
-                }
-                if (state.drawerSearchQuery.isNotEmpty()) {
-                    Icon(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = "清空搜索",
-                        tint = Everforest.CommentGrey,
-                        modifier = Modifier
-                            .size(15.dp)
-                            .clickable { onSearchQueryChange("") },
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // Filter by Engine (hide when only 1 engine is available and no filter is active)
-        if (state.engines.size > 1 || state.drawerEngineFilter != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                SidebarFilterPill(
-                    label = "全部",
-                    selected = state.drawerEngineFilter == null,
-                    onClick = { onSelectFilter(null) },
-                )
-                for (eng in state.engines) {
-                    SidebarFilterPill(
-                        label = shortEngineLabel(eng.id),
-                        selected = state.drawerEngineFilter == eng.id,
-                        engineId = eng.id,
-                        onClick = { onSelectFilter(eng.id) },
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-        }
-
-        // Active List vs Archived List Switcher
-        val archivedCount = state.archivedSessionsCount
-        Surface(
-            shape = RoundedCornerShape(9.dp),
-            color = Everforest.Bg1,
-            border = BorderStroke(1.dp, Everforest.Bg2),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(3.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                val activeSelected = !state.drawerShowArchived
-                Surface(
-                    shape = RoundedCornerShape(7.dp),
-                    color = if (activeSelected) Everforest.Bg2 else Color.Transparent,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(7.dp))
-                        .clickable { onToggleArchivedView(false) }
-                        .testTag("drawer_tab_active"),
-                ) {
                     Box(
-                        modifier = Modifier.padding(vertical = 5.5.dp),
-                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(),
+                        contentAlignment = Alignment.CenterStart,
                     ) {
-                        Text(
-                            text = "会话列表",
-                            fontSize = 11.5.sp,
-                            fontWeight = if (activeSelected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (activeSelected) Everforest.Fg else Everforest.Grey1,
+                        if (state.drawerSearchQuery.isEmpty()) {
+                            Text(
+                                text = "搜索会话或工作区…",
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp,
+                                color = Everforest.Grey0,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        BasicTextField(
+                            value = state.drawerSearchQuery,
+                            onValueChange = { next ->
+                                if (showHostSwitcher) showHostSwitcher = false
+                                onSearchQueryChange(next)
+                            },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = { dismissKeyboard() }),
+                            textStyle = TextStyle(
+                                fontSize = 12.5.sp,
+                                lineHeight = 16.sp,
+                                color = Everforest.Fg,
+                            ),
+                            cursorBrush = SolidColor(Everforest.Green),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("drawer_search_input"),
+                        )
+                    }
+                    if (state.drawerSearchQuery.isNotEmpty()) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "清空搜索",
+                            tint = Everforest.CommentGrey,
+                            modifier = Modifier
+                                .size(15.dp)
+                                .clickable { onSearchQueryChange("") },
                         )
                     }
                 }
-                val archSelected = state.drawerShowArchived
-                Surface(
-                    shape = RoundedCornerShape(7.dp),
-                    color = if (archSelected) Everforest.Bg2 else Color.Transparent,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(7.dp))
-                        .clickable { onToggleArchivedView(true) }
-                        .testTag("drawer_tab_archived"),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(vertical = 5.5.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
+            }
+
+            if (state.engines.size > 1 || state.drawerEngineFilter != null) {
+                val filterActive = state.drawerEngineFilter != null
+                Box {
+                    Surface(
+                        shape = RoundedCornerShape(9.dp),
+                        color = if (filterActive) Everforest.Bg2 else Everforest.Bg1,
+                        border = BorderStroke(
+                            1.dp,
+                            if (filterActive) Everforest.CodeGreen.copy(alpha = 0.55f) else Everforest.Bg3,
+                        ),
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .clickable {
+                                showHostSwitcher = false
+                                dismissKeyboard()
+                                showFilterMenu = true
+                            }
+                            .testTag("drawer_btn_filter"),
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Inventory2,
-                            contentDescription = null,
-                            tint = if (archSelected) Everforest.BoldGold else Everforest.Grey1,
-                            modifier = Modifier.size(13.dp),
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Tune,
+                                contentDescription = "按编码引擎筛选",
+                                tint = if (filterActive) Everforest.CodeGreen else Everforest.Grey1,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            if (filterActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(6.dp)
+                                        .size(5.dp)
+                                        .clip(CircleShape)
+                                        .background(Everforest.CodeGreen),
+                                )
+                            }
+                        }
+                    }
+
+                    DropdownMenu(
+                        expanded = showFilterMenu,
+                        onDismissRequest = { showFilterMenu = false },
+                        containerColor = Everforest.Bg1,
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "全部引擎",
+                                    fontSize = 12.5.sp,
+                                    color = if (state.drawerEngineFilter == null) Everforest.CodeGreen else Everforest.Fg,
+                                    fontWeight = if (state.drawerEngineFilter == null) FontWeight.SemiBold else FontWeight.Normal,
+                                )
+                            },
+                            trailingIcon = if (state.drawerEngineFilter == null) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Check,
+                                        contentDescription = null,
+                                        tint = Everforest.CodeGreen,
+                                        modifier = Modifier.size(14.dp),
+                                    )
+                                }
+                            } else {
+                                null
+                            },
+                            onClick = {
+                                showFilterMenu = false
+                                onSelectFilter(null)
+                            },
                         )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = if (archivedCount > 0) "已归档 ($archivedCount)" else "已归档",
-                            fontSize = 11.5.sp,
-                            fontWeight = if (archSelected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (archSelected) Everforest.BoldGold else Everforest.Grey1,
+                        for (eng in state.engines) {
+                            val selected = state.drawerEngineFilter == eng.id
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = shortEngineLabel(eng.id),
+                                        fontSize = 12.5.sp,
+                                        color = if (selected) Everforest.CodeGreen else Everforest.Fg,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                    )
+                                },
+                                leadingIcon = {
+                                    EngineGlyphIcon(engineId = eng.id, size = 15.dp)
+                                },
+                                trailingIcon = if (selected) {
+                                    {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = null,
+                                            tint = Everforest.CodeGreen,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                                onClick = {
+                                    showFilterMenu = false
+                                    onSelectFilter(eng.id)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(9.dp),
+                color = if (state.drawerShowArchived) Everforest.BgYellow else Everforest.Bg1,
+                border = BorderStroke(
+                    1.dp,
+                    if (state.drawerShowArchived) Everforest.BoldGold.copy(alpha = 0.5f) else Everforest.Bg3,
+                ),
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .clickable {
+                        showHostSwitcher = false
+                        dismissKeyboard()
+                        onToggleArchivedView(!state.drawerShowArchived)
+                    }
+                    .testTag("drawer_tab_archived"),
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Inventory2,
+                        contentDescription = if (state.drawerShowArchived) {
+                            "返回活跃会话列表"
+                        } else if (archivedCount > 0) {
+                            "查看已归档会话 ($archivedCount)"
+                        } else {
+                            "查看已归档会话"
+                        },
+                        tint = if (state.drawerShowArchived) Everforest.BoldGold else Everforest.Grey1,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    if (!state.drawerShowArchived && archivedCount > 0) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp)
+                                .size(5.dp)
+                                .clip(CircleShape)
+                                .background(Everforest.BoldGold),
                         )
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        if (state.drawerEngineFilter != null || state.drawerShowArchived) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (state.drawerEngineFilter != null) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.Bg2,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable { onSelectFilter(null) }
+                            .testTag("drawer_active_engine_filter_chip"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            EngineGlyphIcon(engineId = state.drawerEngineFilter, size = 11.5.dp)
+                            Text(
+                                text = "筛选：${shortEngineLabel(state.drawerEngineFilter)}",
+                                fontSize = 10.5.sp,
+                                lineHeight = 13.sp,
+                                color = Everforest.CodeGreen,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "取消筛选",
+                                tint = Everforest.CommentGrey,
+                                modifier = Modifier.size(11.dp),
+                            )
+                        }
+                    }
+                }
+                if (state.drawerShowArchived) {
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = Everforest.BgYellow,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .clickable { onToggleArchivedView(false) }
+                            .testTag("drawer_tab_active"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = if (archivedCount > 0) "已归档 ($archivedCount) · 返回" else "已归档 · 返回",
+                                fontSize = 10.5.sp,
+                                lineHeight = 13.sp,
+                                color = Everforest.BoldGold,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "返回活跃列表",
+                                tint = Everforest.BoldGold,
+                                modifier = Modifier.size(11.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(6.dp))
 
         val isGroupedByProject = state.sidebarGroupingMode == SidebarGroupingMode.PROJECT
         val collapsedGroupKeys = state.effectiveCollapsedProjectGroupKeys
@@ -927,7 +1033,7 @@ internal fun TasksSidebarContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -935,37 +1041,91 @@ internal fun TasksSidebarContent(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Row(
-                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Computer,
-                        contentDescription = null,
-                        tint = Everforest.Green,
-                        modifier = Modifier.size(15.dp),
-                    )
-                    Text(
-                        text = "${state.engines.count { it.status.ready }} 个引擎在线",
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp,
-                        color = Everforest.Grey2,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Everforest.Bg1,
+                        border = BorderStroke(1.dp, Everforest.Bg3),
+                        modifier = Modifier
+                            .height(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                showHostSwitcher = false
+                                dismissKeyboard()
+                                onOpenUsage()
+                            }
+                            .testTag("drawer_btn_usage"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.QueryStats,
+                                contentDescription = null,
+                                tint = Everforest.Green,
+                                modifier = Modifier.size(14.dp),
+                            )
+                            Text(
+                                text = "用量",
+                                fontSize = 11.5.sp,
+                                lineHeight = 14.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.Fg,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Everforest.Bg1,
+                        border = BorderStroke(1.dp, Everforest.Bg3),
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = !state.sessionsRefreshing) { onRefresh() }
+                            .testTag("drawer_btn_refresh"),
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (state.sessionsRefreshing) {
+                                CircularProgressIndicator(
+                                    color = Everforest.Green,
+                                    strokeWidth = 1.8.dp,
+                                    modifier = Modifier.size(13.dp),
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Rounded.Refresh,
+                                    contentDescription = "刷新会话",
+                                    tint = Everforest.Grey2,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
+                        }
+                    }
                 }
+
                 Box(
                     modifier = Modifier
+                        .height(30.dp)
                         .clip(RoundedCornerShape(6.dp))
                         .clickable { confirmingLogout = true }
-                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                        .padding(horizontal = 6.dp)
                         .testTag("drawer_btn_logout"),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         text = "断开连接",
                         fontSize = 12.sp,
-                        lineHeight = 16.sp,
+                        lineHeight = 15.sp,
                         fontWeight = FontWeight.Medium,
                         color = Everforest.Red,
                         maxLines = 1,
@@ -973,60 +1133,77 @@ internal fun TasksSidebarContent(
                     )
                 }
             }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text(
-                    text = appVersionLabel(),
-                    fontSize = 10.sp,
-                    lineHeight = 14.sp,
-                    color = Everforest.Grey0,
-                )
-                val latest = state.appUpdate.latestRelease
-                if (state.appUpdate.hasUpdate && latest != null) {
-                    Surface(
-                        shape = RoundedCornerShape(999.dp),
-                        color = Everforest.BgGreen,
-                        border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.45f)),
+
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(999.dp))
-                            .clickable { onOpenAppUpdate() }
-                            .testTag("drawer_update_pill"),
-                    ) {
-                        Text(
-                            text = "新版本 ${latest.tagName}",
-                            fontSize = 9.5.sp,
-                            lineHeight = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Everforest.Green,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-                        )
-                    }
-                } else {
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(Everforest.Green),
+                    )
                     Text(
-                        text = if (state.appUpdate.checking) "检查更新中…" else "检查更新",
+                        text = "${state.engines.count { it.status.ready }} 引擎在线 · ${appVersionLabel()}",
                         fontSize = 10.sp,
                         lineHeight = 14.sp,
-                        color = Everforest.CommentGrey,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .clickable(enabled = !state.appUpdate.checking) { onCheckAppUpdate() }
-                            .padding(horizontal = 3.dp, vertical = 1.dp)
-                            .testTag("drawer_check_update_btn"),
+                        color = Everforest.Grey0,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    val latest = state.appUpdate.latestRelease
+                    if (state.appUpdate.hasUpdate && latest != null) {
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = Everforest.BgGreen,
+                            border = BorderStroke(1.dp, Everforest.Green.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .clickable { onOpenAppUpdate() }
+                                .testTag("drawer_update_pill"),
+                        ) {
+                            Text(
+                                text = "新版本 ${latest.tagName}",
+                                fontSize = 9.5.sp,
+                                lineHeight = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Everforest.Green,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = if (state.appUpdate.checking) "检查更新中…" else "检查更新",
+                            fontSize = 10.sp,
+                            lineHeight = 14.sp,
+                            color = Everforest.CommentGrey,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable(enabled = !state.appUpdate.checking) { onCheckAppUpdate() }
+                                .padding(horizontal = 3.dp, vertical = 1.dp)
+                                .testTag("drawer_check_update_btn"),
+                        )
+                    }
+                }
+                state.hubFingerprint?.let { fp ->
+                    // Same short code as `lework pair` prints on the host — compare to rule out impostors
+                    Text(
+                        text = "已加密 · 主机指纹 $fp",
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp,
+                        color = Everforest.Grey0.copy(alpha = 0.85f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-            }
-            state.hubFingerprint?.let { fp ->
-                // Same short code as `lework pair` prints on the host — compare to rule out impostors
-                Text(
-                    text = "已加密 · 主机指纹 $fp",
-                    fontSize = 10.sp,
-                    lineHeight = 14.sp,
-                    color = Everforest.Grey0,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
             }
         }
         }
