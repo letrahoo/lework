@@ -9,6 +9,7 @@ import {
   normalizeBaseUrlForOpenAi,
 } from '../registry/provider-adapters.ts'
 import { formatEngineTurnError } from './network-error.ts'
+import { PiSkillCatalog } from './pi-skills.ts'
 import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
 
 /**
@@ -57,6 +58,7 @@ export class PiEngineAdapter implements EngineAdapter {
 class PiEmbeddedSession implements EngineSession {
   readonly sessionId: string
   readonly cwd: string
+  private readonly skills = new PiSkillCatalog()
   private selectedModel: string
   private mode: SessionMode
   private readonly sessionAllowedWriteOrExec = new Set<string>()
@@ -97,6 +99,15 @@ class PiEmbeddedSession implements EngineSession {
     this.init.emit({ type: 'session.state', state: 'running' })
 
     try {
+      // Skill commands stay out of both the current CPA request and later model history.
+      const skillResult = this.skills.handleCommand(text)
+      if (skillResult !== undefined) {
+        this.init.emit({ type: 'message.assistant.delta', messageId: msgId, text: skillResult })
+        this.init.emit({ type: 'turn.done', turnId, stopReason: 'end_turn' })
+        this.init.emit({ type: 'session.state', state: 'idle' })
+        return
+      }
+
       // 1. Plan mode or explicit plan request emits structured plan entries
       if (this.mode === 'plan' || /计划|plan/i.test(text)) {
         this.init.emit({
