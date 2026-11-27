@@ -8,8 +8,15 @@ internal data class ParsedLocalFileLink(
 
 private val EXPLICIT_SCHEME_RE = Regex("^([a-zA-Z][a-zA-Z0-9+.-]*):(.*)$")
 private val HASH_LINE_RANGE_RE = Regex("^[Ll]?(\\d+)(?:-[Ll]?(\\d+))?$")
+private val COLON_LINE_COL_RE = Regex("^(.*):(\\d+):(\\d+)$")
 private val COLON_LINE_RANGE_RE = Regex("^(.*):(\\d+)(?:-(\\d+))?$")
 private val FILE_EXTENSION_RE = Regex("^[A-Za-z0-9._\\-\\u0080-\\uFFFF]+\\.[A-Za-z0-9]{1,12}$")
+private val KNOWN_EXTENSIONLESS_FILES = setOf(
+    "dockerfile", "containerfile", "makefile", "gnumakefile", "justfile",
+    "gemfile", "rakefile", "podfile", "brewfile", "fastfile", "vagrantfile",
+    "procfile", "license", "readme", "changelog",
+)
+private val KNOWN_DOTFILES_RE = Regex("^\\.[A-Za-z0-9][A-Za-z0-9._-]{1,40}$")
 
 /**
  * Parses Markdown link targets that refer to local files into a normalized path and optional line range.
@@ -89,6 +96,19 @@ internal fun parseLocalFileLink(rawUrl: String): ParsedLocalFileLink? {
     }
 
     if (startLine == null) {
+        val colonColMatch = COLON_LINE_COL_RE.matchEntire(cleanPath)
+        if (colonColMatch != null) {
+            val base = colonColMatch.groupValues[1]
+            val s = colonColMatch.groupValues[2].toIntOrNull()?.takeIf { it > 0 }
+            if (base.isNotBlank() && s != null) {
+                cleanPath = base
+                startLine = s
+                endLine = s
+            }
+        }
+    }
+
+    if (startLine == null) {
         val colonMatch = COLON_LINE_RANGE_RE.matchEntire(cleanPath)
         if (colonMatch != null) {
             val base = colonMatch.groupValues[1]
@@ -120,7 +140,9 @@ private fun looksLikeLocalFilePath(path: String, fromFileUri: Boolean): Boolean 
     if (path.contains('/')) {
         return !path.startsWith("//")
     }
-    return FILE_EXTENSION_RE.matches(path)
+    return FILE_EXTENSION_RE.matches(path) ||
+        path.lowercase() in KNOWN_EXTENSIONLESS_FILES ||
+        KNOWN_DOTFILES_RE.matches(path)
 }
 
 /**

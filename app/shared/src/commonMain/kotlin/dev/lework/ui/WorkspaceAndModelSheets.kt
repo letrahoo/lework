@@ -674,8 +674,8 @@ internal fun WorkspaceFileTreeSheet(
                         }
                     }
                 } else {
-                    val highlightedFile = remember(content, ext) {
-                        highlightEverforestCode(content, ext)
+                    val highlightedFile = remember(content, filePath) {
+                        highlightFileContent(content = content, filePathOrLang = filePath)
                     }
                     SelectionContainer {
                         Box(

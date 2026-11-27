@@ -5,7 +5,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { ErrorCode, type CheckpointInfo, type FsEntry, type SessionWorktreeInfo } from '@lework/protocol'
 import { defaultDataDir } from '../platform/index.ts'
-import { HubRpcError, assertNotSensitive, isSensitivePath, resolveAllowedWorkspacePath } from '../security/path-guard.ts'
+import {
+  HubRpcError,
+  assertNotSensitive,
+  assertNotSensitiveReadTarget,
+  isSensitivePath,
+  resolveAllowedWorkspacePath,
+} from '../security/path-guard.ts'
 
 const MAX_READ_BYTES = 256 * 1024
 const MAX_DIFF_BYTES = 96 * 1024
@@ -179,24 +185,30 @@ function expandHomeShortcut(filePath: string): string {
   return filePath
 }
 
-export function readWorkspaceFile(filePath: string, workspaceRoots: string[]): {
+/**
+ * Reads a UTF-8 preview (up to `MAX_READ_BYTES`) of any regular file on the Hub host.
+ *
+ * File preview is intentionally NOT restricted to configured `workspaceRoots`, so
+ * clickable file links anywhere on the host (other repositories, `/tmp`, dotfiles,
+ * `~/.claude/plans`, `~/.gemini/skills`, `~/.agent-memory`, etc.) can be previewed freely.
+ * Hard credential/secret files remain blocked via `assertNotSensitiveReadTarget`.
+ */
+export function readWorkspaceFile(filePath: string, _workspaceRoots: string[] = []): {
   path: string
   content: string
   truncated: boolean
 } {
   const expandedPath = typeof filePath === 'string' ? expandHomeShortcut(filePath.trim()) : ''
-  if (!expandedPath || !path.isAbsolute(expandedPath) || expandedPath.split(/[/\\]+/).includes('..')) {
+  if (!expandedPath || !path.isAbsolute(expandedPath) || expandedPath.includes('\0')) {
     throw new HubRpcError(ErrorCode.PathNotAllowed, 'Invalid file path.')
   }
-  const parentDir = path.dirname(expandedPath)
-  resolveAllowedWorkspacePath(parentDir, workspaceRoots)
+  const normalizedPath = path.resolve(expandedPath)
+  assertNotSensitiveReadTarget(normalizedPath)
 
   let realFile: string
   try {
-    realFile = fs.realpathSync(expandedPath)
-    // Also verify real parent is inside workspaceRoots
-    resolveAllowedWorkspacePath(path.dirname(realFile), workspaceRoots)
-    assertNotSensitive(realFile)
+    realFile = fs.realpathSync(normalizedPath)
+    assertNotSensitiveReadTarget(realFile)
     const st = fs.statSync(realFile)
     if (!st.isFile()) {
       throw new HubRpcError(ErrorCode.InvalidParams, 'Target path is not a regular file.')
