@@ -57,26 +57,78 @@ describe('Hub local file preview read roots & home expansion', () => {
     expect(overviewMd.content).toContain('[rgo.md](entries/internal-infra/rgo.md)')
   })
 
-  it('still blocks sensitive files, path traversal, and symlinks escaping ~/.agent-memory', () => {
+  it('allows previewing arbitrary files outside configured workspaceRoots, including other dirs, dotfiles, symlinks, and agent docs', () => {
+    const externalDir = path.join(tempRoot, 'outside-repo', 'src')
+    fs.mkdirSync(externalDir, { recursive: true })
+    const externalGo = path.join(externalDir, 'main.go')
+    fs.writeFileSync(externalGo, 'package main\nfunc main() {}\n')
+
+    const zshrcPath = path.join(fakeHome, '.zshrc')
+    fs.writeFileSync(zshrcPath, 'export EDITOR=nvim\n')
+
+    const claudePlanDir = path.join(fakeHome, '.claude', 'plans')
+    fs.mkdirSync(claudePlanDir, { recursive: true })
+    const claudePlan = path.join(claudePlanDir, 'arch.md')
+    fs.writeFileSync(claudePlan, '# Architecture Plan\n')
+
+    const geminiSkillDir = path.join(fakeHome, '.gemini', 'skills', 'demo')
+    fs.mkdirSync(geminiSkillDir, { recursive: true })
+    const geminiSkill = path.join(geminiSkillDir, 'SKILL.md')
+    fs.writeFileSync(geminiSkill, '# Demo Skill\n')
+
+    const codexDir = path.join(fakeHome, '.codex')
+    fs.mkdirSync(codexDir, { recursive: true })
+    const codexConfig = path.join(codexDir, 'config.toml')
+    fs.writeFileSync(codexConfig, 'model = "gpt-5"\n')
+
+    const symlinkToOutside = path.join(workspaceDir, 'linked-main.go')
+    fs.symlinkSync(externalGo, symlinkToOutside)
+
+    const onlyWorkspace = [workspaceDir]
+
+    expect(readWorkspaceFile(externalGo, onlyWorkspace).content).toContain('package main')
+    expect(readWorkspaceFile('~/.zshrc', onlyWorkspace).content).toContain('EDITOR=nvim')
+    expect(readWorkspaceFile('~/.claude/plans/arch.md', onlyWorkspace).content).toContain('# Architecture Plan')
+    expect(readWorkspaceFile('~/.gemini/skills/demo/SKILL.md', onlyWorkspace).content).toContain('# Demo Skill')
+    expect(readWorkspaceFile('~/.codex/config.toml', onlyWorkspace).content).toContain('model = "gpt-5"')
+    expect(readWorkspaceFile(symlinkToOutside, onlyWorkspace).path).toBe(fs.realpathSync(externalGo))
+    expect(readWorkspaceFile(path.join(workspaceDir, '..', 'outside-repo', 'src', 'main.go'), onlyWorkspace).content).toContain(
+      'package main',
+    )
+  })
+
+  it('still blocks hard credential vaults, secret filenames, and symlinks targeting secrets', () => {
     const sshKey = path.join(fakeHome, '.ssh', 'id_ed25519')
     fs.writeFileSync(sshKey, 'PRIVATE-SSH-KEY')
 
     const dotEnvInMemory = path.join(fakeHome, '.agent-memory', '.env')
     fs.writeFileSync(dotEnvInMemory, 'API_SECRET=topsecret')
 
-    const symlinkEscape = path.join(fakeHome, '.agent-memory', 'concepts', 'leak.md')
-    fs.symlinkSync(sshKey, symlinkEscape)
+    const claudeDir = path.join(fakeHome, '.claude')
+    fs.mkdirSync(claudeDir, { recursive: true })
+    const claudeCreds = path.join(claudeDir, '.credentials.json')
+    fs.writeFileSync(claudeCreds, '{"token":"secret"}')
+
+    const codexDir = path.join(fakeHome, '.codex')
+    fs.mkdirSync(codexDir, { recursive: true })
+    const codexAuth = path.join(codexDir, 'auth.json')
+    fs.writeFileSync(codexAuth, '{"api_key":"secret"}')
+
+    const symlinkToSecret = path.join(fakeHome, '.agent-memory', 'concepts', 'leak.md')
+    fs.symlinkSync(sshKey, symlinkToSecret)
 
     const readableRoots = getReadableFileRoots([workspaceDir])
 
     expect(() => readWorkspaceFile('~/.ssh/id_ed25519', readableRoots)).toThrowError()
     expect(() => readWorkspaceFile('~/.agent-memory/../.ssh/id_ed25519', readableRoots)).toThrowError()
     expect(() => readWorkspaceFile(dotEnvInMemory, readableRoots)).toThrowError()
-    expect(() => readWorkspaceFile(symlinkEscape, readableRoots)).toThrowError()
+    expect(() => readWorkspaceFile(claudeCreds, readableRoots)).toThrowError()
+    expect(() => readWorkspaceFile(codexAuth, readableRoots)).toThrowError()
+    expect(() => readWorkspaceFile(symlinkToSecret, readableRoots)).toThrowError()
 
     try {
-      readWorkspaceFile(symlinkEscape, readableRoots)
-      expect.unreachable('symlink escape should throw PathNotAllowed')
+      readWorkspaceFile(symlinkToSecret, readableRoots)
+      expect.unreachable('symlink to secret should throw PathNotAllowed')
     } catch (err: any) {
       expect(err.code).toBe(ErrorCode.PathNotAllowed)
     }

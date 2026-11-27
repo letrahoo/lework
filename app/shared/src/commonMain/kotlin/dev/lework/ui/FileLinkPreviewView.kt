@@ -82,8 +82,14 @@ internal fun FileLinkPreviewContent(
     val ext = remember(entry.resolvedPath) { fileExtensionOf(entry.resolvedPath) }
     val isMarkdown = remember(ext) { isMarkdownExtension(ext) }
     val isHtml = remember(ext) { isHtmlExtension(ext) }
+    val detectedLang = remember(entry.resolvedPath, entry.content) {
+        detectCodeLanguage(entry.resolvedPath, entry.content.orEmpty())
+    }
     val canOpenExternal = remember(entry.resolvedPath) { canOpenLocalFileExternally(entry.resolvedPath) }
     var htmlShowSource by remember(entry.resolvedPath) { mutableStateOf(false) }
+    var markdownShowSource by remember(entry.resolvedPath, entry.startLine) {
+        mutableStateOf(entry.startLine != null)
+    }
     var copiedKind by remember(entry.resolvedPath) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -159,6 +165,23 @@ internal fun FileLinkPreviewContent(
                             .weight(1f, fill = false)
                             .testTag("file_preview_title"),
                     )
+                    if (detectedLang.id != "plain") {
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = Everforest.Bg2.copy(alpha = 0.8f),
+                            border = BorderStroke(1.dp, Everforest.Bg3),
+                            modifier = Modifier.testTag("file_preview_lang_badge"),
+                        ) {
+                            Text(
+                                text = detectedLang.displayName,
+                                fontSize = 10.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Medium,
+                                color = Everforest.Aqua,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.5.dp),
+                            )
+                        }
+                    }
                     if (lineBadge != null) {
                         Surface(
                             shape = RoundedCornerShape(999.dp),
@@ -271,6 +294,27 @@ internal fun FileLinkPreviewContent(
                         )
                     }
                 }
+            }
+        }
+
+        if (isMarkdown && !entry.loading && entry.error == null && !entry.isBinary) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FilePreviewModePill(
+                    label = "阅读预览",
+                    selected = !markdownShowSource,
+                    testTag = "file_preview_tab_rendered",
+                    onClick = { markdownShowSource = false },
+                )
+                FilePreviewModePill(
+                    label = "Markdown 源码",
+                    selected = markdownShowSource,
+                    testTag = "file_preview_tab_source",
+                    onClick = { markdownShowSource = true },
+                )
             }
         }
 
@@ -412,7 +456,7 @@ internal fun FileLinkPreviewContent(
                     }
                 }
 
-                isMarkdown -> {
+                isMarkdown && !markdownShowSource -> {
                     val docBaseDir = remember(entry.resolvedPath) { parentDirectoryOf(entry.resolvedPath) }
                     CompositionLocalProvider(
                         LocalFileLinkClickHandler provides { target ->
@@ -478,7 +522,7 @@ internal fun FileLinkPreviewContent(
                 else -> {
                     CodeFilePreviewBody(
                         content = entry.content.orEmpty(),
-                        ext = ext,
+                        filePath = entry.resolvedPath,
                         startLine = entry.startLine,
                         endLine = entry.endLine,
                         truncated = entry.truncated,
@@ -492,20 +536,22 @@ internal fun FileLinkPreviewContent(
 @Composable
 private fun CodeFilePreviewBody(
     content: String,
-    ext: String,
+    filePath: String,
     startLine: Int?,
     endLine: Int?,
     truncated: Boolean,
 ) {
-    val lines = remember(content) { content.split('\n') }
-    val gutterWidthDp = remember(lines.size) {
-        val digits = lines.size.coerceAtLeast(1).toString().length.coerceIn(2, 5)
+    val highlightedLines = remember(content, filePath) {
+        highlightFileLines(content = content, filePathOrLang = filePath)
+    }
+    val gutterWidthDp = remember(highlightedLines.size) {
+        val digits = highlightedLines.size.coerceAtLeast(1).toString().length.coerceIn(2, 5)
         (digits * 8 + 18).dp
     }
     val listState = rememberLazyListState()
     LaunchedEffect(content, startLine) {
-        if (startLine != null && startLine > 0 && lines.isNotEmpty()) {
-            val targetIdx = (startLine - 4).coerceIn(0, lines.lastIndex)
+        if (startLine != null && startLine > 0 && highlightedLines.isNotEmpty()) {
+            val targetIdx = (startLine - 4).coerceIn(0, highlightedLines.lastIndex)
             listState.scrollToItem(targetIdx)
         }
     }
@@ -518,14 +564,11 @@ private fun CodeFilePreviewBody(
                 .padding(vertical = 8.dp)
                 .testTag("file_preview_code_list"),
         ) {
-            itemsIndexed(lines) { idx, rawLine ->
+            itemsIndexed(highlightedLines) { idx, highlightedLine ->
                 val lineNo = idx + 1
                 val isHighlighted = startLine != null &&
                     lineNo >= startLine &&
                     lineNo <= (endLine ?: startLine)
-                val highlightedLine = remember(rawLine, ext) {
-                    highlightEverforestCode(rawLine, ext)
-                }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
