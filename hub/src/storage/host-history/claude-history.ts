@@ -405,6 +405,7 @@ export function parseClaudeTranscript(
   const lines = readFullSessionLines(filePath)
   let seq = 0
   const emitPlanCleared = (ts: number) => {
+    stepTracker.reset()
     events.push({
       seq: seq++,
       sessionId,
@@ -648,10 +649,18 @@ export function parseClaudeTranscript(
             outputTokens: o.message.usage.output_tokens,
           })
         }
+        const isExplicitAssistantTurnEnd =
+          !sawToolUse &&
+          openTools.size === 0 &&
+          (o.message.stop_reason === 'end_turn' ||
+            o.message.stop_reason === 'stop_sequence' ||
+            o.message.stop_reason === 'max_tokens')
         isRunning = sawToolUse || o.message.stop_reason === 'tool_use'
         if (!isRunning) {
           turnStartedAt = undefined
-          if (planHygiene.onTurnEnded()) emitPlanCleared(ts)
+          if (isExplicitAssistantTurnEnd && planHygiene.onTurnEnded()) {
+            emitPlanCleared(ts)
+          }
         }
       }
     } catch {

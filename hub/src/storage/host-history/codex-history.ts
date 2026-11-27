@@ -234,6 +234,20 @@ export function parseCodexTranscript(
         o.type === 'event_msg' &&
         (o.payload?.type === 'task_complete' || o.payload?.type === 'turn_aborted')
       ) {
+        if (o.payload.type === 'turn_aborted') {
+          for (const callId of openTools) {
+            events.push({
+              seq: seq++,
+              sessionId,
+              ts,
+              type: 'tool.update',
+              toolCallId: callId,
+              status: 'failed',
+              output: '已停止',
+            })
+          }
+        }
+        openTools.clear()
         activeTurn = false
         turnStartedAt = undefined
         if (planHygiene.onTurnEnded()) emitPlanCleared(ts)

@@ -3182,6 +3182,10 @@ class ConsoleStore(
                         throw IllegalStateException(_state.value.connectionError ?: "网络连接已断开，无法连接到主机")
                     }
                 }
+                val preSendSessionId = _state.value.activeSessionId
+                val preSendTranscript = preSendSessionId?.let { _state.value.transcripts[it] }
+                val preSendPlanUpdatedAt = preSendTranscript?.planUpdatedAt ?: 0L
+                val preSendPlanEntries = preSendTranscript?.planEntries.orEmpty()
                 val sentSessionId = try {
                     dispatchPromptRpc(trimmed, attached)
                 } catch (ce: CancellationException) {
@@ -3207,6 +3211,11 @@ class ConsoleStore(
                 }
                 _state.update { st ->
                     val prevTranscript = st.transcripts[sentSessionId] ?: return@update st
+                    val planUnchangedSinceDispatch =
+                        sentSessionId == preSendSessionId &&
+                            prevTranscript.planUpdatedAt == preSendPlanUpdatedAt &&
+                            prevTranscript.planEntries == preSendPlanEntries
+                    if (!planUnchangedSinceDispatch) return@update st
                     val cleared = prevTranscript.clearStalePlanBeforeNewPrompt()
                     if (cleared === prevTranscript) st else st.copy(transcripts = st.transcripts + (sentSessionId to cleared))
                 }
@@ -3290,6 +3299,10 @@ class ConsoleStore(
                 val promptToSend = if (hasUnsentPrompt) failedText else SEAMLESS_CONTINUE_PROMPT
                 val imagesToSend = if (hasUnsentPrompt) failedImages else emptyList()
 
+                val preSendSessionId = targetSid
+                val preSendTranscript = preSendSessionId?.let { _state.value.transcripts[it] }
+                val preSendPlanUpdatedAt = preSendTranscript?.planUpdatedAt ?: 0L
+                val preSendPlanEntries = preSendTranscript?.planEntries.orEmpty()
                 val sentSessionId = try {
                     dispatchPromptRpc(promptToSend, imagesToSend)
                 } catch (ce: CancellationException) {
@@ -3315,7 +3328,16 @@ class ConsoleStore(
                 }
                 _state.update { st ->
                     val prevTranscript = st.transcripts[sentSessionId]
-                    val cleared = prevTranscript?.clearStalePlanBeforeNewPrompt()
+                    val planUnchangedSinceDispatch =
+                        prevTranscript != null &&
+                            sentSessionId == preSendSessionId &&
+                            prevTranscript.planUpdatedAt == preSendPlanUpdatedAt &&
+                            prevTranscript.planEntries == preSendPlanEntries
+                    val cleared = if (planUnchangedSinceDispatch) {
+                        prevTranscript.clearStalePlanBeforeNewPrompt()
+                    } else {
+                        prevTranscript
+                    }
                     val nextTranscripts = if (cleared != null && cleared !== prevTranscript) {
                         st.transcripts + (sentSessionId to cleared)
                     } else {

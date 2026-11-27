@@ -78,7 +78,7 @@ internal fun resolveExecutionStepsLifecycle(
     sessionState: SessionState?,
     isSessionRunning: Boolean,
     isWaitingPermission: Boolean,
-    hasActionButtons: Boolean,
+    hasApprovePlanAction: Boolean,
 ): ExecutionStepsLifecycle {
     val effectiveWaitingPermission = isWaitingPermission || sessionState == SessionState.WAITING_PERMISSION
     if (effectiveWaitingPermission) return ExecutionStepsLifecycle.WAITING_PERMISSION
@@ -95,7 +95,7 @@ internal fun resolveExecutionStepsLifecycle(
             ExecutionStepsLifecycle.STOPPED
         allFinished ->
             ExecutionStepsLifecycle.COMPLETED
-        hasActionButtons ->
+        hasApprovePlanAction ->
             ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING
         else ->
             ExecutionStepsLifecycle.INCOMPLETE
@@ -170,19 +170,19 @@ internal fun ExecutionStepsCard(
     val failedCount = entries.count { it.status == "failed" }
     val inProgressEntry = entries.firstOrNull { it.status == "in_progress" }
     val allFinished = entries.all { it.status == "completed" || it.status == "skipped" }
-    val hasActionButtons = onOpenPlanArtifact != null || onApprovePlan != null
+    val hasApprovePlanAction = onApprovePlan != null
 
     val lifecycle = resolveExecutionStepsLifecycle(
         entries = entries,
         sessionState = matchingSession?.state,
         isSessionRunning = isSessionRunning,
         isWaitingPermission = isWaitingPermission,
-        hasActionButtons = hasActionButtons,
+        hasApprovePlanAction = hasApprovePlanAction,
     )
     val isLiveRunning = lifecycle == ExecutionStepsLifecycle.RUNNING
     val defaultExpanded = defaultExpandedForLifecycle(
         lifecycle = lifecycle,
-        hasApprovePlanAction = onApprovePlan != null,
+        hasApprovePlanAction = hasApprovePlanAction,
     )
 
     // Keyed directly on (sessionKey, lifecycle, defaultExpanded) so user manual toggles survive
@@ -328,7 +328,7 @@ internal fun ExecutionStepsCard(
                             }
                             ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING -> {
                                 withStyle(SpanStyle(color = Everforest.CommentGrey)) {
-                                    append(if (onApprovePlan != null) " · 待确认方案" else " · 执行方案")
+                                    append(" · 待确认方案")
                                 }
                             }
                             ExecutionStepsLifecycle.COMPLETED -> {

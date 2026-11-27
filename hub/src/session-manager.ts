@@ -631,7 +631,7 @@ export class SessionManager {
       )
     }
 
-    if (managed.meta.state === 'running') {
+    if (managed.meta.state === 'running' && !managed.cancelled) {
       if (managed.queuedTurns.length >= 8) {
         throw new HubRpcError(ErrorCode.Conflict, '待执行消息队列已满（最多 8 条），请等待当前轮次完成。')
       }
@@ -902,12 +902,15 @@ export class SessionManager {
     }
     const req = this.requireSession(sessionId)
     req.cancelled = true
-    req.turnGeneration++
+    const cancelGen = ++req.turnGeneration
     req.queuedTurns = []
     req.meta.queuedPrompts = undefined
     req.meta.liveStatusText = undefined
     req.meta.turnStartedAt = undefined
     await req.handle.cancel()
+    if (req.closed || !this.sessions.has(sessionId) || req.turnGeneration !== cancelGen) {
+      return
+    }
     req.meta.queuedPrompts = undefined
     const lastEv = req.events[req.events.length - 1]
     if (!lastEv || lastEv.type !== 'session.state' || lastEv.state !== 'idle') {

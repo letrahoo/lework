@@ -491,4 +491,334 @@ describe('Execution steps lifecycle & turn hygiene across Hub and host history',
       await sm.closeAll()
     }
   })
+
+  it('Claude host history ignores intermediate stop_reason:null streaming records before and after queued_command', () => {
+    const dir = mkTmpDir()
+    const fp = path.join(dir, 'claude-streaming-null-stop.jsonl')
+    const baseLines = [
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-11-27T05:00:00Z',
+        message: { role: 'user', content: '执行多步重构' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-27T05:00:01Z',
+        message: {
+          id: 'm1',
+          role: 'assistant',
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu_todo_1',
+              name: 'TodoWrite',
+              input: {
+                todos: [
+                  { content: '分析调用链', status: 'completed' },
+                  { content: '修改核心状态机', status: 'in_progress' },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-11-27T05:00:02Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tu_todo_1', content: 'Todos updated' }],
+        },
+      }),
+      // Intermediate streaming thinking/text chunks with `stop_reason: null` BEFORE queued_command
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-27T05:00:03Z',
+        message: {
+          id: 'm2',
+          role: 'assistant',
+          stop_reason: null,
+          content: [{ type: 'thinking', thinking: '先检查下游影响范围…' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-27T05:00:04Z',
+        message: {
+          id: 'm2',
+          role: 'assistant',
+          stop_reason: null,
+          content: [{ type: 'text', text: '正在定位相关文件。' }],
+        },
+      }),
+      // Mid-turn steering absorbed while still in the same turn -> must NOT clear plan!
+      JSON.stringify({
+        type: 'attachment',
+        timestamp: '2026-11-27T05:00:05Z',
+        attachment: { type: 'queued_command', prompt: '顺便补上单测' },
+      }),
+      // Intermediate streaming thinking/text chunks with `stop_reason: null` AFTER queued_command
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-27T05:00:06Z',
+        message: {
+          id: 'm3',
+          role: 'assistant',
+          stop_reason: null,
+          content: [{ type: 'thinking', thinking: '收到补充要求，继续执行…' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-27T05:00:07Z',
+        message: {
+          id: 'm3',
+          role: 'assistant',
+          stop_reason: null,
+          content: [{ type: 'text', text: '好的，会一并补齐单测。' }],
+        },
+      }),
+    ]
+    fs.writeFileSync(fp, baseLines.join('\n') + '\n', 'utf8')
+
+    const midStream = parseClaudeTranscript('host:claude:stream-null', fp)
+    expect(midStream.events.some(e => e.type === 'plan.updated' && e.entries.length === 0)).toBe(false)
+    expect(extractLatestPlanFromEvents(midStream.events)).toEqual([
+      { content: '分析调用链', status: 'completed' },
+      { content: '修改核心状态机', status: 'in_progress' },
+    ])
+
+    // Once an explicit terminal `stop_reason: 'end_turn'` arrives without fresh plan update,
+    // the post-queued_command turn ends and clears the stale plan cleanly.
+    const withExplicitEnd = [
+      ...baseLines,
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-27T05:00:15Z',
+        message: {
+          id: 'm4',
+          role: 'assistant',
+          stop_reason: 'end_turn',
+          content: [{ type: 'text', text: '重构和单测均已完成。' }],
+        },
+      }),
+    ]
+    fs.writeFileSync(fp, withExplicitEnd.join('\n') + '\n', 'utf8')
+    const afterEnd = parseClaudeTranscript('host:claude:stream-null', fp)
+    expect(afterEnd.isRunning).toBe(false)
+    expect(extractLatestPlanFromEvents(afterEnd.events)).toBeUndefined()
+  })
+
+  it('Claude TaskCreate in Turn 2 does not resurrect interrupted Turn 1 tasks after plan clear', () => {
+    const dir = mkTmpDir()
+    const fp = path.join(dir, 'claude-taskcreate-reset.jsonl')
+    const lines = [
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-11-27T05:10:00Z',
+        message: { role: 'user', content: 'Turn 1 任务' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-27T05:10:02Z',
+        message: {
+          id: 'm1',
+          role: 'assistant',
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu_c1',
+              name: 'TaskCreate',
+              input: { subject: '旧任务步骤一', status: 'in_progress' },
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-11-27T05:10:03Z',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tu_c1', content: 'Task #1 created' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-11-27T05:10:08Z',
+        message: { role: 'user', content: '[Request interrupted by user]' },
+      }),
+      // Turn 2 starts fresh and creates a brand new task
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-11-27T05:11:00Z',
+        message: { role: 'user', content: 'Turn 2 新任务' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: '2026-11-27T05:11:02Z',
+        message: {
+          id: 'm2',
+          role: 'assistant',
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu_c2',
+              name: 'TaskCreate',
+              input: { subject: '新任务步骤一', status: 'in_progress' },
+            },
+          ],
+        },
+      }),
+    ]
+    fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf8')
+
+    const parsed = parseClaudeTranscript('host:claude:task-reset', fp)
+    const latest = extractLatestPlanFromEvents(parsed.events)
+    expect(latest).toEqual([{ content: '新任务步骤一', status: 'in_progress' }])
+  })
+
+  it('Codex turn_aborted fails open tool calls and clears isRunning cleanly', () => {
+    const dir = mkTmpDir()
+    const fp = path.join(dir, 'rollout-12345678-1234-1234-1234-1234567890ab.jsonl')
+    const lines = [
+      JSON.stringify({
+        timestamp: '2026-11-27T05:20:00Z',
+        type: 'event_msg',
+        payload: { type: 'task_started' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-11-27T05:20:01Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '运行集成构建' }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-11-27T05:20:02Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          call_id: 'call_shell_unclosed',
+          name: 'shell',
+          arguments: JSON.stringify({ command: 'xcodebuild archive' }),
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-11-27T05:20:10Z',
+        type: 'event_msg',
+        payload: { type: 'turn_aborted' },
+      }),
+    ]
+    fs.writeFileSync(fp, lines.join('\n') + '\n', 'utf8')
+
+    const parsed = parseCodexTranscript('host:codex:abort-open-tool', fp)
+    expect(parsed.isRunning).toBe(false)
+    const failedUpdate = parsed.events.find(
+      e => e.type === 'tool.update' && e.toolCallId === 'call_shell_unclosed',
+    )
+    expect(failedUpdate).toMatchObject({
+      type: 'tool.update',
+      toolCallId: 'call_shell_unclosed',
+      status: 'failed',
+      output: '已停止',
+    })
+  })
+
+  it('SessionManager.cancel() skips late idle event if a new turn superseded turnGeneration while cancelling', async () => {
+    const isolatedHome = mkTmpDir()
+    process.env.LEWORK_HOME = isolatedHome
+    const wsDir = mkTmpDir()
+
+    let emitFn: ((ev: AgentEventBody) => void) | null = null
+    const deferred: {
+      resolveCancel: (() => void) | null
+      resolveTurn1: (() => void) | null
+      resolveTurn2: (() => void) | null
+    } = {
+      resolveCancel: null,
+      resolveTurn1: null,
+      resolveTurn2: null,
+    }
+    let turnNumber = 0
+
+    const sm = new SessionManager(
+      [wsDir],
+      [
+        {
+          id: 'claude',
+          displayName: 'Claude Code',
+          kind: 'cli',
+          probe: async () => ({ installed: true, ready: true }),
+          capabilities: () => ({
+            permissions: true,
+            images: true,
+            modelSwitch: true,
+            modes: true,
+            history: true,
+            cancel: true,
+          }),
+          openSession: async init => {
+            emitFn = init.emit
+            return {
+              sessionId: init.sessionId,
+              cwd: init.cwd,
+              prompt: async () => {
+                turnNumber++
+                emitFn?.({ type: 'session.state', state: 'running' })
+                if (turnNumber === 1) {
+                  await new Promise<void>(r => {
+                    deferred.resolveTurn1 = r
+                  })
+                } else {
+                  await new Promise<void>(r => {
+                    deferred.resolveTurn2 = r
+                  })
+                }
+              },
+              cancel: async () => {
+                deferred.resolveTurn1?.()
+                await new Promise<void>(r => {
+                  deferred.resolveCancel = r
+                })
+              },
+              respondPermission: async () => {},
+              close: async () => {
+                deferred.resolveTurn1?.()
+                deferred.resolveTurn2?.()
+                deferred.resolveCancel?.()
+              },
+            }
+          },
+        },
+      ],
+      {
+        onEvent: () => {},
+        onSessionUpdated: () => {},
+      },
+    )
+
+    try {
+      const sess = await sm.createSession({ engineId: 'claude', cwd: wsDir })
+      await sm.prompt(sess.id, 'Turn 1')
+      // Begin cancel(), suspending inside req.handle.cancel()
+      const cancelPromise = sm.cancel(sess.id)
+      // Before cancel resolves, a brand new Turn 2 starts and advances turnGeneration
+      await sm.prompt(sess.id, 'Turn 2')
+      expect(sm.getSessionMeta(sess.id)?.state).toBe('running')
+
+      // Now the stale cancel() resolves -> must NOT emit idle or clobber Turn 2's running state!
+      deferred.resolveCancel?.()
+      await cancelPromise
+      expect(sm.getSessionMeta(sess.id)?.state).toBe('running')
+      const snap = sm.subscribeSnapshot(sess.id, -1)
+      expect(snap.events.at(-1)).toMatchObject({ type: 'session.state', state: 'running' })
+    } finally {
+      await sm.closeAll()
+    }
+  })
 })

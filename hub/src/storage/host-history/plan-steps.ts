@@ -338,6 +338,11 @@ export class ClaudeTaskStepTracker {
     }
   }
 
+  reset(): void {
+    this.tasks = []
+    this.autoSeq = 1
+  }
+
   snapshot(): PlanEntry[] {
     return this.tasks.map(t => ({ content: t.content, status: t.status }))
   }

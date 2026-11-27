@@ -372,6 +372,13 @@ internal fun DesktopConsoleApp(
                                 val planArtifact = state.activeSessionArtifacts.firstOrNull {
                                     it.actionable || it.kind == dev.lework.protocol.ArtifactKind.PLAN
                                 }
+                                val awaitingPlanApproval = !sessRunning && (
+                                    state.selectedMode == SessionMode.PLAN ||
+                                        (planArtifact != null &&
+                                            topActiveSess?.state == SessionState.IDLE &&
+                                            transcript.planEntries.isNotEmpty() &&
+                                            transcript.planEntries.all { it.status == "pending" })
+                                )
                                 key(activeKey) {
                                     ConversationStreamView(
                                         sessionKey = activeKey,
@@ -390,7 +397,7 @@ internal fun DesktopConsoleApp(
                                                 activeInspectorTab = DesktopInspectorTab.ARTIFACTS
                                             }
                                         },
-                                        onApprovePlan = if (!sessRunning && (planArtifact != null || state.selectedMode == SessionMode.PLAN)) {
+                                        onApprovePlan = if (awaitingPlanApproval) {
                                             { store.approveAndExecutePlan(planArtifact?.title) }
                                         } else {
                                             null

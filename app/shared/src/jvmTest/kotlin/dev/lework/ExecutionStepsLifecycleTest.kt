@@ -5,34 +5,54 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
 import androidx.compose.ui.unit.dp
+import dev.lework.platform.JvmPlatformTestHooks
 import dev.lework.protocol.AgentEvent
+import dev.lework.protocol.ArtifactContentResult
+import dev.lework.protocol.ArtifactInfo
+import dev.lework.protocol.ArtifactKind
+import dev.lework.protocol.ArtifactSource
 import dev.lework.protocol.PermissionOption
 import dev.lework.protocol.PermissionOptionKind
 import dev.lework.protocol.PlanEntry
+import dev.lework.protocol.PromptImageAttachment
+import dev.lework.protocol.ReasoningEffort
 import dev.lework.protocol.SessionMeta
+import dev.lework.protocol.SessionMode
 import dev.lework.protocol.SessionState
 import dev.lework.store.ChatTimelineItem
+import dev.lework.store.ConsoleStore
 import dev.lework.store.SessionTranscript
 import dev.lework.store.clearStalePlanBeforeNewPrompt
 import dev.lework.store.reduceTranscript
 import dev.lework.store.reduceTranscriptBatch
 import dev.lework.store.syncPlanLifecycleWithSessionState
 import dev.lework.store.withFallbackLatestPlan
+import dev.lework.transport.HubTransport
+import dev.lework.ui.ConsoleApp
 import dev.lework.ui.ConversationStreamView
 import dev.lework.ui.EverforestColorScheme
 import dev.lework.ui.ExecutionStepsLifecycle
 import dev.lework.ui.defaultExpandedForLifecycle
 import dev.lework.ui.resolveExecutionStepsLifecycle
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -69,54 +89,54 @@ class ExecutionStepsLifecycleTest {
         // Running
         assertEquals(
             ExecutionStepsLifecycle.RUNNING,
-            resolveExecutionStepsLifecycle(mixedRunning, SessionState.RUNNING, isSessionRunning = true, isWaitingPermission = false, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(mixedRunning, SessionState.RUNNING, isSessionRunning = true, isWaitingPermission = false, hasApprovePlanAction = false),
         )
         assertTrue(defaultExpandedForLifecycle(ExecutionStepsLifecycle.RUNNING, hasApprovePlanAction = false))
 
         // Waiting permission overrides running / in_progress / failed
         assertEquals(
             ExecutionStepsLifecycle.WAITING_PERMISSION,
-            resolveExecutionStepsLifecycle(mixedRunning, SessionState.WAITING_PERMISSION, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(mixedRunning, SessionState.WAITING_PERMISSION, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = false),
         )
         assertEquals(
             ExecutionStepsLifecycle.WAITING_PERMISSION,
-            resolveExecutionStepsLifecycle(withFailed, SessionState.RUNNING, isSessionRunning = true, isWaitingPermission = true, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(withFailed, SessionState.RUNNING, isSessionRunning = true, isWaitingPermission = true, hasApprovePlanAction = false),
         )
         assertTrue(defaultExpandedForLifecycle(ExecutionStepsLifecycle.WAITING_PERMISSION, hasApprovePlanAction = false))
 
         // Inactive with leftover in_progress -> STOPPED (collapsed by default even if old plan artifact exists)
         assertEquals(
             ExecutionStepsLifecycle.STOPPED,
-            resolveExecutionStepsLifecycle(mixedRunning, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(mixedRunning, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = false),
         )
         assertEquals(
             ExecutionStepsLifecycle.STOPPED,
-            resolveExecutionStepsLifecycle(mixedRunning, SessionState.CLOSED, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = true),
+            resolveExecutionStepsLifecycle(mixedRunning, SessionState.CLOSED, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = true),
         )
         assertFalse(defaultExpandedForLifecycle(ExecutionStepsLifecycle.STOPPED, hasApprovePlanAction = true))
 
-        // Inactive with pending only & no actions -> INCOMPLETE (collapsed by default)
+        // Inactive with pending only & no approve-plan action -> INCOMPLETE (collapsed by default)
         assertEquals(
             ExecutionStepsLifecycle.INCOMPLETE,
-            resolveExecutionStepsLifecycle(partialPending, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(partialPending, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = false),
         )
         assertFalse(defaultExpandedForLifecycle(ExecutionStepsLifecycle.INCOMPLETE, hasApprovePlanAction = false))
 
-        // Inactive with pending steps & action buttons -> PLAN_APPROVAL_PENDING (expanded by default)
+        // Inactive with pending steps & approve-plan action -> PLAN_APPROVAL_PENDING (expanded by default)
         assertEquals(
             ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING,
-            resolveExecutionStepsLifecycle(pendingOnly, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = true),
+            resolveExecutionStepsLifecycle(pendingOnly, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = true),
         )
         assertTrue(defaultExpandedForLifecycle(ExecutionStepsLifecycle.PLAN_APPROVAL_PENDING, hasApprovePlanAction = true))
 
         // Completed: collapsed normally, expanded when approve-plan action is presented
         assertEquals(
             ExecutionStepsLifecycle.COMPLETED,
-            resolveExecutionStepsLifecycle(allDone, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(allDone, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = false),
         )
         assertEquals(
             ExecutionStepsLifecycle.COMPLETED,
-            resolveExecutionStepsLifecycle(allDone, SessionState.ERROR, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(allDone, SessionState.ERROR, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = false),
         )
         assertFalse(defaultExpandedForLifecycle(ExecutionStepsLifecycle.COMPLETED, hasApprovePlanAction = false))
         assertTrue(defaultExpandedForLifecycle(ExecutionStepsLifecycle.COMPLETED, hasApprovePlanAction = true))
@@ -124,11 +144,11 @@ class ExecutionStepsLifecycleTest {
         // Failed: explicit failed entry or SessionState.ERROR while unfinished -> FAILED (collapsed by default)
         assertEquals(
             ExecutionStepsLifecycle.FAILED,
-            resolveExecutionStepsLifecycle(withFailed, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(withFailed, SessionState.IDLE, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = false),
         )
         assertEquals(
             ExecutionStepsLifecycle.FAILED,
-            resolveExecutionStepsLifecycle(mixedRunning, SessionState.ERROR, isSessionRunning = false, isWaitingPermission = false, hasActionButtons = false),
+            resolveExecutionStepsLifecycle(mixedRunning, SessionState.ERROR, isSessionRunning = false, isWaitingPermission = false, hasApprovePlanAction = false),
         )
         assertFalse(defaultExpandedForLifecycle(ExecutionStepsLifecycle.FAILED, hasApprovePlanAction = false))
     }
@@ -586,5 +606,411 @@ class ExecutionStepsLifecycleTest {
         waitForIdle()
         onNodeWithText("已中断", substring = true, useUnmergedTree = true).assertIsDisplayed()
         onNodeWithText("Step Gamma", useUnmergedTree = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun readOnlyPlanArtifactDoesNotForceExpandCompletedStoppedOrIncompleteCards() = runComposeUiTest {
+        val sid = "host:agy:conv-historical-artifact"
+        var entries by mutableStateOf(
+            listOf(
+                PlanEntry("步骤一：准备环境", "completed"),
+                PlanEntry("步骤二：完成验证", "completed"),
+            ),
+        )
+        var artifactOpenedCount = 0
+
+        setContent {
+            val sess = SessionMeta(
+                id = sid,
+                engineId = "agy",
+                cwd = "/tmp/lework",
+                title = "Historical Plan Artifact Demo",
+                state = SessionState.IDLE,
+                createdAt = 1_730_000_000_000L,
+                updatedAt = 1_730_000_020_000L,
+                lastSeq = 5,
+            )
+            val transcript = SessionTranscript(
+                earliestSeq = 1,
+                lastSeq = 5,
+                items = listOf(
+                    ChatTimelineItem.Assistant(id = "a_hist", text = "执行完毕。", ts = 1_730_000_020_000L, seq = 5),
+                ),
+                planEntries = entries,
+            )
+            MaterialTheme(colorScheme = EverforestColorScheme) {
+                Box(modifier = Modifier.size(680.dp, 480.dp)) {
+                    ConversationStreamView(
+                        sessionKey = sid,
+                        activeSession = sess,
+                        transcript = transcript,
+                        isSessionRunning = false,
+                        onLoadOlder = {},
+                        onOpenPlanArtifact = { artifactOpenedCount++ },
+                        onApprovePlan = null,
+                    )
+                }
+            }
+        }
+        waitForIdle()
+
+        // 1. COMPLETED + read-only `onOpenPlanArtifact` -> auto-collapsed, `查看方案` still accessible
+        onNodeWithText("执行步骤已完成", substring = true, useUnmergedTree = true).assertIsDisplayed()
+        onNodeWithText("步骤一：准备环境", useUnmergedTree = true).assertDoesNotExist()
+        onNodeWithTag("plan_card_approve_btn", useUnmergedTree = true).assertDoesNotExist()
+        onNodeWithText("查看方案", useUnmergedTree = true).assertIsDisplayed().performClick()
+        waitForIdle()
+        assertEquals(1, artifactOpenedCount)
+
+        // 2. INCOMPLETE (completed + pending) + read-only `onOpenPlanArtifact` -> auto-collapsed as `未完成`
+        entries = listOf(
+            PlanEntry("步骤一：准备环境", "completed"),
+            PlanEntry("步骤二：待执行", "pending"),
+        )
+        waitForIdle()
+        onNodeWithText("未完成", substring = true, useUnmergedTree = true).assertIsDisplayed()
+        onNodeWithText("步骤二：待执行", useUnmergedTree = true).assertDoesNotExist()
+        onNodeWithText("查看方案", useUnmergedTree = true).assertIsDisplayed()
+
+        // 3. STOPPED (completed + in_progress) + read-only `onOpenPlanArtifact` -> auto-collapsed as `已中断`
+        entries = listOf(
+            PlanEntry("步骤一：准备环境", "completed"),
+            PlanEntry("步骤二：中断项", "in_progress"),
+        )
+        waitForIdle()
+        onNodeWithText("已中断", substring = true, useUnmergedTree = true).assertIsDisplayed()
+        onNodeWithText("步骤二：中断项", useUnmergedTree = true).assertDoesNotExist()
+        onNodeWithText("查看方案", useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun clearingPlanEntriesWhileRunningFallsBackSmoothlyToLiveSpinnerRow() = runComposeUiTest {
+        val sid = "host:agy:conv-turn2-fallback"
+        var entries by mutableStateOf(
+            listOf(
+                PlanEntry("Turn 1 Step 1", "completed"),
+                PlanEntry("Turn 1 Step 2", "in_progress"),
+            ),
+        )
+        var sessionState by mutableStateOf(SessionState.IDLE)
+
+        setContent {
+            val sess = SessionMeta(
+                id = sid,
+                engineId = "agy",
+                cwd = "/tmp/lework",
+                title = "Turn 2 Spinner Fallback",
+                state = sessionState,
+                liveStatusText = "Thinking about Turn 2…",
+                createdAt = 1_730_000_000_000L,
+                updatedAt = 1_730_000_010_000L,
+                turnStartedAt = 1_730_000_009_000L,
+                lastSeq = 6,
+            )
+            val transcript = SessionTranscript(
+                earliestSeq = 1,
+                lastSeq = 6,
+                items = listOf(
+                    ChatTimelineItem.User(id = "u2", text = "排查新问题", ts = 1_730_000_009_000L, seq = 6),
+                ),
+                planEntries = entries,
+            )
+            MaterialTheme(colorScheme = EverforestColorScheme) {
+                Box(modifier = Modifier.size(640.dp, 460.dp)) {
+                    ConversationStreamView(
+                        sessionKey = sid,
+                        activeSession = sess,
+                        transcript = transcript,
+                        isSessionRunning = sessionState == SessionState.RUNNING,
+                        onLoadOlder = {},
+                    )
+                }
+            }
+        }
+        waitForIdle()
+
+        // Initially IDLE with stale Turn 1 plan -> collapsed step card, no live spinner row
+        onNodeWithTag("execution_steps_card", useUnmergedTree = true).assertIsDisplayed()
+        onNodeWithTag("live_spinner_row", useUnmergedTree = true).assertDoesNotExist()
+
+        // Turn 2 starts RUNNING and clears stale planEntries -> smoothly falls back to ClaudeLiveSpinnerRow
+        sessionState = SessionState.RUNNING
+        entries = emptyList()
+        waitForIdle()
+        onNodeWithTag("execution_steps_card", useUnmergedTree = true).assertDoesNotExist()
+        onNodeWithTag("live_spinner_row", useUnmergedTree = true).assertIsDisplayed()
+        onNodeWithText("Thinking about Turn 2…", substring = true, useUnmergedTree = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun sendPromptPreSendSnapshotGuardPreservesConcurrentFreshTurn2PlanWhileClearingStalePlan() = runBlocking {
+        JvmPlatformTestHooks.reset()
+        try {
+            val sid = "host:agy:race-guard"
+            val staleEntries = listOf(
+                PlanEntry("Turn 1 Step 1", "completed"),
+                PlanEntry("Turn 1 Interrupted", "in_progress"),
+            )
+            val freshTurn2Entries = listOf(
+                PlanEntry("Turn 2 Brand New Step", "in_progress"),
+            )
+            val baseTransport = FakeHubTransport()
+            baseTransport.sessions.add(
+                SessionMeta(
+                    id = sid,
+                    engineId = "agy",
+                    cwd = "/workspace/lework",
+                    title = "Race Guard Session",
+                    state = SessionState.IDLE,
+                    createdAt = 1_730_000_000_000L,
+                    updatedAt = 1_730_000_010_000L,
+                    lastSeq = 2,
+                ),
+            )
+            baseTransport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 1_730_000_001_000L, "u1", "Turn 1"),
+                AgentEvent.PlanUpdated(1, sid, 1_730_000_002_000L, staleEntries),
+                AgentEvent.TurnDone(2, sid, 1_730_000_005_000L, "t1", "cancelled"),
+            )
+
+            var emitFreshPlanDuringSend = false
+            val transport = object : HubTransport by baseTransport {
+                override suspend fun sendPrompt(
+                    sessionId: String,
+                    text: String,
+                    images: List<PromptImageAttachment>?,
+                    providerId: String?,
+                    modelId: String?,
+                    reasoningEffort: ReasoningEffort?,
+                    mode: SessionMode?,
+                ): String {
+                    val turnId = baseTransport.sendPrompt(
+                        sessionId = sessionId,
+                        text = text,
+                        images = images,
+                        providerId = providerId,
+                        modelId = modelId,
+                        reasoningEffort = reasoningEffort,
+                        mode = mode,
+                    )
+                    if (emitFreshPlanDuringSend) {
+                        // Simulate Hub pushing Turn 2's fresh PlanUpdated BEFORE `session.prompt` RPC returns!
+                        baseTransport.emitEvent(
+                            AgentEvent.PlanUpdated(
+                                seq = 10,
+                                sessionId = sessionId,
+                                ts = 1_730_000_050_000L,
+                                entries = freshTurn2Entries,
+                            ),
+                        )
+                        delay(40L)
+                    }
+                    return turnId
+                }
+            }
+
+            val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+            val store = ConsoleStore(scope, transport)
+            try {
+                store.bootstrapOrConnect()
+                var tries = 0
+                while (store.state.value.connectionStatus != dev.lework.store.ConnectionStatus.CONNECTED && tries++ < 80) {
+                    delay(20L)
+                }
+                store.selectSession(sid)
+                tries = 0
+                while (store.state.value.activeTranscript.planEntries.size != 2 && tries++ < 80) {
+                    delay(20L)
+                }
+                assertEquals(staleEntries, store.state.value.activeTranscript.planEntries)
+                assertTrue(store.state.value.activeTranscript.planTurnEnded)
+
+                // Case 1: Fresh Turn 2 plan arrives concurrently while dispatchPromptRpc is in flight -> MUST NOT be clobbered!
+                emitFreshPlanDuringSend = true
+                store.sendPrompt("开始 Turn 2 并立刻更新步骤")
+                tries = 0
+                while (store.state.value.activeTranscript.planEntries != freshTurn2Entries && tries++ < 80) {
+                    delay(20L)
+                }
+                delay(60L)
+                assertEquals(freshTurn2Entries, store.state.value.activeTranscript.planEntries)
+                assertEquals(1_730_000_050_000L, store.state.value.activeTranscript.planUpdatedAt)
+
+                // Case 2: Turn 2 ends (IDLE) and Turn 3 is sent WITHOUT concurrent fresh plan -> stale Turn 2 plan clears immediately!
+                baseTransport.emitEvent(AgentEvent.TurnDone(11, sid, 1_730_000_060_000L, "t2", "cancelled"))
+                baseTransport.emitSessionUpdate(
+                    baseTransport.sessions.first { it.id == sid }.copy(state = SessionState.IDLE, lastSeq = 11),
+                )
+                tries = 0
+                while (!store.state.value.activeTranscript.planTurnEnded && tries++ < 80) {
+                    delay(20L)
+                }
+                emitFreshPlanDuringSend = false
+                store.sendPrompt("Turn 3 无步骤任务")
+                tries = 0
+                while (store.state.value.activeTranscript.planEntries.isNotEmpty() && tries++ < 80) {
+                    delay(20L)
+                }
+                assertTrue(store.state.value.activeTranscript.planEntries.isEmpty())
+            } finally {
+                scope.cancel()
+            }
+        } finally {
+            JvmPlatformTestHooks.reset()
+        }
+    }
+
+    @Test
+    fun planModeApprovalEndToEndTransitionsToRunningAndAutoCollapsesAfterExecutionWithHistoricalArtifact() = runComposeUiTest {
+        JvmPlatformTestHooks.reset()
+        JvmPlatformTestHooks.simulateDesktopLayout = false
+        try {
+            val sid = "host:agy:plan-e2e"
+            val planArt = ArtifactInfo(
+                id = "agy_file:implementation_plan.md",
+                sessionId = sid,
+                kind = ArtifactKind.PLAN,
+                title = "步骤卡片修复方案",
+                summary = "显式建模生命周期并清理跨轮次过期步骤",
+                fileName = "implementation_plan.md",
+                mimeType = "text/markdown",
+                sizeBytes = 512L,
+                updatedAt = 1_730_000_005_000L,
+                source = ArtifactSource.AGY_BRAIN,
+                actionable = true,
+            )
+            val transport = FakeHubTransport()
+            val initialMeta = SessionMeta(
+                id = sid,
+                engineId = "agy",
+                cwd = "/workspace/lework",
+                title = "Plan Mode Lifecycle E2E",
+                state = SessionState.IDLE,
+                createdAt = 1_730_000_000_000L,
+                updatedAt = 1_730_000_005_000L,
+                lastSeq = 2,
+                mode = SessionMode.PLAN,
+                artifactCount = 1,
+            )
+            transport.sessions.add(initialMeta)
+            transport.artifactsBySession[sid] = mutableListOf(planArt)
+            transport.artifactContents[sid to planArt.id] = ArtifactContentResult(
+                artifact = planArt,
+                content = "# 步骤卡片修复方案\n\n- 步骤一\n- 步骤二",
+                isBase64 = false,
+                truncated = false,
+            )
+            transport.sessionEventsMap[sid] = mutableListOf(
+                AgentEvent.UserMessage(0, sid, 1_730_000_001_000L, "u0", "帮我设计修复方案"),
+                AgentEvent.PlanUpdated(
+                    seq = 1,
+                    sessionId = sid,
+                    ts = 1_730_000_002_000L,
+                    entries = listOf(
+                        PlanEntry("设计状态机枚举", "pending"),
+                        PlanEntry("补齐端到端单测", "pending"),
+                    ),
+                ),
+                AgentEvent.AssistantDelta(2, sid, 1_730_000_005_000L, "a0", "方案已生成，请确认。"),
+            )
+
+            lateinit var store: ConsoleStore
+            setContent {
+                val scope: CoroutineScope = rememberCoroutineScope()
+                val created = remember { ConsoleStore(scope, transport) }
+                store = created
+                Box(modifier = Modifier.size(width = 430.dp, height = 840.dp)) {
+                    ConsoleApp(externalStore = created, autoBootstrap = true)
+                }
+            }
+            waitForIdle()
+            runOnIdle { store.selectSession(sid) }
+            waitUntil(timeoutMillis = 4_000L) {
+                onAllNodesWithTag("plan_card_approve_btn", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+            }
+
+            // 1. In PLAN mode with pending steps + plan artifact: expanded as PLAN_APPROVAL_PENDING with `确认执行`
+            onNodeWithText("待确认方案", substring = true, useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithText("设计状态机枚举", useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithTag("plan_card_approve_btn", useUnmergedTree = true).performClick()
+
+            waitUntil(timeoutMillis = 4_000L) {
+                transport.sentPrompts.any { it.first == sid && it.second.contains("确认执行方案") }
+            }
+            assertEquals(SessionMode.AUTO, store.state.value.selectedMode)
+
+            // 2. Execution starts RUNNING with fresh Turn 2 plan updates
+            runOnIdle {
+                val uExec = AgentEvent.UserMessage(3, sid, 1_730_000_010_000L, "u_exec", "已确认执行方案《步骤卡片修复方案》，请开始按方案实施。")
+                val pRunning = AgentEvent.PlanUpdated(
+                    seq = 4,
+                    sessionId = sid,
+                    ts = 1_730_000_011_000L,
+                    entries = listOf(
+                        PlanEntry("设计状态机枚举", "completed"),
+                        PlanEntry("补齐端到端单测", "in_progress"),
+                    ),
+                )
+                transport.sessionEventsMap[sid]?.addAll(listOf(uExec, pRunning))
+                transport.emitSessionUpdate(
+                    initialMeta.copy(
+                        state = SessionState.RUNNING,
+                        mode = SessionMode.AUTO,
+                        liveStatusText = "Implementing fix...",
+                        turnStartedAt = 1_730_000_010_000L,
+                        lastSeq = 4,
+                    ),
+                )
+                transport.emitEvent(uExec)
+                transport.emitEvent(pRunning)
+            }
+            waitUntil(timeoutMillis = 4_000L) {
+                onAllNodesWithTag("execution_step_status_running_1", useUnmergedTree = true)
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+            }
+            onNodeWithText("1/2 步", substring = true, useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithTag("execution_step_status_running_1", useUnmergedTree = true).assertIsDisplayed()
+
+            // 3. Execution completes cleanly (`AUTO` mode + historical `implementation_plan.md` STILL in artifacts!):
+            //    Must NOT show `确认执行` and MUST auto-collapse as `执行步骤已完成` while keeping `查看方案`!
+            runOnIdle {
+                val pDone = AgentEvent.PlanUpdated(
+                    seq = 5,
+                    sessionId = sid,
+                    ts = 1_730_000_020_000L,
+                    entries = listOf(
+                        PlanEntry("设计状态机枚举", "completed"),
+                        PlanEntry("补齐端到端单测", "completed"),
+                    ),
+                )
+                val tDone = AgentEvent.TurnDone(6, sid, 1_730_000_021_000L, "t_exec", "end_turn")
+                transport.sessionEventsMap[sid]?.addAll(listOf(pDone, tDone))
+                transport.emitEvent(pDone)
+                transport.emitEvent(tDone)
+                transport.emitSessionUpdate(
+                    initialMeta.copy(
+                        state = SessionState.IDLE,
+                        mode = SessionMode.AUTO,
+                        liveStatusText = null,
+                        turnStartedAt = null,
+                        lastSeq = 6,
+                    ),
+                )
+            }
+            waitUntil(timeoutMillis = 4_000L) {
+                store.state.value.activeSession?.state == SessionState.IDLE &&
+                    store.state.value.activeTranscript.planEntries.all { it.status == "completed" } &&
+                    store.state.value.activeTranscript.planEntries.size == 2
+            }
+            waitForIdle()
+            onNodeWithText("2/2 步", substring = true, useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithText("执行步骤已完成", substring = true, useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithText("查看方案", useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithTag("plan_card_approve_btn", useUnmergedTree = true).assertDoesNotExist()
+            onNodeWithText("补齐端到端单测", useUnmergedTree = true).assertDoesNotExist()
+        } finally {
+            JvmPlatformTestHooks.reset()
+        }
     }
 }
