@@ -32,10 +32,52 @@ fi
 cd "$IOS_DIR"
 xcodegen generate
 
+# Resolve effective SemVer (`max(latest reachable vX.Y.Z tag, package.json baseline)`) and fresh UTC build number
+# into a derived-data Info.plist copy so local installs reflect the real release version (e.g. 0.9.3) without
+# dirtying tracked `app/iosApp/iosApp/Info.plist`.
+RESOLVED_IOS_META="$(node -e '
+  const { execFileSync } = require("node:child_process");
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const repoRoot = process.argv[1];
+  const semverRe = /^v?(\d+)\.(\d+)\.(\d+)$/;
+  const parse = raw => {
+    const m = String(raw || "").trim().match(semverRe);
+    return m ? { major: +m[1], minor: +m[2], patch: +m[3] } : null;
+  };
+  const cmp = (a, b) => (a.major - b.major) || (a.minor - b.minor) || (a.patch - b.patch);
+  const fmt = v => `${v.major}.${v.minor}.${v.patch}`;
+  const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+  let best = parse(pkg.version) || { major: 0, minor: 9, patch: 0 };
+  try {
+    const tags = execFileSync("git", ["tag", "--merged", "HEAD", "--list", "v[0-9]*.[0-9]*.[0-9]*", "--sort=-v:refname"], {
+      cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]
+    }).split("\n");
+    for (const line of tags) {
+      const t = parse(line);
+      if (t) {
+        if (cmp(t, best) > 0) best = t;
+        break;
+      }
+    }
+  } catch {}
+  const now = new Date();
+  const p = n => String(n).padStart(2, "0");
+  const build = `${now.getUTCFullYear()}${p(now.getUTCMonth() + 1)}${p(now.getUTCDate())}.${p(now.getUTCHours())}${p(now.getUTCMinutes())}`;
+  process.stdout.write(`${fmt(best)}\t${build}`);
+' "$REPO_ROOT")"
+EFFECTIVE_IOS_VERSION="${LEWORK_IOS_VERSION:-${RESOLVED_IOS_META%%$'\t'*}}"
+EFFECTIVE_IOS_BUILD="${LEWORK_IOS_BUILD_VERSION:-${RESOLVED_IOS_META#*$'\t'}}"
+mkdir -p "$DERIVED_DATA"
+GENERATED_INFO_PLIST="$DERIVED_DATA/Generated-Info.plist"
+cp "$IOS_DIR/iosApp/Info.plist" "$GENERATED_INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $EFFECTIVE_IOS_VERSION" "$GENERATED_INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $EFFECTIVE_IOS_BUILD" "$GENERATED_INFO_PLIST"
+
 MODE="${1:---simulator}"
 
 if [[ "$MODE" == "--simulator" ]]; then
-  echo "==> Building iosApp for iOS Simulator (arm64)..."
+  echo "==> Building iosApp v$EFFECTIVE_IOS_VERSION ($EFFECTIVE_IOS_BUILD) for iOS Simulator (arm64)..."
   xcodebuild \
     -project "$IOS_DIR/iosApp.xcodeproj" \
     -scheme iosApp \
@@ -43,6 +85,7 @@ if [[ "$MODE" == "--simulator" ]]; then
     -sdk iphonesimulator \
     -arch arm64 \
     -derivedDataPath "$DERIVED_DATA" \
+    INFOPLIST_FILE="$GENERATED_INFO_PLIST" \
     CODE_SIGNING_ALLOWED=NO \
     build
   APP_BUNDLE="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/iosApp.app"
@@ -51,7 +94,7 @@ if [[ "$MODE" == "--simulator" ]]; then
 fi
 
 if [[ "$MODE" == "--device-compile" ]]; then
-  echo "==> Compiling & linking iosApp for iphoneos (arm64, unsigned link check)..."
+  echo "==> Compiling & linking iosApp v$EFFECTIVE_IOS_VERSION ($EFFECTIVE_IOS_BUILD) for iphoneos (arm64, unsigned link check)..."
   xcodebuild \
     -project "$IOS_DIR/iosApp.xcodeproj" \
     -scheme iosApp \
@@ -59,6 +102,7 @@ if [[ "$MODE" == "--device-compile" ]]; then
     -sdk iphoneos \
     -destination "generic/platform=iOS" \
     -derivedDataPath "$DERIVED_DATA" \
+    INFOPLIST_FILE="$GENERATED_INFO_PLIST" \
     ONLY_ACTIVE_ARCH=YES \
     ARCHS=arm64 \
     COMPILER_INDEX_STORE_ENABLE=NO \
@@ -114,7 +158,7 @@ if [[ "$MODE" == "--install" ]]; then
   fi
 
   IOS_BUILD_CONFIG="${LEWORK_IOS_CONFIGURATION:-Release}"
-  echo "==> Building & signing Lework ($IOS_BUILD_CONFIG) for physical iPhone ($DEVICE_ID, Team $TEAM_ID, $BUNDLE_ID)..."
+  echo "==> Building & signing Lework v$EFFECTIVE_IOS_VERSION ($EFFECTIVE_IOS_BUILD, $IOS_BUILD_CONFIG) for physical iPhone ($DEVICE_ID, Team $TEAM_ID, $BUNDLE_ID)..."
   XCODE_ARGS=(
     -project "$IOS_DIR/iosApp.xcodeproj"
     -scheme iosApp
@@ -122,6 +166,7 @@ if [[ "$MODE" == "--install" ]]; then
     -sdk iphoneos
     -destination "generic/platform=iOS"
     -derivedDataPath "$DERIVED_DATA"
+    INFOPLIST_FILE="$GENERATED_INFO_PLIST"
     DEVELOPMENT_TEAM="$TEAM_ID"
     PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
     LEWORK_BOOTSTRAP_RELAY="$BOOTSTRAP_RELAY"
