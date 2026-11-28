@@ -12,6 +12,138 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+
+## [v0.9.3] - 2026-11-28
+
+### Added
+- **support picking and sending local file attachments** ([#61](https://github.com/letrahoo/lework/pull/61))
+
+---
+
+## [v0.9.2] - 2026-11-27
+
+### Added
+- **simplify mobile composer action icons and context-aware placeholder** ([#60](https://github.com/letrahoo/lework/pull/60))
+
+### Changed
+- **pin Android release signing across CI and local builds** ([#57](https://github.com/letrahoo/lework/pull/57))
+
+### Fixed
+- **align sidebar controls and declutter mobile drawer chrome** ([#59](https://github.com/letrahoo/lework/pull/59))
+
+---
+
+## [v0.9.1] - 2026-11-27
+
+### Added
+- **persist tsnet device identity across reinstalls and self-heal state** ([#58](https://github.com/letrahoo/lework/pull/58))
+
+---
+
+## [v0.9.0] - 2026-11-27
+
+### Added
+- **support read-only /skills and /skill inspection in embedded Pi sessions** ([#52](https://github.com/letrahoo/lework/pull/52))
+- **allow unrestricted host file preview and multi-language syntax highlighting** ([#53](https://github.com/letrahoo/lework/pull/53))
+- **structured auto titles, spinning sidebar loading indicators & project-first sidebar UX** ([#54](https://github.com/letrahoo/lework/pull/54))
+- **Lework Hub host switcher, non-destructive pairing & 8-principle UX polish** ([#55](https://github.com/letrahoo/lework/pull/55))
+
+### Changed
+- **bump Lework milestone to v0.9.0** ([#56](https://github.com/letrahoo/lework/pull/56))
+
+---
+
+## [v0.8.23] - 2026-11-27
+
+### Added
+- **native AGY ACP parity, slash commands, 8-principle UX overhaul & strict session isolation** ([#51](https://github.com/letrahoo/lework/pull/51))
+
+---
+
+## [v0.8.22] - 2026-11-27
+
+### Fixed
+- **hide draft badge and preview for the currently active session** ([#50](https://github.com/letrahoo/lework/pull/50))
+
+---
+
+## [v0.8.21] - 2026-11-27
+
+### Fixed
+- **enforce strict AGY session isolation across terminal bridge, stream-json & desktop warm subscriptions** ([#49](https://github.com/letrahoo/lework/pull/49))
+
+---
+
+## [v0.8.20] - 2026-11-27
+
+### Added
+- **add GitHub Release update notifier and Desktop one-click DMG updater** ([#48](https://github.com/letrahoo/lework/pull/48))
+
+---
+
+## [v0.8.19] - 2026-11-27
+
+### Added
+- **per-session drafts, in-app local file preview, auto-focus composer & session shortcuts** ([#47](https://github.com/letrahoo/lework/pull/47))
+
+---
+
+## [v0.8.18] - 2026-11-27
+
+### Changed
+- **add bilingual system architecture diagrams and overview** ([#46](https://github.com/letrahoo/lework/pull/46))
+
+---
+
+## [v0.8.17] - 2026-11-27
+
+### Added
+- **add explicit multi-host picker for Tailscale tsnet discovery** ([#45](https://github.com/letrahoo/lework/pull/45))
+
+---
+
+## [v0.8.16] - 2026-11-27
+
+### Added
+- **upgrade tailscale.com to v1.104.7 and add Desktop global lework CLI registration** ([#43](https://github.com/letrahoo/lework/pull/43))
+
+---
+
+## [v0.8.15] - 2026-11-27
+
+### Fixed
+- **model execution steps card lifecycle, clear stale plans across turns, and serialize cancel/prompt** ([#44](https://github.com/letrahoo/lework/pull/44))
+
+---
+
+## [v0.8.14] - 2026-11-27
+
+### Fixed
+- **修复桌面端导入本机 Hub TLS 证书路径导致无法免配直连** ([#42](https://github.com/letrahoo/lework/pull/42))
+
+---
+
+## [v0.8.13] - 2026-11-27
+
+### Added
+- **redesign InlineApprovalBanner with refined Everforest adaptive options** ([#41](https://github.com/letrahoo/lework/pull/41))
+
+---
+
+## [v0.8.12] - 2026-11-27
+
+### Fixed
+- **sort model reasoning efforts in canonical low-to-max order** ([#40](https://github.com/letrahoo/lework/pull/40))
+
+---
+
+## [v0.8.11] - 2026-11-27
+
+### Fixed
+- **support multi-term model search, strip namespace prefix in family chips, and auto-refresh filter dialog** ([#39](https://github.com/letrahoo/lework/pull/39))
+
+---
+
 ## [v0.8.10] - 2026-11-26
 
 ### Fixed
@@ -295,7 +427,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
-[Unreleased]: https://github.com/letrahoo/lework/compare/v0.8.10...HEAD
+[Unreleased]: https://github.com/letrahoo/lework/compare/v0.9.3...HEAD
+[v0.9.3]: https://github.com/letrahoo/lework/compare/v0.9.2...v0.9.3
+[v0.9.2]: https://github.com/letrahoo/lework/compare/v0.9.1...v0.9.2
+[v0.9.1]: https://github.com/letrahoo/lework/compare/v0.9.0...v0.9.1
+[v0.9.0]: https://github.com/letrahoo/lework/compare/v0.8.23...v0.9.0
+[v0.8.23]: https://github.com/letrahoo/lework/compare/v0.8.22...v0.8.23
+[v0.8.22]: https://github.com/letrahoo/lework/compare/v0.8.21...v0.8.22
+[v0.8.21]: https://github.com/letrahoo/lework/compare/v0.8.20...v0.8.21
+[v0.8.20]: https://github.com/letrahoo/lework/compare/v0.8.19...v0.8.20
+[v0.8.19]: https://github.com/letrahoo/lework/compare/v0.8.18...v0.8.19
+[v0.8.18]: https://github.com/letrahoo/lework/compare/v0.8.17...v0.8.18
+[v0.8.17]: https://github.com/letrahoo/lework/compare/v0.8.16...v0.8.17
+[v0.8.16]: https://github.com/letrahoo/lework/compare/v0.8.15...v0.8.16
+[v0.8.15]: https://github.com/letrahoo/lework/compare/v0.8.14...v0.8.15
+[v0.8.14]: https://github.com/letrahoo/lework/compare/v0.8.13...v0.8.14
+[v0.8.13]: https://github.com/letrahoo/lework/compare/v0.8.12...v0.8.13
+[v0.8.12]: https://github.com/letrahoo/lework/compare/v0.8.11...v0.8.12
+[v0.8.11]: https://github.com/letrahoo/lework/compare/v0.8.10...v0.8.11
 [v0.8.10]: https://github.com/letrahoo/lework/compare/v0.8.9...v0.8.10
 [v0.8.9]: https://github.com/letrahoo/lework/compare/v0.8.8...v0.8.9
 [v0.8.8]: https://github.com/letrahoo/lework/compare/v0.8.7...v0.8.8
