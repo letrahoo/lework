@@ -1,6 +1,7 @@
 package dev.lework.android
 
 import android.Manifest
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -10,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.util.Base64
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -25,8 +27,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import dev.lework.platform.AndroidApkInstallLaunchResult
+import dev.lework.platform.AndroidApkInstallStatus
 import dev.lework.platform.AndroidNativeDelegate
 import dev.lework.platform.AndroidPlatformRuntime
+import dev.lework.platform.AndroidReleaseUpdater
 import dev.lework.platform.FilePickOutcome
 import dev.lework.platform.ImagePickSource
 import dev.lework.platform.MAX_ATTACHED_FILES
@@ -48,7 +53,35 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
     private var pendingMaxFiles: Int = MAX_ATTACHED_FILES
     private var pendingCameraFile: File? = null
     private var pendingCameraUri: Uri? = null
+    private var pendingUpdateApkFile: File? = null
+    private var pendingUpdateInstallCallback: ((AndroidApkInstallLaunchResult) -> Unit)? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
+
+    private val unknownSourcesPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val apkFile = pendingUpdateApkFile
+        val cb = pendingUpdateInstallCallback
+        pendingUpdateApkFile = null
+        pendingUpdateInstallCallback = null
+        AndroidReleaseUpdater.clearPendingInstall(applicationContext)
+        if (apkFile == null || cb == null) return@registerForActivityResult
+
+        val canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            packageManager.canRequestPackageInstalls()
+        if (!canInstall) {
+            cb.invoke(AndroidApkInstallLaunchResult(AndroidApkInstallStatus.PERMISSION_DENIED))
+        } else if (!apkFile.isFile) {
+            cb.invoke(
+                AndroidApkInstallLaunchResult(
+                    status = AndroidApkInstallStatus.FAILED,
+                    detail = "缓存的安装包已被系统清理，请重新点击下载安装",
+                ),
+            )
+        } else {
+            cb.invoke(launchSystemApkInstaller(apkFile))
+        }
+    }
 
     private val qrCameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -186,6 +219,7 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
     override fun onResume() {
         super.onResume()
         AndroidPlatformRuntime.onForegroundChanged(true)
+        maybeResumePendingUpdateInstall()
     }
 
     override fun onPause() {
@@ -260,6 +294,78 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
                 onResult(FilePickOutcome())
             }
         }
+    }
+
+    override fun installUpdateApk(
+        apkFile: File,
+        onResult: (AndroidApkInstallLaunchResult) -> Unit,
+    ) {
+        runOnUiThread {
+            pendingUpdateInstallCallback?.invoke(
+                AndroidApkInstallLaunchResult(
+                    status = AndroidApkInstallStatus.FAILED,
+                    detail = "已取消前一次安装请求",
+                ),
+            )
+            pendingUpdateApkFile = null
+            pendingUpdateInstallCallback = null
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                pendingUpdateApkFile = apkFile
+                pendingUpdateInstallCallback = onResult
+                AndroidReleaseUpdater.recordPendingInstall(applicationContext, apkFile)
+                val settingsIntent = Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName"),
+                )
+                runCatching {
+                    unknownSourcesPermissionLauncher.launch(settingsIntent)
+                }.onFailure {
+                    pendingUpdateApkFile = null
+                    pendingUpdateInstallCallback = null
+                    AndroidReleaseUpdater.clearPendingInstall(applicationContext)
+                    onResult(launchSystemApkInstaller(apkFile))
+                }
+            } else {
+                AndroidReleaseUpdater.clearPendingInstall(applicationContext)
+                onResult(launchSystemApkInstaller(apkFile))
+            }
+        }
+    }
+
+    override fun cancelPendingUpdateInstall() {
+        runOnUiThread {
+            pendingUpdateApkFile = null
+            pendingUpdateInstallCallback = null
+            AndroidReleaseUpdater.clearPendingInstall(applicationContext)
+        }
+    }
+
+    private fun maybeResumePendingUpdateInstall() {
+        if (pendingUpdateInstallCallback != null) return
+        val resumableApk = AndroidReleaseUpdater.consumeResumablePendingApk(applicationContext) ?: return
+        launchSystemApkInstaller(resumableApk)
+    }
+
+    private fun launchSystemApkInstaller(apkFile: File): AndroidApkInstallLaunchResult = runCatching {
+        val uri = FileProvider.getUriForFile(
+            this,
+            "$packageName.fileprovider",
+            apkFile,
+        )
+        val installIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            clipData = ClipData.newRawUri("", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(installIntent)
+        AndroidApkInstallLaunchResult(AndroidApkInstallStatus.LAUNCHED_INSTALLER)
+    }.getOrElse { err ->
+        AndroidApkInstallLaunchResult(
+            status = AndroidApkInstallStatus.FAILED,
+            detail = err.message ?: "无法拉起系统安装程序",
+        )
     }
 
     private fun launchSystemCameraCapture() {

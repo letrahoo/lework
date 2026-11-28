@@ -309,7 +309,7 @@ data class GitHubReleaseFetchPayload(
     val resolvedWebUrl: String? = null,
 )
 
-// GitHub Releases update checker & Desktop one-click macOS DMG updater
+// GitHub Releases update checker & Desktop/Android one-click in-app updaters
 expect suspend fun fetchLatestGitHubReleasePayload(
     apiUrl: String,
     fallbackWebUrl: String,
@@ -317,6 +317,15 @@ expect suspend fun fetchLatestGitHubReleasePayload(
 
 expect fun canInstallDesktopDmgUpdate(): Boolean
 expect suspend fun installDesktopDmgUpdate(
+    downloadUrl: String,
+    expectedFileName: String,
+    expectedSha256: String?,
+    checksumsUrl: String?,
+    onProgress: (fraction: Float?, statusText: String) -> Unit,
+): Result<String>
+
+expect fun canInstallAndroidApkUpdate(): Boolean
+expect suspend fun installAndroidApkUpdate(
     downloadUrl: String,
     expectedFileName: String,
     expectedSha256: String?,

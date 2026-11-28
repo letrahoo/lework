@@ -1078,6 +1078,7 @@ internal fun DesktopConsoleApp(
                 updateState = state.appUpdate,
                 onCheckAgain = { store.checkForAppUpdates(manual = true, openDialog = true) },
                 onStartUpdate = store::startAppUpdateAction,
+                onCancelInstall = store::cancelAppUpdateInstall,
                 onOpenReleasePage = store::openLatestReleasePage,
                 onDismissVersion = store::dismissAppUpdateReminder,
                 onClose = store::closeAppUpdateDialog,

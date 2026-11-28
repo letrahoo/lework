@@ -125,6 +125,36 @@ internal fun parseSha256Sums(content: String, fileName: String): String? {
     return null
 }
 
+internal fun resolveApkCandidateFromSha256Sums(
+    content: String,
+    preferredFileName: String,
+): Pair<String, String>? {
+    val preferred = preferredFileName.trim()
+    val entries = mutableListOf<Pair<String, String>>()
+    for (rawLine in content.lineSequence()) {
+        val line = rawLine.trim()
+        if (line.isEmpty() || line.startsWith("#")) continue
+        val sep = line.indexOfFirst { it.isWhitespace() }
+        if (sep <= 0) continue
+        val hash = normalizeSha256Digest(line.substring(0, sep)) ?: continue
+        val name = line.substring(sep).trim().removePrefix("*").substringAfterLast('/')
+        if (name.isEmpty()) continue
+        if (preferred.isNotEmpty() && name == preferred) {
+            return name to hash
+        }
+        if (name.lowercase().endsWith(".apk")) {
+            entries.add(name to hash)
+        }
+    }
+    return entries.firstOrNull { it.first.lowercase().contains("release") } ?: entries.firstOrNull()
+}
+
+internal fun formatReleaseSizeMb(sizeBytes: Long): String? {
+    if (sizeBytes <= 0L) return null
+    val tenths = ((sizeBytes * 10L) / (1024L * 1024L)).coerceAtLeast(1L)
+    return "${tenths / 10L}.${tenths % 10L} MB"
+}
+
 internal fun parseGitHubLatestReleaseJson(jsonBody: String): AppReleaseInfo? {
     val root = runCatching { ProtocolJson.parseToJsonElement(jsonBody).jsonObject }.getOrNull() ?: return null
     if (root["draft"]?.jsonPrimitive?.booleanOrNull == true) return null

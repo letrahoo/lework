@@ -68,9 +68,20 @@ object JvmPlatformTestHooks {
     val runtimeLogs = mutableListOf<String>()
     var fakeRuntimeLogPath: String? = null
     var appVersionOverride: String? = null
+    var platformNameOverride: String? = null
     var onFetchLatestRelease: (suspend (apiUrl: String, fallbackWebUrl: String) -> Result<GitHubReleaseFetchPayload>)? = null
     var canInstallDesktopUpdate: Boolean = false
     var onInstallDesktopUpdate: (
+        suspend (
+            downloadUrl: String,
+            expectedFileName: String,
+            expectedSha256: String?,
+            checksumsUrl: String?,
+            onProgress: (Float?, String) -> Unit,
+        ) -> Result<String>
+    )? = null
+    var canInstallAndroidUpdate: Boolean = false
+    var onInstallAndroidUpdate: (
         suspend (
             downloadUrl: String,
             expectedFileName: String,
@@ -156,14 +167,21 @@ object JvmPlatformTestHooks {
         synchronized(runtimeLogs) { runtimeLogs.clear() }
         fakeRuntimeLogPath = null
         appVersionOverride = null
+        platformNameOverride = null
         onFetchLatestRelease = null
         canInstallDesktopUpdate = false
         onInstallDesktopUpdate = null
+        canInstallAndroidUpdate = false
+        onInstallAndroidUpdate = null
     }
 }
 
 actual fun platformName(): String =
-    if (JvmDesktopRuntime.isEnabled) "macOS Desktop" else "JVM-Test"
+    if (JvmDesktopRuntime.isEnabled) {
+        "macOS Desktop"
+    } else {
+        JvmPlatformTestHooks.platformNameOverride?.trim()?.takeIf { it.isNotEmpty() } ?: "JVM-Test"
+    }
 
 actual fun isDesktopPlatform(): Boolean =
     JvmDesktopRuntime.isEnabled || JvmPlatformTestHooks.simulateDesktopLayout
@@ -588,4 +606,26 @@ actual suspend fun installDesktopDmgUpdate(
             checksumsUrl,
             onProgress,
         ) ?: Result.failure(UnsupportedOperationException("Desktop updater hook not configured in test mode"))
+    }
+
+actual fun canInstallAndroidApkUpdate(): Boolean =
+    if (JvmDesktopRuntime.isEnabled) false else JvmPlatformTestHooks.canInstallAndroidUpdate
+
+actual suspend fun installAndroidApkUpdate(
+    downloadUrl: String,
+    expectedFileName: String,
+    expectedSha256: String?,
+    checksumsUrl: String?,
+    onProgress: (fraction: Float?, statusText: String) -> Unit,
+): Result<String> =
+    if (JvmDesktopRuntime.isEnabled) {
+        Result.failure(UnsupportedOperationException("macOS 桌面端不支持 Android APK 安装"))
+    } else {
+        JvmPlatformTestHooks.onInstallAndroidUpdate?.invoke(
+            downloadUrl,
+            expectedFileName,
+            expectedSha256,
+            checksumsUrl,
+            onProgress,
+        ) ?: Result.failure(UnsupportedOperationException("Android updater hook not configured in test mode"))
     }
