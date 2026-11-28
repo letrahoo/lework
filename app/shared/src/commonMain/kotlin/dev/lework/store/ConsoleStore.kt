@@ -5137,59 +5137,36 @@ class ConsoleStore(
 
         val macDmg = release.macDmgAsset
         if (isDesktopPlatform() && canInstallDesktopDmgUpdate() && macDmg != null) {
-            appUpdateInstallJob?.cancel()
-            _state.update {
-                it.copy(
-                    appUpdate = it.appUpdate.copy(
-                        installing = true,
-                        installProgressFraction = 0f,
-                        installStatusText = "正在准备下载 ${macDmg.name}…",
-                        installError = null,
-                    ),
-                )
-            }
-            appUpdateInstallJob = scope.launch {
-                val res = installDesktopDmgUpdate(
+            startInAppUpdateInstall(
+                fileName = macDmg.name,
+                logPlatform = "desktop",
+                fallbackError = "自动安装更新失败，可点击「GitHub 发布页」手动下载",
+            ) { onProgress ->
+                installDesktopDmgUpdate(
                     downloadUrl = macDmg.downloadUrl,
                     expectedFileName = macDmg.name,
                     expectedSha256 = macDmg.sha256,
                     checksumsUrl = release.checksumsUrl,
-                    onProgress = { fraction, statusText ->
-                        _state.update { cur ->
-                            cur.copy(
-                                appUpdate = cur.appUpdate.copy(
-                                    installProgressFraction = fraction,
-                                    installStatusText = statusText,
-                                ),
-                            )
-                        }
-                    },
+                    onProgress = onProgress,
                 )
-                res.onSuccess { doneMsg ->
-                    _state.update { cur ->
-                        cur.copy(
-                            appUpdate = cur.appUpdate.copy(
-                                installing = false,
-                                installProgressFraction = 1f,
-                                installStatusText = doneMsg,
-                                installError = null,
-                            ),
-                        )
-                    }
-                }.onFailure { err ->
-                    val errMsg = err.message?.takeIf { it.isNotBlank() } ?: "自动安装更新失败，可点击「GitHub 发布页」手动下载"
-                    logRuntimeEvent("UPDATE", "desktop install failed err=$errMsg")
-                    _state.update { cur ->
-                        cur.copy(
-                            appUpdate = cur.appUpdate.copy(
-                                installing = false,
-                                installProgressFraction = null,
-                                installStatusText = null,
-                                installError = errMsg,
-                            ),
-                        )
-                    }
-                }
+            }
+            return
+        }
+
+        val androidApk = release.androidApkAsset
+        if (!isDesktopPlatform() && canInstallAndroidApkUpdate() && androidApk != null) {
+            startInAppUpdateInstall(
+                fileName = androidApk.name,
+                logPlatform = "android",
+                fallbackError = "自动下载安装失败，可点击「GitHub 发布页」手动下载",
+            ) { onProgress ->
+                installAndroidApkUpdate(
+                    downloadUrl = androidApk.downloadUrl,
+                    expectedFileName = androidApk.name,
+                    expectedSha256 = androidApk.sha256,
+                    checksumsUrl = release.checksumsUrl,
+                    onProgress = onProgress,
+                )
             }
             return
         }
@@ -5201,6 +5178,82 @@ class ConsoleStore(
         }
         if (isSafeExternalLink(targetUrl)) {
             openExternalUrl(targetUrl)
+        }
+    }
+
+    fun cancelAppUpdateInstall() {
+        val job = appUpdateInstallJob
+        appUpdateInstallJob = null
+        job?.cancel()
+        _state.update { cur ->
+            if (!cur.appUpdate.installing) {
+                cur
+            } else {
+                cur.copy(
+                    appUpdate = cur.appUpdate.copy(
+                        installing = false,
+                        installProgressFraction = null,
+                        installStatusText = "已取消下载更新",
+                        installError = null,
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun startInAppUpdateInstall(
+        fileName: String,
+        logPlatform: String,
+        fallbackError: String,
+        installer: suspend (onProgress: (fraction: Float?, statusText: String) -> Unit) -> Result<String>,
+    ) {
+        appUpdateInstallJob?.cancel()
+        _state.update {
+            it.copy(
+                appUpdate = it.appUpdate.copy(
+                    installing = true,
+                    installProgressFraction = 0f,
+                    installStatusText = "正在准备下载 $fileName…",
+                    installError = null,
+                ),
+            )
+        }
+        appUpdateInstallJob = scope.launch {
+            val res = installer { fraction, statusText ->
+                _state.update { cur ->
+                    cur.copy(
+                        appUpdate = cur.appUpdate.copy(
+                            installProgressFraction = fraction,
+                            installStatusText = statusText,
+                        ),
+                    )
+                }
+            }
+            res.onSuccess { doneMsg ->
+                _state.update { cur ->
+                    cur.copy(
+                        appUpdate = cur.appUpdate.copy(
+                            installing = false,
+                            installProgressFraction = 1f,
+                            installStatusText = doneMsg,
+                            installError = null,
+                        ),
+                    )
+                }
+            }.onFailure { err ->
+                val errMsg = err.message?.takeIf { it.isNotBlank() } ?: fallbackError
+                logRuntimeEvent("UPDATE", "$logPlatform install failed err=$errMsg")
+                _state.update { cur ->
+                    cur.copy(
+                        appUpdate = cur.appUpdate.copy(
+                            installing = false,
+                            installProgressFraction = null,
+                            installStatusText = null,
+                            installError = errMsg,
+                        ),
+                    )
+                }
+            }
         }
     }
 

@@ -1420,3 +1420,13 @@ actual suspend fun installDesktopDmgUpdate(
     checksumsUrl: String?,
     onProgress: (fraction: Float?, statusText: String) -> Unit,
 ): Result<String> = Result.failure(UnsupportedOperationException("iOS 请前往 GitHub Release 或通过 Mac 更新"))
+
+actual fun canInstallAndroidApkUpdate(): Boolean = false
+
+actual suspend fun installAndroidApkUpdate(
+    downloadUrl: String,
+    expectedFileName: String,
+    expectedSha256: String?,
+    checksumsUrl: String?,
+    onProgress: (fraction: Float?, statusText: String) -> Unit,
+): Result<String> = Result.failure(UnsupportedOperationException("iOS 不支持 APK 自更新"))

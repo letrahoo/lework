@@ -1004,6 +1004,7 @@ private fun MobileConsoleApp(
                 updateState = state.appUpdate,
                 onCheckAgain = { store.checkForAppUpdates(manual = true, openDialog = true) },
                 onStartUpdate = store::startAppUpdateAction,
+                onCancelInstall = store::cancelAppUpdateInstall,
                 onOpenReleasePage = store::openLatestReleasePage,
                 onDismissVersion = store::dismissAppUpdateReminder,
                 onClose = store::closeAppUpdateDialog,
@@ -1260,6 +1261,7 @@ private fun MinimalTopBar(
         ?: "默认模型"
     val externalSourceLabel = activeModelSpec?.externalProviderLabel(state.providers)
     val hasActiveTasks = state.runningSessions.isNotEmpty()
+    val hasUpdateDot = !hasActiveTasks && state.appUpdate.hasVisibleBanner
 
     Row(
         modifier = Modifier
@@ -1287,6 +1289,16 @@ private fun MinimalTopBar(
                         .size(8.dp)
                         .clip(CircleShape)
                         .background(Everforest.Orange),
+                )
+            } else if (hasUpdateDot) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 10.dp, end = 10.dp)
+                        .size(7.5.dp)
+                        .clip(CircleShape)
+                        .background(Everforest.Green)
+                        .testTag("topbar_update_badge_dot"),
                 )
             }
         }

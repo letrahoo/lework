@@ -22,8 +22,6 @@ import android.util.Log
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import dev.lework.protocol.ProtocolJson
-import dev.lework.store.isTrustedGitHubReleaseUrl
-import kotlinx.coroutines.CancellationException
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -55,6 +53,17 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
+enum class AndroidApkInstallStatus {
+    LAUNCHED_INSTALLER,
+    PERMISSION_DENIED,
+    FAILED,
+}
+
+data class AndroidApkInstallLaunchResult(
+    val status: AndroidApkInstallStatus,
+    val detail: String? = null,
+)
+
 interface AndroidNativeDelegate {
     fun presentQrScanner(onResult: (String?) -> Unit)
     fun presentImagePicker(onResult: (PickedImagePayload?) -> Unit)
@@ -71,6 +80,18 @@ interface AndroidNativeDelegate {
     ) {
         onResult(FilePickOutcome())
     }
+    fun installUpdateApk(
+        apkFile: File,
+        onResult: (AndroidApkInstallLaunchResult) -> Unit,
+    ) {
+        onResult(
+            AndroidApkInstallLaunchResult(
+                status = AndroidApkInstallStatus.FAILED,
+                detail = "当前 Android 宿主未注册安装包启动器",
+            ),
+        )
+    }
+    fun cancelPendingUpdateInstall() = Unit
 }
 
 object AndroidPlatformRuntime {
@@ -103,6 +124,9 @@ object AndroidPlatformRuntime {
         val appCtx = context.applicationContext
         appContext = appCtx
         registerNetworkMonitorIfNeeded(appCtx)
+        bgScope.launch {
+            AndroidReleaseUpdater.cleanupObsoleteApks(appCtx)
+        }
     }
 
     private fun registerNetworkMonitorIfNeeded(ctx: Context) {
@@ -1066,68 +1090,8 @@ actual fun logRuntimeEvent(tag: String, message: String) {
 actual suspend fun fetchLatestGitHubReleasePayload(
     apiUrl: String,
     fallbackWebUrl: String,
-): Result<GitHubReleaseFetchPayload> = withContext(Dispatchers.IO) {
-    try {
-        if (!isTrustedGitHubReleaseUrl(apiUrl) || !isTrustedGitHubReleaseUrl(fallbackWebUrl)) {
-            return@withContext Result.failure(IllegalArgumentException("更新源地址不受信任"))
-        }
-        val apiTry = runCatching {
-            val conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                requestMethod = "GET"
-                connectTimeout = 10_000
-                readTimeout = 12_000
-                setRequestProperty("Accept", "application/vnd.github+json")
-                setRequestProperty("User-Agent", "Lework-Android/${appVersionLabel()}")
-            }
-            try {
-                val code = conn.responseCode
-                val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                    ?.bufferedReader(Charsets.UTF_8)
-                    ?.use { it.readText() }
-                    .orEmpty()
-                code to body
-            } finally {
-                conn.disconnect()
-            }
-        }
-        apiTry.getOrNull()?.let { (code, body) ->
-            if (code in 200..299 && body.isNotBlank()) {
-                return@withContext Result.success(GitHubReleaseFetchPayload(jsonBody = body))
-            }
-        }
-        var currentUrl = fallbackWebUrl
-        repeat(6) {
-            val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = false
-                requestMethod = "HEAD"
-                connectTimeout = 10_000
-                readTimeout = 12_000
-                setRequestProperty("User-Agent", "Lework-Android/${appVersionLabel()}")
-            }
-            val code = conn.responseCode
-            val loc = conn.getHeaderField("Location")?.trim().orEmpty()
-            conn.disconnect()
-            if (code in setOf(301, 302, 303, 307, 308) && loc.isNotEmpty()) {
-                val next = URL(URL(currentUrl), loc).toString()
-                if (!isTrustedGitHubReleaseUrl(next)) {
-                    return@withContext Result.failure(IllegalArgumentException("更新源重定向目标不受信任"))
-                }
-                currentUrl = next
-            } else {
-                if (code in 200..399 && isTrustedGitHubReleaseUrl(currentUrl)) {
-                    return@withContext Result.success(GitHubReleaseFetchPayload(resolvedWebUrl = currentUrl))
-                }
-                return@withContext Result.failure(IllegalStateException("无法获取最新版本（HTTP $code）"))
-            }
-        }
-        Result.failure(apiTry.exceptionOrNull() ?: IllegalStateException("无法获取最新 Release 信息"))
-    } catch (ce: CancellationException) {
-        throw ce
-    } catch (e: Exception) {
-        Result.failure(e)
-    }
-}
+): Result<GitHubReleaseFetchPayload> =
+    AndroidReleaseUpdater.fetchLatestReleasePayload(apiUrl, fallbackWebUrl)
 
 actual fun canInstallDesktopDmgUpdate(): Boolean = false
 
@@ -1137,4 +1101,22 @@ actual suspend fun installDesktopDmgUpdate(
     expectedSha256: String?,
     checksumsUrl: String?,
     onProgress: (fraction: Float?, statusText: String) -> Unit,
-): Result<String> = Result.failure(UnsupportedOperationException("Android 请通过浏览器下载 APK 更新"))
+): Result<String> = Result.failure(UnsupportedOperationException("Android 请使用应用内 APK 自更新"))
+
+actual fun canInstallAndroidApkUpdate(): Boolean =
+    AndroidReleaseUpdater.canInstallAndroidApk()
+
+actual suspend fun installAndroidApkUpdate(
+    downloadUrl: String,
+    expectedFileName: String,
+    expectedSha256: String?,
+    checksumsUrl: String?,
+    onProgress: (fraction: Float?, statusText: String) -> Unit,
+): Result<String> =
+    AndroidReleaseUpdater.installApkUpdate(
+        downloadUrl = downloadUrl,
+        expectedFileName = expectedFileName,
+        expectedSha256 = expectedSha256,
+        checksumsUrl = checksumsUrl,
+        onProgress = onProgress,
+    )

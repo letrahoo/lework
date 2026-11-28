@@ -27,12 +27,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import dev.lework.platform.canInstallAndroidApkUpdate
 import dev.lework.platform.canInstallDesktopDmgUpdate
 import dev.lework.platform.isDesktopPlatform
 import dev.lework.platform.platformName
 import dev.lework.store.AppUpdateState
 import dev.lework.store.extractReleaseHighlightSummary
 import dev.lework.store.formatReleasePublishedDate
+import dev.lework.store.formatReleaseSizeMb
 
 @Composable
 internal fun SidebarAppUpdateBanner(
@@ -284,16 +286,22 @@ internal fun AppUpdateDialog(
     updateState: AppUpdateState,
     onCheckAgain: () -> Unit,
     onStartUpdate: () -> Unit,
+    onCancelInstall: () -> Unit = {},
     onOpenReleasePage: () -> Unit,
     onDismissVersion: () -> Unit,
     onClose: () -> Unit,
 ) {
     val release = updateState.latestRelease
-    val isDesktop = remember { isDesktopPlatform() }
-    val canDirectDmgInstall = remember { canInstallDesktopDmgUpdate() }
-    val isAndroid = remember { platformName().contains("android", ignoreCase = true) }
+    val isDesktop = isDesktopPlatform()
+    val canDirectDmgInstall = canInstallDesktopDmgUpdate()
+    val canDirectApkInstall = canInstallAndroidApkUpdate()
+    val isAndroid = platformName().contains("android", ignoreCase = true)
+    val canDirectInstall = release != null && (
+        (isDesktop && canDirectDmgInstall && release.macDmgAsset != null) ||
+            (!isDesktop && canDirectApkInstall && release.androidApkAsset != null)
+        )
 
-    ModalEscapeEffect(onDismiss = onClose)
+    ModalEscapeEffect(onDismiss = { if (!updateState.installing) onClose() })
 
     Dialog(
         onDismissRequest = { if (!updateState.installing) onClose() },
@@ -351,7 +359,13 @@ internal fun AppUpdateDialog(
                                     val date = formatReleasePublishedDate(release.publishedAt)
                                         ?.let { " · 发布于 $it" }
                                         .orEmpty()
-                                    "${updateState.currentVersion} → ${release.tagName}$date"
+                                    val assetSize = when {
+                                        isDesktop -> release.macDmgAsset?.sizeBytes ?: 0L
+                                        isAndroid || canDirectApkInstall -> release.androidApkAsset?.sizeBytes ?: 0L
+                                        else -> 0L
+                                    }
+                                    val sizeSuffix = formatReleaseSizeMb(assetSize)?.let { " · $it" }.orEmpty()
+                                    "${updateState.currentVersion} → ${release.tagName}$date$sizeSuffix"
                                 }
                                 updateState.checking -> "正在连接 GitHub Releases…"
                                 else -> "当前版本 ${updateState.currentVersion}"
@@ -523,91 +537,217 @@ internal fun AppUpdateDialog(
 
                 HorizontalDivider(color = Everforest.Bg2)
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+                val actionLabel = when {
+                    updateState.installing -> "正在更新…"
+                    canDirectInstall -> "下载并安装更新"
+                    isAndroid && release?.androidApkAsset != null -> "下载新版 APK"
+                    else -> "前往下载更新"
+                }
+
+                if (isDesktop) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (updateState.hasUpdate && release != null) {
-                            TextButton(
-                                onClick = onDismissVersion,
-                                enabled = !updateState.installing,
-                                modifier = Modifier.testTag("app_update_dismiss_version_btn"),
-                            ) {
-                                Text("暂不提示此版本", fontSize = 12.sp, color = Everforest.Grey1)
-                            }
-                        } else {
-                            TextButton(
-                                onClick = onCheckAgain,
-                                enabled = !updateState.checking,
-                            ) {
-                                Text("重新检查", fontSize = 12.sp, color = Everforest.Grey1)
-                            }
-                        }
-                        TextButton(
-                            onClick = onOpenReleasePage,
-                            modifier = Modifier.testTag("app_update_open_release_page_btn"),
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
-                                contentDescription = null,
-                                tint = Everforest.Grey2,
-                                modifier = Modifier.size(13.dp),
-                            )
-                            Spacer(Modifier.width(4.dp))
-                            Text("GitHub 发布页", fontSize = 12.sp, color = Everforest.Grey2)
-                        }
-                    }
-
-                    if (updateState.hasUpdate && release != null) {
-                        val actionLabel = when {
-                            updateState.installing -> "正在更新…"
-                            isDesktop && canDirectDmgInstall && release.macDmgAsset != null -> "下载并安装更新"
-                            isAndroid && release.androidApkAsset != null -> "下载新版 APK"
-                            else -> "前往下载更新"
-                        }
-                        Button(
-                            onClick = onStartUpdate,
-                            enabled = !updateState.installing,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Everforest.Green,
-                                contentColor = Everforest.BgDim,
-                            ),
-                            modifier = Modifier.testTag("app_update_primary_action_btn"),
-                        ) {
-                            if (updateState.installing) {
-                                CircularProgressIndicator(
-                                    color = Everforest.BgDim,
-                                    strokeWidth = 1.8.dp,
+                            if (updateState.hasUpdate && release != null) {
+                                TextButton(
+                                    onClick = onDismissVersion,
+                                    enabled = !updateState.installing,
+                                    modifier = Modifier.testTag("app_update_dismiss_version_btn"),
+                                ) {
+                                    Text("暂不提示此版本", fontSize = 12.sp, color = Everforest.Grey1)
+                                }
+                            } else {
+                                TextButton(
+                                    onClick = onCheckAgain,
+                                    enabled = !updateState.checking,
+                                ) {
+                                    Text("重新检查", fontSize = 12.sp, color = Everforest.Grey1)
+                                }
+                            }
+                            TextButton(
+                                onClick = onOpenReleasePage,
+                                modifier = Modifier.testTag("app_update_open_release_page_btn"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                    contentDescription = null,
+                                    tint = Everforest.Grey2,
                                     modifier = Modifier.size(13.dp),
                                 )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Rounded.Download,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(15.dp),
-                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("GitHub 发布页", fontSize = 12.sp, color = Everforest.Grey2)
                             }
-                            Spacer(Modifier.width(5.dp))
-                            Text(
-                                text = actionLabel,
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                            )
                         }
-                    } else {
-                        Button(
-                            onClick = onClose,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Everforest.Bg2,
-                                contentColor = Everforest.Fg,
-                            ),
+
+                        if (updateState.hasUpdate && release != null) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (updateState.installing) {
+                                    OutlinedButton(
+                                        onClick = onCancelInstall,
+                                        border = BorderStroke(1.dp, Everforest.Bg3),
+                                        modifier = Modifier.testTag("app_update_cancel_install_btn"),
+                                    ) {
+                                        Text("取消下载", fontSize = 12.sp, color = Everforest.Grey2)
+                                    }
+                                }
+                                Button(
+                                    onClick = onStartUpdate,
+                                    enabled = !updateState.installing,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Everforest.Green,
+                                        contentColor = Everforest.BgDim,
+                                    ),
+                                    modifier = Modifier.testTag("app_update_primary_action_btn"),
+                                ) {
+                                    if (updateState.installing) {
+                                        CircularProgressIndicator(
+                                            color = Everforest.BgDim,
+                                            strokeWidth = 1.8.dp,
+                                            modifier = Modifier.size(13.dp),
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Download,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(15.dp),
+                                        )
+                                    }
+                                    Spacer(Modifier.width(5.dp))
+                                    Text(
+                                        text = actionLabel,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = onClose,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Everforest.Bg2,
+                                    contentColor = Everforest.Fg,
+                                ),
+                            ) {
+                                Text("关闭", fontSize = 12.5.sp)
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        if (updateState.hasUpdate && release != null) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Button(
+                                    onClick = onStartUpdate,
+                                    enabled = !updateState.installing,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Everforest.Green,
+                                        contentColor = Everforest.BgDim,
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(42.dp)
+                                        .testTag("app_update_primary_action_btn"),
+                                ) {
+                                    if (updateState.installing) {
+                                        CircularProgressIndicator(
+                                            color = Everforest.BgDim,
+                                            strokeWidth = 1.8.dp,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Download,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = actionLabel,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
+                                if (updateState.installing) {
+                                    OutlinedButton(
+                                        onClick = onCancelInstall,
+                                        border = BorderStroke(1.dp, Everforest.Bg3),
+                                        modifier = Modifier
+                                            .height(42.dp)
+                                            .testTag("app_update_cancel_install_btn"),
+                                    ) {
+                                        Text("取消", fontSize = 12.5.sp, color = Everforest.Grey2)
+                                    }
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = onClose,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Everforest.Bg2,
+                                    contentColor = Everforest.Fg,
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(40.dp),
+                            ) {
+                                Text("关闭", fontSize = 13.sp)
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("关闭", fontSize = 12.5.sp)
+                            if (updateState.hasUpdate && release != null) {
+                                TextButton(
+                                    onClick = onDismissVersion,
+                                    enabled = !updateState.installing,
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                    modifier = Modifier.testTag("app_update_dismiss_version_btn"),
+                                ) {
+                                    Text("暂不提示此版本", fontSize = 12.sp, color = Everforest.Grey1)
+                                }
+                            } else {
+                                TextButton(
+                                    onClick = onCheckAgain,
+                                    enabled = !updateState.checking,
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                ) {
+                                    Text("重新检查", fontSize = 12.sp, color = Everforest.Grey1)
+                                }
+                            }
+                            TextButton(
+                                onClick = onOpenReleasePage,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("app_update_open_release_page_btn"),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                                    contentDescription = null,
+                                    tint = Everforest.Grey2,
+                                    modifier = Modifier.size(13.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("GitHub 发布页", fontSize = 12.sp, color = Everforest.Grey2)
+                            }
                         }
                     }
                 }
