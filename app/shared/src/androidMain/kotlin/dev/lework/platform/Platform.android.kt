@@ -65,6 +65,12 @@ interface AndroidNativeDelegate {
     ) {
         presentImagePicker { single -> onResult(listOfNotNull(single)) }
     }
+    fun presentFilePicker(
+        maxCount: Int,
+        onResult: (FilePickOutcome) -> Unit,
+    ) {
+        onResult(FilePickOutcome())
+    }
 }
 
 object AndroidPlatformRuntime {
@@ -874,6 +880,8 @@ actual fun saveHostAccessToken(hubId: String, token: String?) {
 
 actual fun canPickImages(): Boolean = AndroidPlatformRuntime.nativeDelegate != null
 
+actual fun canPickFiles(): Boolean = AndroidPlatformRuntime.nativeDelegate != null
+
 actual fun canCaptureCameraImage(): Boolean = AndroidPlatformRuntime.nativeDelegate != null
 
 actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
@@ -891,6 +899,18 @@ actual fun requestMultiImagePick(
         onResult(emptyList())
     } else {
         d.presentMultiImagePicker(source, maxCount.coerceIn(1, 4), onResult)
+    }
+}
+
+actual fun requestFilePick(
+    maxCount: Int,
+    onResult: (FilePickOutcome) -> Unit,
+) {
+    val d = AndroidPlatformRuntime.nativeDelegate
+    if (d == null) {
+        onResult(FilePickOutcome())
+    } else {
+        d.presentFilePicker(maxCount.coerceIn(1, MAX_ATTACHED_FILES), onResult)
     }
 }
 

@@ -47,11 +47,15 @@ object JvmPlatformTestHooks {
     var activeHostId: String? = null
     val hostTokens = mutableMapOf<String, String>()
     var imagePickSupported: Boolean = true
+    var filePickSupported: Boolean = true
     var cameraCaptureSupported: Boolean = true
     var nextPickedImage: PickedImagePayload? = null
     var nextPickedImages: List<PickedImagePayload> = emptyList()
+    var nextPickedFiles: List<PickedFilePayload> = emptyList()
+    var nextFilePickOutcome: FilePickOutcome? = null
     var nextClipboardImages: List<PickedImagePayload> = emptyList()
     var lastImagePickSource: ImagePickSource? = null
+    var filePickCallCount: Int = 0
     var signingExpiryHours: Int? = null
     var keyboardDismissCount: Int = 0
     var simulateDesktopLayout: Boolean = false
@@ -131,11 +135,15 @@ object JvmPlatformTestHooks {
         activeHostId = null
         hostTokens.clear()
         imagePickSupported = true
+        filePickSupported = true
         cameraCaptureSupported = true
         nextPickedImage = null
         nextPickedImages = emptyList()
+        nextPickedFiles = emptyList()
+        nextFilePickOutcome = null
         nextClipboardImages = emptyList()
         lastImagePickSource = null
+        filePickCallCount = 0
         signingExpiryHours = null
         keyboardDismissCount = 0
         simulateDesktopLayout = false
@@ -461,6 +469,9 @@ actual fun saveHostAccessToken(hubId: String, token: String?) {
 actual fun canPickImages(): Boolean =
     if (JvmDesktopRuntime.isEnabled) true else JvmPlatformTestHooks.imagePickSupported
 
+actual fun canPickFiles(): Boolean =
+    if (JvmDesktopRuntime.isEnabled) true else JvmPlatformTestHooks.filePickSupported
+
 actual fun canCaptureCameraImage(): Boolean =
     if (JvmDesktopRuntime.isEnabled) false else JvmPlatformTestHooks.cameraCaptureSupported
 
@@ -488,6 +499,22 @@ actual fun requestMultiImagePick(
             listOfNotNull(JvmPlatformTestHooks.nextPickedImage)
         }
         onResult(items.take(maxCount.coerceIn(1, 4)))
+    }
+}
+
+actual fun requestFilePick(
+    maxCount: Int,
+    onResult: (FilePickOutcome) -> Unit,
+) {
+    val limit = maxCount.coerceIn(1, MAX_ATTACHED_FILES)
+    if (JvmDesktopRuntime.isEnabled) {
+        JvmDesktopRuntime.pickFiles(limit, onResult)
+    } else {
+        JvmPlatformTestHooks.filePickCallCount++
+        val outcome = JvmPlatformTestHooks.nextFilePickOutcome ?: FilePickOutcome(
+            files = JvmPlatformTestHooks.nextPickedFiles.take(limit),
+        )
+        onResult(outcome.copy(files = outcome.files.take(limit)))
     }
 }
 

@@ -11,6 +11,7 @@ import {
   type EngineInfo,
   type ModelOption,
   type PlanEntry,
+  type PromptFileAttachment,
   type PromptImageAttachment,
   type ReasoningEffort,
   type SessionCancelQueuedResult,
@@ -20,7 +21,7 @@ import {
   type SessionSearchResult,
   type SessionWorktreeInfo,
 } from '@lework/protocol'
-import type { EngineAdapter, EngineSession, StagedPromptImage } from './engines/types.ts'
+import type { EngineAdapter, EngineSession, StagedPromptFile, StagedPromptImage } from './engines/types.ts'
 import { formatEngineTurnError } from './engines/network-error.ts'
 import { discoverEngineSlashCommands } from './engines/slash-commands.ts'
 import { SleepInhibitor } from './platform/index.ts'
@@ -34,8 +35,10 @@ import {
 } from './storage/artifacts.ts'
 import {
   buildTerminalImagePrompt,
+  formatDisplayAttachmentSummary,
   linkSessionAttachmentAlias,
   removeSessionAttachments,
+  stagePromptFilesForSession,
   stagePromptImagesForSession,
   sweepExpiredArchivedAttachments,
 } from './storage/attachment-store.ts'
@@ -65,6 +68,7 @@ interface QueuedTurnItem {
   rawText: string
   displayUserText: string
   stagedImages: StagedPromptImage[]
+  stagedFiles: StagedPromptFile[]
   providerId?: string
   modelId?: string
   reasoningEffort?: ReasoningEffort
@@ -453,6 +457,7 @@ export class SessionManager {
     text: string,
     overrides?: {
       images?: PromptImageAttachment[]
+      files?: PromptFileAttachment[]
       providerId?: string
       modelId?: string
       reasoningEffort?: ReasoningEffort
@@ -460,13 +465,24 @@ export class SessionManager {
     },
   ): Promise<{ turnId: string }> {
     const rawImages = overrides?.images ?? []
-    if (!text.trim() && rawImages.length === 0) {
-      throw new HubRpcError(ErrorCode.InvalidParams, 'Prompt text or image attachment is required.')
+    const rawFiles = overrides?.files ?? []
+    if (!text.trim() && rawImages.length === 0 && rawFiles.length === 0) {
+      throw new HubRpcError(ErrorCode.InvalidParams, 'Prompt text or attachment is required.')
     }
 
     const turnId = `turn_${crypto.randomBytes(6).toString('hex')}`
     const stagedImages = stagePromptImagesForSession(sessionId, turnId, rawImages)
-    const displayUserText = text.trim() || `（已发送 ${stagedImages.length} 张图片）`
+    let stagedFiles: StagedPromptFile[]
+    try {
+      stagedFiles = stagePromptFilesForSession(sessionId, turnId, rawFiles)
+    } catch (err) {
+      throw new HubRpcError(
+        ErrorCode.InvalidParams,
+        err instanceof Error ? err.message : String(err),
+      )
+    }
+    const displayUserText =
+      text.trim() || formatDisplayAttachmentSummary(stagedImages.length, stagedFiles.length)
 
     let managed = this.sessions.get(sessionId)
 
@@ -533,7 +549,7 @@ export class SessionManager {
       if (hostLoaded && hostEntry) {
         // First: if this `host:*` conversation is actively open in a reachable local `tmux` / `iTerm2`
         // terminal, deliver the prompt directly into that live terminal so computer & phone stay in sync!
-        const terminalPromptText = buildTerminalImagePrompt(stagedImages, text)
+        const terminalPromptText = buildTerminalImagePrompt(stagedImages, text, stagedFiles)
         let deliveredToTerminal = false
         try {
           deliveredToTerminal = await this.hostInspector.tryPromptLiveHostSession(
@@ -691,6 +707,7 @@ export class SessionManager {
         rawText: text,
         displayUserText,
         stagedImages,
+        stagedFiles,
         providerId: overrides?.providerId,
         modelId: overrides?.modelId,
         reasoningEffort: overrides?.reasoningEffort,
@@ -719,6 +736,7 @@ export class SessionManager {
       rawText: text,
       displayUserText,
       stagedImages,
+      stagedFiles,
     })
 
     return { turnId }
@@ -849,12 +867,18 @@ export class SessionManager {
   }
 
   private startManagedTurn(managed: ManagedSession, item: QueuedTurnItem): void {
-    const { turnId, rawText, displayUserText, stagedImages } = item
+    const { turnId, rawText, displayUserText, stagedImages, stagedFiles } = item
     const sessionId = managed.meta.id
 
     const previews = stagedImages
       .map(i => i.previewBase64)
       .filter((v): v is string => Boolean(v && v.length > 0))
+    const fileSummaries = stagedFiles.map(f => ({
+      fileName: f.fileName,
+      mimeType: f.mimeType,
+      sizeBytes: f.sizeBytes,
+      stagedPath: f.stagedPath,
+    }))
 
     this.appendEvent(managed, {
       type: 'message.user',
@@ -862,6 +886,7 @@ export class SessionManager {
       text: displayUserText,
       ...(stagedImages.length > 0 ? { imageCount: stagedImages.length } : {}),
       ...(previews.length > 0 ? { imagePreviews: previews } : {}),
+      ...(fileSummaries.length > 0 ? { files: fileSummaries } : {}),
     })
     const existingRec = this.metaStore.get(sessionId)
     if (!existingRec?.customTitle) {
@@ -927,7 +952,12 @@ export class SessionManager {
     this.sleepInhibitor.acquire()
     let turnHadError = false
     void managed.handle
-      .prompt(turnId, rawText, stagedImages.length > 0 ? stagedImages : undefined)
+      .prompt(
+        turnId,
+        rawText,
+        stagedImages.length > 0 ? stagedImages : undefined,
+        stagedFiles.length > 0 ? stagedFiles : undefined,
+      )
       .catch(err => {
         if (managed.closed || managed.cancelled || managed.turnGeneration !== myGen) {
           return

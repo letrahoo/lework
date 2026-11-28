@@ -806,7 +806,7 @@ internal fun DesktopConsoleApp(
                             },
                             onSend = {
                                 val raw = state.activeDraftText
-                                val localAct = if (state.composerAttachedImages.isEmpty()) {
+                                val localAct = if (!state.composerHasAttachments) {
                                     parseLocalSlashAction(raw, state)
                                 } else {
                                     null
@@ -821,8 +821,10 @@ internal fun DesktopConsoleApp(
                             onCancel = store::cancelActiveTurn,
                             onClearQueuedPrompts = store::clearQueuedPrompts,
                             onPickImage = { store.pickAndAttachImage() },
+                            onPickFiles = { store.pickAndAttachFiles() },
                             onPasteClipboardImages = { store.pasteImagesFromClipboard(notifyWhenEmpty = false) },
                             onRemoveImage = store::removeAttachedImage,
+                            onRemoveFile = store::removeAttachedFile,
                             onSelectMentionFile = { relPath ->
                                 val replaced = replaceTrailingMention(state.activeDraftText, relPath)
                                 store.updateSessionDraft(replaced, updateMentions = false)

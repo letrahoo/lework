@@ -3,16 +3,29 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { PromptImageAttachment } from '@lework/protocol'
-import type { StagedPromptImage } from '../engines/types.ts'
+import type { MessageFileSummary, PromptFileAttachment, PromptImageAttachment } from '@lework/protocol'
+import type { StagedPromptFile, StagedPromptImage } from '../engines/types.ts'
 import { defaultDataDir } from '../platform/index.ts'
 import type { SessionMetadataStore } from './session-metadata.ts'
 
 export const ARCHIVED_ATTACHMENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000
+export const MAX_ATTACHMENT_FILE_BYTES = 5 * 1024 * 1024
 
 const SAFE_SID_RE = /^[A-Za-z0-9_-]{1,80}$/
 const SAFE_IMG_FILE_RE = /^([A-Za-z0-9_.-]{1,80})\.(jpg|jpeg|png|webp|gif)$/i
-const STAGED_HEADER_RE = /^\[用户附加了本地图片文件，请使用[^\]]*查看：([^\]]+)\]\s*([\s\S]*)$/
+const STAGED_FILE_PREFIX_RE = /^(turn_[A-Za-z0-9_-]+)_f(\d+)_(.+)$/
+const STAGED_IMG_HEADER_RE = /^\[用户附加了本地图片文件，请使用[^\]]*查看：([^\]]+)\]\s*([\s\S]*)$/
+const STAGED_FILE_HEADER_RE = /^\[用户附加了本地文件，请使用[^\]]*查看：([^\]]+)\]\s*([\s\S]*)$/
+const MAX_PI_INLINE_FILE_BYTES = 32 * 1024
+const MAX_PI_TOTAL_INLINE_BYTES = 64 * 1024
+const TEXT_LIKE_FILE_EXTS = new Set([
+  '.txt', '.md', '.markdown', '.json', '.jsonl', '.yaml', '.yml', '.toml', '.ini', '.conf', '.cfg',
+  '.env', '.csv', '.tsv', '.xml', '.html', '.htm', '.css', '.scss', '.less', '.svg',
+  '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx',
+  '.py', '.rb', '.go', '.rs', '.java', '.kt', '.kts', '.swift', '.c', '.h', '.cc', '.cpp', '.hpp',
+  '.cs', '.php', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.sql', '.graphql', '.proto',
+  '.dockerfile', '.gitignore', '.properties', '.gradle', '.log', '.diff', '.patch',
+])
 const MAX_DIRECT_PREVIEW_FILE_BYTES = 210_000
 const MAX_PREVIEW_B64_CHARS = 260_000
 const MAX_FALLBACK_RAW_B64_CHARS = 320_000
@@ -356,11 +369,161 @@ export function stagePromptImagesForSession(
   return out
 }
 
-export function buildTerminalImagePrompt(stagedImages: StagedPromptImage[], rawUserText: string): string {
+export function sanitizeAttachmentFileName(rawName: string | undefined, index: number): string {
+  const base = path.basename((rawName ?? '').replace(/\\/g, '/')).trim()
+  const cleaned = base
+    .replace(/[\x00-\x1f\x7f<>:"/\\|?*,\[\]]+/g, '_')
+    .replace(/^\.+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!cleaned) return `attachment_${index}.bin`
+  if (cleaned.length <= 120) return cleaned
+  const ext = path.extname(cleaned)
+  if (ext && ext.length <= 16) {
+    const stem = cleaned.slice(0, Math.max(1, 120 - ext.length))
+    return `${stem}${ext}`
+  }
+  return cleaned.slice(0, 120)
+}
+
+export function stagePromptFilesForSession(
+  sessionId: string,
+  turnId: string,
+  files: PromptFileAttachment[],
+): StagedPromptFile[] {
+  if (files.length === 0) return []
+  const safeSid = safeAttachmentSessionKey(sessionId)
+  const runtimeDir = path.join(runtimeAttachmentsBaseDir(), safeSid)
+  const persistDir = path.join(persistentAttachmentsBaseDir(), safeSid)
+  ensurePrivateOwnerDir(runtimeDir)
+  ensurePrivateOwnerDir(persistDir)
+
+  const out: StagedPromptFile[] = []
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]!
+    const bytes = Buffer.from(file.dataBase64, 'base64')
+    if (bytes.length > MAX_ATTACHMENT_FILE_BYTES) {
+      throw new Error(`文件「${file.fileName}」超过 5 MB 上限`)
+    }
+    const cleanName = sanitizeAttachmentFileName(file.fileName, i + 1)
+    const stagedFileName = `${turnId}_f${i + 1}_${cleanName}`
+    const runtimePath = path.join(runtimeDir, stagedFileName)
+    const persistPath = path.join(persistDir, stagedFileName)
+    fs.writeFileSync(runtimePath, bytes, { mode: 0o600 })
+    fs.writeFileSync(persistPath, bytes, { mode: 0o600 })
+
+    out.push({
+      ...file,
+      fileName: cleanName,
+      sizeBytes: bytes.length,
+      stagedPath: runtimePath,
+    })
+  }
+  return out
+}
+
+export function formatDisplayAttachmentSummary(imageCount: number, fileCount: number): string {
+  if (imageCount > 0 && fileCount > 0) {
+    return `（已发送 ${imageCount} 张图片、${fileCount} 个文件）`
+  }
+  if (imageCount > 0) {
+    return `（已发送 ${imageCount} 张图片）`
+  }
+  if (fileCount > 0) {
+    return `（已发送 ${fileCount} 个文件）`
+  }
+  return ''
+}
+
+export function buildStagedFilesPromptHeader(stagedFiles: StagedPromptFile[]): string {
+  if (stagedFiles.length === 0) return ''
+  const pathsCsv = stagedFiles.map(f => f.stagedPath).join(', ')
+  return `[用户附加了本地文件，请使用文件读取工具查看：${pathsCsv}]`
+}
+
+export function buildPromptTextWithAttachments(
+  rawUserText: string,
+  stagedFiles?: StagedPromptFile[],
+  hasImages = false,
+): string {
   const cleanUser = rawUserText.trim()
-  if (stagedImages.length === 0) return cleanUser
-  const pathsCsv = stagedImages.map(i => i.stagedPath).join(', ')
-  return `[用户附加了本地图片文件，请使用 read_file 工具查看：${pathsCsv}]\n\n${cleanUser || '请结合所附图片进行分析。'}`
+  const files = stagedFiles ?? []
+  const fileHeader = buildStagedFilesPromptHeader(files)
+  const fallback =
+    cleanUser ||
+    (hasImages && files.length > 0
+      ? '请结合所附图片和文件进行分析。'
+      : files.length > 0
+        ? '请结合所附文件进行分析。'
+        : hasImages
+          ? '请结合所附图片进行分析。'
+          : '')
+  return fileHeader ? `${fileHeader}\n\n${fallback}` : fallback
+}
+
+export function isTextLikeAttachment(fileName: string, mimeType?: string): boolean {
+  const lowerMime = (mimeType ?? '').toLowerCase().trim()
+  if (
+    lowerMime.startsWith('text/') ||
+    lowerMime === 'application/json' ||
+    lowerMime === 'application/xml' ||
+    lowerMime === 'application/javascript' ||
+    lowerMime === 'application/typescript' ||
+    lowerMime === 'application/x-yaml' ||
+    lowerMime === 'application/yaml' ||
+    lowerMime === 'application/x-sh' ||
+    lowerMime === 'image/svg+xml'
+  ) {
+    return true
+  }
+  const ext = path.extname(fileName).toLowerCase()
+  return TEXT_LIKE_FILE_EXTS.has(ext)
+}
+
+export function buildPiFileContextBlock(stagedFiles: StagedPromptFile[]): string {
+  if (stagedFiles.length === 0) return ''
+  const lines: string[] = [buildStagedFilesPromptHeader(stagedFiles)]
+  let remainingBudget = MAX_PI_TOTAL_INLINE_BYTES
+  for (const file of stagedFiles) {
+    if (remainingBudget <= 0 || !isTextLikeAttachment(file.fileName, file.mimeType)) continue
+    try {
+      const buf = Buffer.from(file.dataBase64, 'base64')
+      if (buf.includes(0)) continue // skip binary payload mislabeled as text
+      const sliceLen = Math.min(buf.length, MAX_PI_INLINE_FILE_BYTES, remainingBudget)
+      const content = buf.subarray(0, sliceLen).toString('utf8')
+      remainingBudget -= sliceLen
+      const truncatedNote = sliceLen < buf.length ? `\n...（文件共 ${buf.length} 字节，已节选前 ${sliceLen} 字节）` : ''
+      lines.push(`\n--- 附件文件：${file.fileName} (${file.stagedPath}) ---\n${content}${truncatedNote}`)
+    } catch {
+      // ignore decode error
+    }
+  }
+  return lines.join('\n')
+}
+
+export function buildTerminalImagePrompt(
+  stagedImages: StagedPromptImage[],
+  rawUserText: string,
+  stagedFiles: StagedPromptFile[] = [],
+): string {
+  const cleanUser = rawUserText.trim()
+  if (stagedImages.length === 0 && stagedFiles.length === 0) return cleanUser
+  const headers: string[] = []
+  if (stagedImages.length > 0) {
+    const pathsCsv = stagedImages.map(i => i.stagedPath).join(', ')
+    headers.push(`[用户附加了本地图片文件，请使用 read_file 工具查看：${pathsCsv}]`)
+  }
+  if (stagedFiles.length > 0) {
+    headers.push(buildStagedFilesPromptHeader(stagedFiles))
+  }
+  const fallback =
+    cleanUser ||
+    (stagedImages.length > 0 && stagedFiles.length > 0
+      ? '请结合所附图片和文件进行分析。'
+      : stagedFiles.length > 0
+        ? '请结合所附文件进行分析。'
+        : '请结合所附图片进行分析。')
+  return `${headers.join('\n')}\n\n${fallback}`
 }
 
 export function linkSessionAttachmentAlias(hubSessionId: string, hostSessionId: string): void {
@@ -433,8 +596,9 @@ export function sweepExpiredArchivedAttachments(
 
 /**
  * Parses a user prompt string that may start with `[用户附加了本地图片文件，请使用...查看：...]`
- * (written into AGY `transcript.jsonl` or Claude `.jsonl`), returning clean display text,
- * image count, and cached thumbnail previews (while re-materializing `/tmp` files if needed).
+ * and/or `[用户附加了本地文件，请使用...查看：...]` (written into AGY `transcript.jsonl`,
+ * Claude `.jsonl`, or Codex history), returning clean display text, image count/previews,
+ * and file summaries (while re-materializing `/tmp` files if needed).
  */
 export function parseStagedImagePromptHeader(
   rawText: string,
@@ -443,28 +607,101 @@ export function parseStagedImagePromptHeader(
   cleanText: string
   imageCount: number
   imagePreviews?: string[]
+  files?: MessageFileSummary[]
 } {
-  const match = rawText.match(STAGED_HEADER_RE)
-  if (!match) {
+  let working = rawText
+  const rawImagePaths: string[] = []
+  const rawFilePaths: string[] = []
+
+  // Strip up to 2 leading attachment headers (image header + file header in either order)
+  for (let pass = 0; pass < 2; pass++) {
+    const imgMatch = working.match(STAGED_IMG_HEADER_RE)
+    if (imgMatch) {
+      const paths = (imgMatch[1] ?? '')
+        .split(',')
+        .map(p => p.trim())
+        .filter(Boolean)
+      for (const p of paths) {
+        if (rawImagePaths.length < 4) rawImagePaths.push(p)
+      }
+      working = (imgMatch[2] ?? '').trim()
+      continue
+    }
+    const fileMatch = working.match(STAGED_FILE_HEADER_RE)
+    if (fileMatch) {
+      const paths = (fileMatch[1] ?? '')
+        .split(',')
+        .map(p => p.trim())
+        .filter(Boolean)
+      for (const p of paths) {
+        if (rawFilePaths.length < 4) rawFilePaths.push(p)
+      }
+      working = (fileMatch[2] ?? '').trim()
+      continue
+    }
+    break
+  }
+
+  if (rawImagePaths.length === 0 && rawFilePaths.length === 0) {
     return { cleanText: rawText, imageCount: 0 }
   }
-  const rawPaths = (match[1] ?? '')
-    .split(',')
-    .map(p => p.trim())
-    .filter(Boolean)
-    .slice(0, 4)
-  const remainder = (match[2] ?? '').trim()
-  const cleanText =
-    remainder === '请结合所附图片进行分析。'
-      ? `（已发送 ${rawPaths.length} 张图片）`
-      : remainder || `（已发送 ${rawPaths.length} 张图片）`
 
-  if (!loadThumbnails || rawPaths.length === 0) {
-    return { cleanText, imageCount: rawPaths.length }
+  const remainder = working.trim()
+  const autoFallback =
+    remainder === '请结合所附图片进行分析。' ||
+    remainder === '请结合所附文件进行分析。' ||
+    remainder === '请结合所附图片和文件进行分析。' ||
+    remainder === '请分析所附图片。'
+  const summaryFallback = formatDisplayAttachmentSummary(rawImagePaths.length, rawFilePaths.length)
+  const cleanText = autoFallback ? summaryFallback : remainder || summaryFallback
+
+  const parsedFiles: MessageFileSummary[] = []
+  for (const p of rawFilePaths) {
+    const baseName = path.basename(p)
+    const safeSid = path.basename(path.dirname(p))
+    const prefixMatch = baseName.match(STAGED_FILE_PREFIX_RE)
+    const displayFileName = prefixMatch ? prefixMatch[3]! : baseName
+    let sizeBytes: number | undefined
+    if (SAFE_SID_RE.test(safeSid) && p.includes('lework-attachments')) {
+      const persistDir = path.join(defaultDataDir(), 'attachments', safeSid)
+      const persistFile = path.join(persistDir, baseName)
+      if (!fs.existsSync(p) && fs.existsSync(persistFile)) {
+        try {
+          const rtDir = path.join(runtimeAttachmentsBaseDir(), safeSid)
+          ensurePrivateOwnerDir(rtDir)
+          fs.copyFileSync(persistFile, path.join(rtDir, baseName))
+          fs.chmodSync(path.join(rtDir, baseName), 0o600)
+        } catch {
+          // best effort
+        }
+      }
+      try {
+        const target = fs.existsSync(p) ? p : fs.existsSync(persistFile) ? persistFile : null
+        if (target) {
+          const st = fs.statSync(target)
+          if (st.isFile()) sizeBytes = st.size
+        }
+      } catch {
+        // ignore stat failure
+      }
+    }
+    parsedFiles.push({
+      fileName: displayFileName.slice(0, 180) || 'file',
+      ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+      stagedPath: p,
+    })
+  }
+
+  if (!loadThumbnails || rawImagePaths.length === 0) {
+    return {
+      cleanText,
+      imageCount: rawImagePaths.length,
+      ...(parsedFiles.length > 0 ? { files: parsedFiles } : {}),
+    }
   }
 
   const previews: string[] = []
-  for (const p of rawPaths) {
+  for (const p of rawImagePaths) {
     const fileName = path.basename(p)
     const safeSid = path.basename(path.dirname(p))
     const fileMatch = fileName.match(SAFE_IMG_FILE_RE)
@@ -510,7 +747,8 @@ export function parseStagedImagePromptHeader(
 
   return {
     cleanText,
-    imageCount: rawPaths.length,
+    imageCount: rawImagePaths.length,
     ...(previews.length > 0 ? { imagePreviews: previews } : {}),
+    ...(parsedFiles.length > 0 ? { files: parsedFiles } : {}),
   }
 }

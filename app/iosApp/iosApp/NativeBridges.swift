@@ -5,14 +5,18 @@ import PhotosUI
 import Shared
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 final class NativeBridgeCoordinator: NSObject, ObservableObject, IosNativeDelegate {
     @Published var isShowingScanner: Bool = false
     @Published var isShowingPhotoPicker: Bool = false
     @Published var isShowingCameraCapture: Bool = false
+    @Published var isShowingDocumentPicker: Bool = false
     @Published var photoSelectionLimit: Int = 4
+    @Published var fileSelectionLimit: Int = 4
     private var activeQrReqId: Int64?
     private var activeImageReqId: Int64?
+    private var activeFileReqId: Int64?
     private let tsnetQueue = DispatchQueue(label: "dev.lework.tsnet", qos: .userInitiated)
     private let pathMonitor = NWPathMonitor()
     private let pathQueue = DispatchQueue(label: "dev.lework.pathmonitor", qos: .utility)
@@ -181,6 +185,29 @@ final class NativeBridgeCoordinator: NSObject, ObservableObject, IosNativeDelega
             if let reqId = self.activeImageReqId {
                 self.activeImageReqId = nil
                 IosNativeBridge.shared.completeMultiImagePick(reqId: reqId, payloadsJson: payloadsJson)
+            }
+        }
+    }
+
+    func presentFilePicker(reqId: Int64, maxCount: Int32) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let prev = self.activeFileReqId {
+                IosNativeBridge.shared.completeFilePick(reqId: prev, payloadJson: nil)
+            }
+            self.activeFileReqId = reqId
+            self.fileSelectionLimit = max(1, min(4, Int(maxCount)))
+            self.isShowingDocumentPicker = true
+        }
+    }
+
+    func finishFilePick(_ payloadJson: String?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isShowingDocumentPicker = false
+            if let reqId = self.activeFileReqId {
+                self.activeFileReqId = nil
+                IosNativeBridge.shared.completeFilePick(reqId: reqId, payloadJson: payloadJson)
             }
         }
     }
@@ -381,6 +408,156 @@ struct CameraPhotoCaptureSheet: UIViewControllerRepresentable {
             let ts = Int(Date().timeIntervalSince1970)
             DispatchQueue.global(qos: .userInitiated).async { [onComplete] in
                 let json = IosImageEncoder.encodeBatchToJson([(uiImage, "camera_\(ts)")])
+                DispatchQueue.main.async {
+                    onComplete(json)
+                }
+            }
+        }
+    }
+}
+
+private enum IosFileEncoder {
+    private static let maxFileBytes = 5 * 1024 * 1024
+
+    struct EncodedFileItem: Codable {
+        let fileName: String
+        let mimeType: String
+        let dataBase64: String
+        let sizeBytes: Int64
+        let thumbnailBase64: String?
+        let isImage: Bool
+    }
+
+    struct EncodedOutcome: Codable {
+        let files: [EncodedFileItem]
+        let skippedOversizedCount: Int
+        let skippedUnreadableCount: Int
+    }
+
+    static func encodeDocumentsToJson(_ urls: [URL], limit: Int) -> String? {
+        var encoded: [EncodedFileItem] = []
+        var skippedOversized = 0
+        var skippedUnreadable = 0
+
+        for (idx, url) in urls.prefix(max(1, min(4, limit))).enumerated() {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped {
+                    url.stopAccessingSecurityScopedResource()
+                }
+                // `asCopy: true` delivers temporary inbox copies owned by this app; remove once encoded
+                try? FileManager.default.removeItem(at: url)
+            }
+
+            let rawName = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fileName = rawName.isEmpty ? "file_\(idx + 1)" : String(rawName.prefix(180))
+            let utType = UTType(filenameExtension: url.pathExtension)
+            let mimeType = utType?.preferredMIMEType ?? "application/octet-stream"
+            let isRasterImage = (utType?.conforms(to: .image) == true) && (utType != .svg)
+
+            if isRasterImage, let uiImg = UIImage(contentsOfFile: url.path),
+               let imgItem = IosImageEncoder.encodeSingle(image: uiImg, rawName: fileName, index: idx + 1)
+            {
+                let approxBytes = Int64((imgItem.dataBase64.count * 3) / 4)
+                encoded.append(
+                    EncodedFileItem(
+                        fileName: imgItem.fileName,
+                        mimeType: imgItem.mimeType,
+                        dataBase64: imgItem.dataBase64,
+                        sizeBytes: approxBytes,
+                        thumbnailBase64: imgItem.thumbnailBase64,
+                        isImage: true
+                    )
+                )
+                continue
+            }
+
+            if let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
+               let reportedSize = values.fileSize,
+               reportedSize > maxFileBytes
+            {
+                skippedOversized += 1
+                continue
+            }
+
+            guard let data = try? Data(contentsOf: url) else {
+                skippedUnreadable += 1
+                continue
+            }
+            if data.count > maxFileBytes {
+                skippedOversized += 1
+                continue
+            }
+
+            encoded.append(
+                EncodedFileItem(
+                    fileName: fileName,
+                    mimeType: String(mimeType.prefix(120)),
+                    dataBase64: data.base64EncodedString(),
+                    sizeBytes: Int64(data.count),
+                    thumbnailBase64: nil,
+                    isImage: false
+                )
+            )
+        }
+
+        let outcome = EncodedOutcome(
+            files: encoded,
+            skippedOversizedCount: skippedOversized,
+            skippedUnreadableCount: skippedUnreadable
+        )
+        guard let data = try? JSONEncoder().encode(outcome),
+              let json = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+        return json
+    }
+}
+
+struct DocumentPickerSheet: UIViewControllerRepresentable {
+    let selectionLimit: Int
+    let onComplete: (String?) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selectionLimit: selectionLimit, onComplete: onComplete)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = selectionLimit > 1
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let selectionLimit: Int
+        let onComplete: (String?) -> Void
+        private var didFinish = false
+
+        init(selectionLimit: Int, onComplete: @escaping (String?) -> Void) {
+            self.selectionLimit = selectionLimit
+            self.onComplete = onComplete
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            guard !didFinish else { return }
+            didFinish = true
+            onComplete(nil)
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard !didFinish else { return }
+            didFinish = true
+            guard !urls.isEmpty else {
+                onComplete(nil)
+                return
+            }
+            let limit = selectionLimit
+            DispatchQueue.global(qos: .userInitiated).async { [onComplete] in
+                let json = IosFileEncoder.encodeDocumentsToJson(urls, limit: limit)
                 DispatchQueue.main.async {
                     onComplete(json)
                 }

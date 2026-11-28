@@ -4,9 +4,16 @@ import crypto from 'node:crypto'
 import type { EngineCapabilities, EngineStatus, PermissionOption, SessionMode } from '@lework/protocol'
 import { findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
 import { isExternalProviderId, mergeSessionEnv } from '../registry/provider-adapters.ts'
+import { buildPromptTextWithAttachments } from '../storage/attachment-store.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
-import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
+import type {
+  EngineAdapter,
+  EngineSession,
+  EngineSessionInit,
+  StagedPromptFile,
+  StagedPromptImage,
+} from './types.ts'
 
 export function buildCodexLaunchArgs(
   baseArgs: string[],
@@ -262,7 +269,12 @@ class CodexAppServerSession implements EngineSession {
     await this.start()
   }
 
-  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
+  async prompt(
+    turnId: string,
+    text: string,
+    images?: StagedPromptImage[],
+    files?: StagedPromptFile[],
+  ): Promise<void> {
     this.currentMsgId = `msg_${turnId}`
     this.activeTurn = true
     this.init.emit({ type: 'session.state', state: 'running' })
@@ -271,7 +283,7 @@ class CodexAppServerSession implements EngineSession {
     for (const img of images ?? []) {
       inputItems.push({ type: 'localImage', path: img.stagedPath })
     }
-    const effectiveText = text.trim() || (images?.length ? '请结合所附图片进行分析。' : '')
+    const effectiveText = buildPromptTextWithAttachments(text, files, Boolean(images?.length))
     if (effectiveText) {
       inputItems.push({ type: 'text', text: effectiveText })
     }

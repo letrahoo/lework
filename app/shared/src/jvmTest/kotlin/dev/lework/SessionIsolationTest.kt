@@ -5,6 +5,7 @@ import dev.lework.protocol.AgentEvent
 import dev.lework.protocol.PermissionOption
 import dev.lework.protocol.PermissionOptionKind
 import dev.lework.protocol.PlanEntry
+import dev.lework.protocol.PromptFileAttachment
 import dev.lework.protocol.PromptImageAttachment
 import dev.lework.protocol.ReasoningEffort
 import dev.lework.protocol.SessionMeta
@@ -269,6 +270,7 @@ class SessionIsolationTest {
                     sessionId: String,
                     text: String,
                     images: List<PromptImageAttachment>?,
+                    files: List<PromptFileAttachment>?,
                     providerId: String?,
                     modelId: String?,
                     reasoningEffort: ReasoningEffort?,

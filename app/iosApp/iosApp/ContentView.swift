@@ -42,6 +42,17 @@ struct ContentView: View {
                     }
                 }
             )
+            .sheet(
+                isPresented: $bridge.isShowingDocumentPicker,
+                onDismiss: {
+                    bridge.finishFilePick(nil)
+                },
+                content: {
+                    DocumentPickerSheet(selectionLimit: bridge.fileSelectionLimit) { payloadJson in
+                        bridge.finishFilePick(payloadJson)
+                    }
+                }
+            )
             .fullScreenCover(
                 isPresented: $bridge.isShowingCameraCapture,
                 onDismiss: {

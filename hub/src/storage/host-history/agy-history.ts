@@ -750,6 +750,7 @@ export function parseAgyTranscript(
               text: imgInfo.cleanText || (totalImgs > 0 ? `（已发送 ${totalImgs} 张图片）` : ''),
               ...(totalImgs > 0 ? { imageCount: totalImgs } : {}),
               ...(mergedPreviews.length > 0 ? { imagePreviews: mergedPreviews } : {}),
+              ...(imgInfo.files?.length ? { files: imgInfo.files } : {}),
             })
           })
         } else if (nativeMedia.count > 0) {

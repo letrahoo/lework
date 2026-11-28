@@ -501,6 +501,14 @@ export const ProxyUsageResult = z.object({
 })
 export type ProxyUsageResult = z.infer<typeof ProxyUsageResult>
 
+export const MessageFileSummary = z.object({
+  fileName: z.string().min(1).max(180),
+  mimeType: z.string().max(120).optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  stagedPath: z.string().max(4096).optional(),
+})
+export type MessageFileSummary = z.infer<typeof MessageFileSummary>
+
 // ---------------------------------------------------------------------------
 // Agent events (normalized across engines)
 // ---------------------------------------------------------------------------
@@ -516,6 +524,7 @@ export const AgentEvent = z.discriminatedUnion('type', [
     text: z.string(),
     imageCount: z.number().int().nonnegative().optional(),
     imagePreviews: z.array(z.string().min(4).max(300_000)).max(4).optional(),
+    files: z.array(MessageFileSummary).max(4).optional(),
   }),
   z.object({ ...base, type: z.literal('message.assistant.delta'), messageId: z.string(), text: z.string() }),
   z.object({ ...base, type: z.literal('reasoning.delta'), messageId: z.string(), text: z.string() }),
@@ -574,6 +583,14 @@ export const PromptImageAttachment = z.object({
   fileName: z.string().max(120).optional(),
 })
 export type PromptImageAttachment = z.infer<typeof PromptImageAttachment>
+
+export const PromptFileAttachment = z.object({
+  fileName: z.string().min(1).max(180),
+  mimeType: z.string().min(1).max(120),
+  dataBase64: z.string().max(6_800_000),
+  sizeBytes: z.number().int().nonnegative().max(5 * 1024 * 1024).optional(),
+})
+export type PromptFileAttachment = z.infer<typeof PromptFileAttachment>
 
 export const WorkspaceFilesResult = z.object({
   path: z.string(),
@@ -789,6 +806,7 @@ export const Methods = {
       sessionId: z.string(),
       text: z.string().max(200_000),
       images: z.array(PromptImageAttachment).max(4).optional(),
+      files: z.array(PromptFileAttachment).max(4).optional(),
       providerId: z.string().optional(),
       modelId: z.string().optional(),
       reasoningEffort: ReasoningEffort.optional(),

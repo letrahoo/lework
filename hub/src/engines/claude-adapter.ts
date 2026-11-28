@@ -11,10 +11,17 @@ import type {
 } from '@lework/protocol'
 import { findExecutable, isExecutableFile, probeCommandVersion } from '../platform/index.ts'
 import { mergeSessionEnv } from '../registry/provider-adapters.ts'
+import { buildPromptTextWithAttachments } from '../storage/attachment-store.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import { discoverEngineSlashCommands, mergeSlashCommands, parseAcpAvailableCommands } from './slash-commands.ts'
-import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
+import type {
+  EngineAdapter,
+  EngineSession,
+  EngineSessionInit,
+  StagedPromptFile,
+  StagedPromptImage,
+} from './types.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const hubRoot = path.resolve(__dirname, '../..')
@@ -250,7 +257,12 @@ class ClaudeAcpSession implements EngineSession {
     await this.start()
   }
 
-  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
+  async prompt(
+    turnId: string,
+    text: string,
+    images?: StagedPromptImage[],
+    files?: StagedPromptFile[],
+  ): Promise<void> {
     this.currentMsgId = `msg_${turnId}`
     this.activeTurn = true
     this.init.emit({ type: 'session.state', state: 'running' })
@@ -263,7 +275,7 @@ class ClaudeAcpSession implements EngineSession {
         mimeType: img.mimeType,
       })
     }
-    const effectiveText = text.trim() || (images?.length ? '请结合所附图片进行分析。' : '')
+    const effectiveText = buildPromptTextWithAttachments(text, files, Boolean(images?.length))
     if (effectiveText) {
       promptBlocks.push({ type: 'text', text: effectiveText })
     }

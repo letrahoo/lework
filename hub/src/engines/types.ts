@@ -4,6 +4,7 @@ import type {
   EngineInfo,
   EngineStatus,
   ModelOption,
+  PromptFileAttachment,
   PromptImageAttachment,
   ReasoningEffort,
   SessionMode,
@@ -15,6 +16,11 @@ export type EmitAgentEvent = (body: AgentEventBody) => void
 export interface StagedPromptImage extends PromptImageAttachment {
   stagedPath: string
   previewBase64?: string
+}
+
+export interface StagedPromptFile extends PromptFileAttachment {
+  stagedPath: string
+  sizeBytes: number
 }
 
 export interface EngineSessionInit {
@@ -37,7 +43,12 @@ export interface EngineSessionInit {
 export interface EngineSession {
   readonly sessionId: string
   readonly cwd: string
-  prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void>
+  prompt(
+    turnId: string,
+    text: string,
+    images?: StagedPromptImage[],
+    files?: StagedPromptFile[],
+  ): Promise<void>
   cancel(): Promise<void>
   respondPermission(requestId: string, optionId: string | null, customInput?: string): Promise<void>
   setModel?(modelId: string): Promise<void>

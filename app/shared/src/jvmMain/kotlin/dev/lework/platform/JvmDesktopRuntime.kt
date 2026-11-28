@@ -910,6 +910,81 @@ object JvmDesktopRuntime {
         }.apply { isDaemon = true }.start()
     }
 
+    // --- Native General File Picker (Documents, PDF, Code, Logs, etc.) ---
+    fun pickFiles(maxCount: Int, onResult: (FilePickOutcome) -> Unit) {
+        Thread {
+            val pickedFiles = runCatching {
+                val dialog = FileDialog(null as Frame?, "选择要附带的文件", FileDialog.LOAD).apply {
+                    isMultipleMode = maxCount > 1
+                }
+                dialog.isVisible = true
+                dialog.files?.toList().orEmpty()
+            }.getOrDefault(emptyList())
+
+            onResult(encodePickedLocalFiles(pickedFiles, maxCount))
+        }.apply { isDaemon = true }.start()
+    }
+
+    internal fun encodePickedLocalFiles(files: List<File>, maxCount: Int = MAX_ATTACHED_FILES): FilePickOutcome {
+        val rasterExts = setOf("png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "tiff", "tif")
+        val out = mutableListOf<PickedFilePayload>()
+        var skippedOversized = 0
+        var skippedUnreadable = 0
+
+        for (file in files.take(maxCount.coerceIn(1, MAX_ATTACHED_FILES))) {
+            if (!file.isFile || !file.canRead()) {
+                skippedUnreadable++
+                continue
+            }
+            val ext = file.extension.lowercase()
+            if (ext in rasterExts) {
+                val img = encodePickedImageFile(file)
+                if (img != null) {
+                    out.add(
+                        PickedFilePayload(
+                            fileName = img.fileName,
+                            mimeType = img.mimeType,
+                            dataBase64 = img.dataBase64,
+                            sizeBytes = (img.dataBase64.length * 3L) / 4L,
+                            thumbnailBase64 = img.thumbnailBase64,
+                            isImage = true,
+                        ),
+                    )
+                    continue
+                }
+            }
+            val len = file.length()
+            if (len > MAX_ATTACHED_FILE_BYTES) {
+                skippedOversized++
+                continue
+            }
+            val rawBytes = runCatching { file.readBytes() }.getOrNull()
+            if (rawBytes == null) {
+                skippedUnreadable++
+                continue
+            }
+            if (rawBytes.size.toLong() > MAX_ATTACHED_FILE_BYTES) {
+                skippedOversized++
+                continue
+            }
+            val cleanName = file.name.trim().ifEmpty { "file.bin" }.take(180)
+            out.add(
+                PickedFilePayload(
+                    fileName = cleanName,
+                    mimeType = inferMimeTypeFromFileName(cleanName),
+                    dataBase64 = Base64.encode(rawBytes),
+                    sizeBytes = rawBytes.size.toLong(),
+                    isImage = false,
+                ),
+            )
+        }
+        return FilePickOutcome(
+            files = out,
+            skippedOversizedCount = skippedOversized,
+            skippedUnreadableCount = skippedUnreadable,
+        )
+    }
+
     private fun encodePickedImageFile(file: File): PickedImagePayload? = runCatching {
         if (!file.isFile || file.length() <= 0 || file.length() > MAX_RAW_IMAGE_BYTES) return null
         val rawBytes = file.readBytes()

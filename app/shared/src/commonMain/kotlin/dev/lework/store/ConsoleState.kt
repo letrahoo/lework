@@ -131,6 +131,7 @@ sealed interface ChatTimelineItem {
         val text: String,
         val imageCount: Int = 0,
         val imagePreviews: List<String> = emptyList(),
+        val files: List<MessageFileSummary> = emptyList(),
         override val ts: Long = 0L,
         override val seq: Int = -1,
     ) : ChatTimelineItem
@@ -178,6 +179,7 @@ data class TurnRecoveryBannerState(
     val detail: String,
     val failedPromptText: String? = null,
     val failedImages: List<PromptImageAttachment> = emptyList(),
+    val failedFiles: List<PromptFileAttachment> = emptyList(),
     val canResumePreviousTurn: Boolean = true,
     val lastErrorAtMs: Long = 0L,
 )
@@ -448,9 +450,10 @@ data class ConsoleUiState(
     val connectingTsnetHubId: String? = null,
     val pairedHosts: List<PairedHost> = loadPairedHosts(),
     val activeHostId: String? = loadActiveHostId(),
-    // Composer `@file` autocomplete, per-session drafts/images & signing expiry reminder
+    // Composer `@file` autocomplete, per-session drafts/attachments & signing expiry reminder
     val sessionDrafts: Map<String, String> = emptyMap(),
     val sessionAttachedImages: Map<String, List<PromptImageAttachment>> = emptyMap(),
+    val sessionAttachedFiles: Map<String, List<PromptFileAttachment>> = emptyMap(),
     val mentionQuery: String? = null,
     val workspaceFileSuggestions: List<String> = emptyList(),
     val signingExpiryDismissed: Boolean = false,
@@ -502,6 +505,12 @@ data class ConsoleUiState(
     val composerAttachedImages: List<PromptImageAttachment>
         get() = sessionAttachedImages[activeDraftKey].orEmpty()
 
+    val composerAttachedFiles: List<PromptFileAttachment>
+        get() = sessionAttachedFiles[activeDraftKey].orEmpty()
+
+    val composerHasAttachments: Boolean
+        get() = composerAttachedImages.isNotEmpty() || composerAttachedFiles.isNotEmpty()
+
     val activeFilePreview: LinkedFilePreviewEntry?
         get() = filePreviewStack.lastOrNull()
 
@@ -514,16 +523,28 @@ data class ConsoleUiState(
     fun attachedImagesFor(sessionId: String?): List<PromptImageAttachment> =
         sessionAttachedImages[sessionDraftKey(sessionId)].orEmpty()
 
+    fun attachedFilesFor(sessionId: String?): List<PromptFileAttachment> =
+        sessionAttachedFiles[sessionDraftKey(sessionId)].orEmpty()
+
     fun hasDraft(sessionId: String?): Boolean =
-        draftTextFor(sessionId).isNotBlank() || attachedImagesFor(sessionId).isNotEmpty()
+        draftTextFor(sessionId).isNotBlank() ||
+            attachedImagesFor(sessionId).isNotEmpty() ||
+            attachedFilesFor(sessionId).isNotEmpty()
 
     fun draftPreviewFor(sessionId: String?): String? {
         val text = draftTextFor(sessionId).replace(Regex("\\s+"), " ").trim()
         val imgCount = attachedImagesFor(sessionId).size
-        return when {
-            text.isNotEmpty() && imgCount > 0 -> "[图片 ×$imgCount] $text"
-            text.isNotEmpty() -> text
+        val fileCount = attachedFilesFor(sessionId).size
+        val attachBadge = when {
+            imgCount > 0 && fileCount > 0 -> "[图片 ×$imgCount · 文件 ×$fileCount]"
             imgCount > 0 -> "[图片 ×$imgCount]"
+            fileCount > 0 -> "[文件 ×$fileCount]"
+            else -> null
+        }
+        return when {
+            text.isNotEmpty() && attachBadge != null -> "$attachBadge $text"
+            text.isNotEmpty() -> text
+            attachBadge != null -> attachBadge
             else -> null
         }
     }
@@ -912,6 +933,7 @@ fun reduceTranscript(current: SessionTranscript, event: AgentEvent): SessionTran
                     text = event.text,
                     imageCount = event.imageCount ?: event.imagePreviews?.size ?: 0,
                     imagePreviews = event.imagePreviews.orEmpty(),
+                    files = event.files.orEmpty(),
                     ts = event.ts,
                     seq = event.seq,
                 ),
@@ -1083,6 +1105,7 @@ fun reduceTranscriptBatch(initial: SessionTranscript, events: List<AgentEvent>):
                         text = event.text,
                         imageCount = event.imageCount ?: event.imagePreviews?.size ?: 0,
                         imagePreviews = event.imagePreviews.orEmpty(),
+                        files = event.files.orEmpty(),
                         ts = event.ts,
                         seq = event.seq,
                     ),

@@ -150,13 +150,14 @@ interface IosNativeDelegate {
     fun tsnetLogout(reqId: Long)
     fun presentQrScanner(reqId: Long)
     fun presentImagePicker(reqId: Long, useCamera: Boolean, maxCount: Int)
+    fun presentFilePicker(reqId: Long, maxCount: Int)
 }
 
 /**
  * Bridge registered by Swift (`NativeBridges.swift`) at app launch to connect:
  * 1. Embedded Go `libtsnetbridge.a` (`LeworkTsnet*` C functions)
  * 2. `AVCaptureSession` QR code scanner sheet
- * 3. `PHPickerViewController` multi-image picker & `UIImagePickerController` camera capture
+ * 3. `PHPickerViewController` multi-image picker, `UIDocumentPickerViewController` file picker & `UIImagePickerController` camera capture
  * 4. `.onOpenURL` (`lework://pair` & `lework://session`) deep-link forwarding
  */
 object IosNativeBridge {
@@ -165,6 +166,7 @@ object IosNativeBridge {
     private val pendingTsnet = mutableMapOf<Long, (String) -> Unit>()
     private val pendingQr = mutableMapOf<Long, (String?) -> Unit>()
     private val pendingImages = mutableMapOf<Long, (List<PickedImagePayload>) -> Unit>()
+    private val pendingFiles = mutableMapOf<Long, (FilePickOutcome) -> Unit>()
 
     internal val incomingUriFlow = MutableStateFlow<String?>(null)
     internal val networkEpochFlow = MutableStateFlow(0L)
@@ -209,6 +211,12 @@ object IosNativeBridge {
         return id
     }
 
+    internal fun allocFilesCallback(cb: (FilePickOutcome) -> Unit): Long {
+        val id = nextReqId++
+        pendingFiles[id] = cb
+        return id
+    }
+
     fun completeTsnetRequest(reqId: Long, json: String) {
         pendingTsnet.remove(reqId)?.invoke(json)
     }
@@ -227,6 +235,18 @@ object IosNativeBridge {
             ProtocolJson.decodeFromString(ListSerializer(PickedImagePayload.serializer()), payloadsJson)
         }.getOrDefault(emptyList())
         cb.invoke(parsed.filter { it.dataBase64.isNotBlank() })
+    }
+
+    fun completeFilePick(reqId: Long, payloadJson: String?) {
+        val cb = pendingFiles.remove(reqId) ?: return
+        if (payloadJson.isNullOrBlank()) {
+            cb.invoke(FilePickOutcome())
+            return
+        }
+        val parsed = runCatching {
+            ProtocolJson.decodeFromString(FilePickOutcome.serializer(), payloadJson)
+        }.getOrDefault(FilePickOutcome())
+        cb.invoke(parsed)
     }
 
     fun completeImagePick(reqId: Long, fileName: String?, mimeType: String?, dataBase64: String?) {
@@ -1023,6 +1043,8 @@ actual fun saveHostAccessToken(hubId: String, token: String?) {
 
 actual fun canPickImages(): Boolean = IosNativeBridge.delegate != null
 
+actual fun canPickFiles(): Boolean = IosNativeBridge.delegate != null
+
 actual fun canCaptureCameraImage(): Boolean = IosNativeBridge.delegate != null
 
 actual fun requestImagePick(onResult: (PickedImagePayload?) -> Unit) {
@@ -1045,6 +1067,22 @@ actual fun requestMultiImagePick(
         dispatch_async(dispatch_get_main_queue()) {
             val id = IosNativeBridge.allocImagesCallback(onResult)
             d.presentImagePicker(id, useCamera, clamped)
+        }
+    }
+}
+
+actual fun requestFilePick(
+    maxCount: Int,
+    onResult: (FilePickOutcome) -> Unit,
+) {
+    val d = IosNativeBridge.delegate
+    if (d == null) {
+        onResult(FilePickOutcome())
+    } else {
+        val clamped = maxCount.coerceIn(1, MAX_ATTACHED_FILES)
+        dispatch_async(dispatch_get_main_queue()) {
+            val id = IosNativeBridge.allocFilesCallback(onResult)
+            d.presentFilePicker(id, clamped)
         }
     }
 }

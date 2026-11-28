@@ -910,7 +910,8 @@ private fun MessageTimestampCaption(
     }
 }
 
-private val AUTO_IMAGE_PLACEHOLDER_REGEX = Regex("^（已发送\\s*\\d+\\s*张图片）$")
+private val AUTO_ATTACHMENT_PLACEHOLDER_REGEX =
+    Regex("^（已发送\\s*(?:\\d+\\s*张图片(?:、\\d+\\s*个文件)?|\\d+\\s*个文件)）$")
 
 @Composable
 private fun MessageTimelineRow(
@@ -924,13 +925,16 @@ private fun MessageTimelineRow(
     when (item) {
         is ChatTimelineItem.User -> {
             var lightboxIdx by remember(item.id) { mutableStateOf<Int?>(null) }
+            val fileLinkClickHandler = LocalFileLinkClickHandler.current
             val isDesktop = isDesktopPlatform()
             val hasPreviews = item.imagePreviews.isNotEmpty()
+            val hasFiles = item.files.isNotEmpty()
             val isAutoPlaceholderOnly =
-                (hasPreviews || item.imageCount > 0) && AUTO_IMAGE_PLACEHOLDER_REGEX.matches(item.text.trim())
+                (hasPreviews || item.imageCount > 0 || hasFiles) &&
+                    AUTO_ATTACHMENT_PLACEHOLDER_REGEX.matches(item.text.trim())
             val bubbleMaxWidth = when {
                 isDesktop && item.imagePreviews.size > 1 -> 460.dp
-                isDesktop && hasPreviews -> 360.dp
+                isDesktop && (hasPreviews || hasFiles) -> 360.dp
                 else -> 316.dp
             }
 
@@ -1010,6 +1014,24 @@ private fun MessageTimelineRow(
                                     fontSize = 11.5.sp,
                                     color = Everforest.Green,
                                 )
+                            }
+                        }
+
+                        if (hasFiles) {
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                item.files.forEachIndexed { idx, file ->
+                                    val targetPath = file.stagedPath?.takeIf { it.isNotBlank() }
+                                    TimelineAttachedFileChip(
+                                        file = file,
+                                        messageId = item.id,
+                                        index = idx,
+                                        onClick = if (targetPath != null && fileLinkClickHandler != null) {
+                                            { fileLinkClickHandler(targetPath) }
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
                             }
                         }
 

@@ -723,7 +723,7 @@ private fun MobileConsoleApp(
                         dismissKeyboard()
                         val msg = promptField.text
                         cursorSyncRequest = null
-                        val localAct = if (state.composerAttachedImages.isEmpty()) {
+                        val localAct = if (!state.composerHasAttachments) {
                             parseLocalSlashAction(msg, state)
                         } else {
                             null
@@ -745,6 +745,10 @@ private fun MobileConsoleApp(
                         dismissKeyboard()
                         store.pickAndAttachImage()
                     },
+                    onPickFiles = {
+                        dismissKeyboard()
+                        store.pickAndAttachFiles()
+                    },
                     onCaptureCamera = {
                         dismissKeyboard()
                         store.captureAndAttachImage()
@@ -754,6 +758,7 @@ private fun MobileConsoleApp(
                         store.pasteImagesFromClipboard(notifyWhenEmpty = notifyWhenEmpty)
                     },
                     onRemoveImage = store::removeAttachedImage,
+                    onRemoveFile = store::removeAttachedFile,
                     onSelectMentionFile = { relPath ->
                         val (nextText, nextCursor) = replaceMentionAtCursor(
                             text = promptField.text,

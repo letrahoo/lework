@@ -573,6 +573,7 @@ export function parseClaudeTranscript(
             text: stagedParsed.cleanText || `（已发送 ${totalImgs} 张图片）`,
             ...(totalImgs > 0 ? { imageCount: totalImgs } : {}),
             ...(mergedPreviews.length > 0 ? { imagePreviews: mergedPreviews } : {}),
+            ...(stagedParsed.files?.length ? { files: stagedParsed.files } : {}),
           })
         }
       } else if (

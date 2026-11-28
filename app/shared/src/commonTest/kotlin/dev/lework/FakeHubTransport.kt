@@ -70,6 +70,7 @@ class FakeHubTransport : HubTransport {
     val sentPrompts = mutableListOf<Pair<String, String>>()
     val sentPromptParams = mutableListOf<SessionPromptParams>()
     val sentPromptImages = mutableListOf<Pair<String, List<PromptImageAttachment>>>()
+    val sentPromptFiles = mutableListOf<Pair<String, List<PromptFileAttachment>>>()
     var lastCreateUseWorktree: Boolean? = null
     var lastCreateWorktreeBranch: String? = null
     val setModelCalls = mutableListOf<SessionSetModelParams>()
@@ -343,6 +344,7 @@ class FakeHubTransport : HubTransport {
         sessionId: String,
         text: String,
         images: List<PromptImageAttachment>?,
+        files: List<PromptFileAttachment>?,
         providerId: String?,
         modelId: String?,
         reasoningEffort: ReasoningEffort?,
@@ -360,6 +362,7 @@ class FakeHubTransport : HubTransport {
                 sessionId = sessionId,
                 text = text,
                 images = images,
+                files = files,
                 providerId = providerId,
                 modelId = modelId,
                 reasoningEffort = reasoningEffort,
@@ -368,6 +371,9 @@ class FakeHubTransport : HubTransport {
         )
         if (!images.isNullOrEmpty()) {
             sentPromptImages.add(sessionId to images)
+        }
+        if (!files.isNullOrEmpty()) {
+            sentPromptFiles.add(sessionId to files)
         }
         return "turn_${sentPrompts.size}"
     }

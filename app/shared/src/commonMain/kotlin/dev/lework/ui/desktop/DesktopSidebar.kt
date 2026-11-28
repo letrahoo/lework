@@ -665,6 +665,7 @@ internal fun DesktopSidebar(
             state.workspaces,
             state.sessionDrafts,
             state.sessionAttachedImages,
+            state.sessionAttachedFiles,
             state.activeSessionId,
         ) {
             state.sidebarProjectGroups(excludePinned = true, excludeFloatingWaiting = true)
@@ -679,7 +680,14 @@ internal fun DesktopSidebar(
             state.flatTimeSidebarSessions(excludePinned = true, excludeFloatingWaiting = true)
         }
         val archivedList = state.filteredArchivedSessions
-        val archivedGroups = remember(archivedList, state.workspaces, state.sessionDrafts, state.sessionAttachedImages, state.activeSessionId) {
+        val archivedGroups = remember(
+            archivedList,
+            state.workspaces,
+            state.sessionDrafts,
+            state.sessionAttachedImages,
+            state.sessionAttachedFiles,
+            state.activeSessionId,
+        ) {
             state.archivedProjectGroups
         }
 

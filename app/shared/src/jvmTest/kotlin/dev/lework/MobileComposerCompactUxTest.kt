@@ -156,7 +156,7 @@ class MobileComposerCompactUxTest {
             onNodeWithTag("composer_add_image_btn").assertIsDisplayed()
             onNodeWithTag("composer_slash_btn").assertIsDisplayed()
             onNodeWithTag("composer_mention_btn").assertIsDisplayed()
-            onNodeWithContentDescription("添加图片", useUnmergedTree = true).assertIsDisplayed()
+            onNodeWithContentDescription("添加图片或文件", useUnmergedTree = true).assertIsDisplayed()
             onNodeWithContentDescription("命令", useUnmergedTree = true).assertIsDisplayed()
             onNodeWithContentDescription("引用文件", useUnmergedTree = true).assertIsDisplayed()
 

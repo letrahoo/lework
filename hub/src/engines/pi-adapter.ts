@@ -8,9 +8,16 @@ import {
   normalizeBaseUrlForAnthropic,
   normalizeBaseUrlForOpenAi,
 } from '../registry/provider-adapters.ts'
+import { buildPiFileContextBlock } from '../storage/attachment-store.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import { PiSkillCatalog } from './pi-skills.ts'
-import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
+import type {
+  EngineAdapter,
+  EngineSession,
+  EngineSessionInit,
+  StagedPromptFile,
+  StagedPromptImage,
+} from './types.ts'
 
 /**
  * Self-built embedded Pi Engine (§5 of PLAN.md).
@@ -93,7 +100,12 @@ class PiEmbeddedSession implements EngineSession {
     })
   }
 
-  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
+  async prompt(
+    turnId: string,
+    text: string,
+    images?: StagedPromptImage[],
+    files?: StagedPromptFile[],
+  ): Promise<void> {
     this.abortController = new AbortController()
     const msgId = `msg_${turnId}`
     this.init.emit({ type: 'session.state', state: 'running' })
@@ -223,8 +235,17 @@ class PiEmbeddedSession implements EngineSession {
       }
 
       // 4. Query CLIProxyAPI (:8317)
-      const effectiveText = text.trim() || (images?.length ? '请分析所附图片。' : '')
-      const textPrompt = `[Workspace files: ${entries.join(', ')}]\n\n${effectiveText}`
+      const fileContext = files?.length ? `${buildPiFileContextBlock(files)}\n\n` : ''
+      const effectiveText =
+        text.trim() ||
+        (images?.length && files?.length
+          ? '请结合所附图片和文件进行分析。'
+          : files?.length
+            ? '请分析所附文件。'
+            : images?.length
+              ? '请分析所附图片。'
+              : '')
+      const textPrompt = `[Workspace files: ${entries.join(', ')}]\n\n${fileContext}${effectiveText}`
       if (images && images.length > 0) {
         const parts: Array<Record<string, unknown>> = [{ type: 'text', text: textPrompt }]
         for (const img of images) {

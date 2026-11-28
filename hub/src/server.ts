@@ -15,6 +15,7 @@ import {
   type HubInfo,
   type MethodName,
   type ProfileInfo,
+  type PromptFileAttachment,
   type PromptImageAttachment,
   type ProviderConfigInput,
   type ReasoningEffort,
@@ -87,7 +88,7 @@ export interface HubServerOptions {
 const HELLO_DEADLINE_MS = 10_000
 const MAX_PREAUTH_CONNECTIONS = 32
 const MAX_REMOTE_SLAVES = 32
-const WS_MAX_PAYLOAD = 4 * 1024 * 1024
+const WS_MAX_PAYLOAD = 32 * 1024 * 1024
 const AUTH_FAILURE_DELAY_MS = 400
 
 const SlaveRegistration = z.object({
@@ -1071,6 +1072,7 @@ export class HubServer {
           sessionId: string
           text: string
           images?: PromptImageAttachment[]
+          files?: PromptFileAttachment[]
           providerId?: string
           modelId?: string
           reasoningEffort?: ReasoningEffort
@@ -1082,6 +1084,7 @@ export class HubServer {
         }
         return await this.sessionManager.prompt(p.sessionId, p.text, {
           images: p.images,
+          files: p.files,
           providerId: p.providerId,
           modelId: p.modelId,
           reasoningEffort: p.reasoningEffort,
