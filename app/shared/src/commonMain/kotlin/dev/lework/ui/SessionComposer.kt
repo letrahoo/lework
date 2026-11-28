@@ -43,7 +43,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lework.platform.MAX_ATTACHED_FILES
 import dev.lework.platform.canCaptureCameraImage
+import dev.lework.platform.canPickFiles
 import dev.lework.platform.canPickImages
 import dev.lework.protocol.*
 import dev.lework.store.*
@@ -61,9 +63,11 @@ internal fun ClaudeStyleComposer(
     onCancel: () -> Unit,
     onClearQueuedPrompts: () -> Unit = {},
     onPickImage: () -> Unit = {},
+    onPickFiles: () -> Unit = {},
     onCaptureCamera: () -> Unit = {},
     onPasteClipboardImages: (notifyWhenEmpty: Boolean) -> Boolean = { false },
     onRemoveImage: (Int) -> Unit = {},
+    onRemoveFile: (Int) -> Unit = {},
     onSelectMentionFile: (String) -> Unit = {},
     onInsertAtMention: () -> Unit = {},
     onDismissMention: () -> Unit = {},
@@ -77,6 +81,7 @@ internal fun ClaudeStyleComposer(
         (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
     val queuedCount = activeSess?.queuedPrompts?.size ?: 0
     val imageSupported = remember { canPickImages() } && (state.selectedEngine?.capabilities?.images != false)
+    val fileSupported = remember { canPickFiles() }
     val cameraSupported = remember { canCaptureCameraImage() }
     var showImageSourceMenu by remember { mutableStateOf(false) }
     var lightboxIndex by remember { mutableStateOf<Int?>(null) }
@@ -232,7 +237,7 @@ internal fun ClaudeStyleComposer(
                         )
                     }
                 }
-                if (state.composerAttachedImages.isNotEmpty()) {
+                if (state.composerHasAttachments) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -310,6 +315,13 @@ internal fun ClaudeStyleComposer(
                                 }
                             }
                         }
+                        state.composerAttachedFiles.forEachIndexed { idx, file ->
+                            ComposerAttachedFileChip(
+                                file = file,
+                                index = idx,
+                                onRemove = { onRemoveFile(idx) },
+                            )
+                        }
                     }
                 }
 
@@ -324,6 +336,7 @@ internal fun ClaudeStyleComposer(
                             text = mobileComposerPlaceholder(
                                 engineId = state.selectedEngineId,
                                 hasAttachedImages = state.composerAttachedImages.isNotEmpty(),
+                                hasAttachedFiles = state.composerAttachedFiles.isNotEmpty(),
                                 canQueueFollowUp = isSessionRunning && activeSess?.state == SessionState.RUNNING,
                             ),
                             color = Everforest.CommentGrey,
@@ -385,13 +398,28 @@ internal fun ClaudeStyleComposer(
                         horizontalArrangement = Arrangement.spacedBy(5.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (imageSupported) {
-                            val remainingSlots = (4 - state.composerAttachedImages.size).coerceAtLeast(0)
+                        if (imageSupported || fileSupported) {
+                            val imgCount = state.composerAttachedImages.size
+                            val fileCount = state.composerAttachedFiles.size
+                            val remainingImageSlots = if (imageSupported) (4 - imgCount).coerceAtLeast(0) else 0
+                            val remainingFileSlots = if (fileSupported) (MAX_ATTACHED_FILES - fileCount).coerceAtLeast(0) else 0
+                            val hasRemainingSlots = remainingImageSlots > 0 || remainingFileSlots > 0
+                            val attachDescription = when {
+                                imageSupported && fileSupported -> "添加图片或文件"
+                                fileSupported -> "添加文件"
+                                else -> "添加图片"
+                            }
+                            val attachIcon = when {
+                                fileCount > 0 && imgCount == 0 -> Icons.Rounded.AttachFile
+                                imgCount > 0 && fileCount == 0 -> Icons.Rounded.AddPhotoAlternate
+                                fileSupported -> Icons.Rounded.AttachFile
+                                else -> Icons.Rounded.AddPhotoAlternate
+                            }
                             Box {
-                                if (state.composerAttachedImages.isEmpty()) {
+                                if (!state.composerHasAttachments) {
                                     ComposerIconButton(
-                                        icon = Icons.Rounded.AddPhotoAlternate,
-                                        contentDescription = "添加图片",
+                                        icon = attachIcon,
+                                        contentDescription = attachDescription,
                                         tint = Everforest.Green,
                                         active = showImageSourceMenu,
                                         activeTint = Everforest.Green,
@@ -400,15 +428,20 @@ internal fun ClaudeStyleComposer(
                                         onClick = { showImageSourceMenu = true },
                                     )
                                 } else {
+                                    val badgeLabel = when {
+                                        imgCount > 0 && fileCount == 0 -> "$imgCount/4"
+                                        fileCount > 0 && imgCount == 0 -> "$fileCount/$MAX_ATTACHED_FILES"
+                                        else -> "${imgCount + fileCount}"
+                                    }
                                     ComposerMetaChip(
-                                        icon = Icons.Rounded.AddPhotoAlternate,
-                                        label = "${state.composerAttachedImages.size}/4",
-                                        tint = if (remainingSlots > 0) Everforest.Green else Everforest.CommentGrey,
-                                        labelColor = if (remainingSlots > 0) Everforest.Fg else Everforest.CommentGrey,
-                                        iconContentDescription = "添加图片",
+                                        icon = attachIcon,
+                                        label = badgeLabel,
+                                        tint = if (hasRemainingSlots) Everforest.Green else Everforest.CommentGrey,
+                                        labelColor = if (hasRemainingSlots) Everforest.Fg else Everforest.CommentGrey,
+                                        iconContentDescription = attachDescription,
                                         testTag = "composer_add_image_btn",
                                         onClick = {
-                                            if (remainingSlots <= 0) return@ComposerMetaChip
+                                            if (!hasRemainingSlots) return@ComposerMetaChip
                                             showImageSourceMenu = true
                                         },
                                     )
@@ -418,54 +451,18 @@ internal fun ClaudeStyleComposer(
                                     onDismissRequest = { showImageSourceMenu = false },
                                     modifier = Modifier.background(Everforest.Bg1),
                                 ) {
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text("粘贴剪贴板图片", color = Everforest.Fg, fontSize = 13.5.sp)
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Rounded.ContentPaste,
-                                                contentDescription = null,
-                                                tint = Everforest.BoldGold,
-                                                modifier = Modifier.size(17.dp),
-                                            )
-                                        },
-                                        onClick = {
-                                            showImageSourceMenu = false
-                                            onPasteClipboardImages(true)
-                                        },
-                                        modifier = Modifier.testTag("composer_paste_clipboard_image"),
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                "从相册选择（最多 $remainingSlots 张）",
-                                                color = Everforest.Fg,
-                                                fontSize = 13.5.sp,
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Rounded.PhotoLibrary,
-                                                contentDescription = null,
-                                                tint = Everforest.Green,
-                                                modifier = Modifier.size(17.dp),
-                                            )
-                                        },
-                                        onClick = {
-                                            showImageSourceMenu = false
-                                            onPickImage()
-                                        },
-                                        modifier = Modifier.testTag("composer_pick_library"),
-                                    )
-                                    if (cameraSupported) {
+                                    if (fileSupported && remainingFileSlots > 0) {
                                         DropdownMenuItem(
                                             text = {
-                                                Text("直接拍照识别", color = Everforest.Fg, fontSize = 13.5.sp)
+                                                Text(
+                                                    "选择文件（最多 $remainingFileSlots 个）",
+                                                    color = Everforest.Fg,
+                                                    fontSize = 13.5.sp,
+                                                )
                                             },
                                             leadingIcon = {
                                                 Icon(
-                                                    imageVector = Icons.Rounded.PhotoCamera,
+                                                    imageVector = Icons.AutoMirrored.Rounded.InsertDriveFile,
                                                     contentDescription = null,
                                                     tint = Everforest.Aqua,
                                                     modifier = Modifier.size(17.dp),
@@ -473,9 +470,71 @@ internal fun ClaudeStyleComposer(
                                             },
                                             onClick = {
                                                 showImageSourceMenu = false
-                                                onCaptureCamera()
+                                                onPickFiles()
                                             },
-                                            modifier = Modifier.testTag("composer_pick_camera"),
+                                            modifier = Modifier.testTag("composer_pick_files"),
+                                        )
+                                    }
+                                    if (imageSupported && remainingImageSlots > 0) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    "从相册选择（最多 $remainingImageSlots 张）",
+                                                    color = Everforest.Fg,
+                                                    fontSize = 13.5.sp,
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.PhotoLibrary,
+                                                    contentDescription = null,
+                                                    tint = Everforest.Green,
+                                                    modifier = Modifier.size(17.dp),
+                                                )
+                                            },
+                                            onClick = {
+                                                showImageSourceMenu = false
+                                                onPickImage()
+                                            },
+                                            modifier = Modifier.testTag("composer_pick_library"),
+                                        )
+                                        if (cameraSupported) {
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text("直接拍照识别", color = Everforest.Fg, fontSize = 13.5.sp)
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.PhotoCamera,
+                                                        contentDescription = null,
+                                                        tint = Everforest.BoldGold,
+                                                        modifier = Modifier.size(17.dp),
+                                                    )
+                                                },
+                                                onClick = {
+                                                    showImageSourceMenu = false
+                                                    onCaptureCamera()
+                                                },
+                                                modifier = Modifier.testTag("composer_pick_camera"),
+                                            )
+                                        }
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text("粘贴剪贴板图片", color = Everforest.Fg, fontSize = 13.5.sp)
+                                            },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.ContentPaste,
+                                                    contentDescription = null,
+                                                    tint = Everforest.Grey2,
+                                                    modifier = Modifier.size(17.dp),
+                                                )
+                                            },
+                                            onClick = {
+                                                showImageSourceMenu = false
+                                                onPasteClipboardImages(true)
+                                            },
+                                            modifier = Modifier.testTag("composer_paste_clipboard_image"),
                                         )
                                     }
                                 }
@@ -563,7 +622,7 @@ internal fun ClaudeStyleComposer(
 
                     Spacer(Modifier.width(8.dp))
 
-                    val hasDraft = text.isNotBlank() || state.composerAttachedImages.isNotEmpty()
+                    val hasDraft = text.isNotBlank() || state.composerHasAttachments
                     val canQueueWhileRunning =
                         isSessionRunning && hasDraft && activeSess?.state == SessionState.RUNNING
                     val isCancelling =
@@ -640,10 +699,186 @@ internal fun mobileComposerPlaceholder(
     engineId: String,
     hasAttachedImages: Boolean,
     canQueueFollowUp: Boolean,
+    hasAttachedFiles: Boolean = false,
 ): String = when {
+    hasAttachedImages && hasAttachedFiles -> "添加附件说明，或直接发送…"
+    hasAttachedFiles -> "添加文件说明，或直接发送…"
     hasAttachedImages -> "添加图片说明，或直接发送…"
     canQueueFollowUp -> "补充下一条指令，结束后自动发送…"
     else -> "发消息给 ${shortEngineLabel(engineId)}…"
+}
+
+internal fun formatAttachmentFileSize(sizeBytes: Int?): String? {
+    val bytes = sizeBytes?.takeIf { it >= 0 } ?: return null
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> "${(bytes / 1024).coerceAtLeast(1)} KB"
+        else -> {
+            val wholeMb = bytes / (1024 * 1024)
+            val tenthMb = ((bytes % (1024 * 1024)) * 10) / (1024 * 1024)
+            "$wholeMb.$tenthMb MB"
+        }
+    }
+}
+
+internal fun attachmentFileIcon(fileName: String, mimeType: String? = null): ImageVector {
+    val ext = fileName.substringAfterLast('.', "").lowercase().trim()
+    val lowerMime = mimeType?.lowercase().orEmpty()
+    return when {
+        ext == "pdf" || lowerMime == "application/pdf" -> Icons.Rounded.PictureAsPdf
+        ext in setOf("zip", "tar", "gz", "tgz", "7z", "rar") -> Icons.Rounded.FolderZip
+        ext in setOf("csv", "tsv", "xls", "xlsx") -> Icons.Rounded.TableChart
+        ext in setOf(
+            "kt", "kts", "java", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "rs",
+            "swift", "c", "h", "cpp", "hpp", "json", "jsonl", "yaml", "yml", "toml", "xml",
+            "html", "htm", "css", "scss", "sql", "sh", "bash", "zsh", "gradle",
+        ) -> Icons.Rounded.Code
+        ext in setOf("md", "markdown", "txt", "log", "doc", "docx") -> Icons.Rounded.Description
+        else -> Icons.AutoMirrored.Rounded.InsertDriveFile
+    }
+}
+
+@Composable
+internal fun ComposerAttachedFileChip(
+    file: PromptFileAttachment,
+    index: Int,
+    onRemove: () -> Unit,
+) {
+    val ext = file.fileName.substringAfterLast('.', "").uppercase().take(8)
+    val sizeLabel = formatAttachmentFileSize(file.sizeBytes)
+    val subtitle = listOfNotNull(ext.takeIf { it.isNotEmpty() && it != file.fileName.uppercase() }, sizeLabel)
+        .joinToString(" · ")
+        .ifEmpty { "文件" }
+
+    Surface(
+        shape = RoundedCornerShape(11.dp),
+        color = Everforest.Bg2,
+        border = BorderStroke(1.dp, Everforest.Aqua.copy(alpha = 0.42f)),
+        modifier = Modifier
+            .height(50.dp)
+            .widthIn(min = 124.dp, max = 196.dp)
+            .testTag("composer_file_chip_$index"),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 9.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(Everforest.Bg1),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = attachmentFileIcon(file.fileName, file.mimeType),
+                    contentDescription = null,
+                    tint = Everforest.Aqua,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f, fill = false),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    text = file.fileName,
+                    fontSize = 11.5.sp,
+                    lineHeight = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Everforest.Fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitle,
+                    fontSize = 9.5.sp,
+                    lineHeight = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Everforest.CommentGrey,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Surface(
+                shape = CircleShape,
+                color = Everforest.BgDim.copy(alpha = 0.85f),
+                border = BorderStroke(0.8.dp, Everforest.Bg3),
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .clickable { onRemove() }
+                    .testTag("composer_remove_file_$index"),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "移除文件",
+                        tint = Everforest.Fg,
+                        modifier = Modifier.size(11.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun TimelineAttachedFileChip(
+    file: MessageFileSummary,
+    messageId: String,
+    index: Int,
+    onClick: (() -> Unit)? = null,
+) {
+    val sizeLabel = formatAttachmentFileSize(file.sizeBytes)
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Everforest.Bg1,
+        border = BorderStroke(1.dp, Everforest.Bg3),
+        modifier = Modifier
+            .widthIn(max = 260.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .let { mod -> if (onClick != null) mod.clickable(onClick = onClick) else mod }
+            .testTag("user_bubble_file_${messageId}_$index"),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Icon(
+                imageVector = attachmentFileIcon(file.fileName, file.mimeType),
+                contentDescription = null,
+                tint = Everforest.Aqua,
+                modifier = Modifier.size(15.dp),
+            )
+            Column(
+                modifier = Modifier.weight(1f, fill = false),
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    text = file.fileName,
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Everforest.Fg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (sizeLabel != null) {
+                    Text(
+                        text = sizeLabel,
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Everforest.CommentGrey,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable

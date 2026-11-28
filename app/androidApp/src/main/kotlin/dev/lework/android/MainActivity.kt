@@ -27,8 +27,13 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import dev.lework.platform.AndroidNativeDelegate
 import dev.lework.platform.AndroidPlatformRuntime
+import dev.lework.platform.FilePickOutcome
 import dev.lework.platform.ImagePickSource
+import dev.lework.platform.MAX_ATTACHED_FILES
+import dev.lework.platform.MAX_ATTACHED_FILE_BYTES
+import dev.lework.platform.PickedFilePayload
 import dev.lework.platform.PickedImagePayload
+import dev.lework.platform.inferMimeTypeFromFileName
 import dev.lework.ui.ConsoleApp
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -39,6 +44,8 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
     private var qrCallback: ((String?) -> Unit)? = null
     private var multiImageCallback: ((List<PickedImagePayload>) -> Unit)? = null
     private var pendingMaxImages: Int = 4
+    private var multiFileCallback: ((FilePickOutcome) -> Unit)? = null
+    private var pendingMaxFiles: Int = MAX_ATTACHED_FILES
     private var pendingCameraFile: File? = null
     private var pendingCameraUri: Uri? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()
@@ -80,6 +87,22 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
         ioExecutor.execute {
             val payloads = uris.take(limit).mapNotNull { decodeAndDownscaleImage(it) }
             runOnUiThread { cb.invoke(payloads) }
+        }
+    }
+
+    private val multiFilePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris: List<Uri> ->
+        val cb = multiFileCallback
+        multiFileCallback = null
+        val limit = pendingMaxFiles.coerceIn(1, MAX_ATTACHED_FILES)
+        if (uris.isEmpty() || cb == null) {
+            cb?.invoke(FilePickOutcome())
+            return@registerForActivityResult
+        }
+        ioExecutor.execute {
+            val outcome = readPickedDocuments(uris.take(limit))
+            runOnUiThread { cb.invoke(outcome) }
         }
     }
 
@@ -222,6 +245,23 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
         }
     }
 
+    override fun presentFilePicker(
+        maxCount: Int,
+        onResult: (FilePickOutcome) -> Unit,
+    ) {
+        runOnUiThread {
+            multiFileCallback?.invoke(FilePickOutcome())
+            multiFileCallback = onResult
+            pendingMaxFiles = maxCount.coerceIn(1, MAX_ATTACHED_FILES)
+            runCatching {
+                multiFilePickerLauncher.launch(arrayOf("*/*"))
+            }.onFailure {
+                multiFileCallback = null
+                onResult(FilePickOutcome())
+            }
+        }
+    }
+
     private fun launchSystemCameraCapture() {
         runCatching {
             val dir = File(cacheDir, "camera_captures").apply { mkdirs() }
@@ -299,9 +339,107 @@ class MainActivity : ComponentActivity(), AndroidNativeDelegate {
         }
     }.getOrNull()
 
-    private fun resolveDisplayName(uri: Uri): String? = runCatching {
-        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) cursor.getString(0) else null
+    private fun readPickedDocuments(uris: List<Uri>): FilePickOutcome {
+        val picked = mutableListOf<PickedFilePayload>()
+        var skippedOversized = 0
+        var skippedUnreadable = 0
+
+        for ((idx, uri) in uris.withIndex()) {
+            val meta = resolveDocumentMeta(uri)
+            val fileName = meta.first?.takeIf { it.isNotBlank() } ?: "file_${idx + 1}"
+            val reportedSize = meta.second
+            val rawMime = contentResolver.getType(uri)?.lowercase()?.trim()
+                ?.takeIf { it.isNotBlank() && it != "application/octet-stream" }
+                ?: inferMimeTypeFromFileName(fileName)
+
+            val isRasterImage = rawMime.startsWith("image/") && rawMime != "image/svg+xml"
+            if (isRasterImage) {
+                val img = decodeAndDownscaleImage(uri, defaultName = fileName)
+                if (img != null) {
+                    picked.add(
+                        PickedFilePayload(
+                            fileName = img.fileName,
+                            mimeType = img.mimeType,
+                            dataBase64 = img.dataBase64,
+                            sizeBytes = (img.dataBase64.length * 3L) / 4L,
+                            thumbnailBase64 = img.thumbnailBase64,
+                            isImage = true,
+                        ),
+                    )
+                    continue
+                }
+            }
+
+            if (reportedSize != null && reportedSize > MAX_ATTACHED_FILE_BYTES) {
+                skippedOversized++
+                continue
+            }
+
+            val bytesResult = readUriBytesBounded(uri, MAX_ATTACHED_FILE_BYTES)
+            when (bytesResult) {
+                null -> skippedUnreadable++
+                ByteArrayReadResult.Oversized -> skippedOversized++
+                is ByteArrayReadResult.Ok -> {
+                    val b64 = Base64.encodeToString(bytesResult.bytes, Base64.NO_WRAP)
+                    picked.add(
+                        PickedFilePayload(
+                            fileName = fileName.take(180),
+                            mimeType = rawMime.take(120),
+                            dataBase64 = b64,
+                            sizeBytes = bytesResult.bytes.size.toLong(),
+                            isImage = false,
+                        ),
+                    )
+                }
+            }
+        }
+        return FilePickOutcome(
+            files = picked,
+            skippedOversizedCount = skippedOversized,
+            skippedUnreadableCount = skippedUnreadable,
+        )
+    }
+
+    private sealed interface ByteArrayReadResult {
+        data class Ok(val bytes: ByteArray) : ByteArrayReadResult
+        data object Oversized : ByteArrayReadResult
+    }
+
+    private fun readUriBytesBounded(uri: Uri, maxBytes: Long): ByteArrayReadResult? = runCatching {
+        contentResolver.openInputStream(uri)?.use { input ->
+            val out = ByteArrayOutputStream()
+            val buf = ByteArray(16 * 1024)
+            var total = 0L
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > maxBytes) return@runCatching ByteArrayReadResult.Oversized
+                out.write(buf, 0, n)
+            }
+            ByteArrayReadResult.Ok(out.toByteArray())
         }
     }.getOrNull()
+
+    private fun resolveDisplayName(uri: Uri): String? = resolveDocumentMeta(uri).first
+
+    private fun resolveDocumentMeta(uri: Uri): Pair<String?, Long?> = runCatching {
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                val name = if (nameIdx >= 0 && !cursor.isNull(nameIdx)) cursor.getString(nameIdx) else null
+                val size = if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) cursor.getLong(sizeIdx) else null
+                name to size
+            } else {
+                null to null
+            }
+        } ?: (null to null)
+    }.getOrDefault(null to null)
 }

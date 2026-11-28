@@ -742,6 +742,7 @@ internal fun TasksSidebarContent(
             state.workspaces,
             state.sessionDrafts,
             state.sessionAttachedImages,
+            state.sessionAttachedFiles,
             state.activeSessionId,
         ) {
             state.sidebarProjectGroups(excludePinned = false, excludeFloatingWaiting = true)
@@ -755,7 +756,14 @@ internal fun TasksSidebarContent(
             state.flatTimeSidebarSessions(excludePinned = false, excludeFloatingWaiting = true)
         }
         val archivedList = state.filteredArchivedSessions
-        val archivedGroups = remember(archivedList, state.workspaces, state.sessionDrafts, state.sessionAttachedImages, state.activeSessionId) {
+        val archivedGroups = remember(
+            archivedList,
+            state.workspaces,
+            state.sessionDrafts,
+            state.sessionAttachedImages,
+            state.sessionAttachedFiles,
+            state.activeSessionId,
+        ) {
             state.archivedProjectGroups
         }
 

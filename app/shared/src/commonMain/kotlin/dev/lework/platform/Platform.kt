@@ -140,6 +140,63 @@ data class PickedImagePayload(
     val thumbnailBase64: String? = null,
 )
 
+const val MAX_ATTACHED_FILE_BYTES: Long = 5L * 1024L * 1024L
+const val MAX_ATTACHED_FILES: Int = 4
+
+@Serializable
+data class PickedFilePayload(
+    val fileName: String,
+    val mimeType: String,
+    val dataBase64: String,
+    val sizeBytes: Long = 0L,
+    val thumbnailBase64: String? = null,
+    val isImage: Boolean = false,
+)
+
+@Serializable
+data class FilePickOutcome(
+    val files: List<PickedFilePayload> = emptyList(),
+    val skippedOversizedCount: Int = 0,
+    val skippedUnreadableCount: Int = 0,
+)
+
+fun inferMimeTypeFromFileName(fileName: String): String {
+    val ext = fileName.substringAfterLast('.', "").lowercase().trim()
+    return when (ext) {
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        "svg" -> "image/svg+xml"
+        "pdf" -> "application/pdf"
+        "txt", "log" -> "text/plain"
+        "md", "markdown" -> "text/markdown"
+        "json", "jsonl" -> "application/json"
+        "yaml", "yml" -> "application/yaml"
+        "xml" -> "application/xml"
+        "html", "htm" -> "text/html"
+        "css" -> "text/css"
+        "csv" -> "text/csv"
+        "tsv" -> "text/tab-separated-values"
+        "js", "mjs", "cjs" -> "text/javascript"
+        "ts", "mts", "cts", "tsx", "jsx" -> "text/typescript"
+        "py", "kt", "kts", "java", "swift", "go", "rs", "c", "h", "cpp", "hpp", "rb", "php", "sql", "sh", "zsh", "bash" -> "text/plain"
+        "zip" -> "application/zip"
+        "gz", "tgz" -> "application/gzip"
+        "tar" -> "application/x-tar"
+        "doc" -> "application/msword"
+        "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        "xls" -> "application/vnd.ms-excel"
+        "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        "ppt" -> "application/vnd.ms-powerpoint"
+        "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        "mp3" -> "audio/mpeg"
+        "wav" -> "audio/wav"
+        "m4a" -> "audio/mp4"
+        else -> "application/octet-stream"
+    }
+}
+
 data class LocalDateTimeParts(
     val year: Int,
     val month: Int,
@@ -224,14 +281,19 @@ expect fun saveActiveHostId(hubId: String?)
 expect fun loadHostAccessToken(hubId: String): String?
 expect fun saveHostAccessToken(hubId: String, token: String?)
 
-// Native image picker, camera capture, bitmap decoding & iOS provisioning profile expiration inspector
+// Native image/file picker, camera capture, bitmap decoding & iOS provisioning profile expiration inspector
 expect fun canPickImages(): Boolean
+expect fun canPickFiles(): Boolean
 expect fun canCaptureCameraImage(): Boolean
 expect fun requestImagePick(onResult: (PickedImagePayload?) -> Unit)
 expect fun requestMultiImagePick(
     source: ImagePickSource = ImagePickSource.LIBRARY,
     maxCount: Int = 4,
     onResult: (List<PickedImagePayload>) -> Unit,
+)
+expect fun requestFilePick(
+    maxCount: Int = MAX_ATTACHED_FILES,
+    onResult: (FilePickOutcome) -> Unit,
 )
 expect fun decodeImageBytes(bytes: ByteArray): ImageBitmap?
 expect fun signingExpiryRemainingHours(): Int?

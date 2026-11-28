@@ -450,6 +450,14 @@ data class PlanEntry(
 )
 
 @Serializable
+data class MessageFileSummary(
+    val fileName: String,
+    val mimeType: String? = null,
+    val sizeBytes: Int? = null,
+    val stagedPath: String? = null,
+)
+
+@Serializable
 sealed interface AgentEvent {
     val seq: Int
     val sessionId: String
@@ -475,6 +483,7 @@ sealed interface AgentEvent {
         val text: String,
         val imageCount: Int? = null,
         val imagePreviews: List<String>? = null,
+        val files: List<MessageFileSummary>? = null,
     ) : AgentEvent
 
     @Serializable
@@ -654,6 +663,14 @@ data class PromptImageAttachment(
 )
 
 @Serializable
+data class PromptFileAttachment(
+    val fileName: String,
+    val mimeType: String,
+    val dataBase64: String,
+    val sizeBytes: Int? = null,
+)
+
+@Serializable
 data class FsListParams(
     val path: String,
 )
@@ -720,6 +737,7 @@ data class SessionPromptParams(
     val sessionId: String,
     val text: String,
     val images: List<PromptImageAttachment>? = null,
+    val files: List<PromptFileAttachment>? = null,
     val providerId: String? = null,
     val modelId: String? = null,
     val reasoningEffort: ReasoningEffort? = null,

@@ -20,11 +20,18 @@ import {
   resolveAgyWireModel,
 } from '../storage/host-history/engine-settings.ts'
 import { isPlanStepToolName, parsePlanEntriesFromRaw } from '../storage/host-history/plan-steps.ts'
+import { buildPromptTextWithAttachments, buildTerminalImagePrompt } from '../storage/attachment-store.ts'
 import { HUB_VERSION } from '../version.ts'
 import { StdioJsonRpcProcess, type JsonRpcInbound } from './acp-jsonrpc.ts'
 import { formatEngineTurnError } from './network-error.ts'
 import { discoverEngineSlashCommands, mergeSlashCommands, parseAcpAvailableCommands } from './slash-commands.ts'
-import type { EngineAdapter, EngineSession, EngineSessionInit, StagedPromptImage } from './types.ts'
+import type {
+  EngineAdapter,
+  EngineSession,
+  EngineSessionInit,
+  StagedPromptFile,
+  StagedPromptImage,
+} from './types.ts'
 
 export interface AgyAdapterOptions {
   binary?: string
@@ -459,7 +466,12 @@ class AgyAcpSession implements EngineSession {
     await this.start()
   }
 
-  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
+  async prompt(
+    turnId: string,
+    text: string,
+    images?: StagedPromptImage[],
+    files?: StagedPromptFile[],
+  ): Promise<void> {
     const myToken = ++this.turnSeq
     this.currentMsgId = `msg_${turnId}`
     this.suppressedPlanToolIds.clear()
@@ -476,7 +488,7 @@ class AgyAcpSession implements EngineSession {
         mimeType: img.mimeType,
       })
     }
-    const effectiveText = text.trim() || (images?.length ? '请结合所附图片进行分析。' : '')
+    const effectiveText = buildPromptTextWithAttachments(text, files, Boolean(images?.length))
     if (effectiveText) {
       promptBlocks.push({ type: 'text', text: effectiveText })
     }
@@ -1720,17 +1732,18 @@ class AgyStreamSession implements EngineSession {
     )
   }
 
-  async prompt(turnId: string, text: string, images?: StagedPromptImage[]): Promise<void> {
+  async prompt(
+    turnId: string,
+    text: string,
+    images?: StagedPromptImage[],
+    files?: StagedPromptFile[],
+  ): Promise<void> {
     this.currentMsgId = `msg_${turnId}`
     this.emittedDeltaInTurn = false
     this.emittedPlanStepKeys.clear()
     this.init.emit({ type: 'session.state', state: 'running' })
 
-    const imgHeader =
-      images && images.length > 0
-        ? `[用户附加了本地图片文件，请使用 read_file 查看：${images.map(i => i.stagedPath).join(', ')}]\n\n`
-        : ''
-    const effectiveContent = `${imgHeader}${text.trim() || '请结合所附图片进行分析。'}`
+    const effectiveContent = buildTerminalImagePrompt(images ?? [], text, files ?? [])
 
     try {
       const desiredKey = this.resolveCurrentSpec().key

@@ -2104,6 +2104,37 @@
                 "minLength": 4,
                 "maxLength": 300000
               }
+            },
+            "files": {
+              "maxItems": 4,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "fileName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 180
+                  },
+                  "mimeType": {
+                    "type": "string",
+                    "maxLength": 120
+                  },
+                  "sizeBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "stagedPath": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "fileName"
+                ],
+                "additionalProperties": false
+              }
             }
           },
           "required": [
@@ -6659,6 +6690,40 @@
                 "additionalProperties": false
               }
             },
+            "files": {
+              "maxItems": 4,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "fileName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 180
+                  },
+                  "mimeType": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "dataBase64": {
+                    "type": "string",
+                    "maxLength": 6800000
+                  },
+                  "sizeBytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5242880
+                  }
+                },
+                "required": [
+                  "fileName",
+                  "mimeType",
+                  "dataBase64"
+                ],
+                "additionalProperties": false
+              }
+            },
             "providerId": {
               "type": "string"
             },
@@ -8680,6 +8745,37 @@
                           "minLength": 4,
                           "maxLength": 300000
                         }
+                      },
+                      "files": {
+                        "maxItems": 4,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "fileName": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 180
+                            },
+                            "mimeType": {
+                              "type": "string",
+                              "maxLength": 120
+                            },
+                            "sizeBytes": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            },
+                            "stagedPath": {
+                              "type": "string",
+                              "maxLength": 4096
+                            }
+                          },
+                          "required": [
+                            "fileName"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -10277,6 +10373,37 @@
                       "type": "string",
                       "minLength": 4,
                       "maxLength": 300000
+                    }
+                  },
+                  "files": {
+                    "maxItems": 4,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "fileName": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 180
+                        },
+                        "mimeType": {
+                          "type": "string",
+                          "maxLength": 120
+                        },
+                        "sizeBytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "stagedPath": {
+                          "type": "string",
+                          "maxLength": 4096
+                        }
+                      },
+                      "required": [
+                        "fileName"
+                      ],
+                      "additionalProperties": false
                     }
                   }
                 },

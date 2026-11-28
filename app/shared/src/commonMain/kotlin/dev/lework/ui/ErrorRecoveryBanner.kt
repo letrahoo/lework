@@ -48,7 +48,8 @@ internal fun NetworkErrorRecoveryBanner(
         needsReconnect -> "重连并继续"
         else -> "重试继续"
     }
-    val hasUnsentDraft = !banner.failedPromptText.isNullOrBlank() || banner.failedImages.isNotEmpty()
+    val hasUnsentDraft =
+        !banner.failedPromptText.isNullOrBlank() || banner.failedImages.isNotEmpty() || banner.failedFiles.isNotEmpty()
     val resumeHint = when {
         hasUnsentDraft -> "已保留上一条未发送内容，重试将原样发送"
         needsReconnect -> "网络恢复后点击将自动重连并继续上一轮任务"

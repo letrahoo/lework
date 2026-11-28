@@ -27,6 +27,7 @@ import dev.lework.protocol.ArtifactSource
 import dev.lework.protocol.PermissionOption
 import dev.lework.protocol.PermissionOptionKind
 import dev.lework.protocol.PlanEntry
+import dev.lework.protocol.PromptFileAttachment
 import dev.lework.protocol.PromptImageAttachment
 import dev.lework.protocol.ReasoningEffort
 import dev.lework.protocol.SessionMeta
@@ -779,6 +780,7 @@ class ExecutionStepsLifecycleTest {
                     sessionId: String,
                     text: String,
                     images: List<PromptImageAttachment>?,
+                    files: List<PromptFileAttachment>?,
                     providerId: String?,
                     modelId: String?,
                     reasoningEffort: ReasoningEffort?,
@@ -788,6 +790,7 @@ class ExecutionStepsLifecycleTest {
                         sessionId = sessionId,
                         text = text,
                         images = images,
+                        files = files,
                         providerId = providerId,
                         modelId = modelId,
                         reasoningEffort = reasoningEffort,

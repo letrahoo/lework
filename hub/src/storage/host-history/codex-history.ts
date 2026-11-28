@@ -287,7 +287,7 @@ export function parseCodexTranscript(
           )
           const finalText =
             stagedParsed.cleanText || (totalImgs > 0 ? `（已发送 ${totalImgs} 张图片）` : '')
-          if (!finalText && totalImgs === 0) continue
+          if (!finalText && totalImgs === 0 && !stagedParsed.files?.length) continue
           if (planHygiene.onUserMessage()) emitPlanCleared(ts)
           activeTurn = true
           turnStartedAt = ts
@@ -300,6 +300,7 @@ export function parseCodexTranscript(
             text: finalText,
             ...(totalImgs > 0 ? { imageCount: totalImgs } : {}),
             ...(mergedPreviews.length > 0 ? { imagePreviews: mergedPreviews } : {}),
+            ...(stagedParsed.files?.length ? { files: stagedParsed.files } : {}),
           })
         } else if (role === 'assistant') {
           if (!text) continue

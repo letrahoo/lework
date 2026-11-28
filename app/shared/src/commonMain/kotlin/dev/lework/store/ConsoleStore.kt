@@ -1617,6 +1617,7 @@ class ConsoleStore(
                 authUserName = hostMeta?.userName ?: it.authUserName,
                 sessionDrafts = emptyMap(),
                 sessionAttachedImages = emptyMap(),
+                sessionAttachedFiles = emptyMap(),
                 mentionQuery = null,
                 workspaceFileSuggestions = emptyList(),
                 filePreviewStack = emptyList(),
@@ -2277,6 +2278,7 @@ class ConsoleStore(
                 retryingTurn = false,
                 sessionDrafts = emptyMap(),
                 sessionAttachedImages = emptyMap(),
+                sessionAttachedFiles = emptyMap(),
                 mentionQuery = null,
                 workspaceFileSuggestions = emptyList(),
                 filePreviewStack = emptyList(),
@@ -2490,6 +2492,7 @@ class ConsoleStore(
                     openedArtifact = if (switchedDifferentHost) null else it.openedArtifact,
                     sessionDrafts = if (switchedDifferentHost) emptyMap() else it.sessionDrafts,
                     sessionAttachedImages = if (switchedDifferentHost) emptyMap() else it.sessionAttachedImages,
+                    sessionAttachedFiles = if (switchedDifferentHost) emptyMap() else it.sessionAttachedFiles,
                     filePreviewStack = if (switchedDifferentHost) emptyList() else it.filePreviewStack,
                     promptNoticeText = if (switchedDifferentHost) null else it.promptNoticeText,
                     promptNoticeActionLabel = if (switchedDifferentHost) null else it.promptNoticeActionLabel,
@@ -3667,6 +3670,7 @@ class ConsoleStore(
             s.copy(
                 sessionDrafts = s.sessionDrafts - key,
                 sessionAttachedImages = s.sessionAttachedImages - key,
+                sessionAttachedFiles = s.sessionAttachedFiles - key,
             )
         }
     }
@@ -3828,6 +3832,149 @@ class ConsoleStore(
         }
     }
 
+    fun pickAndAttachFiles() {
+        if (!canPickFiles()) return
+        val snap = _state.value
+        val remainingFiles = (MAX_ATTACHED_FILES - snap.composerAttachedFiles.size).coerceAtLeast(0)
+        val remainingImages = if (snap.selectedEngine?.capabilities?.images != false) {
+            (4 - snap.composerAttachedImages.size).coerceAtLeast(0)
+        } else {
+            0
+        }
+        val maxPick = maxOf(remainingFiles, remainingImages).coerceIn(0, MAX_ATTACHED_FILES)
+        if (maxPick <= 0) {
+            _state.update { it.copy(promptErrorText = "单条消息最多附带 $MAX_ATTACHED_FILES 个文件") }
+            return
+        }
+        requestFilePick(maxCount = maxPick) { outcome ->
+            applyPickedFileOutcome(outcome)
+        }
+    }
+
+    internal fun applyPickedFileOutcome(outcome: FilePickOutcome) {
+        val cur = _state.value
+        val engineSupportsImages = cur.selectedEngine?.capabilities?.images != false
+        val routedImages = mutableListOf<PromptImageAttachment>()
+        val routedFiles = mutableListOf<PromptFileAttachment>()
+        var remainingImgSlots = if (engineSupportsImages) {
+            (4 - cur.composerAttachedImages.size).coerceAtLeast(0)
+        } else {
+            0
+        }
+
+        for (picked in outcome.files) {
+            if (picked.isImage && picked.dataBase64.isNotBlank() && remainingImgSlots > 0) {
+                routedImages.add(
+                    PromptImageAttachment(
+                        mimeType = picked.mimeType,
+                        dataBase64 = picked.dataBase64,
+                        thumbnailBase64 = picked.thumbnailBase64?.takeIf { it.isNotBlank() },
+                        fileName = picked.fileName.take(120),
+                    ),
+                )
+                remainingImgSlots--
+            } else if (picked.fileName.isNotBlank()) {
+                routedFiles.add(
+                    PromptFileAttachment(
+                        fileName = picked.fileName.take(180),
+                        mimeType = picked.mimeType.ifBlank { inferMimeTypeFromFileName(picked.fileName) }.take(120),
+                        dataBase64 = picked.dataBase64,
+                        sizeBytes = picked.sizeBytes.coerceIn(0L, MAX_ATTACHED_FILE_BYTES).toInt(),
+                    ),
+                )
+            }
+        }
+
+        val notices = mutableListOf<String>()
+        if (outcome.skippedOversizedCount > 0) {
+            notices.add("单个文件上限 5 MB，已跳过 ${outcome.skippedOversizedCount} 个过大文件")
+        }
+        if (outcome.skippedUnreadableCount > 0) {
+            notices.add("有 ${outcome.skippedUnreadableCount} 个文件无法读取，已跳过")
+        }
+
+        var fileOverflow = false
+        _state.update { s ->
+            val key = s.activeDraftKey
+            val curImgs = s.sessionAttachedImages[key].orEmpty()
+            val curFiles = s.sessionAttachedFiles[key].orEmpty()
+            val imgSlots = (4 - curImgs.size).coerceAtLeast(0)
+            val fileSlots = (MAX_ATTACHED_FILES - curFiles.size).coerceAtLeast(0)
+
+            val addedImgs = routedImages.take(imgSlots)
+            val addedFiles = routedFiles.take(fileSlots)
+            if (routedFiles.size > fileSlots) {
+                fileOverflow = true
+            }
+
+            val nextImgs = if (addedImgs.isNotEmpty()) {
+                s.sessionAttachedImages + (key to (curImgs + addedImgs))
+            } else {
+                s.sessionAttachedImages
+            }
+            val nextFiles = if (addedFiles.isNotEmpty()) {
+                s.sessionAttachedFiles + (key to (curFiles + addedFiles))
+            } else {
+                s.sessionAttachedFiles
+            }
+
+            val allNotices = buildList {
+                addAll(notices)
+                if (fileOverflow) {
+                    add("单条消息最多附带 $MAX_ATTACHED_FILES 个文件")
+                }
+            }
+            s.copy(
+                sessionAttachedImages = nextImgs,
+                sessionAttachedFiles = nextFiles,
+                promptErrorText = when {
+                    allNotices.isNotEmpty() -> allNotices.joinToString("；")
+                    addedImgs.isNotEmpty() || addedFiles.isNotEmpty() -> null
+                    else -> s.promptErrorText
+                },
+            )
+        }
+    }
+
+    fun attachFiles(attachments: List<PromptFileAttachment>) {
+        if (attachments.isEmpty()) return
+        _state.update { s ->
+            val key = s.activeDraftKey
+            val current = s.sessionAttachedFiles[key].orEmpty()
+            val slots = (MAX_ATTACHED_FILES - current.size).coerceAtLeast(0)
+            if (slots == 0) {
+                s.copy(promptErrorText = "单条消息最多附带 $MAX_ATTACHED_FILES 个文件")
+            } else {
+                s.copy(
+                    sessionAttachedFiles = s.sessionAttachedFiles + (key to (current + attachments.take(slots))),
+                    promptErrorText = if (attachments.size > slots) {
+                        "单条消息最多附带 $MAX_ATTACHED_FILES 个文件，已附加前 $slots 个"
+                    } else {
+                        null
+                    },
+                )
+            }
+        }
+    }
+
+    fun removeAttachedFile(index: Int) {
+        _state.update { s ->
+            val key = s.activeDraftKey
+            val current = s.sessionAttachedFiles[key].orEmpty()
+            if (index !in current.indices) {
+                s
+            } else {
+                val remainingFiles = current.filterIndexed { i, _ -> i != index }
+                val nextMap = if (remainingFiles.isEmpty()) {
+                    s.sessionAttachedFiles - key
+                } else {
+                    s.sessionAttachedFiles + (key to remainingFiles)
+                }
+                s.copy(sessionAttachedFiles = nextMap)
+            }
+        }
+    }
+
     fun dismissPromptError() {
         _state.update { it.copy(promptErrorText = null) }
     }
@@ -3838,6 +3985,7 @@ class ConsoleStore(
             val targetKey = sessionDraftKey(banner?.sessionId ?: s.activeSessionId)
             val restoreText = banner?.failedPromptText?.takeIf { it.isNotBlank() }
             val restoreImages = banner?.failedImages.orEmpty()
+            val restoreFiles = banner?.failedFiles.orEmpty()
             val nextDrafts = if (restoreText != null && s.sessionDrafts[targetKey].isNullOrBlank()) {
                 s.sessionDrafts + (targetKey to restoreText)
             } else {
@@ -3848,12 +3996,18 @@ class ConsoleStore(
             } else {
                 s.sessionAttachedImages
             }
+            val nextFiles = if (restoreFiles.isNotEmpty() && s.sessionAttachedFiles[targetKey].isNullOrEmpty()) {
+                s.sessionAttachedFiles + (targetKey to restoreFiles)
+            } else {
+                s.sessionAttachedFiles
+            }
             s.copy(
                 turnRecoveryBanner = null,
                 promptErrorText = null,
                 unsentDraftToRestore = null,
                 sessionDrafts = nextDrafts,
                 sessionAttachedImages = nextImages,
+                sessionAttachedFiles = nextFiles,
             )
         }
     }
@@ -3894,6 +4048,7 @@ class ConsoleStore(
         nowMs: Long = epochMillis(),
         failedPromptText: String? = null,
         failedImages: List<PromptImageAttachment> = emptyList(),
+        failedFiles: List<PromptFileAttachment> = emptyList(),
         preserveUnsentOnSameContext: Boolean = true,
         forceNetworkError: Boolean = false,
         canResumePreviousTurn: Boolean = true,
@@ -3913,6 +4068,11 @@ class ConsoleStore(
         val effectiveFailedImages = when {
             failedImages.isNotEmpty() -> failedImages
             preserveUnsentOnSameContext && sameContext -> previous?.failedImages.orEmpty()
+            else -> emptyList()
+        }
+        val effectiveFailedFiles = when {
+            failedFiles.isNotEmpty() -> failedFiles
+            preserveUnsentOnSameContext && sameContext -> previous?.failedFiles.orEmpty()
             else -> emptyList()
         }
 
@@ -3939,9 +4099,11 @@ class ConsoleStore(
             detail = detail,
             failedPromptText = effectiveFailedPrompt,
             failedImages = effectiveFailedImages,
+            failedFiles = effectiveFailedFiles,
             canResumePreviousTurn = canResumePreviousTurn ||
                 !effectiveFailedPrompt.isNullOrBlank() ||
                 effectiveFailedImages.isNotEmpty() ||
+                effectiveFailedFiles.isNotEmpty() ||
                 sessionId != null,
             lastErrorAtMs = nowMs,
         )
@@ -3952,6 +4114,7 @@ class ConsoleStore(
         rawMessage: String,
         failedPromptText: String? = null,
         failedImages: List<PromptImageAttachment> = emptyList(),
+        failedFiles: List<PromptFileAttachment> = emptyList(),
         preserveUnsentOnSameContext: Boolean = true,
         forceNetworkError: Boolean = false,
         canResumePreviousTurn: Boolean = true,
@@ -3966,6 +4129,7 @@ class ConsoleStore(
                 nowMs = nowMs,
                 failedPromptText = failedPromptText,
                 failedImages = failedImages,
+                failedFiles = failedFiles,
                 preserveUnsentOnSameContext = preserveUnsentOnSameContext,
                 forceNetworkError = forceNetworkError,
                 canResumePreviousTurn = canResumePreviousTurn,
@@ -4053,7 +4217,8 @@ class ConsoleStore(
 
     private suspend fun dispatchPromptRpc(
         trimmed: String,
-        attached: List<PromptImageAttachment>,
+        attachedImages: List<PromptImageAttachment>,
+        attachedFiles: List<PromptFileAttachment>,
         snapshot: PromptDispatchSnapshot,
     ): String {
         val cur = _state.value
@@ -4100,7 +4265,8 @@ class ConsoleStore(
             rpc.sendPrompt(
                 sessionId = sessionId,
                 text = trimmed,
-                images = attached.takeIf { it.isNotEmpty() },
+                images = attachedImages.takeIf { it.isNotEmpty() },
+                files = attachedFiles.takeIf { it.isNotEmpty() },
                 providerId = snapshot.providerId,
                 modelId = snapshot.modelId,
                 reasoningEffort = snapshot.effort,
@@ -4134,7 +4300,8 @@ class ConsoleStore(
                 rpc.sendPrompt(
                     sessionId = remapped.id,
                     text = trimmed,
-                    images = attached.takeIf { it.isNotEmpty() },
+                    images = attachedImages.takeIf { it.isNotEmpty() },
+                    files = attachedFiles.takeIf { it.isNotEmpty() },
                     providerId = snapshot.providerId,
                     modelId = snapshot.modelId,
                     reasoningEffort = snapshot.effort,
@@ -4152,18 +4319,20 @@ class ConsoleStore(
         val s = _state.value
         val originatingSessionId = s.activeSessionId
         val originatingDraftKey = sessionDraftKey(originatingSessionId)
-        val attached = s.attachedImagesFor(originatingSessionId)
-        if (trimmed.isEmpty() && attached.isEmpty()) return
+        val attachedImages = s.attachedImagesFor(originatingSessionId)
+        val attachedFiles = s.attachedFilesFor(originatingSessionId)
+        if (trimmed.isEmpty() && attachedImages.isEmpty() && attachedFiles.isEmpty()) return
         val dispatchSnapshot = capturePromptDispatchSnapshot(s, originatingSessionId)
         logRuntimeEvent(
             "PROMPT",
-            "send sid=${originatingSessionId ?: "new"} engine=${dispatchSnapshot.engineId} len=${trimmed.length} images=${attached.size}",
+            "send sid=${originatingSessionId ?: "new"} engine=${dispatchSnapshot.engineId} len=${trimmed.length} images=${attachedImages.size} files=${attachedFiles.size}",
         )
         mentionJob?.cancel()
         _state.update {
             it.copy(
                 sessionDrafts = it.sessionDrafts - originatingDraftKey,
                 sessionAttachedImages = it.sessionAttachedImages - originatingDraftKey,
+                sessionAttachedFiles = it.sessionAttachedFiles - originatingDraftKey,
                 mentionQuery = null,
                 workspaceFileSuggestions = emptyList(),
                 promptErrorText = null,
@@ -4189,11 +4358,11 @@ class ConsoleStore(
                 val preSendPlanUpdatedAt = preSendTranscript?.planUpdatedAt ?: 0L
                 val preSendPlanEntries = preSendTranscript?.planEntries.orEmpty()
                 val sentSessionId = try {
-                    dispatchPromptRpc(trimmed, attached, dispatchSnapshot)
+                    dispatchPromptRpc(trimmed, attachedImages, attachedFiles, dispatchSnapshot)
                 } catch (ce: CancellationException) {
                     if (!isActive) throw ce
                     if (ensureConnectedForSend(forceReconnect = true)) {
-                        dispatchPromptRpc(trimmed, attached, dispatchSnapshot)
+                        dispatchPromptRpc(trimmed, attachedImages, attachedFiles, dispatchSnapshot)
                     } else {
                         throw ce
                     }
@@ -4202,7 +4371,7 @@ class ConsoleStore(
                 } catch (firstErr: Throwable) {
                     // Socket dropped right as the user tapped Send: reconnect once and retry transparently!
                     if (ensureConnectedForSend(forceReconnect = true)) {
-                        dispatchPromptRpc(trimmed, attached, dispatchSnapshot)
+                        dispatchPromptRpc(trimmed, attachedImages, attachedFiles, dispatchSnapshot)
                     } else {
                         throw firstErr
                     }
@@ -4227,7 +4396,8 @@ class ConsoleStore(
                     sessionId = originatingSessionId,
                     rawMessage = "网络连接刚恢复，消息尚未发出",
                     failedPromptText = trimmed.takeIf { it.isNotEmpty() },
-                    failedImages = attached,
+                    failedImages = attachedImages,
+                    failedFiles = attachedFiles,
                     forceNetworkError = true,
                 )
             } catch (e: RpcCallException) {
@@ -4236,7 +4406,8 @@ class ConsoleStore(
                     sessionId = originatingSessionId,
                     rawMessage = errMsg,
                     failedPromptText = trimmed.takeIf { it.isNotEmpty() },
-                    failedImages = attached,
+                    failedImages = attachedImages,
+                    failedFiles = attachedFiles,
                     forceNetworkError = false,
                 )
             } catch (t: Throwable) {
@@ -4245,7 +4416,8 @@ class ConsoleStore(
                     sessionId = originatingSessionId,
                     rawMessage = errMsg,
                     failedPromptText = trimmed.takeIf { it.isNotEmpty() },
-                    failedImages = attached,
+                    failedImages = attachedImages,
+                    failedFiles = attachedFiles,
                     forceNetworkError = true,
                 )
             }
@@ -4255,8 +4427,8 @@ class ConsoleStore(
     /**
      * One-tap recovery action for network disconnects & interrupted turns:
      * 1. Reconnects to the Hub & catches up missed session events if currently disconnected.
-     * 2. If the previous prompt failed before reaching the Hub (`failedPromptText`/`failedImages`),
-     *    resends that exact prompt & images with zero loss.
+     * 2. If the previous prompt failed before reaching the Hub (`failedPromptText`/`failedImages`/`failedFiles`),
+     *    resends that exact prompt & attachments with zero loss.
      * 3. Otherwise (upstream mid-turn abort after prompt reached the Hub), sends a seamless
      *    continuation instruction into the same active session so the agent resumes right where it stopped.
      */
@@ -4267,7 +4439,8 @@ class ConsoleStore(
         val targetSid = banner?.sessionId ?: snap.activeSessionId
         val failedText = banner?.failedPromptText?.trim().orEmpty()
         val failedImages = banner?.failedImages.orEmpty()
-        val hasUnsentPrompt = failedText.isNotEmpty() || failedImages.isNotEmpty()
+        val failedFiles = banner?.failedFiles.orEmpty()
+        val hasUnsentPrompt = failedText.isNotEmpty() || failedImages.isNotEmpty() || failedFiles.isNotEmpty()
         val dispatchSnapshot = capturePromptDispatchSnapshot(snap, targetSid)
 
         _state.update { it.copy(retryingTurn = true, promptErrorText = null) }
@@ -4281,6 +4454,7 @@ class ConsoleStore(
                             rawMessage = _state.value.connectionError ?: "网络仍未恢复，重连主机失败",
                             failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                             failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
+                            failedFiles = if (hasUnsentPrompt) failedFiles else emptyList(),
                             preserveUnsentOnSameContext = hasUnsentPrompt,
                             forceNetworkError = true,
                         )
@@ -4299,17 +4473,18 @@ class ConsoleStore(
 
                 val promptToSend = if (hasUnsentPrompt) failedText else SEAMLESS_CONTINUE_PROMPT
                 val imagesToSend = if (hasUnsentPrompt) failedImages else emptyList()
+                val filesToSend = if (hasUnsentPrompt) failedFiles else emptyList()
 
                 val preSendSessionId = targetSid
                 val preSendTranscript = preSendSessionId?.let { _state.value.transcripts[it] }
                 val preSendPlanUpdatedAt = preSendTranscript?.planUpdatedAt ?: 0L
                 val preSendPlanEntries = preSendTranscript?.planEntries.orEmpty()
                 val sentSessionId = try {
-                    dispatchPromptRpc(promptToSend, imagesToSend, dispatchSnapshot)
+                    dispatchPromptRpc(promptToSend, imagesToSend, filesToSend, dispatchSnapshot)
                 } catch (ce: CancellationException) {
                     if (!isActive) throw ce
                     if (ensureConnectedForSend(forceReconnect = true)) {
-                        dispatchPromptRpc(promptToSend, imagesToSend, dispatchSnapshot)
+                        dispatchPromptRpc(promptToSend, imagesToSend, filesToSend, dispatchSnapshot)
                     } else {
                         throw ce
                     }
@@ -4317,7 +4492,7 @@ class ConsoleStore(
                     throw e
                 } catch (firstErr: Throwable) {
                     if (ensureConnectedForSend(forceReconnect = true)) {
-                        dispatchPromptRpc(promptToSend, imagesToSend, dispatchSnapshot)
+                        dispatchPromptRpc(promptToSend, imagesToSend, filesToSend, dispatchSnapshot)
                     } else {
                         throw firstErr
                     }
@@ -4352,11 +4527,19 @@ class ConsoleStore(
                     } else {
                         st.sessionAttachedImages
                     }
+                    val nextAttachedFiles = if (
+                        hasUnsentPrompt && st.sessionAttachedFiles[retryDraftKey] == failedFiles
+                    ) {
+                        st.sessionAttachedFiles - retryDraftKey
+                    } else {
+                        st.sessionAttachedFiles
+                    }
                     st.copy(
                         turnRecoveryBanner = null,
                         promptErrorText = null,
                         unsentDraftToRestore = null,
                         sessionAttachedImages = nextAttachedImages,
+                        sessionAttachedFiles = nextAttachedFiles,
                         transcripts = nextTranscripts,
                     )
                 }
@@ -4367,6 +4550,7 @@ class ConsoleStore(
                     rawMessage = "重试已中断，请检查网络后再次点击重试",
                     failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                     failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
+                    failedFiles = if (hasUnsentPrompt) failedFiles else emptyList(),
                     preserveUnsentOnSameContext = hasUnsentPrompt,
                     forceNetworkError = true,
                 )
@@ -4377,6 +4561,7 @@ class ConsoleStore(
                     rawMessage = errMsg,
                     failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                     failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
+                    failedFiles = if (hasUnsentPrompt) failedFiles else emptyList(),
                     preserveUnsentOnSameContext = hasUnsentPrompt,
                     forceNetworkError = false,
                 )
@@ -4387,6 +4572,7 @@ class ConsoleStore(
                     rawMessage = errMsg,
                     failedPromptText = if (hasUnsentPrompt) failedText.ifEmpty { null } else null,
                     failedImages = if (hasUnsentPrompt) failedImages else emptyList(),
+                    failedFiles = if (hasUnsentPrompt) failedFiles else emptyList(),
                     preserveUnsentOnSameContext = hasUnsentPrompt,
                     forceNetworkError = true,
                 )

@@ -48,6 +48,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lework.platform.MAX_ATTACHED_FILES
+import dev.lework.platform.canPickFiles
 import dev.lework.platform.canPickImages
 import dev.lework.protocol.SessionMode
 import dev.lework.protocol.SessionState
@@ -80,8 +82,10 @@ internal fun DesktopComposer(
     onCancel: () -> Unit,
     onClearQueuedPrompts: () -> Unit = {},
     onPickImage: () -> Unit,
+    onPickFiles: () -> Unit = {},
     onPasteClipboardImages: () -> Boolean = { false },
     onRemoveImage: (Int) -> Unit,
+    onRemoveFile: (Int) -> Unit = {},
     onSelectMentionFile: (String) -> Unit,
     onDismissMention: () -> Unit,
     onSelectSlashCommand: (ResolvedSlashCommand) -> Unit = {},
@@ -91,6 +95,7 @@ internal fun DesktopComposer(
         (activeSess.state == SessionState.RUNNING || activeSess.state == SessionState.WAITING_PERMISSION)
     val queuedCount = activeSess?.queuedPrompts?.size ?: 0
     val imageSupported = remember { canPickImages() } && (state.selectedEngine?.capabilities?.images != false)
+    val fileSupported = remember { canPickFiles() }
     var lightboxIndex by remember { mutableStateOf<Int?>(null) }
 
     var browseSlashManually by remember(draftKey) { mutableStateOf(false) }
@@ -309,7 +314,7 @@ internal fun DesktopComposer(
                     }
                 }
 
-                if (state.composerAttachedImages.isNotEmpty()) {
+                if (state.composerHasAttachments) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -374,10 +379,17 @@ internal fun DesktopComposer(
                                 }
                             }
                         }
+                        state.composerAttachedFiles.forEachIndexed { idx, file ->
+                            ComposerAttachedFileChip(
+                                file = file,
+                                index = idx,
+                                onRemove = { onRemoveFile(idx) },
+                            )
+                        }
                     }
                 }
 
-                val hasDraft = text.isNotBlank() || state.composerAttachedImages.isNotEmpty()
+                val hasDraft = text.isNotBlank() || state.composerHasAttachments
                 val canSubmitNow =
                     hasDraft && (!isSessionRunning || activeSess?.state == SessionState.RUNNING)
 
@@ -567,6 +579,38 @@ internal fun DesktopComposer(
                                         labelColor = if (remainingSlots > 0) Everforest.Fg else Everforest.CommentGrey,
                                         testTag = "composer_add_image_btn",
                                         onClick = { if (remainingSlots > 0) onPickImage() },
+                                    )
+                                }
+                            }
+                        }
+
+                        if (fileSupported) {
+                            val remainingFileSlots =
+                                (MAX_ATTACHED_FILES - state.composerAttachedFiles.size).coerceAtLeast(0)
+                            if (state.composerAttachedFiles.isEmpty()) {
+                                LeworkIconActionButton(
+                                    icon = Icons.Rounded.AttachFile,
+                                    tooltip = "添加本地文件",
+                                    subtitle = "支持 PDF / 代码 / 文档 / 日志等（单个 ≤ 5 MB，最多 $MAX_ATTACHED_FILES 个）",
+                                    idleTint = Everforest.Aqua,
+                                    hoverTint = Everforest.Aqua,
+                                    size = 28.dp,
+                                    iconSize = 16.dp,
+                                    testTag = "composer_add_file_btn",
+                                    onClick = onPickFiles,
+                                )
+                            } else {
+                                LeworkTooltip(
+                                    label = if (remainingFileSlots > 0) "继续添加文件" else "已达文件上限 ($MAX_ATTACHED_FILES/$MAX_ATTACHED_FILES)",
+                                    subtitle = if (remainingFileSlots > 0) "还可添加 $remainingFileSlots 个文件（单个 ≤ 5 MB）" else null,
+                                ) {
+                                    DesktopComposerPill(
+                                        icon = Icons.Rounded.AttachFile,
+                                        label = "${state.composerAttachedFiles.size}/$MAX_ATTACHED_FILES",
+                                        tint = if (remainingFileSlots > 0) Everforest.Aqua else Everforest.CommentGrey,
+                                        labelColor = if (remainingFileSlots > 0) Everforest.Fg else Everforest.CommentGrey,
+                                        testTag = "composer_add_file_btn",
+                                        onClick = { if (remainingFileSlots > 0) onPickFiles() },
                                     )
                                 }
                             }
@@ -798,7 +842,7 @@ internal fun DesktopComposer(
                             LeworkTooltip(
                                 label = if (canQueueWhileRunning) "加入待发队列" else "发送消息",
                                 shortcut = if (hasDraft) "Enter" else null,
-                                subtitle = if (!hasDraft) "输入内容或添加图片后发送" else null,
+                                subtitle = if (!hasDraft) "输入内容或添加附件后发送" else null,
                             ) {
                                 Surface(
                                     shape = CircleShape,
